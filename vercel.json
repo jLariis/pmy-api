@@ -1,0 +1,26 @@
+{
+    "version": 2,
+    "env": {},
+    "builds": [
+        {
+            "src": "src/**/*",
+            "use": "@vercel/node"
+        },
+        {
+            "src": "/src/client/**/*",
+            "use": "@now/static"
+        }
+    ],
+    "routes": [
+        {
+            "src": "/",
+            "dest": "/",
+            "methods": [
+                "GET",
+                "POST",
+                "PUT",
+                "DELETE"
+            ]
+        }
+    ]
+}
