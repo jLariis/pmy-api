@@ -7,12 +7,12 @@
     "assets": [
       {
         "include": "config/ssl/*",
-        "outDir": "public",
+        "outDir": "dist",
         "watchAssets": true
       },
       {
         "include": "client/**/*",
-        "outDir": "public",
+        "outDir": "dist",
         "watchAssets": true
       }
     ]

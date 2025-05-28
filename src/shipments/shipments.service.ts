@@ -36,6 +36,8 @@ export class ShipmentsService {
       header: 1,
     });
 
+    const consNumber = jsonData[0]?.[4];
+
     const today = new Date();
     const todayISO = today.toISOString();
 
@@ -72,6 +74,7 @@ export class ShipmentsService {
               notes: 'Paquete recogido en sucursal',
             },
           ],
+          constNumber: consNumber
         };
       })
       .filter(Boolean);

@@ -21,6 +21,7 @@ export const initialShipments = [
         notes: 'Paquete recolectado en punto A',
       },
     ],
+    consNumber: 123456,
   },
 ];
 

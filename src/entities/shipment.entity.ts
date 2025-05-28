@@ -53,4 +53,7 @@ export class Shipment {
 
   @OneToMany(() => ShipmentStatus, status => status.shipment, { cascade: true })
   statusHistory: ShipmentStatus[];
+
+  @Column()
+  consNumber: number;
 }

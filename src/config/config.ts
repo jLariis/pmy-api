@@ -13,7 +13,11 @@ export const config = () => ({
         database: process.env.DB_NAME,
         synchronize: JSON.parse(process.env.DB_SYNC),
         logging: JSON.parse(process.env.DB_LOGGING),
-        entities: ['public/entities/*.entity.js'],
-        //autoLoadEntities: true,
+        entities: [__dirname + '/../entities/*.entity.{js,ts}'],
+        ssl: {
+            ca: readFileSync(__dirname + '/ssl/ca.pem'),
+            rejectUnauthorized: true,
+        },
+        
     } satisfies DataSourceOptions,
 });
