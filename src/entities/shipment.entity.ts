@@ -1,4 +1,4 @@
-import { Column, Entity, ManyToOne, OneToMany, OneToOne, JoinColumn, PrimaryGeneratedColumn } from 'typeorm';
+import { Column, Entity, ManyToOne, OneToMany, OneToOne, JoinColumn, PrimaryGeneratedColumn, BeforeInsert } from 'typeorm';
 import { Payment } from './payment.entity';
 import { ShipmentStatus } from './shipment-status.entity'
 import { Priority } from '../common/enums/priority.enum';
@@ -24,10 +24,10 @@ export class Shipment {
   @Column()
   recipientZip: string;
 
-  @Column()
-  commitDate: string;
+  @Column({ type: 'date' })
+  commitDate: Date;
 
-  @Column()
+  @Column({ type: 'time' })
   commitTime: string;
 
   @Column()
@@ -54,6 +54,13 @@ export class Shipment {
   @OneToMany(() => ShipmentStatus, status => status.shipment, { cascade: true })
   statusHistory: ShipmentStatus[];
 
-  @Column()
-  consNumber: number;
+  @Column({nullable: true})
+  consNumber: string;
+
+  @BeforeInsert()
+  setDefaults() {
+    const now = new Date();
+    this.commitDate = new Date(now.toISOString().split('T')[0]); // yyyy-mm-dd
+    this.commitTime = now.toTimeString().split(' ')[0]; // hh:mm:ss
+  }
 }
