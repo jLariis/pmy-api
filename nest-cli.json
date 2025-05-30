@@ -9,11 +9,6 @@
         "include": "config/ssl/*",
         "outDir": "dist",
         "watchAssets": true
-      },
-      {
-        "include": "client/**/*",
-        "outDir": "dist",
-        "watchAssets": true
       }
     ]
   }

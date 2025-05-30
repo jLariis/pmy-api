@@ -18,12 +18,10 @@ export const config = () => {
         synchronize: JSON.parse(process.env.DB_SYNC),
         logging: JSON.parse(process.env.DB_LOGGING),
         entities: [__dirname + '/../entities/*.entity.{js,ts}'],
-        ...(isProd && {
-            ssl: {
-                ca: readFileSync(path.join(__dirname, 'ssl', 'ca.pem')).toString(),
-                rejectUnauthorized: true,
-            },
-        }),
+        ssl: {
+            ca: readFileSync(path.join(__dirname, './ssl', 'ca.pem')).toString(),
+            rejectUnauthorized: true,
+        },
         } satisfies DataSourceOptions,
     };
 };
