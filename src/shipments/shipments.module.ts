@@ -8,7 +8,7 @@ import { TrackingModule } from 'src/tracking/tracking.module';
 
 @Module({
   controllers: [ShipmentsController],
-  imports: [TypeOrmModule.forFeature([Shipment])/*,TrackingModule*/],
+  imports: [TypeOrmModule.forFeature([Shipment]),TrackingModule],
   providers: [ShipmentsService, FedexService],
   exports: [ShipmentsService],
 })
