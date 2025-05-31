@@ -77,7 +77,7 @@ export class ShipmentsService {
           relations: ['payment', 'statusHistory'] 
         });
 
-      try {
+      /*try {
           const status = await this.fedexService.trackPackage(pendingShipments[0].trackingNumber);
           this.logger.log(`🚀 ~ ShipmentsService ~ checkStatusOnFedex ~ status: ${status}`)
           this.logger.log(`🚀 ~ ShipmentsService ~ checkStatusOnFedex ~ pendingShipments[0]: ${pendingShipments[0]}`)
@@ -95,21 +95,22 @@ export class ShipmentsService {
           }
         } catch (err) {
           console.error(`Error tracking ${pendingShipments[0].trackingNumber}:`, err.message);
-        }
+        }*/
 
 
-      /*for (const shipment of pendingShipments) {
+      for (const shipment of pendingShipments) {
         this.logger.log("🚀 ~ ShipmentsService ~ checkStatusOnFedex ~ shipment:", shipment)
-
+        
         try {
           const status = await this.fedexService.trackPackage(shipment.trackingNumber);
           this.logger.log("🚀 ~ ShipmentsService ~ checkStatusOnFedex ~ status:", status)
+          
           
           if (status === 'Delivered') {
             const newShipmentStatus = new ShipmentStatus();
             newShipmentStatus.status = ShipmentStatusType.ENTREGADO; // o el status correspondiente
             newShipmentStatus.timestamp = new Date().toISOString();
-            newShipmentStatus.notes = 'Actualizado por cron job automático';
+            newShipmentStatus.notes = 'Actualizado por fedex API.';
             newShipmentStatus.shipment = shipment;
 
             shipment.status = ShipmentStatusType.ENTREGADO;
@@ -119,7 +120,7 @@ export class ShipmentsService {
         } catch (err) {
           console.error(`Error tracking ${shipment.trackingNumber}:`, err.message);
         }
-      }*/
+      }
 
     } catch( error) {
       console.log("error: ", error)

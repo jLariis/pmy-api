@@ -81,6 +81,8 @@ export class FedexService {
         headers: FEDEX_HEADERS(token),
       });
 
+      this.logger.log("Last status: ", response.data.output.completeTrackResults[0].trackResults[0].latestStatusDetail);
+
       return response.data.output.completeTrackResults[0].trackResults[0].latestStatusDetail.statusByLocale;
       
     } catch (error) {
