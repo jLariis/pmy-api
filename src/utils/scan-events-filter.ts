@@ -11,10 +11,9 @@ export const scanEventsFilter = (
     new Date(a.date).getTime() - new Date(b.date).getTime()
   );
 
-  // 2. Buscar el PRIMER evento que coincida
-  const lowerFilter = filterBy.toLowerCase();
   const firstMatchIndex = sortedEvents.findIndex(event =>
-    event.eventDescription?.toLowerCase().includes(lowerFilter)
+    event.exceptionDescription.includes(filterBy) || 
+    event.eventDescription.includes(filterBy)
   );
 
   if (firstMatchIndex === -1) return [];

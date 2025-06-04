@@ -59,6 +59,8 @@ export function parseDynamicSheet(sheet: XLSX.Sheet,  options: ParseOptions): Pa
         const recipientCity = isYaqui ? 'Del Yaqui' : (row[headerMap['recipientCity']] ?? 'N/A');
         const payment = row[headerMap['payment']] ?? null;
 
+        console.log("🚀 ~ parseDynamicSheet ~ payment:", payment);
+
         return {
             trackingNumber: row[headerMap['trackingNumber']],
             recipientName: row[headerMap['recipientName']] ?? 'Sin Nombre',
@@ -68,14 +70,8 @@ export function parseDynamicSheet(sheet: XLSX.Sheet,  options: ParseOptions): Pa
             commitDate: commitDate,
             commitTime: formatExcelTimeToMySQL(row[headerMap['commitTime']]),
             recipientPhone: row[headerMap['recipientPhone']] ?? 'Sin Teléfono',
-            //status: ShipmentStatusType.PENDIENTE,
             payment,
             priority: getPriority(priorityDate),
-            /*statusHistory: [{
-                status: ShipmentStatusType.RECOLECCION,
-                timestamp: todayISO,
-                notes: 'Paquete recogido en sucursal',
-            }],*/
             consNumber: row[headerMap['consNumber']] ?? null,
         };
     });

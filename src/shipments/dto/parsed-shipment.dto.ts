@@ -12,13 +12,8 @@ export class ParsedShipmentDto {
     commitTime: string;
     recipientPhone: string;
     status?: ShipmentStatusType;
-    payment?: Payment;
+    payment?: string;
     priority: Priority;
-    /*statusHistory: [{
-        status: ShipmentStatusType.RECOLECCION,
-        timestamp: todayISO,
-        notes: 'Paquete recogido en sucursal',
-    }],*/
     consNumber?: string;
 }
 

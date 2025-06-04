@@ -17,6 +17,8 @@ import { ScanEventDto } from './dto/fedex/scan-event.dto';
 import { DhlShipmentDto } from './dto/dhl/dhl-shipment.dto';
 import { Priority } from 'src/common/enums/priority.enum';
 import { mapDhlStatusTextToEnum } from 'src/utils/dhl-status-map.utils';
+import { Payment } from 'src/entities';
+import { PaymentStatus } from 'src/common/enums/payment-status.enum';
 
 @Injectable()
 export class ShipmentsService {
@@ -34,9 +36,7 @@ export class ShipmentsService {
     let initialState: ScanEventDto;
 
     if(scanEvents.length === 0) {
-      console.log("🚀 ~ ShipmentsService ~ processScanEvents ~ Buscar con At")
       filteredScanEvents.push(...scanEventsFilter(fedexShipmentData.output.completeTrackResults[0].trackResults[0].scanEvents, "At local FedEx facility"));
-      console.log("🚀 ~ ShipmentsService ~ processScanEvents ~ filteredScanEvents:", filteredScanEvents)
       initialState = filteredScanEvents.find(scanEvent => scanEvent.eventDescription === "" && scanEvent.exceptionDescription ==="At local FedEx facility")
     } else {
       filteredScanEvents.push(...scanEvents);
@@ -49,15 +49,13 @@ export class ShipmentsService {
 
     for (const scanEvent of filteredScanEvents) {
         const isInicialState = scanEvent === initialState;
-
         const newShipmentStatus = new ShipmentStatus();
-        
-        newShipmentStatus.status = isInicialState
-          ? ShipmentStatusType.RECOLECCION
-          : mapFedexStatusToLocalStatus(scanEvent.eventDescription);
-        
         const date = new Date(scanEvent.date);
         const formatted = format(date, 'yyyy-MM-dd HH:mm:ss');
+
+        newShipmentStatus.status = isInicialState
+          ? ShipmentStatusType.RECOLECCION
+          : mapFedexStatusToLocalStatus(scanEvent.eventDescription);        
         newShipmentStatus.timestamp = formatted;
         newShipmentStatus.notes = isInicialState
           ? 'Paquete recogido en sucursal.'
@@ -74,10 +72,7 @@ export class ShipmentsService {
   async createShipmentHistory(shipment: ParsedShipmentDto, savedShipment: Shipment): Promise<ShipmentStatus[]> {
     try {
       const fedexShipmentData: TrackingResponseDto = await this.fedexService.trackPackage(shipment.trackingNumber);
-      
-      //console.log("🚀 ~ ShipmentsService ~ createShipmentHistory ~ fedexShipmentData:", fedexShipmentData)
       const scanEvents = scanEventsFilter(fedexShipmentData.output.completeTrackResults[0].trackResults[0].scanEvents, "A trusted third-party vendor is on the way with your package");
-      console.log("🚀 ~ ShipmentsService ~ createShipmentHistory ~ scanEvents:", scanEvents)
       const histories = await this.processScanEvents(scanEvents, fedexShipmentData, savedShipment);    
 
       return histories;
@@ -87,6 +82,8 @@ export class ShipmentsService {
     }
   }
 
+
+  /*** Ya no será así hay que validar */
   async checkStatusOnFedex() {
     try {
       /** Evaluar si checará los en pendiente en ruta o que status */
@@ -99,15 +96,15 @@ export class ShipmentsService {
         });
 
       for (const shipment of pendingShipments) {
-        this.logger.log("🚀 ~ ShipmentsService ~ checkStatusOnFedex ~ shipment:", shipment)
+        //this.logger.log("🚀 ~ ShipmentsService ~ checkStatusOnFedex ~ shipment:", shipment)
         
-        try {
+        try { // Cambiar...
           const shipmentInfo: TrackingResponseDto = await this.fedexService.trackPackage(shipment.trackingNumber);
           const status = shipmentInfo.output.completeTrackResults[0].trackResults[0].latestStatusDetail.statusByLocale;
           const scanEvents = scanEventsFilter(shipmentInfo.output.completeTrackResults[0].trackResults[0].scanEvents);
 
-          this.logger.log("🚀 ~ ShipmentsService ~ checkStatusOnFedex ~ status:", status)
-          this.logger.log("🚀 ~ ShipmentsService ~ checkStatusOnFedex ~ scanEvents:", scanEvents)
+          //this.logger.log("🚀 ~ ShipmentsService ~ checkStatusOnFedex ~ status:", status)
+          //this.logger.log("🚀 ~ ShipmentsService ~ checkStatusOnFedex ~ scanEvents:", scanEvents)
           
           if (status === 'Delivered') {
             const newShipmentStatus = new ShipmentStatus();
@@ -182,6 +179,63 @@ export class ShipmentsService {
       if (exists) {
         duplicatedTrackings.push(shipment);
       } else {
+        const payment: Payment = null;
+        const newShipment: Shipment = await this.shipmentRepository.create({...shipment, payment})
+        const histories = await this.createShipmentHistory(shipment, newShipment);
+        newShipment.statusHistory = histories;
+        newShipment.status = histories[0].status;
+        newShipment.shipmentType = ShipmentType.FEDEX;
+
+        if(shipment.payment){
+          const newPayment: Payment = new Payment();
+          const match = shipment.payment.match(/([0-9]+(?:\.[0-9]+)?)/);
+
+          if(match) {
+            const amount = parseFloat(match[1]);
+            if(!isNaN(amount)) {
+              newPayment.amount = amount;
+              newPayment.status = PaymentStatus.FAILED
+            }
+          }
+
+          newShipment.payment = newPayment;
+        }
+
+        newShipments.push(newShipment);
+      }
+    }
+    
+    await this.shipmentRepository.save(newShipments);
+
+    const datoToResponse = {
+      saved: newShipments.length,
+      duplicated: duplicatedTrackings.length,
+      duplicatedTrackings,
+    }
+
+    this.logger.log(`🚀 ~ ShipmentsService ~ processExcelFile ~ datoToResponse: ${JSON.stringify(datoToResponse)}`)
+
+    return datoToResponse;
+  }
+
+
+  /***** Just for testing ONE tracking */
+  async validateDataforTracking(trackingNumber: string) {
+    const shipmentInfo: TrackingResponseDto = await this.fedexService.trackPackage(trackingNumber)
+    console.log("🚀 ~ ShipmentsService ~ validateDataforTracking ~ shipmentInfo:", shipmentInfo)
+
+    const scanEvents = scanEventsFilter(shipmentInfo.output.completeTrackResults[0].trackResults[0].scanEvents);
+    
+    console.log("🚀 ~ ShipmentsService ~ validateDataforTracking ~ scanEvents:", scanEvents)
+
+    return scanEvents;
+
+    /* for (const shipment of shipmentsToSave) {
+      const exists = await this.existShipment(shipment.trackingNumber, shipment.recipientCity);
+
+      if (exists) {
+        duplicatedTrackings.push(shipment);
+      } else {
         const newShipment: Shipment = await this.shipmentRepository.create(shipment)
         const histories = await this.createShipmentHistory(shipment, newShipment);
         newShipment.statusHistory = histories;
@@ -199,89 +253,88 @@ export class ShipmentsService {
       duplicatedTrackings,
     }
 
-    this.logger.log(`🚀 ~ ShipmentsService ~ processExcelFile ~ datoToResponse: ${datoToResponse}`)
+    this.logger.log(`🚀 ~ ShipmentsService ~ processExcelFile ~ datoToResponse: ${JSON.stringify(datoToResponse)}`)
 
-    return datoToResponse;
+    return datoToResponse;*/
   }
-
 
   /********************  DHL ********************/
-  parse(text: string): DhlShipmentDto {
-    const lines = text.split('\n').map(l => l.trim());
-    console.log("🚀 ~ ShipmentsService ~ parse ~ lines:", lines)
-    
-    const dto: DhlShipmentDto = {
-      awb: '',
-      origin: '',
-      destination: '',
-      shipmentTime: '',
-      receiver: {
-        name: '',
-        contactName: '',
-        address1: '',
-        address2: '',
-        city: '',
-        state: '',
-        zip: '',
-        country: '',
-        phone: '',
-      },
-      events: [],
-    };
+    parse(text: string): DhlShipmentDto {
+      const lines = text.split('\n').map(l => l.trim());
+      console.log("🚀 ~ ShipmentsService ~ parse ~ lines:", lines)
 
-    for (const line of lines) {
-      if (line.startsWith('AWB :')) dto.awb = line.replace('AWB :', '').trim();
-      if (line.startsWith('Orig :')) dto.origin = line.replace('Orig :', '').trim();
-      if (line.startsWith('Dest :')) dto.destination = line.replace('Dest :', '').trim();
-      if (line.startsWith('Shipment Time :')) dto.shipmentTime = line.replace('Shipment Time :', '').trim();
-      if (line.startsWith('Receiver Name :')) dto.receiver.name = line.replace('Receiver Name :', '').trim();
-      if (line.startsWith('Address Line1 :')) dto.receiver.address1 = line.replace('Address Line1 :', '').trim();
-      if (line.startsWith('Address Line2 :')) dto.receiver.address2 = line.replace('Address Line2 :', '').trim();
-      if (line.startsWith('City :')) dto.receiver.city = line.replace('City :', '').trim();
-      if (line.startsWith('Zip Code :')) dto.receiver.zip = line.replace('Zip Code :', '').trim();
-      if (line.startsWith('Phone :')) dto.receiver.phone = line.replace('Phone :', '').trim();
-      if (line.startsWith('Event :')) {
-        const [, status, location, timestamp] = line.match(/Event : (.*?) at (.*?) on (.*)/) || [];
-        if (status && location && timestamp) {
-          dto.events.push({ status, location, timestamp });
+      const dto: DhlShipmentDto = {
+        awb: '',
+        origin: '',
+        destination: '',
+        shipmentTime: '',
+        receiver: {
+          name: '',
+          contactName: '',
+          address1: '',
+          address2: '',
+          city: '',
+          state: '',
+          zip: '',
+          country: '',
+          phone: '',
+        },
+        events: [],
+      };
+
+      for (const line of lines) {
+        if (line.startsWith('AWB :')) dto.awb = line.replace('AWB :', '').trim();
+        if (line.startsWith('Orig :')) dto.origin = line.replace('Orig :', '').trim();
+        if (line.startsWith('Dest :')) dto.destination = line.replace('Dest :', '').trim();
+        if (line.startsWith('Shipment Time :')) dto.shipmentTime = line.replace('Shipment Time :', '').trim();
+        if (line.startsWith('Receiver Name :')) dto.receiver.name = line.replace('Receiver Name :', '').trim();
+        if (line.startsWith('Address Line1 :')) dto.receiver.address1 = line.replace('Address Line1 :', '').trim();
+        if (line.startsWith('Address Line2 :')) dto.receiver.address2 = line.replace('Address Line2 :', '').trim();
+        if (line.startsWith('City :')) dto.receiver.city = line.replace('City :', '').trim();
+        if (line.startsWith('Zip Code :')) dto.receiver.zip = line.replace('Zip Code :', '').trim();
+        if (line.startsWith('Phone :')) dto.receiver.phone = line.replace('Phone :', '').trim();
+        if (line.startsWith('Event :')) {
+          const [, status, location, timestamp] = line.match(/Event : (.*?) at (.*?) on (.*)/) || [];
+          if (status && location && timestamp) {
+            dto.events.push({ status, location, timestamp });
+          }
         }
       }
+
+      return dto;
     }
+    
+    async createFromParsedDto(input: string) {
+      const dto = this.parse(input);
+      console.log('Parsed DTO:', dto);
+      const shipment = new Shipment();
 
-    return dto;
-  }
-  
-  async createFromParsedDto(input: string) {
-    const dto = this.parse(input);
-    console.log('Parsed DTO:', dto);
-    const shipment = new Shipment();
+      shipment.trackingNumber = dto.awb;
+      shipment.shipmentType = ShipmentType.FEDEX;
+      shipment.recipientName = dto.receiver.name;
+      shipment.recipientAddress = `${dto.receiver.address1} ${dto.receiver.address2}`.trim();
+      shipment.recipientCity = dto.receiver.city;
+      shipment.recipientZip = dto.receiver.zip;
+      shipment.recipientPhone = dto.receiver.phone;
+      shipment.status = ShipmentStatusType.PENDIENTE;
+      shipment.priority = Priority.BAJA;
+      shipment.shipmentType = ShipmentType.DHL;
 
-    shipment.trackingNumber = dto.awb;
-    shipment.shipmentType = ShipmentType.FEDEX;
-    shipment.recipientName = dto.receiver.name;
-    shipment.recipientAddress = `${dto.receiver.address1} ${dto.receiver.address2}`.trim();
-    shipment.recipientCity = dto.receiver.city;
-    shipment.recipientZip = dto.receiver.zip;
-    shipment.recipientPhone = dto.receiver.phone;
-    shipment.status = ShipmentStatusType.PENDIENTE;
-    shipment.priority = Priority.BAJA;
-    shipment.shipmentType = ShipmentType.DHL;
+      const commitDateTime = new Date(dto.shipmentTime);
+      shipment.commitDate = new Date(commitDateTime.toISOString().split('T')[0]);
+      shipment.commitTime = commitDateTime.toTimeString().split(' ')[0];
 
-    const commitDateTime = new Date(dto.shipmentTime);
-    shipment.commitDate = new Date(commitDateTime.toISOString().split('T')[0]);
-    shipment.commitTime = commitDateTime.toTimeString().split(' ')[0];
+      shipment.statusHistory = dto.events.map(event => {
+        const status = new ShipmentStatus();
+        status.status = mapDhlStatusTextToEnum(event.status); // aquí el cambio clave
+        status.timestamp = event.timestamp;
+        status.notes = event.location; // puedes poner location como nota si no la necesitas separada
+        return status;
+      });
 
-    shipment.statusHistory = dto.events.map(event => {
-      const status = new ShipmentStatus();
-      status.status = mapDhlStatusTextToEnum(event.status); // aquí el cambio clave
-      status.timestamp = event.timestamp;
-      status.notes = event.location; // puedes poner location como nota si no la necesitas separada
-      return status;
-    });
-
-    //return this.shipmentRepository.save(shipment);
-  }
-
+      //return this.shipmentRepository.save(shipment);
+    }
+  /******************************************* */
 }
 
 

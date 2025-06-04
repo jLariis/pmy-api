@@ -7,7 +7,6 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import { FedexService } from './fedex.service';
 import { TrackingResponseDto } from './dto/fedex/tracking-response.dto';
 import { TrackRequestDto } from './dto/tracking-request.dto';
-import { ParseDhlDto } from './dto/dhl/parse-dhl.dto';
 
 @ApiTags('exercise-api')
 @ApiBearerAuth()
@@ -19,13 +18,9 @@ export class ShipmentsController {
   ) {}
 
   @Get()
+  @ApiOperation({ summary: 'Consultar todos los envios' })
   allShipments(){
     return this.shipmentsService.findAll();
-  }
-
-  @Post()
-  saveShipments(@Body() createShipmentDto: any) {
-    //return this.shipmentsService.create(createShipmentDto);
   }
 
   @Post('upload')
@@ -48,7 +43,7 @@ export class ShipmentsController {
     return this.shipmentsService.validateShipmentFedex(file);
   }
 
-  @Post('upload-dhl-file')
+  @Post('upload-dhl')
   @UseInterceptors(FileInterceptor('file'))
   @ApiOperation({ summary: 'Subir archivo txt para procesar' })
   @ApiConsumes('multipart/form-data')
@@ -69,35 +64,43 @@ export class ShipmentsController {
     return this.shipmentsService.createFromParsedDto(rawText);
   }
 
-  @Get('test-tracking/:trackingNumber')
-  @ApiResponse({ type: TrackingResponseDto })
-  testTracking(@Param('trackingNumber') trackingNumber: string){
-    console.log("🚀 ~ ShipmentsController ~ testTracking ~ trackingNumber:", trackingNumber)
-    //return this.shipmentsService.checkStatusOnFedex();
-    return this.fedexService.trackPackage(trackingNumber);
-  }
 
 
-  /*** Mejor realizar un consulta para multiples trackings */
-  @Post('tracking')
-  @ApiBody({ type: TrackRequestDto })
-  async track(@Body() body: TrackRequestDto): Promise<TrackingResponseDto[] | TrackingResponseDto> {
-    let trackingNumbers: string[] = [];
-
-    if (body.trackingNumber) {
-      trackingNumbers = [body.trackingNumber];
-    } else if (body.trackingNumbers && body.trackingNumbers.length > 0) {
-      trackingNumbers = body.trackingNumbers;
-    } else {
-      throw new BadRequestException('Debes proporcionar al menos un número de rastreo.');
+  /****************************************** SOLO PRUEBAS *********************************************************/
+  /*
+    @Get('test-tracking/:trackingNumber')
+    @ApiResponse({ type: TrackingResponseDto })
+    testTracking(@Param('trackingNumber') trackingNumber: string){
+      console.log("🚀 ~ ShipmentsController ~ testTracking ~ trackingNumber:", trackingNumber)
+      //return this.shipmentsService.checkStatusOnFedex();
+      return this.fedexService.trackPackage(trackingNumber);
     }
 
-    // Aquí haces la lógica para procesar cada trackingNumber
-    const results = await Promise.all(
-      trackingNumbers.map((tn) => this.fedexService.trackPackage(tn)),
-    );
+    @Get('validate-tracking/:trackingNumber')
+    validateTracking(@Param('trackingNumber') trackigNumber: string) {
+      return this.shipmentsService.validateDataforTracking(trackigNumber);
+    }
 
-    return trackingNumbers.length === 1 ? results[0] : results;
-  }
+    @Post('tracking')
+    @ApiBody({ type: TrackRequestDto })
+    async track(@Body() body: TrackRequestDto): Promise<TrackingResponseDto[] | TrackingResponseDto> {
+      let trackingNumbers: string[] = [];
+
+      if (body.trackingNumber) {
+        trackingNumbers = [body.trackingNumber];
+      } else if (body.trackingNumbers && body.trackingNumbers.length > 0) {
+        trackingNumbers = body.trackingNumbers;
+      } else {
+        throw new BadRequestException('Debes proporcionar al menos un número de rastreo.');
+      }
+
+      // Aquí haces la lógica para procesar cada trackingNumber
+      const results = await Promise.all(
+        trackingNumbers.map((tn) => this.fedexService.trackPackage(tn)),
+      );
+
+      return trackingNumbers.length === 1 ? results[0] : results;
+    }
+  /**************************************************************************************************************** */
 
 }
