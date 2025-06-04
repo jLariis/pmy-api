@@ -183,7 +183,7 @@ export class ShipmentsService {
         const newShipment: Shipment = await this.shipmentRepository.create({...shipment, payment})
         const histories = await this.createShipmentHistory(shipment, newShipment);
         newShipment.statusHistory = histories;
-        newShipment.status = histories[0].status;
+        newShipment.status = histories[histories.length - 1].status;
         newShipment.shipmentType = ShipmentType.FEDEX;
 
         if(shipment.payment){
