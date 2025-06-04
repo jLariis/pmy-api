@@ -93,10 +93,10 @@ export class ShipmentsService {
             status: ShipmentStatusType.PENDIENTE 
           },
           relations: ['payment', 'statusHistory'] 
-        });
+      });
 
       for (const shipment of pendingShipments) {
-        //this.logger.log("🚀 ~ ShipmentsService ~ checkStatusOnFedex ~ shipment:", shipment)
+        this.logger.log("🚀 ~ ShipmentsService ~ checkStatusOnFedex ~ shipment:", shipment)
         
         try { // Cambiar...
           const shipmentInfo: TrackingResponseDto = await this.fedexService.trackPackage(shipment.trackingNumber);
@@ -183,8 +183,14 @@ export class ShipmentsService {
         const newShipment: Shipment = await this.shipmentRepository.create({...shipment, payment})
         const histories = await this.createShipmentHistory(shipment, newShipment);
         newShipment.statusHistory = histories;
-        newShipment.status = histories[histories.length - 1].status;
+        newShipment.status = histories[0].status;
         newShipment.shipmentType = ShipmentType.FEDEX;
+
+        /*const lastHistory = histories[histories.length - 1];
+        console.log("🚀 ~ ShipmentsService ~ validateShipmentFedex ~ lastHistory:", lastHistory)
+        const firstHistory = histories[0];
+        console.log("🚀 ~ ShipmentsService ~ validateShipmentFedex ~ firstHistory:", firstHistory)*/
+
 
         if(shipment.payment){
           const newPayment: Payment = new Payment();
