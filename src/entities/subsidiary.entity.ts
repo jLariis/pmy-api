@@ -20,6 +20,26 @@ export class Subsidiary {
   @Column({ default: true })
   active: boolean;
 
+  @Column({ default: '', nullable: true})
+  officeManager: string;
+
+  @Column({
+    type: "decimal",
+    precision: 10,
+    scale: 2,
+    default: 0.00
+  })
+  fedexCostPackage: string;
+
+  @Column({
+    type: "decimal",
+    precision: 10,
+    scale: 2,
+    default: 0.00
+  })
+  dhlCostPackage: string;
+
+
   @OneToMany(() => RouteIncome, income => income.subsidiary)
   incomes: RouteIncome[];
 

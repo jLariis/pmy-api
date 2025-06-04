@@ -3,6 +3,7 @@ import { Payment } from './payment.entity';
 import { ShipmentStatus } from './shipment-status.entity'
 import { Priority } from '../common/enums/priority.enum';
 import { ShipmentStatusType } from '../common/enums/shipment-status-type.enum';
+import { ShipmentType } from 'src/common/enums/shipment-type.enum';
 
 @Entity('shipment')
 export class Shipment {
@@ -11,6 +12,13 @@ export class Shipment {
 
   @Column()
   trackingNumber: string;
+
+  @Column({
+    type: 'enum',
+    enum: ShipmentType,
+    default: ShipmentType.FEDEX,
+  })
+  shipmentType: ShipmentType;
 
   @Column()
   recipientName: string;
@@ -57,10 +65,14 @@ export class Shipment {
   @Column({nullable: true})
   consNumber: string;
 
+  @Column({nullable: true})
+  createdAt: string;
+
   @BeforeInsert()
   setDefaults() {
     const now = new Date();
     this.commitDate = new Date(now.toISOString().split('T')[0]); // yyyy-mm-dd
-    this.commitTime = now.toTimeString().split(' ')[0]; // hh:mm:ss
+    this.commitTime = "18:00:00"; // hh:mm:ss
+    this.createdAt = now.toISOString();
   }
 }

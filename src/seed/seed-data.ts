@@ -72,6 +72,26 @@ export const initialSubsidiaries = [
     phone: '6441234567',
     active: true,
   },
+  {
+    id: 'sub-002',
+    name: 'Hermosillo',
+    address: 'Calle 2, Colonia Centro',
+    phone: '6441234567',
+    officeManager: 'Juan Perez',
+    fedexCostPackage: 59.51,
+    dhlCostPackage: 45,
+    active: true,
+  },
+  {
+    id: 'sub-003',
+    name: 'Nogales',
+    address: 'Calle 3, Colonia Centro',
+    phone: '6441234567',
+    officeManager: 'John Doe',
+    fedexCostPackage: 59.51,
+    dhlCostPackage: 45,
+    active: true,
+  }
 ];
 
 export const initialExpenseCategories = [

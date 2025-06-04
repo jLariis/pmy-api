@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import axios from 'axios';
 import * as qs from 'qs';
 import { FEDEX_AUTH_HEADERS, FEDEX_AUTHENTICATION_ENDPOINT, FEDEX_HEADERS, FEDEX_TRACKING_ENDPOINT } from 'src/common/constants';
+import { TrackingResponseDto } from './dto/fedex/tracking-response.dto';
 
 @Injectable()
 export class FedexService {
@@ -15,13 +16,14 @@ export class FedexService {
       return this.token;
     }
 
-    this.logger.log(`🚀 ~ FedexService ~ authorization ~ this.token: ${this.token}`)
+    //this.logger.log(`🚀 ~ FedexService ~ authorization ~ this.token: ${this.token}`)
 
     const { FEDEX_CLIENT_ID, FEDEX_CLIENT_SECRET, FEDEX_API_URL } = process.env;
 
-    this.logger.log(`🚀 ~ FedexService ~ authorization ~ FEDEX_CLIENT_ID: ${FEDEX_CLIENT_ID}`)
+    //this.logger.log(`🚀 ~ FedexService ~ authorization ~ FEDEX_CLIENT_ID: ${FEDEX_CLIENT_ID}`)
 
     if (!FEDEX_CLIENT_ID || !FEDEX_CLIENT_SECRET || !FEDEX_API_URL) {
+      this.logger.error('❌ Las variables de entorno de FedEx no están definidas.');
       throw new Error('❌ Las variables de entorno de FedEx no están definidas.');
     }
 
@@ -31,7 +33,7 @@ export class FedexService {
       client_secret: FEDEX_CLIENT_SECRET,
     });
 
-    this.logger.log(`🚀 ~ FedexService ~ authorization ~ data: ${data}`)
+    //this.logger.log(`🚀 ~ FedexService ~ authorization ~ data: ${data}`)
 
     try {
       const response = await axios.post(`${FEDEX_API_URL}${FEDEX_AUTHENTICATION_ENDPOINT}`,
@@ -60,11 +62,8 @@ export class FedexService {
     this.logger.log(`Tracking number: ${trackingNumber}`);
     
     const token = await this.authorization();
-    this.logger.log(`🚀 ~ FedexService ~ trackPackage ~ token: ${token}`)
-
     const url = `${process.env.FEDEX_API_URL}${FEDEX_TRACKING_ENDPOINT}`;
 
-    this.logger.log(`🚀 ~ FedexService ~ trackPackage ~ url: ${url}`)
     const body = {
       trackingInfo: [
         {
@@ -81,9 +80,12 @@ export class FedexService {
         headers: FEDEX_HEADERS(token),
       });
 
-      this.logger.log("Last status: ", response.data.output.completeTrackResults[0].trackResults[0].latestStatusDetail);
+      this.logger.log('✅ Data de FedEx obtenida exitosamente');
+      //this.logger.log(`Tracking Info - completeTrackResults: ${JSON.stringify(response.data.output.completeTrackResults)}`);
+      //this.logger.log(`Tracking Info - Last Status: ${JSON.stringify(response.data.output.completeTrackResults[0].trackResults[0].latestStatusDetail)}`);
 
-      return response.data.output.completeTrackResults[0].trackResults[0].latestStatusDetail.statusByLocale;
+      //return response.data.output.completeTrackResults[0].trackResults[0].latestStatusDetail.statusByLocale;
+      return response.data;
       
     } catch (error) {
       this.logger.error('❌ Error al rastrear paquete:', error.response?.data || error.message);
