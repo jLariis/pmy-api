@@ -2,7 +2,6 @@ import { Injectable, Logger } from '@nestjs/common';
 import axios from 'axios';
 import * as qs from 'qs';
 import { FEDEX_AUTH_HEADERS, FEDEX_AUTHENTICATION_ENDPOINT, FEDEX_HEADERS, FEDEX_TRACKING_ENDPOINT } from 'src/common/constants';
-import { TrackingResponseDto } from './dto/fedex/tracking-response.dto';
 
 @Injectable()
 export class FedexService {

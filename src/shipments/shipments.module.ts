@@ -5,11 +5,12 @@ import { Shipment } from '../entities/shipment.entity';
 import { ShipmentsService } from './shipments.service';
 import { FedexService } from './fedex.service';
 import { TrackingModule } from 'src/tracking/tracking.module';
+import { DHLService } from './dhl.service';
 
 @Module({
   controllers: [ShipmentsController],
   imports: [TypeOrmModule.forFeature([Shipment]),TrackingModule],
-  providers: [ShipmentsService, FedexService],
+  providers: [ShipmentsService, FedexService, DHLService],
   exports: [ShipmentsService],
 })
 export class ShipmentsModule { }

@@ -3,6 +3,8 @@ import { ShipmentStatusType } from '../common/enums/shipment-status-type.enum';
 import { getHeaderIndexMap } from './header-detector.util';
 import { ParsedShipmentDto } from 'src/shipments/dto/parsed-shipment.dto';
 import { Priority } from 'src/common/enums/priority.enum';
+import { Payment } from 'src/entities/payment.entity';
+import { PaymentStatus } from 'src/common/enums/payment-status.enum';
 
 const todayISO = new Date().toISOString();
 
@@ -73,6 +75,53 @@ export function parseDynamicSheet(sheet: XLSX.Sheet,  options: ParseOptions): Pa
             payment,
             priority: getPriority(priorityDate),
             consNumber: row[headerMap['consNumber']] ?? null,
+            isNotIndividualBilling: is315,
         };
     });
 }
+
+export function parseDynamicSheetCharge(sheet: XLSX.Sheet) {
+    const shipmentsWithCharge = [];    
+    const allRows: any[][] = XLSX.utils.sheet_to_json(sheet, {
+        header: 1,
+        range: 0,
+        blankrows: false,
+    });
+
+    const { map: headerMap, headerRowIndex } = getHeaderIndexMap(sheet,20, true);
+    
+    console.log("🚀 ~ parseDynamicSheetCharge ~ headerMap:", headerMap)
+
+    const dataRows = allRows.slice(headerRowIndex + 1);
+
+    dataRows.map(row => {
+        const includesCharge = row[headerMap['cod']]
+
+        if(includesCharge) {
+            console.log("Incluye cobro");
+
+            const newPayment: Payment = new Payment();
+            const match = includesCharge.match(/([0-9]+(?:\.[0-9]+)?)/);
+
+            if(match) {
+                const amount = parseFloat(match[1]);
+                
+                if(!isNaN(amount)) {
+                    newPayment.amount = amount;
+                    newPayment.status = PaymentStatus.PENDING
+                }
+            }
+
+
+            shipmentsWithCharge.push({
+                trackingNumber: row[headerMap['trackingNumber']],
+                recipientAddress: row[headerMap['recipientAddress']],
+                payment: newPayment,
+            })                    
+        }
+    });
+
+    return shipmentsWithCharge;
+}
+
+

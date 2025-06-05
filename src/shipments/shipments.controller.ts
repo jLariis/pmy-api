@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete, UseGuards, UseInterceptors, UploadedFile, BadRequestException, HttpStatus } from '@nestjs/common';
+import { Controller, Get, Post, Body, Patch, Param, Delete, UseGuards, UseInterceptors, UploadedFile, BadRequestException, HttpStatus, InternalServerErrorException } from '@nestjs/common';
 import { ShipmentsService } from './shipments.service';
 import { ApiBearerAuth, ApiBody, ApiConsumes, ApiOperation, ApiProperty, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from 'src/auth/guards/jwt-auth.guard';
@@ -40,6 +40,12 @@ export class ShipmentsController {
     },
   })
   uploadFile(@UploadedFile() file: Express.Multer.File) {
+    if(file.originalname.toLowerCase().includes('cobro')){
+      console.log("Incluye cobro: ", file.originalname);
+      return this.shipmentsService.processFileCharges(file);
+    }
+
+
     return this.shipmentsService.validateShipmentFedex(file);
   }
 
@@ -60,14 +66,31 @@ export class ShipmentsController {
     },
   })
   async uploadDhlFile(@UploadedFile() file: Express.Multer.File) {
-    const rawText = file.buffer.toString('utf8');
-    return this.shipmentsService.createFromParsedDto(rawText);
+    try {
+      const fileContent = file.buffer.toString('utf-8');
+      const result = await this.shipmentsService.processDhlTxtFile(fileContent);
+
+      return {
+        success: true,
+        message: 'Archivo DHL procesado correctamente',
+        ...result
+      };
+    } catch (error) {
+      if (error instanceof BadRequestException) {
+        throw error;
+      }
+      throw new InternalServerErrorException({
+        errorId: 'DHL_UPLOAD_ERROR',
+        message: 'Error al procesar el archivo DHL',
+        details: error.message
+      });
+    }
   }
 
 
 
   /****************************************** SOLO PRUEBAS *********************************************************/
-  /*
+  
     @Get('test-tracking/:trackingNumber')
     @ApiResponse({ type: TrackingResponseDto })
     testTracking(@Param('trackingNumber') trackingNumber: string){

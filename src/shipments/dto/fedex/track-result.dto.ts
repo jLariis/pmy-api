@@ -53,4 +53,9 @@ export class TrackResultDto {
 
   @ApiProperty({ type: [String] })
   availableImages: string[];
+
+  @ApiProperty({ type: String })
+  deliveryDetails: {
+    receivedByName: string;
+  }
 }

@@ -3,7 +3,7 @@ import { Payment } from './payment.entity';
 import { ShipmentStatus } from './shipment-status.entity'
 import { Priority } from '../common/enums/priority.enum';
 import { ShipmentStatusType } from '../common/enums/shipment-status-type.enum';
-import { ShipmentType } from 'src/common/enums/shipment-type.enum';
+import { ShipmentType } from '../common/enums/shipment-type.enum';
 
 @Entity('shipment')
 export class Shipment {
@@ -64,6 +64,12 @@ export class Shipment {
 
   @Column({nullable: true})
   consNumber: string;
+
+  @Column({default: false})
+  isNotIndividualBilling: boolean;
+
+  @Column({default: ''})
+  receivedByName: string;
 
   @Column({nullable: true})
   createdAt: string;

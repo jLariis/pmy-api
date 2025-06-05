@@ -9,7 +9,7 @@ export interface HeaderDetectionResult {
     map: Record<string, number>;
 }
 
-export function getHeaderIndexMap(sheet: XLSX.Sheet, maxScanRows = 20): HeaderDetectionResult {
+export function getHeaderIndexMap(sheet: XLSX.Sheet, maxScanRows = 20, isForCharges: boolean = false): HeaderDetectionResult {
     const allRows = XLSX.utils.sheet_to_json(sheet, {
         header: 1,
         range: 0,
@@ -22,8 +22,8 @@ export function getHeaderIndexMap(sheet: XLSX.Sheet, maxScanRows = 20): HeaderDe
         // Normaliza todos los valores de la fila
         const normalizedRow = row.map(cell => (typeof cell === 'string' ? normalizeHeader(cell) : ''));
 
-        const hasKnownHeader = normalizedRow.some(h => Object.values(headerAliases).includes(h));
-
+        const hasKnownHeader = (isForCharges ? normalizedRow.some(h => Object.values(chargeHeaderAliases).includes(h)) : normalizedRow.some(h => Object.values(headerAliases).includes(h)));
+    
         if (hasKnownHeader) {
             const headerMap: Record<string, number> = {};
 
@@ -60,6 +60,16 @@ export const headerAliases: Record<string, string> = {
     'phone': 'recipientPhone',
     'cod': 'payment',
     'last comm scan update': 'payment',
+    'comm comment (comment contain) all': 'cod',
     // agrega más según tus necesidades
 };
 
+export const chargeHeaderAliases: Record<string, string> = {
+    'tracking number': 'trackigNumber',
+    'tracking no': 'trackingNumber',
+    'recipient address': 'recipientAddress',
+    'recip addr': 'recipientAddress',
+    'comm comment (comment contain) all': 'cod',
+    'cod': 'cod',
+    'last comm scan update': 'cod',
+}
