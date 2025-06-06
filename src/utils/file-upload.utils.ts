@@ -12,7 +12,9 @@ interface ParseOptions {
     fileName: string;
 }
 
-function getPriority(commitDate: Date): Priority {
+export function getPriority(commitDate: Date): Priority {
+    if(!commitDate) return null;
+
     const diff = (commitDate.getTime() - new Date().getTime()) / (1000 * 60 * 60 * 24);
     if (diff <= 0) return Priority.ALTA;
     if (diff <= 3) return Priority.MEDIA;
@@ -56,7 +58,7 @@ export function parseDynamicSheet(sheet: XLSX.Sheet,  options: ParseOptions): Pa
 
     return dataRows.map(row => {
         const rawDate = row[headerMap['commitDate']];
-        const commitDate = formatExcelDateToMySQL(rawDate) ?? new Date().toISOString().slice(0, 10);
+        const commitDate = formatExcelDateToMySQL(rawDate) ?? null;
         const priorityDate = commitDate ? new Date(commitDate) : new Date();
         const recipientCity = isYaqui ? 'Del Yaqui' : (row[headerMap['recipientCity']] ?? 'N/A');
         const payment = row[headerMap['payment']] ?? null;
@@ -124,4 +126,30 @@ export function parseDynamicSheetCharge(sheet: XLSX.Sheet) {
     return shipmentsWithCharge;
 }
 
+export function parseDynamicSheetDHL(sheet: XLSX.Sheet) {
+    const allRows: any[][] = XLSX.utils.sheet_to_json(sheet, {
+        header: 1,
+        range: 0,
+        blankrows: false,
+        raw: false
+    });
+
+    const { map: headerMap, headerRowIndex } = getHeaderIndexMap(sheet,20, true);
+    
+    console.log("🚀 ~ parseDynamicSheetCharge ~ headerMap:", headerMap)
+
+    const dataRows = allRows.slice(headerRowIndex + 1);
+
+    return dataRows.map(row => {
+        console.log("🚀 ~ parseDynamicSheetDHL ~ row:", row)
+
+        return {
+            trackingNumber: row[headerMap['trackingNumber']],
+            recipientAddress: row[headerMap['recipientAddress']],
+            recipientAddress2: row[headerMap['recipientAddress2']],
+            recipientZip: row[headerMap['recipientZip']],
+            commitDate: row[headerMap['commitDate']]
+        }
+    });
+}
 

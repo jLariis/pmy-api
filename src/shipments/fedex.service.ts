@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import axios from 'axios';
 import * as qs from 'qs';
 import { FEDEX_AUTH_HEADERS, FEDEX_AUTHENTICATION_ENDPOINT, FEDEX_HEADERS, FEDEX_TRACKING_ENDPOINT } from 'src/common/constants';
+import { FedExTrackingResponseDto } from './dto/fedex/fedex-tracking-response.dto';
 
 @Injectable()
 export class FedexService {
@@ -57,7 +58,7 @@ export class FedexService {
     }
   }
 
-  async trackPackage(trackingNumber: string): Promise<any> {
+  async trackPackage(trackingNumber: string): Promise<FedExTrackingResponseDto> {
     this.logger.log(`Tracking number: ${trackingNumber}`);
     
     const token = await this.authorization();
@@ -80,7 +81,7 @@ export class FedexService {
       });
 
       this.logger.log('✅ Data de FedEx obtenida exitosamente');
-      //this.logger.log(`Tracking Info - completeTrackResults: ${JSON.stringify(response.data.output.completeTrackResults)}`);
+      this.logger.log(`Tracking Info - completeTrackResults: ${JSON.stringify(response.data.output.completeTrackResults)}`);
       //this.logger.log(`Tracking Info - Last Status: ${JSON.stringify(response.data.output.completeTrackResults[0].trackResults[0].latestStatusDetail)}`);
 
       //return response.data.output.completeTrackResults[0].trackResults[0].latestStatusDetail.statusByLocale;

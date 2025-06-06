@@ -4,6 +4,7 @@ import { ShipmentStatus } from './shipment-status.entity'
 import { Priority } from '../common/enums/priority.enum';
 import { ShipmentStatusType } from '../common/enums/shipment-status-type.enum';
 import { ShipmentType } from '../common/enums/shipment-type.enum';
+import { Subsidiary } from './subsidiary.entity';
 
 @Entity('shipment')
 export class Shipment {
@@ -73,6 +74,10 @@ export class Shipment {
 
   @Column({nullable: true})
   createdAt: string;
+
+  @ManyToOne(() => Subsidiary, { nullable: true })
+  @JoinColumn({ name: 'subsidiaryId' })
+  subsidiary: Subsidiary;
 
   @BeforeInsert()
   setDefaults() {

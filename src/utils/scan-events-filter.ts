@@ -1,9 +1,10 @@
+import { FedExScanEventDto } from "src/shipments/dto/fedex/fedex-tracking-response.dto";
 import { ScanEventDto } from "src/shipments/dto/fedex/scan-event.dto";
 
 export const scanEventsFilter = (
-  scanEvents: ScanEventDto[],
+  scanEvents: FedExScanEventDto[],
   filterBy: string = ""
-): ScanEventDto[] => {
+): FedExScanEventDto[] => {
   if (!filterBy.trim()) return scanEvents;
 
   // 1. Clonar y ordenar de más ANTIGUO a más RECIENTE

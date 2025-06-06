@@ -1,12 +1,13 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete, UseGuards, UseInterceptors, UploadedFile, BadRequestException, HttpStatus, InternalServerErrorException } from '@nestjs/common';
+import { Controller, Get, Post, Body, Patch, Param, Delete, UseGuards, UseInterceptors, UploadedFile, BadRequestException, HttpStatus, InternalServerErrorException, UploadedFiles } from '@nestjs/common';
 import { ShipmentsService } from './shipments.service';
 import { ApiBearerAuth, ApiBody, ApiConsumes, ApiOperation, ApiProperty, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from 'src/auth/guards/jwt-auth.guard';
 import { Public } from 'src/auth/decorators/decorators/public-decorator';
-import { FileInterceptor } from '@nestjs/platform-express';
+import { FileFieldsInterceptor, FileInterceptor } from '@nestjs/platform-express';
 import { FedexService } from './fedex.service';
 import { TrackingResponseDto } from './dto/fedex/tracking-response.dto';
 import { TrackRequestDto } from './dto/tracking-request.dto';
+import { FedExTrackingResponseDto } from './dto/fedex/fedex-tracking-response.dto';
 
 @ApiTags('exercise-api')
 @ApiBearerAuth()
@@ -50,30 +51,54 @@ export class ShipmentsController {
   }
 
   @Post('upload-dhl')
-  @UseInterceptors(FileInterceptor('file'))
-  @ApiOperation({ summary: 'Subir archivo txt para procesar' })
+  @UseInterceptors(
+    FileFieldsInterceptor([
+      { name: 'excelFile', maxCount: 1 },
+      { name: 'txtFile', maxCount: 1 },
+    ]),
+  )
+  @ApiOperation({ summary: 'Subir archivo txt y Excel para procesar' })
   @ApiConsumes('multipart/form-data')
   @ApiBody({
-    description: 'Archivo txt a procesar',
+    description: 'Archivos Excel y TXT',
     schema: {
       type: 'object',
       properties: {
-        file: {
+        excelFile: {
+          type: 'string',
+          format: 'binary',
+        },
+        txtFile: {
           type: 'string',
           format: 'binary',
         },
       },
     },
   })
-  async uploadDhlFile(@UploadedFile() file: Express.Multer.File) {
+  async uploadDhlFile(
+    @UploadedFiles()
+    files: {
+      excelFile?: Express.Multer.File[];
+      txtFile?: Express.Multer.File[];
+    },
+  ) {
+    const excelFile = files.excelFile?.[0];
+    const txtFile = files.txtFile?.[0];
+
+    if (!excelFile || !txtFile) {
+      throw new BadRequestException('Ambos archivos son requeridos');
+    }
+
     try {
-      const fileContent = file.buffer.toString('utf-8');
+      const fileContent = txtFile.buffer.toString('utf-8');
       const result = await this.shipmentsService.processDhlTxtFile(fileContent);
+      const updateShipments = await this.shipmentsService.processDhlExcelFiel(excelFile);
 
       return {
         success: true,
         message: 'Archivo DHL procesado correctamente',
-        ...result
+        ...result,
+        ...updateShipments,
       };
     } catch (error) {
       if (error instanceof BadRequestException) {
@@ -81,18 +106,16 @@ export class ShipmentsController {
       }
       throw new InternalServerErrorException({
         errorId: 'DHL_UPLOAD_ERROR',
-        message: 'Error al procesar el archivo DHL',
-        details: error.message
+        message: 'Error al procesar los archivos DHL',
+        details: error.message,
       });
     }
   }
 
-
-
   /****************************************** SOLO PRUEBAS *********************************************************/
   
     @Get('test-tracking/:trackingNumber')
-    @ApiResponse({ type: TrackingResponseDto })
+    @ApiResponse({ type: FedExTrackingResponseDto })
     testTracking(@Param('trackingNumber') trackingNumber: string){
       console.log("🚀 ~ ShipmentsController ~ testTracking ~ trackingNumber:", trackingNumber)
       //return this.shipmentsService.checkStatusOnFedex();
@@ -104,26 +127,11 @@ export class ShipmentsController {
       return this.shipmentsService.validateDataforTracking(trackigNumber);
     }
 
-    @Post('tracking')
-    @ApiBody({ type: TrackRequestDto })
-    async track(@Body() body: TrackRequestDto): Promise<TrackingResponseDto[] | TrackingResponseDto> {
-      let trackingNumbers: string[] = [];
-
-      if (body.trackingNumber) {
-        trackingNumbers = [body.trackingNumber];
-      } else if (body.trackingNumbers && body.trackingNumbers.length > 0) {
-        trackingNumbers = body.trackingNumbers;
-      } else {
-        throw new BadRequestException('Debes proporcionar al menos un número de rastreo.');
-      }
-
-      // Aquí haces la lógica para procesar cada trackingNumber
-      const results = await Promise.all(
-        trackingNumbers.map((tn) => this.fedexService.trackPackage(tn)),
-      );
-
-      return trackingNumbers.length === 1 ? results[0] : results;
+    @Get('normalize-cities')
+    normalizeCities() {
+      return this.shipmentsService.normalizeCities();
     }
+
   /**************************************************************************************************************** */
 
 }

@@ -58,4 +58,11 @@ export class TrackResultDto {
   deliveryDetails: {
     receivedByName: string;
   }
+
+  @ApiProperty()
+  standardTransitTimeWindow: {
+    window: {
+      ends: string
+    }
+  }
 }
