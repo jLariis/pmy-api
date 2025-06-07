@@ -50,17 +50,15 @@ export class ShipmentsService {
     
         const newShipmentStatus = new ShipmentStatus();
         const rawDate = scanEvent.date; // '2025-06-05T10:57:00-07:00'
-        console.log("🚀 ~ ShipmentsService ~ processScanEvents ~ rawDate:", rawDate)
-        const dateWithoutTZ = rawDate.replace(/([-+]\d{2}:\d{2})$/, ''); 
-        const date = new Date(dateWithoutTZ);
-        console.log("🚀 ~ ShipmentsService ~ processScanEvents ~ dateWithoutTZ:", dateWithoutTZ)
-        const formatted = format(date, 'yyyy-MM-dd HH:mm:ss');
-        console.log("🚀 ~ ShipmentsService ~ processScanEvents ~ formatted:", formatted)
+        const eventDate = new Date(rawDate);
+        
+        console.log(`Fecha original (${scanEvent.date}):`, rawDate); 
+        console.log('Fecha convertida (UTC):', eventDate.toISOString());
 
         newShipmentStatus.status = isInicialState
           ? ShipmentStatusType.RECOLECCION
           : mapFedexStatusToLocalStatus(scanEvent.eventDescription);        
-        newShipmentStatus.timestamp = formatted;
+        newShipmentStatus.timestamp = eventDate;
         newShipmentStatus.notes = this.generateNote(scanEvent, isInicialState);
 
         // ✅ Aquí asignas el shipment relacionado
@@ -139,13 +137,21 @@ export class ShipmentsService {
           }
 
           const status = shipmentInfo.output.completeTrackResults[0].trackResults[0].latestStatusDetail.statusByLocale;
+          const event = shipmentInfo.output.completeTrackResults[0].trackResults[0].scanEvents.find(event => event.eventType === "DL")
 
           this.logger.log(`📣 Último estatus: ${status}`);
           
           if (status === 'Delivered') {
             const newShipmentStatus = new ShipmentStatus();
             newShipmentStatus.status = ShipmentStatusType.ENTREGADO; // o el status correspondiente
-            newShipmentStatus.timestamp = new Date().toISOString();
+
+            const rawDate = event.date; // '2025-06-05T10:57:00-07:00'
+            const eventDate = new Date(rawDate);
+            
+            console.log(`Fecha original (${event.date}):`, rawDate); 
+            console.log('Fecha convertida (UTC):', eventDate.toISOString());
+
+            newShipmentStatus.timestamp = eventDate;
             newShipmentStatus.notes = 'Actualizado por fedex API.';
             newShipmentStatus.shipment = shipment;
 
@@ -351,14 +357,15 @@ export class ShipmentsService {
     
         const newShipmentStatus = new ShipmentStatus();
         const rawDate = scanEvent.date; // '2025-06-05T10:57:00-07:00'
-        const dateWithoutTZ = rawDate.replace(/([-+]\d{2}:\d{2})$/, ''); 
-        const date = new Date(dateWithoutTZ);
-        const formatted = format(date, 'yyyy-MM-dd HH:mm:ss');
+        const eventDate = new Date(rawDate);
+        
+        console.log(`Fecha original (${scanEvent.date}):`, rawDate); 
+        console.log('Fecha convertida (UTC):', eventDate.toISOString());
 
         newShipmentStatus.status = isInicialState
           ? ShipmentStatusType.RECOLECCION
           : mapFedexStatusToLocalStatus(scanEvent.eventDescription);        
-        newShipmentStatus.timestamp = formatted;
+        newShipmentStatus.timestamp = eventDate;
         newShipmentStatus.notes = this.generateNote(scanEvent, isInicialState);
 
         // ✅ Aquí asignas el shipment relacionado

@@ -215,7 +215,7 @@ export class DHLService {
     return events.map(event => {
       const status = new ShipmentStatus();
       status.status = mapDhlStatusTextToEnum(event.code) || ShipmentStatusType.PENDIENTE;
-      status.timestamp = event.eventDateTime;
+      status.timestamp = new Date(event.eventDateTime);
       status.notes = `${event.remark || ''} ${event.facilityId ? `(${event.facilityId})` : ''}`.trim();
       return status;
     });

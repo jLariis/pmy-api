@@ -9,6 +9,7 @@ import { TrackingModule } from 'src/tracking/tracking.module';
 @Module({
   controllers: [SubsidiariesController],
   imports: [TypeOrmModule.forFeature([Subsidiary]),TrackingModule],
+  providers: [SubsidiariesService],
   exports: [SubsidiariesService],
 })
 export class SubsidiariesModule {}

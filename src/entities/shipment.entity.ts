@@ -79,6 +79,9 @@ export class Shipment {
   @JoinColumn({ name: 'subsidiaryId' })
   subsidiary: Subsidiary;
 
+  @Column({ nullable: true })
+  subsidiaryId: string;
+
   @BeforeInsert()
   setDefaults() {
     const now = new Date();

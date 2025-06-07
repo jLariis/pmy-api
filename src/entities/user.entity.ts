@@ -1,4 +1,4 @@
-import { Column, Entity, ManyToMany, JoinTable, ManyToOne, PrimaryGeneratedColumn } from 'typeorm';
+import { Column, Entity, ManyToMany, JoinTable, ManyToOne, PrimaryGeneratedColumn, JoinColumn } from 'typeorm';
 import { Role } from './role.entity';
 import { Subsidiary } from './subsidiary.entity';
 
@@ -22,9 +22,6 @@ export class User {
   @Column({ default: 'user' })
   role: 'admin' | 'user';
 
-  @ManyToOne(() => Subsidiary, subsidiary => subsidiary.users, { nullable: true })
-  subsidiary?: Subsidiary;
-
   @ManyToMany(() => Role, role => role.users)
   @JoinTable()
   roles: Role[];
@@ -32,6 +29,15 @@ export class User {
   @Column('simple-array', { nullable: true })
   permissions?: string[];
 
+  @ManyToOne(() => Subsidiary, { nullable: true })
+  @JoinColumn({ name: 'subsidiaryId' })
+  subsidiary: Subsidiary;
+
+  @Column({ nullable: true })
+  subsidiaryId: string;
+
   @Column({ nullable: true })
   avatar?: string;
 }
+
+

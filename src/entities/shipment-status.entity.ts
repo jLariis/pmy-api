@@ -16,8 +16,20 @@ export class ShipmentStatus {
   })
   status: ShipmentStatusType;
 
-  @Column()
-  timestamp: string;
+  @Column({
+    type: 'timestamp',
+    precision: 3,
+    transformer: {
+      to: (value: Date) => {
+        return new Date(value.getTime() - (value.getTimezoneOffset() * 60000));
+      },
+      from: (value: string) => {
+        const date = new Date(value);
+        return new Date(date.getTime() + (date.getTimezoneOffset() * 60000));
+      }
+    }
+  })
+  timestamp: Date;
 
   @Column({ nullable: true })
   notes?: string;

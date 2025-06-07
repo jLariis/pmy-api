@@ -11,6 +11,9 @@ import { Logger } from 'winston';
 import { ScheduleModule } from '@nestjs/schedule';
 import { JwtAuthGuard } from './auth/guards/jwt-auth.guard';
 import { ShipmentsModule } from './shipments/shipments.module';
+import { SubsidiariesModule } from './subsidiaries/subsidiaries.module';
+import { IncomeModule } from './income/income.module';
+import { CollectionModule } from './collections/collections.module';
 
 @Module({
   imports: [
@@ -25,7 +28,10 @@ import { ShipmentsModule } from './shipments/shipments.module';
       useClass: DatabaseConfig
     }),
     UsersModule,
-    ShipmentsModule
+    ShipmentsModule,
+    SubsidiariesModule,
+    IncomeModule,
+    CollectionModule
   ],
   controllers: [AppController],
   providers: [
