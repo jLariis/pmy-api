@@ -12,6 +12,11 @@ import { Public } from 'src/auth/decorators/decorators/public-decorator';
 export class UsersController {
   constructor(private readonly usersService: UsersService) {}
 
+  @Get()
+  getAll() {
+    return this.usersService.findAll();
+  }
+
   @ApiBody({type: CreateUserDto})
   @Public()
   @Post('register')

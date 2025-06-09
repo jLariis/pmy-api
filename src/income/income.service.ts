@@ -59,7 +59,86 @@ export class IncomeService {
       return this.formatDailyReport(dailyStats, dailyCollections, fromDate);
     }
 
-    async getMonthShipmentReport(subsidiaryId: string, firstDay: Date, lastDay: Date) {
+
+    async getMonthlyShipmentReport(fromDate: Date, toDate: Date) {
+      if (isNaN(fromDate.getTime()) || isNaN(toDate.getTime())) {
+        throw new Error('Invalid date format for startISO or endISO');
+      }
+
+      const shipments = await this.shipmentRepository.find({
+        where: {
+          statusHistory: {
+            timestamp: Between(fromDate, toDate),
+            status: In(['entregado', 'no_entregado'])
+          }
+        },
+        relations: ['statusHistory'],
+        order: {
+          statusHistory: {
+            timestamp: 'DESC'
+          }
+        }
+      });
+      
+      console.log("🚀 ~ IncomeService ~ getMonthlyShipmentReport ~ shipments:", shipments)
+
+      const collections = await this.collectionRepository.find({
+        where: {
+          createdAt: Between(fromDate.toISOString(), toDate.toISOString())
+        }
+      })
+      console.log("🚀 ~ IncomeService ~ getMonthlyShipmentReport ~ collections:", collections)
+      
+      // 3. Procesamiento en memoria
+      const dailyStats = this.processShipmentsByDay(shipments, fromDate, toDate);
+      const dailyCollections = this.processCollectionsByDay(collections, fromDate, toDate);
+
+      // 4. Formatear resultado final
+      return this.formatDailyReport(dailyStats, dailyCollections, fromDate);
+    }
+
+    async getMonthShipmentReportAll(firstDay: Date, lastDay: Date) {
+      if (isNaN(firstDay.getTime()) || isNaN(lastDay.getTime())) {
+        throw new Error('Invalid date format for startISO or endISO');
+      }
+
+      const shipments = await this.shipmentRepository.find({
+        where: {
+          statusHistory: {
+            timestamp: Between(firstDay, lastDay),
+            status: In(['entregado', 'no_entregado'])
+          }
+        },
+        relations: ['statusHistory'],
+        order: {
+          statusHistory: {
+            timestamp: 'DESC'
+          }
+        }
+      });
+
+      const collections = await this.collectionRepository.find({
+        where: {
+          createdAt: Between(firstDay.toISOString(), lastDay.toISOString())
+        }
+      })
+
+      const dailyStats = this.processShipmentsByDay(shipments, firstDay, lastDay);
+      const dailyCollections = this.processCollectionsByDay(collections, firstDay, lastDay);
+
+      // 4. Formatear resultado final
+      const incomes = await this.formatDailyReport(dailyStats, dailyCollections, firstDay);     
+
+      const expenses = await this.expenseRepository.find({
+        where: {
+          date: Between(firstDay, lastDay)
+        }
+      });
+
+      return await this.getResumenFinanciero(incomes, expenses, collections, firstDay, lastDay);
+    }
+
+    async getMonthShipmentReportBySucursal(subsidiaryId: string, firstDay: Date, lastDay: Date) {
       if (isNaN(firstDay.getTime()) || isNaN(lastDay.getTime())) {
         throw new Error('Invalid date format for startISO or endISO');
       }
@@ -128,12 +207,11 @@ export class IncomeService {
         const totalIncome = income.reduce((sum, i) => sum + (parseFloat(i.totalIncome.replace(/[$,]/g, '')) || 0), 0)
         const totalExpenses = expense.reduce((sum, g) => sum + (g.amount || 0), 0)
         const totalCollections = collentions.length * this.PRECIO_ENTREGADO;
-        const incomeTotalWithCollections = totalIncome + totalCollections;
 
         return {
-          income: incomeTotalWithCollections,
+          income: totalIncome,
           expenses: totalExpenses,
-          balance: incomeTotalWithCollections - totalExpenses,
+          balance: totalIncome - totalExpenses,
           period: `${firstDay.toLocaleDateString()} - ${lastDay.toLocaleDateString()}`,
         }
       } catch (error) {
@@ -165,7 +243,6 @@ export class IncomeService {
         }
       });
 
-      console.log("🚀 ~ IncomeService ~ processCollectionsByDay ~ dailyCollections:", dailyCollections)
       return dailyCollections;
     }
 
@@ -214,16 +291,13 @@ export class IncomeService {
         const dateKey = currentDate.toISOString().split('T')[0];
         const stats = dailyStats[dateKey] || { entregados: 0, no_entregados: 0 };
         const collectionsCount = dailyCollections[dateKey] || 0;
-        console.log("🚀 ~ IncomeService ~ constresult:IncomeDto[]=Array.from ~ collectionsCount:", collectionsCount)
-
+      
         const entregadosConCollections = stats.entregados + collectionsCount;
         const total = entregadosConCollections + stats.no_entregados;
 
         const totalIngresos = 
           (entregadosConCollections * this.PRECIO_ENTREGADO) +
           (stats.no_entregados * this.PRECIO_NO_ENTREGADO);
-
-        console.log("🚀 ~ IncomeService ~ constresult:IncomeDto[]=Array.from ~ totalIngresos:", totalIngresos)
 
         return {
           date: dateFormatter.format(currentDate),
