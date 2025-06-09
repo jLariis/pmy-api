@@ -7,6 +7,7 @@ import { WinstonModule } from 'nest-winston';
 import "winston-daily-rotate-file";
 import { ValidationPipe } from '@nestjs/common';
 
+
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, {
     logger: WinstonModule.createLogger({

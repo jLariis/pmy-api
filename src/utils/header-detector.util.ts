@@ -66,7 +66,6 @@ export const headerAliases: Record<string, string> = {
     'cod': 'payment',
     'last comm scan update': 'payment',
     'comm comment (comment contain) all': 'cod',
-    // agrega más según tus necesidades
 };
 
 export const chargeHeaderAliases: Record<string, string> = {

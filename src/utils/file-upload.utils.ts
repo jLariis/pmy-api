@@ -29,6 +29,42 @@ function formatExcelDateToMySQL(dateStr?: string): string | null {
     return `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
 }
 
+function excelDateToJSDate(serial: number): Date {
+  const utcDays = Math.floor(serial - 25569); // días desde Unix epoch
+  const utcValue = utcDays * 86400; // segundos
+  const dateInfo = new Date(utcValue * 1000);
+
+  // Esto preserva la hora local
+  const fractionalDay = serial - Math.floor(serial) + 0.0000001;
+
+  let totalSeconds = Math.floor(86400 * fractionalDay);
+  const seconds = totalSeconds % 60;
+  totalSeconds = Math.floor(totalSeconds / 60);
+  const minutes = totalSeconds % 60;
+  const hours = Math.floor(totalSeconds / 60);
+
+  dateInfo.setHours(hours);
+  dateInfo.setMinutes(minutes);
+  dateInfo.setSeconds(seconds);
+
+  return dateInfo;
+}
+
+function normalizeDateInput(input: any): Date {
+  if (typeof input === 'number') {
+    return excelDateToJSDate(input);
+  }
+  if (typeof input === 'string') {
+    // Asume ISO, convierte a local correctamente
+    const date = new Date(input);
+    return new Date(date.getTime() + date.getTimezoneOffset() * 60000); // para obtener hora local sin desfase
+  }
+  if (input instanceof Date) {
+    return new Date(input.getTime() + input.getTimezoneOffset() * 60000);
+  }
+  throw new Error('Formato de fecha no reconocido');
+}
+
 function formatExcelTimeToMySQL(timeStr?: string): string {
     if (!timeStr || typeof timeStr !== 'string') {
         return new Date().toTimeString().slice(0, 8);
@@ -40,7 +76,39 @@ function formatExcelTimeToMySQL(timeStr?: string): string {
     return new Date().toTimeString().slice(0, 8);
 }
 
-export function parseDynamicSheet(sheet: XLSX.Sheet,  options: ParseOptions): ParsedShipmentDto[] {
+function parseExcelDate(value: any): string | null {
+  if (!value) return null;
+
+  let d: Date | null = null;
+
+  if (value instanceof Date) {
+    d = new Date(value.getTime() + (value.getTimezoneOffset() * 60000)); // Ajuste a local
+  } else if (typeof value === 'number') {
+    // Excel serial date: desde 1899-12-30
+    const excelEpoch = new Date(Date.UTC(1899, 11, 30));
+    d = new Date(excelEpoch.getTime() + value * 86400000);
+  } else if (typeof value === 'string') {
+    const parts = value.split('/');
+    if (parts.length === 3) {
+      const [a, b, c] = parts.map(p => parseInt(p, 10));
+      const isUS = a <= 12 && b <= 31;
+      const year  = c;
+      const month = (isUS ? a : b) - 1;
+      const day   = isUS ? b : a;
+      d = new Date(year, month, day);
+    }
+  }
+
+  if (!d || isNaN(d.getTime())) return null;
+
+  // Regresamos como yyyy-MM-dd (más estándar)
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+export function parseDynamicSheet(sheet: XLSX.Sheet, options: ParseOptions): ParsedShipmentDto[] {
     const { fileName } = options;
 
     const isYaqui = fileName.toLowerCase().includes('yaqui');
@@ -49,21 +117,20 @@ export function parseDynamicSheet(sheet: XLSX.Sheet,  options: ParseOptions): Pa
     const allRows: any[][] = XLSX.utils.sheet_to_json(sheet, {
         header: 1,
         range: 0,
-        blankrows: false,
+        blankrows: false
     });
 
     const { map: headerMap, headerRowIndex } = getHeaderIndexMap(sheet);
-
     const dataRows = allRows.slice(headerRowIndex + 1);
 
     return dataRows.map(row => {
         const rawDate = row[headerMap['commitDate']];
         const commitDate = formatExcelDateToMySQL(rawDate) ?? null;
-        const priorityDate = commitDate ? new Date(commitDate) : new Date();
+        
+        console.log("🚀 ~ parseDynamicSheet ~ commitDate:", commitDate)
+
         const recipientCity = isYaqui ? 'Del Yaqui' : (row[headerMap['recipientCity']] ?? 'N/A');
         const payment = row[headerMap['payment']] ?? null;
-
-        console.log("🚀 ~ parseDynamicSheet ~ payment:", payment);
 
         return {
             trackingNumber: row[headerMap['trackingNumber']],
@@ -71,11 +138,11 @@ export function parseDynamicSheet(sheet: XLSX.Sheet,  options: ParseOptions): Pa
             recipientAddress: row[headerMap['recipientAddress']] ?? 'Sin Dirección',
             recipientCity,
             recipientZip: row[headerMap['recipientZip']] ?? 'N/A',
-            commitDate: commitDate,
+            commitDate: commitDate, // ISO format string o null
             commitTime: formatExcelTimeToMySQL(row[headerMap['commitTime']]),
             recipientPhone: row[headerMap['recipientPhone']] ?? 'Sin Teléfono',
             payment,
-            priority: getPriority(priorityDate),
+            //priority: getPriority(priorityDate),
             consNumber: row[headerMap['consNumber']] ?? null,
             isNotIndividualBilling: is315,
         };
@@ -87,7 +154,7 @@ export function parseDynamicSheetCharge(sheet: XLSX.Sheet) {
     const allRows: any[][] = XLSX.utils.sheet_to_json(sheet, {
         header: 1,
         range: 0,
-        blankrows: false,
+        blankrows: false
     });
 
     const { map: headerMap, headerRowIndex } = getHeaderIndexMap(sheet,20, true);
@@ -113,7 +180,6 @@ export function parseDynamicSheetCharge(sheet: XLSX.Sheet) {
                     newPayment.status = PaymentStatus.PENDING
                 }
             }
-
 
             shipmentsWithCharge.push({
                 trackingNumber: row[headerMap['trackingNumber']],

@@ -96,9 +96,49 @@ export const initialSubsidiaries = [
 
 export const initialExpenseCategories = [
   {
-    id: 'cat-001',
+    id: '963e7a1a-a1f2-44a8-a873-4d0f9580e5ec',
     name: 'Combustible',
     description: 'Gastos de gasolina y diesel',
+  },
+  {
+    id: '438f571a-1987-4fc5-bddd-c13b0ee75703',
+    name: 'Nómina',
+    description: 'Gastos de nómina',
+  },
+  {
+    id: 'e23ef20d-9731-42e6-a280-e524b5f041f4',
+    name: 'Renta',
+    description: 'Gastos de renta',
+  },
+  {
+    id: '84e3c788-831c-4d17-98f7-ab0334d6a438',
+    name: 'Recarga',
+    description: 'Gastos de plan o recarga telefónica',
+  },
+  {
+    id: '793ddf36-eb89-456f-a78c-745f8c8986db',
+    name: 'Peajes',
+    description: 'Gastos de casetas en carretera',
+  },
+  {
+    id: '2588fc6f-06c3-4674-9b59-fb772d6f713a',
+    name: 'Servicios',
+    description: 'Gastos de servicios como agua, luz, internet',
+  },
+  {
+    id: '3fdbdd8d-74bd-474d-bed9-488f8d20f4f4',
+    name: 'Mantenimiento',
+    description: 'Gastos de mantimiento de unidades',
+  },
+  {
+    id: 'c32df4db-d462-453d-89f0-59c5b2e8603b',
+    name: 'Impuestos',
+    description: 'Gastos de pago de impuestos',
+  },
+  {
+    id: '3f3663b5-da2b-4487-b921-236fc6d79f79',
+    name: 'Seguros',
+    description: 'Gastos de pago de seguros',
   },
 ];
 

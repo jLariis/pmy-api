@@ -9,7 +9,7 @@ import { TrackingResponseDto } from './dto/fedex/tracking-response.dto';
 import { TrackRequestDto } from './dto/tracking-request.dto';
 import { FedExTrackingResponseDto } from './dto/fedex/fedex-tracking-response.dto';
 
-@ApiTags('exercise-api')
+@ApiTags('shipments')
 @ApiBearerAuth()
 @Controller('shipments')
 export class ShipmentsController {
@@ -122,9 +122,24 @@ export class ShipmentsController {
       return this.fedexService.trackPackage(trackingNumber);
     }
 
-    @Get('validate-tracking/:trackingNumber')
-    validateTracking(@Param('trackingNumber') trackigNumber: string) {
-      return this.shipmentsService.validateDataforTracking(trackigNumber);
+    @Post('validate-tracking')
+    @UseInterceptors(FileInterceptor('file'))
+    @ApiOperation({ summary: 'Subir archivo Excel para procesar' })
+    @ApiConsumes('multipart/form-data')
+    @ApiBody({
+      description: 'Archivo Excel a procesar',
+      schema: {
+        type: 'object',
+        properties: {
+          file: {
+            type: 'string',
+            format: 'binary',
+          },
+        },
+      },
+    })
+    validateTracking(@UploadedFile() file: Express.Multer.File) {
+      return this.shipmentsService.validateDataforTracking(file);
     }
 
     @Get('normalize-cities')

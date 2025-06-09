@@ -206,7 +206,7 @@ export class DHLService {
 
     if (dto.shipmentTime) {
       const commitDateTime = new Date(dto.shipmentTime);
-      shipment.commitDate = new Date(commitDateTime.toISOString().split('T')[0]);
+      shipment.commitDate = commitDateTime.toISOString().split('T')[0];
       shipment.commitTime = commitDateTime.toTimeString().split(' ')[0];
     }
   }

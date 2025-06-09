@@ -16,10 +16,12 @@ export class AuthController {
         @Inject(Logger) private readonly logger: LoggerService
     ) { }
 
+    
+    @Public()
+    @UseGuards(LocalAuthGuard)
     @ApiBasicAuth()
     @ApiResponse({ status: 200, description: 'Correct credentials' })
     @ApiResponse({ status: 401, description: 'Invalid Credentials' })
-    @UseGuards(LocalAuthGuard)
     @ApiBody({ type: AuthDto})
     @Post('token')
     async login(@Request() req) {

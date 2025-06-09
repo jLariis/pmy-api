@@ -51,15 +51,28 @@ export class AuthService {
         return null;
     }
 
-    async login(user: any): Promise<{access_token: string, role: any, name: any}> {        
-        const payload = { email: user.email, sub: user.id, role: user.role, name: `${user.firstName} ${user.lastName}` };
+    async login(user: any): Promise<{access_token: string, user: any}> {        
+        const payload = { 
+            email: user.email, 
+            sub: user.id, 
+            role: user.role, 
+            name: user.name, 
+            lastName: user.lastName,
+            subsidiary: user.subsidiary
+        };
 
         this.logger.log(`Login Payload: ${JSON.stringify(payload)}`, AuthService.name);
 
         return {
             access_token: this.jwtService.sign(payload),
-            role: payload.role,
-            name: payload.name
+            user: {
+                id: payload.sub,
+                role: payload.role,
+                name: payload.name,
+                lastName: payload.lastName,
+                subsidiary: user.subsidiary
+            }
+            
         };
     }
 

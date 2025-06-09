@@ -81,7 +81,7 @@ export class FedexService {
       });
 
       this.logger.log('✅ Data de FedEx obtenida exitosamente');
-      this.logger.log(`Tracking Info - completeTrackResults: ${JSON.stringify(response.data.output.completeTrackResults)}`);
+      //this.logger.log(`Tracking Info - completeTrackResults: ${JSON.stringify(response.data.output.completeTrackResults)}`);
       //this.logger.log(`Tracking Info - Last Status: ${JSON.stringify(response.data.output.completeTrackResults[0].trackResults[0].latestStatusDetail)}`);
 
       //return response.data.output.completeTrackResults[0].trackResults[0].latestStatusDetail.statusByLocale;

@@ -1,9 +1,11 @@
 import { Body, Controller, Get, HttpCode, Param, Post, UsePipes, ValidationPipe } from '@nestjs/common';
 import { CollectionsService } from './collections.service';
 import { CollectionDto } from './dto/collection.dto';
-import { ApiOperation, ApiBody, ApiCreatedResponse } from '@nestjs/swagger';
+import { ApiOperation, ApiBody, ApiCreatedResponse, ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { Collection } from 'src/entities/collection.entity';
 
+@ApiTags('collections')
+@ApiBearerAuth()
 @Controller('collections')
 export class CollectionsController {
   constructor(private readonly collectionsService: CollectionsService) {}

@@ -1,12 +1,12 @@
 import { Module } from '@nestjs/common';
 import { IncomeController } from './income.controller';
 import { IncomeService } from './income.service';
-import { RouteIncome, Shipment } from 'src/entities';
+import { Expense, RouteIncome, Shipment } from 'src/entities';
 import { TypeOrmModule } from '@nestjs/typeorm';
-import { ShipmentsService } from 'src/shipments/shipments.service';
+import { Collection } from 'src/entities/collection.entity';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([RouteIncome, Shipment])],
+  imports: [TypeOrmModule.forFeature([RouteIncome, Shipment, Expense, Collection])],
   controllers: [IncomeController],
   providers: [IncomeService],
   exports: [IncomeService],

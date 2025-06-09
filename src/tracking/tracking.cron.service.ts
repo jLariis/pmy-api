@@ -11,6 +11,6 @@ export class TrackingCronService {
   @Cron(CronExpression.EVERY_30_MINUTES)
   async handleCron() {
     this.logger.log('🕐 Ejecutando verificación de envíos...');
-    await this.shipmentService.checkStatusOnFedex(); // función que tú defines
+    await this.shipmentService.checkStatusOnFedex();
   }
 }

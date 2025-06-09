@@ -18,6 +18,7 @@ import { DHLService } from './dhl.service';
 import { DhlShipmentDto } from './dto/dhl/dhl-shipment.dto';
 import { FedExScanEventDto, FedExTrackingResponseDto } from './dto/fedex/fedex-tracking-response.dto';
 import { SubsidiariesService } from 'src/subsidiaries/subsidiaries.service';
+import { Priority } from 'src/common/enums/priority.enum';
 
 @Injectable()
 export class ShipmentsService {
@@ -52,8 +53,8 @@ export class ShipmentsService {
         const rawDate = scanEvent.date; // '2025-06-05T10:57:00-07:00'
         const eventDate = new Date(rawDate);
         
-        console.log(`Fecha original (${scanEvent.date}):`, rawDate); 
-        console.log('Fecha convertida (UTC):', eventDate.toISOString());
+        //console.log(`Fecha original (${scanEvent.date}):`, rawDate); 
+        //console.log('Fecha convertida (UTC):', eventDate.toISOString());
 
         newShipmentStatus.status = isInicialState
           ? ShipmentStatusType.RECOLECCION
@@ -70,7 +71,7 @@ export class ShipmentsService {
   }
 
   /** Este esta de mas refactorizar */
-  async createShipmentHistory(shipment: ParsedShipmentDto, savedShipment: Shipment, fedexShipmentData: FedExTrackingResponseDto): Promise<ShipmentStatus[]> {
+  async createShipmentHistory(savedShipment: Shipment, fedexShipmentData: FedExTrackingResponseDto): Promise<ShipmentStatus[]> {
     try {
       const scanEvents = scanEventsFilter(fedexShipmentData.output.completeTrackResults[0].trackResults[0].scanEvents, "A trusted third-party vendor is on the way with your package");
       const histories = await this.processScanEvents(scanEvents, fedexShipmentData, savedShipment);    
@@ -83,7 +84,7 @@ export class ShipmentsService {
   }
 
   private generateNote(scanEvent: FedExScanEventDto, isInitialState: boolean) {
-    console.log("🚀 ~ ShipmentsService ~ generateNote ~ isInitialState:", isInitialState) 
+    //console.log("🚀 ~ ShipmentsService ~ generateNote ~ isInitialState:", isInitialState) 
     if(isInitialState) return 'Paquete recogido en sucursal.'
 
     switch(scanEvent.exceptionCode) {
@@ -96,6 +97,8 @@ export class ShipmentsService {
     }
   }
 
+
+  /** PUDIERA CAMBIARSE A USAR el code 07-08-17 o el string code DL etc */
   private translateEventDescription(event: string) {
     switch(event) {
       case 'A request was made to change this delivery date.':
@@ -125,6 +128,9 @@ export class ShipmentsService {
           relations: ['payment', 'statusHistory'] 
       });
 
+      this.logger.log(`📦🕐 ~ ShipmentsService ~ checkStatusOnFedex ~ pendingShipments ${pendingShipments.length}`)
+
+      
       for (const shipment of pendingShipments) {
         this.logger.log("🚚 ~ ShipmentsService ~ checkStatusOnFedex ~ shipment:", shipment)
         
@@ -138,7 +144,7 @@ export class ShipmentsService {
 
           const status = shipmentInfo.output.completeTrackResults[0].trackResults[0].latestStatusDetail.statusByLocale;
           const event = shipmentInfo.output.completeTrackResults[0].trackResults[0].scanEvents.find(event => event.eventType === "DL")
-
+          
           this.logger.log(`📣 Último estatus: ${status}`);
           
           if (status === 'Delivered') {
@@ -219,6 +225,7 @@ export class ShipmentsService {
     const sheet = workbook.Sheets[workbook.SheetNames[0]];
     
     const shipmentsToSave: ParsedShipmentDto[] = parseDynamicSheet(sheet, {fileName: originalname});
+    
     const newShipments: Shipment[] = [];
 
     for (const shipment of shipmentsToSave) {
@@ -230,18 +237,16 @@ export class ShipmentsService {
         const payment: Payment = null;
         const newShipment: Shipment = await this.shipmentRepository.create({...shipment, payment})
         const fedexShipmentData: FedExTrackingResponseDto = await this.fedexService.trackPackage(shipment.trackingNumber);
-        const histories = await this.createShipmentHistory(shipment, newShipment,fedexShipmentData);
-        
+        const histories = await this.createShipmentHistory(newShipment, fedexShipmentData);
+
         if(!shipment.commitDate) {
           const rawDate = fedexShipmentData.output.completeTrackResults[0].trackResults[0].standardTransitTimeWindow.window.ends; // Ej: '2025-06-05T10:57:00-07:00'
-          console.log("🚀 ~ ShipmentsService ~ validateShipmentFedex ~ fedexShipmentData.output.completeTrackResults[0].trackResults[0]:", fedexShipmentData.output.completeTrackResults[0].trackResults[0].standardTransitTimeWindow)
-          console.log("🚀 ~ ShipmentsService ~ validateShipmentFedex ~ rawDate:", rawDate)
-          
+                    
           if(!rawDate){
-            const defaultDay = new Date();
-            newShipment.commitDate = defaultDay;
+            const defaultDay = format(new Date(), 'yyyy-MM-dd HH:mm:ss');
+            const [fecha] = defaultDay.split(' ');
+            newShipment.commitDate = fecha;
             newShipment.commitTime = '18:00:00'
-            newShipment.priority = getPriority(defaultDay)
           } else {
             const formattedDateTime = format(
               new Date(rawDate.replace(/([-+]\d{2}:\d{2})$/, '')), 
@@ -250,14 +255,15 @@ export class ShipmentsService {
             console.log("🚀 ~ ShipmentsService ~ validateShipmentFedex ~ formattedDateTime:", formattedDateTime)  
 
             const [fecha, hora] = formattedDateTime.split(' ');
-            newShipment.commitDate = new Date(fecha);
+            newShipment.commitDate = fecha;
             newShipment.commitTime = hora
-            newShipment.priority = getPriority(newShipment.commitDate)
-            newShipment.subsidiary = await this.cityClasification(shipment.recipientCity)
+        
           }
 
         }
 
+        newShipment.priority = getPriority(new Date(newShipment.commitDate))
+        newShipment.subsidiary = await this.cityClasification(shipment.recipientCity)
         newShipment.statusHistory = histories;
         newShipment.status = histories[0].status;
         newShipment.receivedByName = fedexShipmentData.output.completeTrackResults[0].trackResults[0].deliveryDetails.receivedByName;
@@ -279,7 +285,8 @@ export class ShipmentsService {
 
           newShipment.payment = newPayment;
         }
-
+        
+        console.log("🚀 ~ ShipmentsService ~ validateShipmentFedex ~ newShipment.commitDate:", newShipment.commitDate)
         newShipments.push(newShipment);
       }
     }
@@ -330,88 +337,135 @@ export class ShipmentsService {
   }
 
   /***** Just for testing ONE tracking */
-  async validateDataforTracking(trackingNumber: string) {
-    const shipmentInfo: FedExTrackingResponseDto = await this.fedexService.trackPackage(trackingNumber)
-    const shipmentStatus: ShipmentStatus[] = [];
-    const filteredScanEvents: FedExScanEventDto[] = [];
-    console.log("🚀 ~ ShipmentsService ~ validateDataforTracking ~ shipmentInfo:", shipmentInfo)
-    const buscarPor = "A trusted third-party vendor is on the way with your package"
+    async validateDataforTracking(file: Express.Multer.File) {
+      if (!file) throw new BadRequestException('No file uploaded');
 
-    const scanEvents = scanEventsFilter(shipmentInfo.output.completeTrackResults[0].trackResults[0].scanEvents, buscarPor);
-    console.log("🚀 ~ validateDataforTracking ~ scanEvents:", scanEvents)
-    
-    console.log("🚀 ~ ShipmentsService ~ validateDataforTracking ~ scanEvents:", scanEvents)
+      const { buffer, originalname } = file;
+      const duplicatedTrackings: any[] = [];
+      const newShipments: Shipment[] = [];
 
-    if(scanEvents.length === 0) {
-      filteredScanEvents.push(...scanEventsFilter(shipmentInfo.output.completeTrackResults[0].trackResults[0].scanEvents, "At local FedEx facility"));
-    } else {
-      filteredScanEvents.push(...scanEvents);
-    }
+      if (!originalname.match(/\.(csv|xlsx?)$/i)) {
+        throw new BadRequestException('Unsupported file type');
+      }
 
-    if(filteredScanEvents.length === 0) {
-      filteredScanEvents.push(...scanEventsFilter(shipmentInfo.output.completeTrackResults[0].trackResults[0].scanEvents, "On FedEx vehicle for delivery"))
-    }
+      const workbook = XLSX.read(buffer, { type: 'buffer' });
+      const sheet = workbook.Sheets[workbook.SheetNames[0]];
+      
+      const shipmentsToSave: ParsedShipmentDto[] = parseDynamicSheet(sheet, {fileName: originalname});
+      //console.log("🚀 ~ ShipmentsService ~ validateDataforTracking ~ shipmentsToSave:", shipmentsToSave)
 
-    for (const scanEvent of filteredScanEvents) {
-        const isInicialState = scanEvent.date === filteredScanEvents[filteredScanEvents.length - 1].date;
-    
-        const newShipmentStatus = new ShipmentStatus();
-        const rawDate = scanEvent.date; // '2025-06-05T10:57:00-07:00'
-        const eventDate = new Date(rawDate);
+      for (const shipment of shipmentsToSave) { 
+        const shipmentInfo: FedExTrackingResponseDto = await this.fedexService.trackPackage(shipment.trackingNumber)
+        const scanEvents = scanEventsFilter(shipmentInfo.output.completeTrackResults[0].trackResults[0].scanEvents, "A trusted third-party vendor is on the way with your package");
+        let shipmentStatus: ShipmentStatus[] = [];
         
-        console.log(`Fecha original (${scanEvent.date}):`, rawDate); 
-        console.log('Fecha convertida (UTC):', eventDate.toISOString());
+        const payment: Payment = null;
+        const newShipment = this.shipmentRepository.create({...shipment, payment});
+      
+        //console.log("🚀 ~ ShipmentsService ~ validateDataforTracking ~ newShipment:", newShipment)
+        const filteredScanEvents: FedExScanEventDto[] = [];
 
-        newShipmentStatus.status = isInicialState
-          ? ShipmentStatusType.RECOLECCION
-          : mapFedexStatusToLocalStatus(scanEvent.eventDescription);        
-        newShipmentStatus.timestamp = eventDate;
-        newShipmentStatus.notes = this.generateNote(scanEvent, isInicialState);
+        if(scanEvents.length === 0) {
+          filteredScanEvents.push(...scanEventsFilter(shipmentInfo.output.completeTrackResults[0].trackResults[0].scanEvents, "At local FedEx facility"));
+        } else {
+          filteredScanEvents.push(...scanEvents);
+        }
 
-        // ✅ Aquí asignas el shipment relacionado
-        newShipmentStatus.shipment = new Shipment();
-        shipmentStatus.push(newShipmentStatus);
-    }
+        if(filteredScanEvents.length === 0) {
+          filteredScanEvents.push(...scanEventsFilter(shipmentInfo.output.completeTrackResults[0].trackResults[0].scanEvents, "On FedEx vehicle for delivery"))
+        }
 
-    const newShipment: Shipment = new Shipment()
-    newShipment.statusHistory = shipmentStatus;
-    newShipment.status = shipmentStatus[0].status;
-    newShipment.shipmentType = ShipmentType.FEDEX;
+        for (const scanEvent of filteredScanEvents) {
+            const isInicialState = scanEvent.date === filteredScanEvents[filteredScanEvents.length - 1].date;
+        
+            const newShipmentStatus = new ShipmentStatus();
+            const rawDate = scanEvent.date; // '2025-06-05T10:57:00-07:00'
+            const eventDate = new Date(rawDate);
+            
+            console.log(`Fecha original (${scanEvent.date}):`, rawDate); 
+            console.log('Fecha convertida (UTC):', eventDate.toISOString());
 
-    return {
-      eventosOriginales: shipmentInfo.output.completeTrackResults[0].trackResults[0].scanEvents,
-      eventosEscaneados: filteredScanEvents,
-      historias: shipmentStatus,
-      envio: newShipment
-    };
+            newShipmentStatus.status = isInicialState
+              ? ShipmentStatusType.RECOLECCION
+              : mapFedexStatusToLocalStatus(scanEvent.eventDescription);        
+            newShipmentStatus.timestamp = eventDate;
+            newShipmentStatus.notes = this.generateNote(scanEvent, isInicialState);
 
-    /* for (const shipment of shipmentsToSave) {
-      const exists = await this.existShipment(shipment.trackingNumber, shipment.recipientCity);
+            // ✅ Aquí asignas el shipment relacionado
+            newShipmentStatus.shipment = newShipment;
+            shipmentStatus.push(newShipmentStatus);
+        }
 
-      if (exists) {
-        duplicatedTrackings.push(shipment);
-      } else {
-        const newShipment: Shipment = await this.shipmentRepository.create(shipment)
-        const histories = await this.createShipmentHistory(shipment, newShipment);
-        newShipment.statusHistory = histories;
-        newShipment.status = histories[0].status;
+        if (!shipment.commitDate) {
+          const rawDate = shipmentInfo.output.completeTrackResults[0].trackResults[0].standardTransitTimeWindow.window.ends; // Ej: '2025-06-05T10:57:00-07:00'
+          
+          if(!rawDate){
+            console.log("🚀 ~ ShipmentsService ~ validateDataforTracking ~ rawDate ~ sin rawDate")
+            const defaultDay = format(new Date(), 'yyyy-MM-dd HH:mm:ss');
+            console.log("🚀 ~ ShipmentsService ~ validateDataforTracking ~ defaultDay:", defaultDay)
+            const [fecha] = defaultDay.split(' ');
+            newShipment.commitDate = fecha;
+            console.log("🚀 ~ ShipmentsService ~ validateDataforTracking ~  newShipment.commitDate:",  newShipment.commitDate)
+            newShipment.commitTime = '18:00:00'
+          } else {
+            const formattedDateTime = format(
+              new Date(rawDate.replace(/([-+]\d{2}:\d{2})$/, '')), 
+              'yyyy-MM-dd HH:mm:ss'
+            );
+            
+            const [fecha, hora] = formattedDateTime.split(' ');
+            newShipment.commitDate = fecha
+            newShipment.commitTime = hora
+          }
+        }
+
+        newShipment.priority = getPriority(new Date(newShipment.commitDate))
+        newShipment.subsidiary = await this.cityClasification(shipment.recipientCity)
+        newShipment.statusHistory = shipmentStatus;
+        newShipment.status = shipmentStatus[0].status;
+        newShipment.receivedByName = shipmentInfo.output.completeTrackResults[0].trackResults[0].deliveryDetails.receivedByName;
         newShipment.shipmentType = ShipmentType.FEDEX;
+        newShipment.isNotIndividualBilling = shipment.isNotIndividualBilling;    
+
+        if(shipment.payment){
+          const newPayment: Payment = new Payment();
+          const match = shipment.payment.match(/([0-9]+(?:\.[0-9]+)?)/);
+          const isPaymentClomplete = shipmentStatus.findIndex(history => history.status === ShipmentStatusType.ENTREGADO);
+
+          if(match) {
+            const amount = parseFloat(match[1]);
+            if(!isNaN(amount)) {
+              newPayment.amount = amount;
+              newPayment.status =  isPaymentClomplete ? PaymentStatus.PAID : PaymentStatus.PENDING
+            }
+          }
+
+          newShipment.payment = newPayment;
+        }
+        
         newShipments.push(newShipment);
       }
+
+
+      const outputShipments = newShipments.map(shipment => ({
+        ...shipment,
+        statusHistory: shipment.statusHistory.map(status => ({
+          status: status.status,
+          timestamp: status.timestamp,
+          notes: status.notes,
+        }))
+      }));
+
+
+      const datoToResponse = {
+        saved: outputShipments,
+      
+      }
+
+      //this.logger.log(`🚀 ~ ShipmentsService ~ processExcelFile ~ datoToResponse: ${JSON.stringify(datoToResponse)}`)
+
+      return datoToResponse;
     }
-    
-    await this.shipmentRepository.save(newShipments);
-
-    const datoToResponse = {
-      saved: newShipments.length,
-      duplicated: duplicatedTrackings.length,
-      duplicatedTrackings,
-    }
-
-    this.logger.log(`🚀 ~ ShipmentsService ~ processExcelFile ~ datoToResponse: ${JSON.stringify(datoToResponse)}`)
-
-    return datoToResponse;*/
-  }
 
   /********************  DHL ********************/
     async processDhlTxtFile(fileContent: string): Promise<{ success: number; errors: number }> {
@@ -466,7 +520,7 @@ export class ShipmentsService {
         const [fecha, hora] = commitDate.split(' ');
 
         if(shipmentToUpdate) {
-          shipmentToUpdate.commitDate = new Date(fecha);
+          shipmentToUpdate.commitDate = fecha;
           shipmentToUpdate.commitTime = hora;
           shipmentToUpdate.recipientAddress = recipientAddress + " " + recipientAddress2;
           await this.shipmentRepository.save(shipmentToUpdate);

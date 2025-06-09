@@ -34,7 +34,7 @@ export class Shipment {
   recipientZip: string;
 
   @Column({ type: 'date' })
-  commitDate: Date;
+  commitDate: string;
 
   @Column({ type: 'time' })
   commitTime: string;
@@ -85,8 +85,6 @@ export class Shipment {
   @BeforeInsert()
   setDefaults() {
     const now = new Date();
-    this.commitDate = new Date(now.toISOString().split('T')[0]); // yyyy-mm-dd
-    this.commitTime = "18:00:00"; // hh:mm:ss
     this.createdAt = now.toISOString();
   }
 }

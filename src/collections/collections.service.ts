@@ -17,7 +17,8 @@ export class CollectionsService {
 
 
     async save(collectionDto: CollectionDto[]): Promise<Collection[]> {
-      return await this.collectionRepository.save(collectionDto);
+      const newCollections = await this.collectionRepository.create(collectionDto);
+      return await this.collectionRepository.save(newCollections);
     }
 
     async getByTrackingNumber(trackingNumber: string){

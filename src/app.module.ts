@@ -9,11 +9,11 @@ import { DatabaseConfig } from './config/db/database.config';
 import { UsersModule } from './users/users.module';
 import { Logger } from 'winston';
 import { ScheduleModule } from '@nestjs/schedule';
-import { JwtAuthGuard } from './auth/guards/jwt-auth.guard';
 import { ShipmentsModule } from './shipments/shipments.module';
 import { SubsidiariesModule } from './subsidiaries/subsidiaries.module';
 import { IncomeModule } from './income/income.module';
 import { CollectionModule } from './collections/collections.module';
+import { ExpensesModule } from './expenses/expenses.module';
 
 @Module({
   imports: [
@@ -31,12 +31,13 @@ import { CollectionModule } from './collections/collections.module';
     ShipmentsModule,
     SubsidiariesModule,
     IncomeModule,
-    CollectionModule
+    CollectionModule,
+    ExpensesModule
   ],
   controllers: [AppController],
   providers: [
     Logger,
-    AppService
+    AppService,
   ],
 })
 export class AppModule {}

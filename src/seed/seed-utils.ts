@@ -12,20 +12,35 @@ import {
   initialShipments,
 } from './seed-data';
 
+import * as bcrypt from 'bcrypt';
+
 export async function runSeeds(dataSource: DataSource) {
   console.log('📦 Insertando datos...');
 
-  await dataSource.getRepository('user').save(initialUsers);
-  await dataSource.getRepository('permission').save(initialPermissions);
-  await dataSource.getRepository('role').save(initialRoles);
-  await dataSource.getRepository('subsidiary').save(initialSubsidiaries);
-  await dataSource.getRepository('expense_category').save(initialExpenseCategories);
-  await dataSource.getRepository('expense').save(initialExpenses);
-  await dataSource.getRepository('driver').save(initialDrivers);
-  await dataSource.getRepository('vehicle').save(initialVehicles);
-  await dataSource.getRepository('route').save(initialRoutes);
+  const saltRounds = 10;
+  const usersWithHashedPasswords = await Promise.all(
+    initialUsers.map(async (user) => {
+      const salt = await bcrypt.genSalt(saltRounds);
+      const hashedPassword = await bcrypt.hash(user.password, salt);
+      return {
+        ...user,
+        password: hashedPassword,
+      };
+    })
+  );
 
-  for (const shipment of initialShipments) {
+
+  //await dataSource.getRepository('user').save(usersWithHashedPasswords);
+  //await dataSource.getRepository('permission').save(initialPermissions);
+  //await dataSource.getRepository('role').save(initialRoles);
+  //await dataSource.getRepository('subsidiary').save(initialSubsidiaries);
+  await dataSource.getRepository('expense_category').save(initialExpenseCategories);
+  //await dataSource.getRepository('expense').save(initialExpenses);
+  //await dataSource.getRepository('driver').save(initialDrivers);
+  //await dataSource.getRepository('vehicle').save(initialVehicles);
+  //await dataSource.getRepository('route').save(initialRoutes);
+
+  /*for (const shipment of initialShipments) {
     const savedShipment = await dataSource.getRepository('shipment').save(shipment);
     if (shipment.payment) {
       await dataSource.getRepository('payment').save({
@@ -41,7 +56,7 @@ export async function runSeeds(dataSource: DataSource) {
         });
       }
     }
-  }
+  }*/
 
   console.log('✅ Seeds completados');
 }
