@@ -1,3 +1,5 @@
+import { startOfMonth, endOfMonth } from "date-fns";
+
 export function formatCurrency(amount: number): string {
   return new Intl.NumberFormat('es-MX', {
     style: 'currency',
@@ -20,4 +22,10 @@ export function getWeekRange() {
   endDate.setHours(23, 59, 59, 999);
 
   return { startDate, endDate };
+}
+
+export function getStartAndEndOfMonth(date: Date): { start: Date; end: Date } {
+  const start = startOfMonth(date);
+  const end = endOfMonth(date);
+  return { start, end };
 }

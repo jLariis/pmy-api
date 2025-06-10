@@ -144,7 +144,7 @@ export function parseDynamicSheet(sheet: XLSX.Sheet, options: ParseOptions): Par
             payment,
             //priority: getPriority(priorityDate),
             consNumber: row[headerMap['consNumber']] ?? null,
-            isNotIndividualBilling: is315,
+            isNotIndividualBilling: is315, // si es true es carga completa si es false es normal
         };
     });
 }
