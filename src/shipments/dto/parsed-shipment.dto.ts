@@ -15,7 +15,7 @@ export class ParsedShipmentDto {
     payment?: string;
     priority?: Priority;
     consNumber?: string;
-    isNotIndividualBilling?: boolean;
+    isPartOfCharge?: boolean;
     subsidiary?: Subsidiary
 }
 

@@ -2,11 +2,11 @@ import { HttpStatus, Injectable } from '@nestjs/common';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { InjectRepository } from '@nestjs/typeorm';
-import { User } from 'src/users/dto/user.entity';
 import { Repository } from 'typeorm';
 import { Role } from 'src/auth/enums/role.enum';
 import { BusinessException } from 'src/common/business.exception';
 import * as bcrypt from 'bcrypt';
+import { User } from 'src/entities';
 
 @Injectable()
 export class UsersService {
@@ -62,7 +62,7 @@ export class UsersService {
     }
   }
 
-  async savePasswordReset(email: string, resetToken: string) {
+  /*async savePasswordReset(email: string, resetToken: string) {
     const user = await this.userRepository.findOneBy({email});
 
     if(!user) {
@@ -90,11 +90,13 @@ export class UsersService {
     }
 
     return user;    
-  }
+  }*/
 
 
-  findAll() {
-    return `This action returns all users`;
+  async findAll(): Promise<User[]> {
+    return this.userRepository.find({
+      relations: ['subsidiary']
+    })
   }
 
   async findOne(id: string) {
@@ -106,7 +108,7 @@ export class UsersService {
   }
 
   async update(id: string, updateUserDto: UpdateUserDto) {
-    return await this.userRepository.update(id, updateUserDto);
+    return await this.userRepository.update(id, {});
   }
 
   remove(id: string) {

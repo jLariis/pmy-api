@@ -8,10 +8,10 @@ import { jwtConstants } from './constants';
 import { JwtStrategy } from './strategies/jwt.strategy';
 import { TypeOrmModule } from "@nestjs/typeorm";
 import { JwtTokenService } from "./jwt-token.service";
-import { User } from 'src/users/dto/user.entity';
 import { AuthController } from './auth.controller';
 import { BlacklistService } from './blacklist.service';
 import { EmailService } from './email.service';
+import { User } from 'src/entities/user.entity';
 
 @Module({
     controllers: [AuthController],

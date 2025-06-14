@@ -5,10 +5,10 @@ import { InjectRepository } from "@nestjs/typeorm";
 import { Repository } from "typeorm";
 import * as bcrypt from 'bcrypt';
 import { BusinessException } from 'src/common/business.exception';
-import { User } from 'src/users/dto/user.entity';
 import { BlacklistService } from './blacklist.service';
 import { EmailService } from './email.service';
 import { v4 as uuidv4 } from 'uuid';
+import { User } from 'src/entities/user.entity';
 
 @Injectable()
 export class AuthService {
@@ -81,7 +81,7 @@ export class AuthService {
         this.blacklistService.add(token);
     }
 
-    async requestPasswordReset(dto: any): Promise<void> {
+    /*async requestPasswordReset(dto: any): Promise<void> {
         const { email } = dto;
     
         const resetToken = uuidv4();
@@ -116,7 +116,7 @@ export class AuthService {
         } catch (error) {
             console.log("Error traying to hash password: ", error);
         }
-    }
+    }*/
 
     validatePasswordComplexity(password: string): boolean {
         const minLength = 8;

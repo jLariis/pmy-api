@@ -16,6 +16,9 @@ export class ShipmentStatus {
   })
   status: ShipmentStatusType;
 
+  @Column({nullable: true, default: ''})
+  exceptionCode?: string
+
   @Column({
     type: 'timestamp',
     precision: 3,

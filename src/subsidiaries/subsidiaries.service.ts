@@ -11,15 +11,19 @@ export class SubsidiariesService {
   ){}
 
   async create(subsidiary: Subsidiary){
-    return this.subsidiaryRepository.save(subsidiary);
+    return await this.subsidiaryRepository.save(subsidiary);
   }
 
   async findAll(){
-    return this.subsidiaryRepository.find();
+    return await this.subsidiaryRepository.find({
+      order: {
+        name: "ASC"
+      }
+    });
   } 
 
   async findById(id: string){
-    return this.subsidiaryRepository.findOneBy({id});
+    return await this.subsidiaryRepository.findOneBy({id});
   }
 
   async getByName(name: string){

@@ -7,11 +7,11 @@ import { FedexService } from './fedex.service';
 import { TrackingModule } from 'src/tracking/tracking.module';
 import { DHLService } from './dhl.service';
 import { SubsidiariesService } from 'src/subsidiaries/subsidiaries.service';
-import { Subsidiary } from 'src/entities';
+import { Income, Subsidiary } from 'src/entities';
 
 @Module({
   controllers: [ShipmentsController],
-  imports: [TypeOrmModule.forFeature([Shipment, Subsidiary]),TrackingModule],
+  imports: [TypeOrmModule.forFeature([Shipment, Subsidiary, Income]),TrackingModule],
   providers: [ShipmentsService, FedexService, DHLService, SubsidiariesService],
   exports: [ShipmentsService],
 })

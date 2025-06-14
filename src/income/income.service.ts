@@ -1,13 +1,14 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ShipmentStatusType } from 'src/common/enums/shipment-status-type.enum';
-import { Expense, Shipment } from 'src/entities';
+import { Expense, Income, Shipment } from 'src/entities';
 import { formatCurrency, getStartAndEndOfMonth, getWeekRange } from 'src/utils/format.util';
 import { Between, In, Repository } from 'typeorm';
 import { IncomeDto } from './dto/income.dto';
 import { Collection } from 'src/entities/collection.entity';
 import { format } from 'date-fns';
 import { groupBy } from 'lodash';
+import { FormatIncomesDto } from './dto/format-incomes.dto';
 
 @Injectable()
 export class IncomeService {
@@ -19,17 +20,29 @@ export class IncomeService {
     private expenseRepository: Repository<Expense>,
     @InjectRepository(Collection)
     private collectionRepository: Repository<Collection>,
+    @InjectRepository(Income)
+    private incomeRepository: Repository<Income>
   ){}
     /****  Debe ser por sucursal */ 
     private PRECIO_ENTREGADO = 59.15;
     private PRECIO_NO_ENTREGADO = 41.00;
     private PRECIO_DHL = 41.00;
 
+    private async getIncomes(subsidiaryId: string, fromDate: Date, toDate: Date, withCharge: boolean = false) {
+      return await this.incomeRepository.find({
+        where: {
+          subsidiaryId,
+          date: Between(fromDate, toDate),
+          isPartOfCharge: withCharge
+        }
+      })
+    }
+
     private async getShipments(subsidiaryId: string, fromDate: Date, toDate: Date, withCharge: boolean = false) {
       return await this.shipmentRepository.find({
         where: {
           subsidiaryId,
-          isNotIndividualBilling: withCharge,
+          isPartOfCharge: withCharge,
           statusHistory: {
             timestamp: Between(fromDate, toDate),
             status: In(['entregado', 'no_entregado'])
@@ -55,7 +68,7 @@ export class IncomeService {
     }
 
     private async getTotalShipmentsIncome(subsidiaryId: string, fromDate: Date, toDate: Date){
-      //isNotIndividualBilling: is315 
+      //isPartOfCharge: is315 
       // --> si es true es carga completa si es false es normal      
       
       const shipments = await this.getShipments(subsidiaryId, fromDate, toDate, false);
@@ -225,19 +238,158 @@ export class IncomeService {
       return report;
     }
 
-    async getIncome(subsidiaryId: string, fromDate: Date, toDate: Date){
-      console.log("🚀 ~ IncomeService ~ getIncome ~ toDate:", toDate)
-      console.log("🚀 ~ IncomeService ~ getIncome ~ fromDate:", fromDate)
+    async formatIncomesNew(
+      incomes: Income[],
+      shipments: Shipment[],
+      collections: Collection[],
+      fromDate: Date,
+      toDate: Date
+    ): Promise<FormatIncomesDto[]> {
+      const report: FormatIncomesDto[] = [];
+
+      // Agrupar por fecha en formato YYYY-MM-DD (asumiendo fechas en UTC)
+      const groupedCollections = groupBy(collections, (c) =>
+        new Date(c.createdAt).toISOString().split('T')[0]
+      );
+
+      const groupedShipments = groupBy(
+        shipments.filter((s) => s.isPartOfCharge),
+        (s) => new Date(s.createdAt).toISOString().split('T')[0]
+      );
+
+      const groupedIncomes = groupBy(incomes, (i) =>
+        new Date(i.date).toISOString().split('T')[0]
+      );
+
+      let currentDate = new Date(fromDate);
+
+      while (currentDate <= toDate) {
+        const dateStr = currentDate.toISOString().split('T')[0];
+
+        // Logs para depuración de agrupamientos
+        // console.log('Fecha actual:', dateStr);
+        // console.log('Keys collections:', Object.keys(groupedCollections));
+        // console.log('Keys shipments:', Object.keys(groupedShipments));
+        // console.log('Keys incomes:', Object.keys(groupedIncomes));
+
+        const dayIncomes = groupedIncomes[dateStr] || [];
+        const dayCollections = groupedCollections[dateStr] || [];
+        const dayCargas = groupedShipments[dateStr] || [];
+
+        // Separar por tipo de envío
+        const fedexIncomes = dayIncomes.filter((i) => i.shipmentType === 'fedex');
+        const dhlIncomes = dayIncomes.filter((i) => i.shipmentType === 'dhl');
+
+        // ---- FEDEx ----
+        // Revisar que notDeliveryStatus sea string para evitar error en includes
+        const fedexNotDelivered = fedexIncomes.filter(
+          (i) =>
+            i.incomeType === 'no_entregado' &&
+            typeof i.notDeliveryStatus === 'string' &&
+            ['07', '08', '17'].includes(i.notDeliveryStatus)
+        ).length;
+
+        const fedexDelivered = fedexIncomes.filter(
+          (i) => i.incomeType === 'entregado'
+        ).length;
+
+        const fedexTotalIncome = fedexIncomes.reduce(
+          (acc, i) => acc + Number(i.cost || 0),
+          0
+        );
+
+        // ---- DHL ----
+        // Aquí asumimos que existe un campo deliveryStatus que indica 'BA' o 'NE'
+        const dhlDelivered = dhlIncomes.filter(
+          (i) => i.deliveryStatus === 'BA'
+        ).length;
+
+        const dhlNotDelivered = dhlIncomes.filter(
+          (i) => i.deliveryStatus === 'NE'
+        ).length;
+
+        const dhlTotalIncome = dhlIncomes.reduce(
+          (acc, i) => acc + Number(i.cost || 0),
+          0
+        );
+
+        const fedex = {
+          pod: fedexDelivered,
+          dex: fedexNotDelivered,
+          total: fedexDelivered + fedexNotDelivered,
+          totalIncome: formatCurrency(fedexTotalIncome)
+        };
+
+        const dhl = {
+          ba: dhlDelivered,
+          ne: dhlNotDelivered,
+          total: dhlDelivered + dhlNotDelivered,
+          totalIncome: formatCurrency(dhlTotalIncome)
+        };
+
+        const collectionsCount = dayCollections.length;
+        const cargasCount = dayCargas.length;
+
+        const total = fedex.total + dhl.total + collectionsCount + cargasCount;
+        const totalIngresos = fedexTotalIncome + dhlTotalIncome;
+
+        // Construcción de items con incomes
+        const incomeItems = dayIncomes.map((i) => ({
+          type: i.isPartOfCharge ? 'carga' : 'shipment',
+          trackingNumber: i.trackingNumber,
+          shipmentType: i.shipmentType,
+          status: i.incomeType,
+          date: new Date(i.date).toISOString(), // seguro que es Date o string parseable
+          cost: Number(i.cost || 0)
+        }));
+
+        // Collections
+        const collectionItems = dayCollections.map((c) => ({
+          type: 'collection',
+          trackingNumber: c.trackingNumber,
+          date: new Date(c.createdAt).toISOString()
+        }));
+
+        // Cargas directas desde shipments
+        const cargaItems = dayCargas.map((s) => ({
+          type: 'carga',
+          trackingNumber: s.trackingNumber,
+          date: new Date(s.createdAt).toISOString()
+        }));
+
+        const items = [...incomeItems, ...collectionItems, ...cargaItems];
+
+        report.push({
+          date: dateStr,
+          fedex,
+          dhl,
+          collections: collectionsCount,
+          cargas: cargasCount,
+          total,
+          totalIncome: formatCurrency(totalIngresos),
+          items
+        });
+
+        currentDate.setDate(currentDate.getDate() + 1);
+      }
+
+      return report;
+    }
+
+    async getIncome(subsidiaryId: string, fromDate: Date, toDate: Date) {
       if (isNaN(fromDate.getTime()) || isNaN(toDate.getTime())) {
         throw new Error('Invalid date format for startISO or endISO');
       }
 
+      const incomes = await this.getIncomes(subsidiaryId, fromDate, toDate);
       const shipments = await this.getShipments(subsidiaryId, fromDate, toDate);
-      console.log("🚀 ~ IncomeService ~ getIncome ~ shipments:", shipments)
       const collections = await this.getCollections(subsidiaryId, fromDate, toDate);
-      console.log("🚀 ~ IncomeService ~ getIncome ~ collections:", collections)
 
-      return await this.formatIncomes(shipments, collections, fromDate, toDate)
+      const incomeData = await this.formatIncomesNew(incomes, shipments, collections, fromDate, toDate);
+      
+      //console.log("🚀 ~ IncomeService ~ getIncome ~ incomeData:", incomeData)
+      
+      return incomeData;
     }
 
     /******* De aquí para abajo se necesita refactorizar */

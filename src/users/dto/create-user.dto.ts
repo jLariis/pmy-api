@@ -24,12 +24,12 @@ export class CreateUserDto {
 
     /*** Estos se van a definir más adelante */
     @ApiProperty({ enum: ["admin", "user", "owner"]})
-    role: Role;
+    role?: 'admin' | 'user';
 
     @ApiProperty({type: String, required: false})
-    avatar: string;
+    avatar?: string;
 
     @ApiProperty({type: () => Subsidiary, required: true})
-    subsidiary: Subsidiary;
+    subsidiary?: Subsidiary;
     
 }

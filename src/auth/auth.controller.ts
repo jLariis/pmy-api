@@ -41,7 +41,7 @@ export class AuthController {
         }
     }
 
-    @Public()
+    /*@Public()
     @Post('recover')
     async recoverPassword() {
         this.logger.log('Calling recoverPassword()', AppController.name);
@@ -58,6 +58,6 @@ export class AuthController {
     ): Promise<void> {
       const { token, newPassword } = body;
         await this.authService.resetPassword(token, newPassword);
-    }
+    }*/
 
 }

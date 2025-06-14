@@ -1,4 +1,4 @@
-import { Column, Entity, ManyToOne, PrimaryGeneratedColumn } from 'typeorm';
+import { Column, Entity, JoinColumn, ManyToOne, PrimaryGeneratedColumn } from 'typeorm';
 import { Subsidiary } from './subsidiary.entity';
 import { ExpenseCategory } from './expense-category.entity';
 
@@ -7,8 +7,12 @@ export class Expense {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
-  @ManyToOne(() => Subsidiary, subsidiary => subsidiary.expenses)
+  @ManyToOne(() => Subsidiary, { nullable: true })
+  @JoinColumn({ name: 'subsidiaryId' })
   subsidiary: Subsidiary;
+
+  @Column({ nullable: true })
+  subsidiaryId: string;
 
   @ManyToOne(() => ExpenseCategory, category => category.expenses)
   category: ExpenseCategory;

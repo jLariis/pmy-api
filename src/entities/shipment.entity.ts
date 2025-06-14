@@ -67,7 +67,7 @@ export class Shipment {
   consNumber: string;
 
   @Column({default: false})
-  isNotIndividualBilling: boolean;
+  isPartOfCharge: boolean;
 
   @Column({default: ''})
   receivedByName: string;

@@ -1,12 +1,9 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete, UseGuards, UseInterceptors, UploadedFile, BadRequestException, HttpStatus, InternalServerErrorException, UploadedFiles } from '@nestjs/common';
+import { Controller, Get, Post, Body, Patch, Param, Delete, UseGuards, UseInterceptors, UploadedFile, BadRequestException, HttpStatus, InternalServerErrorException, UploadedFiles, Query } from '@nestjs/common';
 import { ShipmentsService } from './shipments.service';
 import { ApiBearerAuth, ApiBody, ApiConsumes, ApiOperation, ApiProperty, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from 'src/auth/guards/jwt-auth.guard';
-import { Public } from 'src/auth/decorators/decorators/public-decorator';
 import { FileFieldsInterceptor, FileInterceptor } from '@nestjs/platform-express';
 import { FedexService } from './fedex.service';
-import { TrackingResponseDto } from './dto/fedex/tracking-response.dto';
-import { TrackRequestDto } from './dto/tracking-request.dto';
 import { FedExTrackingResponseDto } from './dto/fedex/fedex-tracking-response.dto';
 
 @ApiTags('shipments')
@@ -46,8 +43,9 @@ export class ShipmentsController {
       return this.shipmentsService.processFileCharges(file);
     }
 
-
-    return this.shipmentsService.validateShipmentFedex(file);
+    // Multiple Sheets: 
+    return this.shipmentsService.validateMultipleSheetsShipmentFedex(file);
+    //return this.shipmentsService.validateShipmentFedex(file);
   }
 
   @Post('upload-dhl')
@@ -112,6 +110,14 @@ export class ShipmentsController {
     }
   }
 
+  @Get('kpis')
+  async getKPIs(
+    @Query('date') date: string,
+    @Query('subsidiaryId') subsidiaryId?: string
+  ) {
+    return await this.shipmentsService.getShipmentKPIs(date, subsidiaryId)
+  }
+
   /****************************************** SOLO PRUEBAS *********************************************************/
   
     @Get('test-tracking/:trackingNumber')
@@ -145,6 +151,12 @@ export class ShipmentsController {
     @Get('normalize-cities')
     normalizeCities() {
       return this.shipmentsService.normalizeCities();
+    }
+
+
+    @Get('test-cron')
+    testCronJob() {
+      return this.shipmentsService.checkStatusOnFedex();
     }
 
   /**************************************************************************************************************** */

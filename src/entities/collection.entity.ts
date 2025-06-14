@@ -6,7 +6,7 @@ export class Collection {
     @PrimaryGeneratedColumn('uuid')
     id: string;
 
-    @Column()
+    @Column({nullable: false})
     trackingNumber: string;
 
     @ManyToOne(() => Subsidiary, { nullable: true })
@@ -16,10 +16,10 @@ export class Collection {
     @Column({ nullable: true })
     subsidiaryId: string;
 
-    @Column()
+    @Column({default: ''})
     status: string;
 
-    @Column()
+    @Column({default: false})
     isPickUp: boolean;
 
     @Column({nullable: true})

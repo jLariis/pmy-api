@@ -1,7 +1,4 @@
-import { Column, Entity, OneToMany, PrimaryGeneratedColumn } from 'typeorm';
-import { RouteIncome } from './route-income.entity';
-import { Expense } from './expense.entity';
-import { User } from './user.entity';
+import { Column, Entity, PrimaryGeneratedColumn } from 'typeorm';
 
 @Entity('subsidiary')
 export class Subsidiary {
@@ -23,6 +20,10 @@ export class Subsidiary {
   @Column({ default: '', nullable: true})
   officeManager: string;
 
+  @Column({ default: '', nullable: true})
+  managerPhone: string;
+
+
   @Column({
     type: "decimal",
     precision: 10,
@@ -38,14 +39,4 @@ export class Subsidiary {
     default: 0.00
   })
   dhlCostPackage: string;
-
-
-  @OneToMany(() => RouteIncome, income => income.subsidiary)
-  incomes: RouteIncome[];
-
-  @OneToMany(() => Expense, expense => expense.subsidiary)
-  expenses: Expense[];
-
-  @OneToMany(() => User, user => user.subsidiary)
-  users: User[];
 }

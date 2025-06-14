@@ -8,7 +8,7 @@ export class TrackingCronService {
 
   constructor(private readonly shipmentService: ShipmentsService) {}
 
-  @Cron(CronExpression.EVERY_30_MINUTES)
+  @Cron(CronExpression.EVERY_HOUR)
   async handleCron() {
     this.logger.log('🕐 Ejecutando verificación de envíos...');
     await this.shipmentService.checkStatusOnFedex();
