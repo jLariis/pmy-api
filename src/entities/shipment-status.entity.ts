@@ -7,7 +7,9 @@ export class ShipmentStatus {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
-  @ManyToOne(() => Shipment, shipment => shipment.statusHistory)
+  @ManyToOne(() => Shipment, shipment => shipment.statusHistory, {
+    onDelete: 'CASCADE',
+  })
   shipment: Shipment;
 
   @Column({

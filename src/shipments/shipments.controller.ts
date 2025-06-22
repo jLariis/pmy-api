@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete, UseGuards, UseInterceptors, UploadedFile, BadRequestException, HttpStatus, InternalServerErrorException, UploadedFiles, Query } from '@nestjs/common';
+import { Controller, Get, Post, Param,UseGuards, UseInterceptors, UploadedFile, BadRequestException, InternalServerErrorException, Request, UploadedFiles, Query, Body } from '@nestjs/common';
 import { ShipmentsService } from './shipments.service';
 import { ApiBearerAuth, ApiBody, ApiConsumes, ApiOperation, ApiProperty, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from 'src/auth/guards/jwt-auth.guard';
@@ -18,7 +18,7 @@ export class ShipmentsController {
   @Get()
   @ApiOperation({ summary: 'Consultar todos los envios' })
   allShipments(){
-    return this.shipmentsService.findAll();
+    return this.shipmentsService.findAllShipmentsAndCharges();
   }
 
   @Post('upload')
@@ -26,7 +26,7 @@ export class ShipmentsController {
   @ApiOperation({ summary: 'Subir archivo Excel para procesar' })
   @ApiConsumes('multipart/form-data')
   @ApiBody({
-    description: 'Archivo Excel a procesar',
+    description: 'Archivo Excel a procesar (Envios, Cargas, F2 o Cobros)',
     schema: {
       type: 'object',
       properties: {
@@ -34,18 +34,27 @@ export class ShipmentsController {
           type: 'string',
           format: 'binary',
         },
+        subsidiaryId: {
+          type: 'string'
+        }
       },
     },
   })
-  uploadFile(@UploadedFile() file: Express.Multer.File) {
+  uploadFile(
+    @UploadedFile() file: Express.Multer.File, 
+    @Body('subsidiaryId') subsidiaryId?: string
+  ) {
+    
     if(file.originalname.toLowerCase().includes('cobro')){
       console.log("Incluye cobro: ", file.originalname);
       return this.shipmentsService.processFileCharges(file);
+    } else if(file.originalname.toLowerCase().includes('f2') || file.originalname.toLowerCase().includes('fedex')){ 
+      console.log("🚀 ~ ShipmentsController ~ uploadFile ~ subsidiaryId:", subsidiaryId)
+      console.log("Incluye F2/Fedex  ~ Es Carga: ", file.originalname);
+      return this.shipmentsService.processFileF2(file, subsidiaryId);
     }
 
-    // Multiple Sheets: 
     return this.shipmentsService.validateMultipleSheetsShipmentFedex(file);
-    //return this.shipmentsService.validateShipmentFedex(file);
   }
 
   @Post('upload-dhl')
@@ -118,6 +127,11 @@ export class ShipmentsController {
     return await this.shipmentsService.getShipmentKPIs(date, subsidiaryId)
   }
 
+  @Get('charges')
+  async getCharges() {
+    return await this.shipmentsService.getAllChargesWithStatus();
+  }
+
   /****************************************** SOLO PRUEBAS *********************************************************/
   
     @Get('test-tracking/:trackingNumber')
@@ -144,7 +158,9 @@ export class ShipmentsController {
         },
       },
     })
-    validateTracking(@UploadedFile() file: Express.Multer.File) {
+    @UseGuards(JwtAuthGuard)
+    validateTracking(@UploadedFile() file: Express.Multer.File, @Request() req) {
+      console.log("🚀 ~ ShipmentsController ~ validateTracking ~ req:", req)
       return this.shipmentsService.validateDataforTracking(file);
     }
 

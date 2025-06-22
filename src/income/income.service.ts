@@ -42,7 +42,6 @@ export class IncomeService {
       return await this.shipmentRepository.find({
         where: {
           subsidiaryId,
-          isPartOfCharge: withCharge,
           statusHistory: {
             timestamp: Between(fromDate, toDate),
             status: In(['entregado', 'no_entregado'])
@@ -252,10 +251,11 @@ export class IncomeService {
         new Date(c.createdAt).toISOString().split('T')[0]
       );
 
-      const groupedShipments = groupBy(
+      /*** Esto va a cambiar ya que los cargos se sacar de una tabla especial = charge */
+      const groupedShipments = 0 /*groupBy(
         shipments.filter((s) => s.isPartOfCharge),
         (s) => new Date(s.createdAt).toISOString().split('T')[0]
-      );
+      );*/
 
       const groupedIncomes = groupBy(incomes, (i) =>
         new Date(i.date).toISOString().split('T')[0]

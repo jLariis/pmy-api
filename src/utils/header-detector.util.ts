@@ -21,7 +21,7 @@ export function getHeaderIndexMap(sheet: XLSX.Sheet, maxScanRows = 20, isForChar
 
         // Normaliza todos los valores de la fila
         const normalizedRow = row.map(cell => (typeof cell === 'string' ? normalizeHeader(cell) : ''));
-
+        
         const hasKnownHeader = (isForCharges ? normalizedRow.some(h => Object.values(chargeHeaderAliases).includes(h)) : normalizedRow.some(h => Object.values(headerAliases).includes(h)));
     
         if (hasKnownHeader) {
@@ -46,18 +46,22 @@ export function getHeaderIndexMap(sheet: XLSX.Sheet, maxScanRows = 20, isForChar
 export const headerAliases: Record<string, string> = {
     'tracking number': 'trackingNumber',
     'tracking no': 'trackingNumber',
+    'numero_guia': 'trackingNumber',
     'hwb no': 'trackingNumber',
     'recip name': 'recipientName',
     'recipient name': 'recipientName',
+    'nombre_dest': 'recipientName',
     'recipient address': 'recipientAddress',
     'recip addr': 'recipientAddress',
     'rcvr addr 1': 'recipientAddress',
     'rcvr addr 2': 'recipientAddress2',
+    'calle_dest': 'recipientAddress',
     'recipient city': 'recipientCity',
     'recip city': 'recipientCity',
     'recipient zip': 'recipientZip',
     'recip postal': 'recipientZip',
     'rcvr postcode': 'recipientZip',
+    'codigo_postal_dest': 'recipientZip',
     'commit date': 'commitDate',
     'edd': 'commitDate',
     'commit time': 'commitTime',

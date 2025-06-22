@@ -66,9 +66,6 @@ export class Shipment {
   @Column({nullable: true})
   consNumber: string;
 
-  @Column({default: false})
-  isPartOfCharge: boolean;
-
   @Column({default: ''})
   receivedByName: string;
 

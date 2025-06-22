@@ -74,6 +74,26 @@ export function parseDynamicSheet(sheet: XLSX.Sheet, options: ParseOptions): Par
     });
 }
 
+export function parseDynamicFileF2(sheet: XLSX.Sheet) {    
+    const allRows: any[][] = XLSX.utils.sheet_to_json(sheet, {
+        header: 1,
+        range: 0,
+        blankrows: false
+    });
+
+    const { map: headerMap, headerRowIndex } = getHeaderIndexMap(sheet);
+    const dataRows = allRows.slice(headerRowIndex + 1);
+
+    return dataRows.map(row => {
+        return {
+            trackingNumber: row[headerMap['trackingNumber']],
+            recipientName: row[headerMap['recipientName']] ?? 'Sin Nombre',
+            recipientAddress: row[headerMap['recipientAddress']] ?? 'Sin Dirección',
+            recipientZip: row[headerMap['recipientZip']] ?? 'N/A',
+        };
+    });
+}
+
 export function parseDynamicSheetCharge(sheet: XLSX.Sheet) {
     const shipmentsWithCharge = [];    
     const allRows: any[][] = XLSX.utils.sheet_to_json(sheet, {

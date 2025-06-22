@@ -23,9 +23,6 @@ export class User {
   @Column({ default: 'user' })
   role: 'admin' | 'user';
 
-  @Column('simple-array', { nullable: true })
-  permissions?: string[];
-
   @ManyToOne(() => Subsidiary, { nullable: true })
   @JoinColumn({ name: 'subsidiaryId' })
   subsidiary: Subsidiary;
@@ -38,6 +35,7 @@ export class User {
 
   @Column({nullable: true, default: true})
   active: boolean;
+
 }
 
 
