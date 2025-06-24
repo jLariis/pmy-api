@@ -48,13 +48,12 @@ export class ShipmentsController {
     if(file.originalname.toLowerCase().includes('cobro')){
       console.log("Incluye cobro: ", file.originalname);
       return this.shipmentsService.processFileCharges(file);
-    } else if(file.originalname.toLowerCase().includes('f2') || file.originalname.toLowerCase().includes('fedex')){ 
-      console.log("🚀 ~ ShipmentsController ~ uploadFile ~ subsidiaryId:", subsidiaryId)
+    } else if(file.originalname.toLowerCase().includes('f2')){ 
       console.log("Incluye F2/Fedex  ~ Es Carga: ", file.originalname);
       return this.shipmentsService.processFileF2(file, subsidiaryId);
     }
 
-    return this.shipmentsService.validateMultipleSheetsShipmentFedex(file);
+    return this.shipmentsService.validateMultipleSheetsShipmentFedexWithSubsidary(file, subsidiaryId);
   }
 
   @Post('upload-dhl')

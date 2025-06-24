@@ -26,14 +26,12 @@ export class IncomeService {
     /****  Debe ser por sucursal */ 
     private PRECIO_ENTREGADO = 59.15;
     private PRECIO_NO_ENTREGADO = 41.00;
-    private PRECIO_DHL = 41.00;
 
     private async getIncomes(subsidiaryId: string, fromDate: Date, toDate: Date, withCharge: boolean = false) {
       return await this.incomeRepository.find({
         where: {
           subsidiaryId,
           date: Between(fromDate, toDate),
-          isPartOfCharge: withCharge
         }
       })
     }

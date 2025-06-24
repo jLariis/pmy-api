@@ -27,6 +27,7 @@ import { Charge } from 'src/entities/charge.entity';
 import { ChargeShipment } from 'src/entities/charge-shipment.entity';
 import { ShipmentAndChargeDto } from './dto/shipment-and-charge.dto';
 import { ChargeWithStatusDto } from './dto/charge-with-status.dto';
+import { IncomeSourceType } from 'src/common/enums/income-source-type.enum';
 
 @Injectable()
 export class ShipmentsService {
@@ -55,41 +56,63 @@ export class ShipmentsService {
     private readonly subsidiaryService: SubsidiariesService
   ) { }
 
-  async processScanEvents(scanEvents: FedExScanEventDto[], fedexShipmentData: FedExTrackingResponseDto,  savedShipment: Shipment): Promise<ShipmentStatus[]>{
+  async processScanEvents(
+    scanEvents: FedExScanEventDto[],
+    fedexShipmentData: FedExTrackingResponseDto,
+    savedShipment: Shipment
+  ): Promise<ShipmentStatus[]> {
     const shipmentStatus: ShipmentStatus[] = [];
     const filteredScanEvents: FedExScanEventDto[] = [];
 
-    if(scanEvents.length === 0) {
-      filteredScanEvents.push(...scanEventsFilter(fedexShipmentData.output.completeTrackResults[0].trackResults[0].scanEvents, "At local FedEx facility"));
+    if (scanEvents.length === 0) {
+      filteredScanEvents.push(
+        ...scanEventsFilter(
+          fedexShipmentData.output.completeTrackResults[0].trackResults[0].scanEvents,
+          "At local FedEx facility"
+        )
+      );
     } else {
       filteredScanEvents.push(...scanEvents);
     }
 
-    if(filteredScanEvents.length === 0) {
-      filteredScanEvents.push(...scanEventsFilter(fedexShipmentData.output.completeTrackResults[0].trackResults[0].scanEvents, "On FedEx vehicle for delivery"))
+    if (filteredScanEvents.length === 0) {
+      filteredScanEvents.push(
+        ...scanEventsFilter(
+          fedexShipmentData.output.completeTrackResults[0].trackResults[0].scanEvents,
+          "On FedEx vehicle for delivery"
+        )
+      );
     }
 
-    for (const scanEvent of filteredScanEvents) {
-        const isInicialState = scanEvent.date === filteredScanEvents[filteredScanEvents.length - 1].date;
-            
-        const newShipmentStatus = new ShipmentStatus();
-        const rawDate = scanEvent.date; // '2025-06-05T10:57:00-07:00'
-        const eventDate = new Date(rawDate);
-        
-        newShipmentStatus.status = isInicialState
-          ? ShipmentStatusType.RECOLECCION
-          : mapFedexStatusToLocalStatus(scanEvent.eventDescription);        
-        newShipmentStatus.timestamp = eventDate;
-        newShipmentStatus.notes = this.generateNote(scanEvent, isInicialState);
-       
-        /** Tal vez esto se eliminará por que el cron será el que estará asignando los estatus */
-        if (newShipmentStatus.status === ShipmentStatusType.NO_ENTREGADO) {
-          newShipmentStatus.exceptionCode = scanEvent.exceptionCode;
-        }
+    const targetExceptionCodes = ['07', '03'];
 
-        // ✅ Aquí asignas el shipment relacionado
-        newShipmentStatus.shipment = savedShipment;
-        shipmentStatus.push(newShipmentStatus);
+    for (const scanEvent of filteredScanEvents) {
+      const isInicialState =
+        scanEvent.date === filteredScanEvents[filteredScanEvents.length - 1].date;
+
+      const newShipmentStatus = new ShipmentStatus();
+      const rawDate = scanEvent.date;
+      const eventDate = new Date(rawDate);
+
+      newShipmentStatus.status = isInicialState
+        ? ShipmentStatusType.RECOLECCION
+        : mapFedexStatusToLocalStatus(scanEvent.eventDescription);
+
+      newShipmentStatus.timestamp = eventDate;
+      newShipmentStatus.notes = this.generateNote(scanEvent, isInicialState);
+      newShipmentStatus.shipment = savedShipment;
+
+      if (
+        newShipmentStatus.status === ShipmentStatusType.NO_ENTREGADO &&
+        scanEvent.exceptionCode &&
+        targetExceptionCodes.includes(scanEvent.exceptionCode)
+      ) {
+        newShipmentStatus.exceptionCode = scanEvent.exceptionCode;
+        shipmentStatus.push(newShipmentStatus); // ✅ se guarda el evento actual
+        break; // ⛔ se detiene aquí, no se guardan más
+      }
+
+      shipmentStatus.push(newShipmentStatus); // solo se guarda si no hubo break
     }
 
     return shipmentStatus;
@@ -114,6 +137,7 @@ export class ShipmentsService {
 
     switch(scanEvent.exceptionCode) {
       case '07':
+      case '03':
       case '08':
       case '17': 
         return this.translateEventDescription(scanEvent.exceptionDescription);
@@ -394,6 +418,8 @@ export class ShipmentsService {
 
     const savedCharge = await this.chargeRepository.save(newCharge);
 
+    const chargeSubsidiary = await this.subsidiaryRepository.findOne({ where: { id: subsidiaryId } });
+
     const processPromises = shipmentsToUpdate.map(async (shipment) => {
       const validation = await this.existShipmentByTrackSpecial(
         shipment.trackingNumber,
@@ -408,36 +434,26 @@ export class ShipmentsService {
       }
 
       try {
-        // Cargar shipment con statusHistory
         const original = await this.shipmentRepository.findOne({
           where: { id: validation.shipment.id },
-          relations: ['statusHistory'],
+          relations: ['subsidiary'],
         });
 
-        // 💥 ELIMINAR ingresos relacionados al shipment
+        if (!original) {
+          notFoundTrackings.push(shipment);
+          return;
+        }
+
         await this.incomeRepository.delete({ trackingNumber: original.trackingNumber });
 
-        // Crear nuevo ChargeShipment con los datos del shipment original
         const chargeShipment = this.chargeShipmentRepository.create({
           ...original,
-          id: undefined, // Evitar conflicto de PK
+          id: undefined,
           charge: savedCharge,
         });
 
         const savedChargeShipment = await this.chargeShipmentRepository.save(chargeShipment);
 
-        // Migrar statusHistory
-        const newStatusHistory = original.statusHistory.map((status) =>
-          this.shipmentStatusRepository.create({
-            ...status,
-            id: undefined,
-            shipment: savedChargeShipment,
-          })
-        );
-
-        await this.shipmentStatusRepository.save(newStatusHistory);
-
-        // Eliminar el shipment original
         await this.shipmentRepository.delete(original.id);
 
         this.logger.log(`✅ Migrated and deleted shipment: ${original.trackingNumber}`);
@@ -449,6 +465,22 @@ export class ShipmentsService {
     });
 
     await Promise.allSettled(processPromises);
+
+    // ✅ Crear el ingreso relacionado al charge solo si hubo migraciones exitosas
+    if (migrated.length > 0 && chargeSubsidiary) {
+      const newIncome = this.incomeRepository.create({
+        subsidiary: chargeSubsidiary,
+        shipmentType: ShipmentType.FEDEX,
+        incomeType: IncomeStatus.ENTREGADO,
+        cost: chargeSubsidiary.chargeCost,
+        isGrouped: true,
+        sourceType: IncomeSourceType.CHARGE,
+        chargeId: savedCharge.id,
+        date: new Date(),
+      });
+
+      await this.incomeRepository.save(newIncome);
+    }
 
     return {
       migrated,
@@ -495,7 +527,7 @@ export class ShipmentsService {
     return null;
   }
 
-  async validateMultipleSheetsShipmentFedex(file: Express.Multer.File, subsidiaryId?: string) {
+  /*async validateMultipleSheetsShipmentFedex(file: Express.Multer.File, subsidiaryId?: string) {
     this.logger.log(`📂 Start processing file: ${file?.originalname}`);
 
     if (!file) throw new BadRequestException('No file uploaded');
@@ -663,10 +695,10 @@ export class ShipmentsService {
       ...result,
       errors: summarizedErrors
     };
-  }
+  }*/
 
   /**** Esta va a ser la nueva función que suplirá a validateMultipleSheetsShipmentFedex */
-  /*async validateMultipleSheetsShipmentFedexWithSubsidary(file: Express.Multer.File, subsidiaryId?: string) {
+  async validateMultipleSheetsShipmentFedexWithSubsidary(file: Express.Multer.File, subsidiaryId?: string) {
     this.logger.log(`📂 Iniciando procesamiento de archivo: ${file?.originalname}`);
 
     if (!file) throw new BadRequestException('No se subió ningún archivo');
@@ -678,7 +710,7 @@ export class ShipmentsService {
 
     // Obtener subsidiaria (una sola vez)
     const predefinedSubsidiary = subsidiaryId
-      ? await this.subsidiaryService.getById(subsidiaryId)
+      ? await this.subsidiaryService.findById(subsidiaryId)
       : null;
 
     if (subsidiaryId && !predefinedSubsidiary) {
@@ -824,7 +856,7 @@ export class ShipmentsService {
       ...result,
       errors: summarizedErrors
     };
-  }*/
+  }
 
   private async generateIncomes(shipment: Shipment, fedexShipmentData: FedExTrackingResponseDto, eventDate: Date) {
     if (!shipment.trackingNumber || !eventDate || !shipment.subsidiary) {
@@ -854,6 +886,7 @@ export class ShipmentsService {
         throw new Error(`Unhandled shipment status: ${shipment.status}`);
     }
 
+    /** Esta por el momento solo para fedex la parte del costo */
     const newIncome = this.incomeRepository.create({
       trackingNumber: shipment.trackingNumber,
       subsidiary: shipment.subsidiary,
@@ -861,8 +894,9 @@ export class ShipmentsService {
       incomeType,
       notDeliveryStatus: incomeSubType,
       shipmentType: ShipmentType.FEDEX,
-      cost: this.PRECIO_ENTREGADO,
-      isPartOfCharge: false,
+      cost: parseFloat(shipment.subsidiary.fedexCostPackage),
+      shipment,
+      shipmentId: shipment.id,
     });
 
     return this.incomeRepository.save(newIncome);

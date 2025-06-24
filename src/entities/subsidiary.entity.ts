@@ -38,4 +38,12 @@ export class Subsidiary {
     default: 0.00
   })
   dhlCostPackage: string;
+
+  @Column({
+    type: "decimal",
+    precision: 10,
+    scale: 2,
+    default: 0.00
+  })
+  chargeCost: number;
 }

@@ -68,7 +68,7 @@ export const headerAliases: Record<string, string> = {
     'recip phone': 'recipientPhone',
     'phone': 'recipientPhone',
     'cod': 'payment',
-    'last comm scan update': 'payment',
+    'last comm scan update': 'cod',
     'comm comment (comment contain) all': 'cod',
 };
 
