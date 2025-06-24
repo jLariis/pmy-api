@@ -23,7 +23,6 @@ export class Subsidiary {
   @Column({ default: '', nullable: true})
   managerPhone: string;
 
-
   @Column({
     type: "decimal",
     precision: 10,

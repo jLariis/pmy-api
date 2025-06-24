@@ -414,6 +414,9 @@ export class ShipmentsService {
           relations: ['statusHistory'],
         });
 
+        // 💥 ELIMINAR ingresos relacionados al shipment
+        await this.incomeRepository.delete({ trackingNumber: original.trackingNumber });
+
         // Crear nuevo ChargeShipment con los datos del shipment original
         const chargeShipment = this.chargeShipmentRepository.create({
           ...original,
