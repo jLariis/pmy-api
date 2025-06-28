@@ -1,9 +1,9 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { DhlShipmentDto } from './dto/dhl/dhl-shipment.dto';
-import { Shipment, ShipmentStatus } from '../entities';
-import { Priority } from '../common/enums/priority.enum';
-import { ShipmentStatusType } from '../common/enums/shipment-status-type.enum';
-import { ShipmentType } from '../common/enums/shipment-type.enum';
+import { DhlShipmentDto } from './dhl/dhl-shipment.dto';
+import { Shipment, ShipmentStatus } from '../../entities';
+import { Priority } from '../../common/enums/priority.enum';
+import { ShipmentStatusType } from '../../common/enums/shipment-status-type.enum';
+import { ShipmentType } from '../../common/enums/shipment-type.enum';
 import { mapDhlStatusTextToEnum } from 'src/utils/dhl.utils';
 
 @Injectable()

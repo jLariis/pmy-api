@@ -1,10 +1,13 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Collection } from 'src/entities/collection.entity';
 import { Repository } from 'typeorm';
 import { CollectionDto } from './dto/collection.dto';
 import { FedexService } from 'src/shipments/fedex.service';
 import { FedExTrackingResponseDto } from 'src/shipments/dto/fedex/fedex-tracking-response.dto';
+import { IncomeSourceType } from 'src/common/enums/income-source-type.enum';
+import { IncomeStatus } from 'src/common/enums/income-status.enum';
+import { ShipmentType } from 'src/common/enums/shipment-type.enum';
+import { Income, Collection, Subsidiary } from 'src/entities';
 
 @Injectable()
 export class CollectionsService {
@@ -12,13 +15,44 @@ export class CollectionsService {
   constructor(
       @InjectRepository(Collection)
       private collectionRepository: Repository<Collection>,
+      @InjectRepository(Income)
+      private incomeRepository: Repository<Income>,
+      @InjectRepository(Subsidiary)
+      private subsidiaryRepository: Repository<Subsidiary>,
       private readonly fedexService: FedexService
     ){}
 
 
     async save(collectionDto: CollectionDto[]): Promise<Collection[]> {
-      const newCollections = await this.collectionRepository.create(collectionDto);
-      return await this.collectionRepository.save(newCollections);
+      // Crear las nuevas collections (objetos sin guardar aún)
+      const newCollections = this.collectionRepository.create(collectionDto);
+
+      // Guardar las collections en base de datos (retorna collections con id asignado)
+      const savedCollections = await this.collectionRepository.save(newCollections);
+
+      // Obtener la subsidiaria (asumo que todas las collections tienen la misma)
+      const subsidiary = await this.subsidiaryRepository.findOneBy({id: collectionDto[0].subsidiaryId})
+  
+      // Crear un array para guardar los incomes que vamos a crear
+      const newIncomes = savedCollections.map((collection) => {
+        return this.incomeRepository.create({
+          subsidiary,
+          trackingNumber: collection.trackingNumber,
+          shipmentType: ShipmentType.FEDEX, // Esto depende de tu lógica, ¿es siempre FEDEX?
+          incomeType: IncomeStatus.ENTREGADO,
+          cost: parseFloat(subsidiary.fedexCostPackage),
+          isGrouped: false,
+          sourceType: IncomeSourceType.COLLECTION,
+          collectionId: collection.id, // Relación con la collection ya guardada
+          date: new Date('2025-06-21'),
+        });
+      });
+
+      // Guardar todos los incomes en base de datos
+      await this.incomeRepository.save(newIncomes);
+
+      // Retornar las collections guardadas
+      return savedCollections;
     }
 
     async getByTrackingNumber(trackingNumber: string){

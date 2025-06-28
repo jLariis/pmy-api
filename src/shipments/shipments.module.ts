@@ -5,7 +5,7 @@ import { Shipment } from '../entities/shipment.entity';
 import { ShipmentsService } from './shipments.service';
 import { FedexService } from './fedex.service';
 import { TrackingModule } from 'src/tracking/tracking.module';
-import { DHLService } from './dhl.service';
+import { DHLService } from './dto/dhl.service';
 import { SubsidiariesService } from 'src/subsidiaries/subsidiaries.service';
 import { Income, ShipmentStatus, Subsidiary } from 'src/entities';
 import { Charge } from 'src/entities/charge.entity';

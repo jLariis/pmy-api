@@ -1,5 +1,4 @@
 import { Injectable } from '@nestjs/common';
-import { CreateExpenseDto } from './dto/create-expense.dto';
 import { UpdateExpenseDto } from './dto/update-expense.dto';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Expense } from 'src/entities';
@@ -12,12 +11,13 @@ export class ExpensesService {
     private expenseRepository: Repository<Expense>
   ){}
 
-  async create(createExpenseDto: CreateExpenseDto) {
-    return await this.expenseRepository.create(createExpenseDto);
+  async create(createExpenseDto: Expense) {
+    const newExpense = await this.expenseRepository.create(createExpenseDto);
+    return await this.expenseRepository.save(newExpense);
   }
 
   async findAll() {
-    return await this.expenseRepository.find();
+    return await this.expenseRepository.find({order: {date: 'ASC'}});
   }
 
   async findOne(id: string) {
@@ -30,8 +30,7 @@ export class ExpensesService {
         subsidiary: {
           id: subsidiaryId
         }
-      }, 
-      relations: ['category']
+      }
     });
 
     return expenses;

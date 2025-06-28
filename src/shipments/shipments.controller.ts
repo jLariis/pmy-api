@@ -5,6 +5,7 @@ import { JwtAuthGuard } from 'src/auth/guards/jwt-auth.guard';
 import { FileFieldsInterceptor, FileInterceptor } from '@nestjs/platform-express';
 import { FedexService } from './fedex.service';
 import { FedExTrackingResponseDto } from './dto/fedex/fedex-tracking-response.dto';
+import { GetShipmentKpisDto } from './dto/get-shipment-kpis.dto';
 
 @ApiTags('shipments')
 @ApiBearerAuth()
@@ -124,6 +125,11 @@ export class ShipmentsController {
     @Query('subsidiaryId') subsidiaryId?: string
   ) {
     return await this.shipmentsService.getShipmentKPIs(date, subsidiaryId)
+  }
+
+  @Get('dashboard/kpis')
+  getKpis(@Query() query: GetShipmentKpisDto) {
+    return this.shipmentsService.getShipmentsKPIsForDashboard(query);
   }
 
   @Get('charges')

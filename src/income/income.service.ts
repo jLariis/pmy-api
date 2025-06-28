@@ -2,13 +2,15 @@ import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ShipmentStatusType } from 'src/common/enums/shipment-status-type.enum';
 import { Expense, Income, Shipment } from 'src/entities';
-import { formatCurrency, getStartAndEndOfMonth, getWeekRange } from 'src/utils/format.util';
-import { Between, In, Repository } from 'typeorm';
+import { formatCurrency, getStartAndEndOfMonth, localKey } from 'src/utils/format.util';
+import { Between, In, Raw, Repository } from 'typeorm';
 import { IncomeDto } from './dto/income.dto';
 import { Collection } from 'src/entities/collection.entity';
-import { format } from 'date-fns';
+import { toZonedTime, format } from 'date-fns-tz';
 import { groupBy } from 'lodash';
 import { FormatIncomesDto } from './dto/format-incomes.dto';
+import { IncomeSourceType } from 'src/common/enums/income-source-type.enum';
+import { DailyExpenses } from './dto/daily-expenses.dto';
 
 @Injectable()
 export class IncomeService {
@@ -23,96 +25,84 @@ export class IncomeService {
     @InjectRepository(Income)
     private incomeRepository: Repository<Income>
   ){}
-    /****  Debe ser por sucursal */ 
-    private PRECIO_ENTREGADO = 59.15;
-    private PRECIO_NO_ENTREGADO = 41.00;
 
-    private async getIncomes(subsidiaryId: string, fromDate: Date, toDate: Date, withCharge: boolean = false) {
-      return await this.incomeRepository.find({
-        where: {
-          subsidiaryId,
-          date: Between(fromDate, toDate),
-        }
-      })
-    }
-
-    private async getShipments(subsidiaryId: string, fromDate: Date, toDate: Date, withCharge: boolean = false) {
-      return await this.shipmentRepository.find({
-        where: {
-          subsidiaryId,
-          statusHistory: {
-            timestamp: Between(fromDate, toDate),
-            status: In(['entregado', 'no_entregado'])
+    private async getTotalShipmentsIncome(subsidiaryId: string, fromDate: Date, toDate: Date){      
+        const incomes = await this.incomeRepository.find({
+          where: {
+            subsidiaryId,
+            date: Between(fromDate, toDate),
+            sourceType: In([
+              IncomeSourceType.SHIPMENT,
+              IncomeSourceType.CHARGE,
+              IncomeSourceType.COLLECTION,
+            ]),
           },
-          
-        },
-        relations: ['statusHistory'],
-        order: {
-          statusHistory: {
-            timestamp: 'DESC'
-          }
-        }
-      });
+          relations: ['subsidiary'],
+        });
+
+        const totalShipmentIncome = incomes.reduce(
+          (acc, income) => acc + parseFloat(income.cost.toString()),
+          0
+        );
+
+        return {
+          totalIncome: totalShipmentIncome,
+          incomes,
+        };
     }
 
-    private async getCollections(subsidiaryId: string, fromDate: Date, toDate: Date) {
-      return await this.collectionRepository.find({
-        where: {
-          createdAt: Between(fromDate.toISOString(), toDate.toISOString()),
-          subsidiaryId: subsidiaryId
-        }
-      });
-    }
-
-    private async getTotalShipmentsIncome(subsidiaryId: string, fromDate: Date, toDate: Date){
-      //isPartOfCharge: is315 
-      // --> si es true es carga completa si es false es normal      
-      
-      const shipments = await this.getShipments(subsidiaryId, fromDate, toDate, false);
-      const chargeShipments = await this.getShipments(subsidiaryId, fromDate, toDate, true);
-
-      const groupedShipments = groupBy(chargeShipments, (s) => new Date(s.createdAt).toISOString());
-      const numberOfPackages = Object.keys(groupedShipments).length;
-      console.log("🚀 ~ IncomeService ~ getTotalShipmentsIncome ~ numberOfPackages:", numberOfPackages)
-      const totalShipmentIncome = (shipments.length * this.PRECIO_ENTREGADO) +
-      (numberOfPackages * 3900);
-
-      return {
-        totalIncome: totalShipmentIncome,
-        shipments: [...shipments, ...chargeShipments]
-      } 
-    }
-
-    private async getTotalIncomeCollections(subsidiaryId: string, fromDate: Date, toDate: Date) {
-      const collections = await this.getCollections(subsidiaryId, fromDate, toDate);
-
-      return {
-        totalCollections: collections.length * this.PRECIO_ENTREGADO,
-        collections: collections
-      }
-    }
-
-    private async getTotalExpenses(subsiaryId: string, fromDate: Date, toDate: Date){
+    private async getTotalExpenses(
+      subsidiaryId: string,
+      fromDate: Date,
+      toDate: Date
+    ): Promise<{
+      totalExpenses: number;
+      daily: DailyExpenses[];
+    }> {
+      // 1) Traer todos los gastos en el rango
       const expenses = await this.expenseRepository.find({
         where: {
-          subsidiary: {
-            id: subsiaryId
-          },
-          date: Between(fromDate, toDate)
+          subsidiary: { id: subsidiaryId },
+          date: Between(fromDate, toDate),
         },
-        relations: ['category']
-      })
+        order: { date: 'ASC' },
+      });
 
+      // 2) Sumar total global
       const totalExpenses = expenses.reduce((sum, g) => {
-        const amount = typeof g.amount === 'string' ? parseFloat(g.amount) : g.amount;
-        return sum + (amount || 0);
+        const amount =
+          typeof g.amount === 'number'
+            ? g.amount
+            : parseFloat(String(g.amount)) || 0;
+        return sum + amount;
       }, 0);
 
-      return {
-        totalExpenses: totalExpenses,
-        expenses: expenses
-      }
+      // 3) Agrupar por día
+      const grouped: Record<string, Expense[]> = {};
+      expenses.forEach((g) => {
+        // formateamos la fecha a YYYY-MM-DD
+        const dayKey = g.date.toISOString().slice(0, 10);
+        if (!grouped[dayKey]) grouped[dayKey] = [];
+        grouped[dayKey].push(g);
+      });
+
+      // 4) Convertir a array con sumas diarias
+      const daily: DailyExpenses[] = Object.entries(grouped).map(
+        ([date, items]) => {
+          const total = items.reduce((sum, g) => {
+            const amount =
+              typeof g.amount === 'number'
+                ? g.amount
+                : parseFloat(String(g.amount)) || 0;
+            return sum + amount;
+          }, 0);
+          return { date, total, items };
+        }
+      );
+
+      return { totalExpenses, daily };
     }
+
 
     async getFinantialDataForDashboard(subsidiaryId: string){
       const today = new Date();
@@ -120,20 +110,31 @@ export class IncomeService {
       //Obtener primer y último día del mes
       const { start, end } = getStartAndEndOfMonth(today);
 
-      const { totalIncome, shipments } = await this.getTotalShipmentsIncome(subsidiaryId, start, end);
-      const { totalCollections, collections } = await this.getTotalIncomeCollections(subsidiaryId, start, end);
-      const { totalExpenses, expenses } = await this.getTotalExpenses(subsidiaryId, start, end)
-      
-      const income = totalIncome + totalCollections;
-      const balance = income - totalExpenses;
-      const formattedIncome = await this.formatIncomes(shipments, collections, start, end);
+      // Incluir toda la fecha final (hasta las 23:59:59.999 del día 22)
+      const adjustedToDate = new Date(end);
+      adjustedToDate.setHours(23, 59, 59, 999);
 
+      const incomes = await this.incomeRepository.find({
+        where: {
+          subsidiaryId,
+          date: Between(start, adjustedToDate),
+        },
+        order: {
+          date: 'ASC',
+        },
+      });
+
+      const income = await this.getTotalShipmentsIncome(subsidiaryId, start, adjustedToDate)
+      
+      const formattedIncome = await this.formatIncomesNew(incomes, start, end);
+      const { totalExpenses, daily } = await this.getTotalExpenses(subsidiaryId, start, end)
+      const balance = income.totalIncome - totalExpenses;
 
       return {
         incomes: formattedIncome,
-        expenses: expenses,
+        expenses: daily,
         finantial: {
-          income: income,
+          income: income.totalIncome,
           expenses: totalExpenses,
           balance: balance,
           period: `${format(start, 'dd/MM/yyyy')} - ${format(end, 'dd/MM/yyyy')}`
@@ -141,95 +142,125 @@ export class IncomeService {
       }
     }
 
-    private async formatIncomes(
-      shipments: Shipment[],
-      collections: Collection[],
-      startDate: Date,
-      endDate: Date
-    ): Promise<IncomeDto[]> {
-      const dateFormatter = new Intl.DateTimeFormat('es-MX', {
-        day: '2-digit',
-        month: '2-digit',
-        year: 'numeric'
-      });
+    /******* DE AQUI EMPIEZA PARA GENERAR LOS INGRESOS */
+    async formatIncomesNewRespaldo(
+      incomes: Income[],
+      fromDate: Date,
+      toDate: Date
+    ): Promise<FormatIncomesDto[]> {
+      const report: FormatIncomesDto[] = [];
+      const pad = (n: number) => String(n).padStart(2, '0');
 
-      const formatDateKey = (date: Date) => {
-        const localDate = new Date(date.getFullYear(), date.getMonth(), date.getDate());
-        return localDate.toISOString().split('T')[0];
+      // Función que, dado un Date ISO, devuelve la clave "yyyy-MM-dd" en zona MX.
+      const localKey = (d: Date) =>
+        d.toLocaleDateString('sv', { timeZone: 'America/Mexico_City' });
+
+      // Función para mostrar "dd-MM-yyyy" en zona MX.
+      const localDisplay = (d: Date) =>
+        d.toLocaleDateString('es-MX', {
+          timeZone: 'America/Mexico_City',
+          day: '2-digit',
+          month: '2-digit',
+          year: 'numeric',
+        });
+
+      // 1) Agrupamos todos los incomes POR SU FECHA LOCAL.
+      const grouped = groupBy(incomes, inc => localKey(new Date(inc.date)));
+
+      // 2) Construimos startDate/endDate en *medianoche MX* explicitando la zona.
+      //    Para ello montamos un ISO con -07:00.
+      const buildMidnightMX = (d: Date): Date => {
+        const yyyy = d.getUTCFullYear();
+        const mm = pad(d.getUTCMonth() + 1);
+        const dd = pad(d.getUTCDate());
+        // 00:00:00 zona -07
+        return new Date(`${yyyy}-${mm}-${dd}T00:00:00-07:00`);
       };
+      let cursor = buildMidnightMX(fromDate);
+      const endCursor = buildMidnightMX(toDate);
 
-      /*** Evitar fechas en el futuro */
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
+      const oneDayMs = 24 * 60 * 60 * 1000;
+      while (cursor.getTime() <= endCursor.getTime()) {
+        const key   = localKey(cursor);      // "2025-06-16"
+        const label = localDisplay(cursor);  // "16-06-2025"
 
-      if (endDate > today) {
-        endDate = today;
-      }
+        const dayIncomes     = grouped[key] || [];
+        const dayShipments   = dayIncomes.filter(i => i.sourceType === 'shipment');
+        const dayCollections = dayIncomes.filter(i => i.sourceType === 'collection');
+        console.log("🚀 ~ IncomeService ~ dayCollections:", dayCollections)
+        const dayCharges     = dayIncomes.filter(i => i.sourceType === 'charge');
 
-      // Inicializar días del rango
-      const daysDiff = Math.ceil((endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24));
-      const dailyStats: Record<string, { entregados: number; no_entregados: number }> = {};
-      const dailyCollections: Record<string, number> = {};
+        // ---- FEDEx / DHL ----
+        const fedexIncomes = dayShipments.filter(i => i.shipmentType === 'fedex');
+        const dhlIncomes   = dayShipments.filter(i => i.shipmentType === 'dhl');
 
-      for (let i = 0; i <= daysDiff; i++) {
-        const date = new Date(startDate);
-        date.setDate(startDate.getDate() + i);
-        const dateKey = formatDateKey(date);
-        dailyStats[dateKey] = { entregados: 0, no_entregados: 0 };
-        dailyCollections[dateKey] = 0;
-      }
+        const fedexDelivered    = fedexIncomes.filter(i => i.incomeType === 'entregado').length;
+        const fedexNotDelivered = fedexIncomes.filter(i =>
+          i.incomeType === 'no_entregado' &&
+          ['07','08','17','03'].includes(i.notDeliveryStatus || '')
+        ).length;
+        const fedexTotalIncome = fedexIncomes.reduce((s,i) => s + parseFloat(i.cost||'0'), 0);
 
-      // Agrupar collections por fecha
-      for (const col of collections) {
-        const dateKey = formatDateKey(new Date(col.createdAt));
-        if (dailyCollections[dateKey] !== undefined) {
-          dailyCollections[dateKey]++;
-        }
-      }
+        const dhlDelivered    = dhlIncomes.filter(i => i.deliveryStatus === 'BA').length;
+        const dhlNotDelivered = dhlIncomes.filter(i => i.deliveryStatus === 'NE').length;
+        const dhlTotalIncome  = dhlIncomes.reduce((s,i) => s + parseFloat(i.cost||'0'), 0);
 
-      // Procesar shipments
-      for (const shipment of shipments) {
-        const lastStatus = shipment.statusHistory[0]; // ya ordenado DESC
-        if (!lastStatus) continue;
+        // ---- CARGAS ----
+        const chargeTotalIncome = dayCharges.reduce((s,i) => s + parseFloat(i.cost||'0'), 0);
 
-        const { status, timestamp } = lastStatus;
-        if (!['entregado', 'no_entregado'].includes(status)) continue;
+        // ---- RESUMEN ----
+        const collectionsCount = dayCollections.length;
+        const cargasCount      = dayCharges.length;
+        const totalCount       = fedexDelivered + fedexNotDelivered
+                              + dhlDelivered + dhlNotDelivered
+                              + collectionsCount + cargasCount;
+        const totalIncome      = fedexTotalIncome + dhlTotalIncome + chargeTotalIncome;
 
-        const dateKey = formatDateKey(new Date(timestamp));
-        if (!dailyStats[dateKey]) continue;
-
-        if (status === 'entregado') {
-          dailyStats[dateKey].entregados++;
-        } else {
-          dailyStats[dateKey].no_entregados++;
-        }
-      }
-
-      // Armar resultado final
-      const report: IncomeDto[] = [];
-      for (let i = 0; i <= daysDiff; i++) {
-        const currentDate = new Date(startDate);
-        currentDate.setDate(startDate.getDate() + i);
-        const dateKey = formatDateKey(currentDate);
-        const stats = dailyStats[dateKey];
-        const collectionsCount = dailyCollections[dateKey] || 0;
-
-        const entregadosConCollections = stats.entregados + collectionsCount;
-        const total = entregadosConCollections + stats.no_entregados;
-
-        const totalIngresos =
-          (entregadosConCollections * this.PRECIO_ENTREGADO) +
-          (stats.no_entregados * this.PRECIO_NO_ENTREGADO);
+        // ---- ITEMS ----
+        const incomeItems = dayShipments.map(i => ({
+          type: 'shipment' as const,
+          trackingNumber: i.trackingNumber,
+          shipmentType: i.shipmentType,
+          status: i.incomeType,
+          date: new Date(i.date).toISOString(),
+          cost: parseFloat(i.cost || '0'),
+        }));
+        const collectionItems = dayCollections.map(i => ({
+          type: 'collection' as const,
+          trackingNumber: i.trackingNumber,
+          date: new Date(i.date).toISOString(),
+        }));
+        const cargaItems = dayCharges.map(i => ({
+          type: 'carga' as const,
+          trackingNumber: i.trackingNumber,
+          shipmentType: i.shipmentType,
+          date: new Date(i.date).toISOString(),
+          cost: parseFloat(i.cost || '0'),
+        }));
 
         report.push({
-          date: dateFormatter.format(currentDate),
-          ok: stats.entregados,
-          ne: stats.no_entregados,
-          ba: 0,
+          date: label,
+          fedex: {
+            pod: fedexDelivered,
+            dex: fedexNotDelivered,
+            total: fedexDelivered + fedexNotDelivered,
+            totalIncome: formatCurrency(fedexTotalIncome),
+          },
+          dhl: {
+            ba: dhlDelivered,
+            ne: dhlNotDelivered,
+            total: dhlDelivered + dhlNotDelivered,
+            totalIncome: formatCurrency(dhlTotalIncome),
+          },
           collections: collectionsCount,
-          total,
-          totalIncome: formatCurrency(totalIngresos)
+          cargas: cargasCount,
+          total: totalCount,
+          totalIncome: formatCurrency(totalIncome),
+          items: [...incomeItems, ...collectionItems, ...cargaItems],
         });
+
+        // Avanzar 1 día (milisegundos) SIN depender de getDate()/UTC
+        cursor = new Date(cursor.getTime() + oneDayMs);
       }
 
       return report;
@@ -237,138 +268,122 @@ export class IncomeService {
 
     async formatIncomesNew(
       incomes: Income[],
-      shipments: Shipment[],
-      collections: Collection[],
       fromDate: Date,
       toDate: Date
     ): Promise<FormatIncomesDto[]> {
       const report: FormatIncomesDto[] = [];
+      const pad = (n: number) => String(n).padStart(2, '0');
+      const timeZone = 'America/Mexico_City';
 
-      // Agrupar por fecha en formato YYYY-MM-DD (asumiendo fechas en UTC)
-      const groupedCollections = groupBy(collections, (c) =>
-        new Date(c.createdAt).toISOString().split('T')[0]
-      );
+      const localKey = (utcDate: Date): string => {
+        const zonedDate = toZonedTime(utcDate, timeZone);
+        return format(zonedDate, 'yyyy-MM-dd');
+      };
 
-      /*** Esto va a cambiar ya que los cargos se sacar de una tabla especial = charge */
-      const groupedShipments = 0 /*groupBy(
-        shipments.filter((s) => s.isPartOfCharge),
-        (s) => new Date(s.createdAt).toISOString().split('T')[0]
-      );*/
+      const localDisplay = (utcDate: Date): string => {
+        const zonedDate = toZonedTime(utcDate, timeZone);
+        return zonedDate.toLocaleDateString('es-MX', {
+          timeZone,
+          day: '2-digit',
+          month: '2-digit',
+          year: 'numeric',
+        });
+      };
 
-      const groupedIncomes = groupBy(incomes, (i) =>
-        new Date(i.date).toISOString().split('T')[0]
-      );
+      // Agrupamos incomes por fecha LOCAL (zona MX)
+      const grouped = groupBy(incomes, inc => localKey(new Date(inc.date)));
 
-      let currentDate = new Date(fromDate);
+      // Normalizamos las fechas desde medianoche en zona MX
+      const buildMidnightMX = (d: Date): Date => {
+        const yyyy = d.getUTCFullYear();
+        const mm = pad(d.getUTCMonth() + 1);
+        const dd = pad(d.getUTCDate());
+        return new Date(`${yyyy}-${mm}-${dd}T00:00:00-07:00`);
+      };
 
-      while (currentDate <= toDate) {
-        const dateStr = currentDate.toISOString().split('T')[0];
+      let cursor = buildMidnightMX(fromDate);
+      const endCursor = buildMidnightMX(toDate);
+      const oneDayMs = 24 * 60 * 60 * 1000;
 
-        // Logs para depuración de agrupamientos
-        // console.log('Fecha actual:', dateStr);
-        // console.log('Keys collections:', Object.keys(groupedCollections));
-        // console.log('Keys shipments:', Object.keys(groupedShipments));
-        // console.log('Keys incomes:', Object.keys(groupedIncomes));
+      while (cursor.getTime() <= endCursor.getTime()) {
+        const key = localKey(cursor);
+        const label = localDisplay(cursor);
 
-        const dayIncomes = groupedIncomes[dateStr] || [];
-        const dayCollections = groupedCollections[dateStr] || [];
-        const dayCargas = groupedShipments[dateStr] || [];
+        const dayIncomes     = grouped[key] || [];
+        const dayShipments   = dayIncomes.filter(i => i.sourceType === 'shipment');
+        const dayCollections = dayIncomes.filter(i => i.sourceType === 'collection');
+        const dayCharges     = dayIncomes.filter(i => i.sourceType === 'charge');
 
-        // Separar por tipo de envío
-        const fedexIncomes = dayIncomes.filter((i) => i.shipmentType === 'fedex');
-        const dhlIncomes = dayIncomes.filter((i) => i.shipmentType === 'dhl');
+        const fedexIncomes = dayShipments.filter(i => i.shipmentType === 'fedex');
+        const dhlIncomes   = dayShipments.filter(i => i.shipmentType === 'dhl');
 
-        // ---- FEDEx ----
-        // Revisar que notDeliveryStatus sea string para evitar error en includes
-        const fedexNotDelivered = fedexIncomes.filter(
-          (i) =>
-            i.incomeType === 'no_entregado' &&
-            typeof i.notDeliveryStatus === 'string' &&
-            ['07', '08', '17'].includes(i.notDeliveryStatus)
+        const fedexDelivered = fedexIncomes.filter(i => i.incomeType === 'entregado').length;
+        const fedexNotDelivered = fedexIncomes.filter(i =>
+          i.incomeType === 'no_entregado' &&
+          ['07', '08'].includes(i.notDeliveryStatus || '')
         ).length;
+        const fedexTotalIncome = fedexIncomes.reduce((sum, i) => sum + parseFloat(i.cost || '0'), 0);
 
-        const fedexDelivered = fedexIncomes.filter(
-          (i) => i.incomeType === 'entregado'
-        ).length;
+        const dhlDelivered = dhlIncomes.filter(i => i.deliveryStatus === 'BA').length;
+        const dhlNotDelivered = dhlIncomes.filter(i => i.deliveryStatus === 'NE').length;
+        const dhlTotalIncome = dhlIncomes.reduce((sum, i) => sum + parseFloat(i.cost || '0'), 0);
 
-        const fedexTotalIncome = fedexIncomes.reduce(
-          (acc, i) => acc + Number(i.cost || 0),
-          0
-        );
-
-        // ---- DHL ----
-        // Aquí asumimos que existe un campo deliveryStatus que indica 'BA' o 'NE'
-        const dhlDelivered = dhlIncomes.filter(
-          (i) => i.deliveryStatus === 'BA'
-        ).length;
-
-        const dhlNotDelivered = dhlIncomes.filter(
-          (i) => i.deliveryStatus === 'NE'
-        ).length;
-
-        const dhlTotalIncome = dhlIncomes.reduce(
-          (acc, i) => acc + Number(i.cost || 0),
-          0
-        );
-
-        const fedex = {
-          pod: fedexDelivered,
-          dex: fedexNotDelivered,
-          total: fedexDelivered + fedexNotDelivered,
-          totalIncome: formatCurrency(fedexTotalIncome)
-        };
-
-        const dhl = {
-          ba: dhlDelivered,
-          ne: dhlNotDelivered,
-          total: dhlDelivered + dhlNotDelivered,
-          totalIncome: formatCurrency(dhlTotalIncome)
-        };
+        const collectionTotalIncome = dayCollections.reduce((sum, i) => sum + parseFloat(i.cost || '0'), 0);
+        const chargeTotalIncome = dayCharges.reduce((sum, i) => sum + parseFloat(i.cost || '0'), 0);
 
         const collectionsCount = dayCollections.length;
-        const cargasCount = dayCargas.length;
+        const cargasCount = dayCharges.length;
+        const totalCount = fedexDelivered + fedexNotDelivered + dhlDelivered + dhlNotDelivered + collectionsCount + cargasCount;
 
-        const total = fedex.total + dhl.total + collectionsCount + cargasCount;
-        const totalIngresos = fedexTotalIncome + dhlTotalIncome;
+        // ✅ Incluir collections en el total de ingreso
+        const totalIncome = fedexTotalIncome + dhlTotalIncome + chargeTotalIncome + collectionTotalIncome;
 
-        // Construcción de items con incomes
-        const incomeItems = dayIncomes.map((i) => ({
-          type: i.isPartOfCharge ? 'carga' : 'shipment',
+        const incomeItems = dayShipments.map(i => ({
+          type: 'shipment' as const,
           trackingNumber: i.trackingNumber,
           shipmentType: i.shipmentType,
           status: i.incomeType,
-          date: new Date(i.date).toISOString(), // seguro que es Date o string parseable
-          cost: Number(i.cost || 0)
+          date: new Date(i.date).toISOString(),
+          cost: parseFloat(i.cost || '0'),
         }));
 
-        // Collections
-        const collectionItems = dayCollections.map((c) => ({
-          type: 'collection',
-          trackingNumber: c.trackingNumber,
-          date: new Date(c.createdAt).toISOString()
+        const collectionItems = dayCollections.map(i => ({
+          type: 'collection' as const,
+          trackingNumber: i.trackingNumber,
+          date: new Date(i.date).toISOString(),
+          cost: parseFloat(i.cost || '0'),
         }));
 
-        // Cargas directas desde shipments
-        const cargaItems = dayCargas.map((s) => ({
-          type: 'carga',
-          trackingNumber: s.trackingNumber,
-          date: new Date(s.createdAt).toISOString()
+        const cargaItems = dayCharges.map(i => ({
+          type: 'carga' as const,
+          trackingNumber: i.trackingNumber,
+          shipmentType: i.shipmentType,
+          date: new Date(i.date).toISOString(),
+          cost: parseFloat(i.cost || '0'),
         }));
-
-        const items = [...incomeItems, ...collectionItems, ...cargaItems];
 
         report.push({
-          date: dateStr,
-          fedex,
-          dhl,
+          date: label,
+          fedex: {
+            pod: fedexDelivered,
+            dex: fedexNotDelivered,
+            total: fedexDelivered + fedexNotDelivered,
+            totalIncome: formatCurrency(fedexTotalIncome),
+          },
+          dhl: {
+            ba: dhlDelivered,
+            ne: dhlNotDelivered,
+            total: dhlDelivered + dhlNotDelivered,
+            totalIncome: formatCurrency(dhlTotalIncome),
+          },
           collections: collectionsCount,
           cargas: cargasCount,
-          total,
-          totalIncome: formatCurrency(totalIngresos),
-          items
+          total: totalCount,
+          totalIncome: formatCurrency(totalIncome),
+          items: [...incomeItems, ...collectionItems, ...cargaItems],
         });
 
-        currentDate.setDate(currentDate.getDate() + 1);
+        cursor = new Date(cursor.getTime() + oneDayMs);
       }
 
       return report;
@@ -379,16 +394,25 @@ export class IncomeService {
         throw new Error('Invalid date format for startISO or endISO');
       }
 
-      const incomes = await this.getIncomes(subsidiaryId, fromDate, toDate);
-      const shipments = await this.getShipments(subsidiaryId, fromDate, toDate);
-      const collections = await this.getCollections(subsidiaryId, fromDate, toDate);
+      // Incluir toda la fecha final (hasta las 23:59:59.999 del día 22)
+      const adjustedToDate = new Date(toDate);
+      adjustedToDate.setHours(23, 59, 59, 999);
 
-      const incomeData = await this.formatIncomesNew(incomes, shipments, collections, fromDate, toDate);
-      
-      //console.log("🚀 ~ IncomeService ~ getIncome ~ incomeData:", incomeData)
-      
+      const incomes = await this.incomeRepository.find({
+        where: {
+          subsidiaryId,
+          date: Raw(alias => `${alias} >= :from AND ${alias} < :to`, { from: fromDate, to: adjustedToDate }),
+        },
+        order: {
+          date: 'ASC',
+        },
+      });
+
+      const incomeData = await this.formatIncomesNew(incomes, fromDate, toDate);
       return incomeData;
     }
+
+    /******* HASTA AQUI */
 
     /******* De aquí para abajo se necesita refactorizar */
       async getWeecklyShipmentReport(subsidiaryId: string, fromDate: Date, toDate: Date) {
@@ -396,34 +420,25 @@ export class IncomeService {
           throw new Error('Invalid date format for startISO or endISO');
         }
 
-        const shipments = await this.shipmentRepository.find({
+        const incomes = await this.incomeRepository.find({
           where: {
             subsidiaryId,
-            statusHistory: {
-              timestamp: Between(fromDate, toDate),
-              status: In(['entregado', 'no_entregado'])
-            }
+            date: 
+              Between(fromDate, toDate)
           },
-          relations: ['statusHistory'],
           order: {
-            statusHistory: {
-              timestamp: 'DESC'
-            }
+            date:  'DESC'
           }
         });
 
-        const collections = await this.collectionRepository.find({
-          where: {
-            createdAt: Between(fromDate.toISOString(), toDate.toISOString())
-          }
-        })
+        console.log("🚀 ~ IncomeService ~ getWeecklyShipmentReport ~ incomes:", incomes)
         
         // 3. Procesamiento en memoria
-        const dailyStats = this.processShipmentsByDay(shipments, fromDate, toDate);
-        const dailyCollections = this.processCollectionsByDay(collections, fromDate, toDate);
+        //const dailyStats = this.processShipmentsByDay(shipments, fromDate, toDate);
+        //const dailyCollections = this.processCollectionsByDay(collections, fromDate, toDate);
 
         // 4. Formatear resultado final
-        return this.formatDailyReport(dailyStats, dailyCollections, fromDate);
+        //return this.formatDailyReport(dailyStats, dailyCollections, fromDate);
       }
 
 
@@ -573,7 +588,7 @@ export class IncomeService {
 
           const totalIncome = income.reduce((sum, i) => sum + (parseFloat(i.totalIncome.replace(/[$,]/g, '')) || 0), 0)
           const totalExpenses = expense.reduce((sum, g) => sum + (g.amount || 0), 0)
-          const totalCollections = collentions.length * this.PRECIO_ENTREGADO;
+          const totalCollections = collentions.length * 59.51;
 
           return {
             income: totalIncome,
@@ -663,8 +678,8 @@ export class IncomeService {
           const total = entregadosConCollections + stats.no_entregados;
 
           const totalIngresos = 
-            (entregadosConCollections * this.PRECIO_ENTREGADO) +
-            (stats.no_entregados * this.PRECIO_NO_ENTREGADO);
+            (entregadosConCollections * 1) +
+            (stats.no_entregados * 1);
 
           return {
             date: dateFormatter.format(currentDate),

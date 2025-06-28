@@ -1,6 +1,12 @@
-import { Column, Entity, JoinColumn, ManyToOne, PrimaryGeneratedColumn } from 'typeorm';
+import {
+  Column,
+  Entity,
+  JoinColumn,
+  ManyToOne,
+  PrimaryGeneratedColumn,
+} from 'typeorm';
 import { Subsidiary } from './subsidiary.entity';
-import { ExpenseCategory } from './expense-category.entity';
+import { ExpenseCategory } from 'src/common/enums/category-enum';
 
 @Entity('expense')
 export class Expense {
@@ -14,13 +20,17 @@ export class Expense {
   @Column({ nullable: true })
   subsidiaryId: string;
 
-  @ManyToOne(() => ExpenseCategory, category => category.expenses)
-  category: ExpenseCategory;
+  @Column({
+    type: 'enum',
+    enum: ExpenseCategory,
+    nullable: true,
+  })
+  category?: ExpenseCategory;
 
   @Column()
   date: Date;
 
-  @Column('decimal')
+  @Column('decimal', { precision: 10, scale: 2, nullable: false })
   amount: number;
 
   @Column({ nullable: true })
@@ -34,7 +44,4 @@ export class Expense {
 
   @Column({ nullable: true })
   notes?: string;
-
-  @Column({ nullable: true })
-  receiptUrl?: string;
 }

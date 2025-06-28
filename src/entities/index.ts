@@ -1,6 +1,5 @@
 export * from './user.entity';
 export * from './subsidiary.entity';
-export * from './expense-category.entity';
 export * from './expense.entity';
 export * from './driver.entity';
 export * from './vehicle.entity';
@@ -9,3 +8,4 @@ export * from './income.entity';
 export * from './shipment.entity';
 export * from './payment.entity';
 export * from './shipment-status.entity';
+export * from './collection.entity';

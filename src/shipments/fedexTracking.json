@@ -1,0 +1,716 @@
+{
+  "transactionId": "6e574412-4791-4d41-80d5-5badadf498d0",
+  "output": {
+    "completeTrackResults": [
+      {
+        "trackingNumber": "881046693354",
+        "trackResults": [
+          {
+            "trackingNumberInfo": {
+              "trackingNumber": "881046693354",
+              "trackingNumberUniqueId": "2460802000~881046693354~FX",
+              "carrierCode": "FDXE"
+            },
+            "additionalTrackingInfo": {
+              "nickname": "",
+              "packageIdentifiers": [
+                {
+                  "type": "PURCHASE_ORDER",
+                  "values": [
+                    "Tendencys70"
+                  ],
+                  "trackingNumberUniqueId": "",
+                  "carrierCode": ""
+                }
+              ],
+              "hasAssociatedShipments": false
+            },
+            "shipperInformation": {
+              "contact": {},
+              "address": {
+                "city": "Monterrey",
+                "stateOrProvinceCode": "NL",
+                "countryCode": "MX",
+                "residential": false,
+                "countryName": "Mexico"
+              }
+            },
+            "recipientInformation": {
+              "contact": {},
+              "address": {
+                "city": "SAN JOSE DEL CABO",
+                "stateOrProvinceCode": "BS",
+                "countryCode": "MX",
+                "residential": false,
+                "countryName": "Mexico"
+              }
+            },
+            "latestStatusDetail": {
+              "code": "OC",
+              "derivedCode": "OC",
+              "statusByLocale": "Label created",
+              "description": "Shipment information sent to FedEx",
+              "scanLocation": {
+                "residential": false
+              },
+              "ancillaryDetails": [
+                {
+                  "reason": "IN001",
+                  "reasonDescription": "Please check back later for shipment status or subscribe for e-mail notifications",
+                  "action": "",
+                  "actionDescription": ""
+                }
+              ]
+            },
+            "availableImages": [],
+            "specialHandlings": [
+              {
+                "type": "DELIVER_WEEKDAY",
+                "description": "Deliver Weekday",
+                "paymentType": "OTHER"
+              }
+            ],
+            "packageDetails": {
+              "packagingDescription": {
+                "type": "YOUR_PACKAGING",
+                "description": "Your Packaging"
+              },
+              "sequenceNumber": "1",
+              "count": "1",
+              "weightAndDimensions": {
+                "weight": [
+                  {
+                    "value": "0.9",
+                    "unit": "KG"
+                  },
+                  {
+                    "value": "1.98",
+                    "unit": "LB"
+                  }
+                ],
+                "dimensions": [
+                  {
+                    "length": 21,
+                    "width": 18,
+                    "height": 6,
+                    "units": "CM"
+                  },
+                  {
+                    "length": 8,
+                    "width": 7,
+                    "height": 2,
+                    "units": "IN"
+                  }
+                ]
+              },
+              "packageContent": []
+            },
+            "shipmentDetails": {
+              "possessionStatus": false,
+              "weight": [
+                {
+                  "value": "0.9",
+                  "unit": "KG"
+                },
+                {
+                  "value": "1.98",
+                  "unit": "LB"
+                }
+              ]
+            },
+            "scanEvents": [
+              {
+                "date": "2025-05-06T07:22:34-05:00",
+                "eventType": "OC",
+                "eventDescription": "Shipment information sent to FedEx",
+                "exceptionCode": "",
+                "exceptionDescription": "",
+                "scanLocation": {
+                  "streetLines": [
+                    ""
+                  ],
+                  "residential": false
+                },
+                "locationType": "CUSTOMER",
+                "derivedStatusCode": "IN",
+                "derivedStatus": "Label created"
+              }
+            ],
+            "availableNotifications": [
+              "ON_DELIVERY",
+              "ON_EXCEPTION",
+              "ON_ESTIMATED_DELIVERY",
+              "ON_TENDER"
+            ],
+            "deliveryDetails": {
+              "deliveryAttempts": "0",
+              "deliveryOptionEligibilityDetails": [
+                {
+                  "option": "INDIRECT_SIGNATURE_RELEASE",
+                  "eligibility": "INELIGIBLE"
+                },
+                {
+                  "option": "REDIRECT_TO_HOLD_AT_LOCATION",
+                  "eligibility": "INELIGIBLE"
+                },
+                {
+                  "option": "REROUTE",
+                  "eligibility": "INELIGIBLE"
+                },
+                {
+                  "option": "RESCHEDULE",
+                  "eligibility": "INELIGIBLE"
+                },
+                {
+                  "option": "RETURN_TO_SHIPPER",
+                  "eligibility": "INELIGIBLE"
+                },
+                {
+                  "option": "DISPUTE_DELIVERY",
+                  "eligibility": "POSSIBLY_ELIGIBLE"
+                },
+                {
+                  "option": "SUPPLEMENT_ADDRESS",
+                  "eligibility": "INELIGIBLE"
+                }
+              ],
+              "destinationServiceArea": "OC"
+            },
+            "originLocation": {
+              "locationContactAndAddress": {
+                "address": {
+                  "city": "MONTERREY",
+                  "stateOrProvinceCode": "NL",
+                  "countryCode": "MX",
+                  "residential": false,
+                  "countryName": "Mexico"
+                }
+              },
+              "locationId": "MMCA"
+            },
+            "destinationLocation": {
+              "locationContactAndAddress": {
+                "address": {
+                  "city": "SAN JOSE DEL CABO",
+                  "stateOrProvinceCode": "BS",
+                  "countryCode": "MX",
+                  "residential": false,
+                  "countryName": "Mexico"
+                }
+              },
+              "locationType": ""
+            },
+            "lastUpdatedDestinationAddress": {
+              "city": "SAN JOSE DEL CABO",
+              "stateOrProvinceCode": "BS",
+              "countryCode": "MX",
+              "residential": false,
+              "countryName": "Mexico"
+            },
+            "serviceCommitMessage": {
+              "message": "We'll add a delivery date as soon as we get your package.",
+              "type": "SHIPMENT_LABEL_CREATED"
+            },
+            "serviceDetail": {
+              "type": "FEDEX_EXPRESS_SAVER",
+              "description": "FedEx Nacional Economico",
+              "shortDescription": "XS"
+            },
+            "standardTransitTimeWindow": {
+              "window": {}
+            },
+            "estimatedDeliveryTimeWindow": {
+              "window": {}
+            },
+            "goodsClassificationCode": "",
+            "returnDetail": {}
+          },
+          {
+            "trackingNumberInfo": {
+              "trackingNumber": "881046693354",
+              "trackingNumberUniqueId": "2460837000~881046693354~FX",
+              "carrierCode": "FDXE"
+            },
+            "additionalTrackingInfo": {
+              "nickname": "",
+              "hasAssociatedShipments": false
+            },
+            "shipperInformation": {
+              "contact": {},
+              "address": {
+                "residential": false
+              }
+            },
+            "recipientInformation": {
+              "contact": {},
+              "address": {
+                "residential": false
+              }
+            },
+            "latestStatusDetail": {
+              "code": "DL",
+              "derivedCode": "DL",
+              "statusByLocale": "Delivered",
+              "description": "Delivered",
+              "scanLocation": {
+                "residential": false
+              }
+            },
+            "dateAndTimes": [
+              {
+                "type": "ACTUAL_DELIVERY",
+                "dateTime": "2025-06-17T16:27:00-07:00"
+              },
+              {
+                "type": "ACTUAL_PICKUP",
+                "dateTime": "2025-06-10T11:56:00-05:00"
+              },
+              {
+                "type": "SHIP",
+                "dateTime": "2025-06-10T00:00:00+00:00"
+              },
+              {
+                "type": "ACTUAL_TENDER",
+                "dateTime": "2025-06-10T11:58:00-05:00"
+              }
+            ],
+            "availableImages": [
+              {
+                "type": "SIGNATURE_PROOF_OF_DELIVERY"
+              }
+            ],
+            "specialHandlings": [
+              {
+                "type": "DELIVER_WEEKDAY",
+                "description": "Deliver Weekday",
+                "paymentType": "OTHER"
+              }
+            ],
+            "packageDetails": {
+              "packagingDescription": {
+                "type": "YOUR_PACKAGING",
+                "description": "Your Packaging"
+              },
+              "count": "1",
+              "weightAndDimensions": {
+                "weight": [
+                  {
+                    "value": "1.0",
+                    "unit": "KG"
+                  },
+                  {
+                    "value": "2.2",
+                    "unit": "LB"
+                  }
+                ]
+              },
+              "packageContent": []
+            },
+            "shipmentDetails": {
+              "possessionStatus": true,
+              "weight": [
+                {
+                  "value": "1.0",
+                  "unit": "KG"
+                },
+                {
+                  "value": "2.2",
+                  "unit": "LB"
+                }
+              ]
+            },
+            "scanEvents": [
+              {
+                "date": "2025-06-17T16:27:00-07:00",
+                "eventType": "DL",
+                "eventDescription": "Delivered",
+                "exceptionCode": "",
+                "exceptionDescription": "",
+                "scanLocation": {
+                  "streetLines": [
+                    ""
+                  ],
+                  "residential": false
+                },
+                "locationId": "LAPA",
+                "locationType": "DELIVERY_LOCATION",
+                "derivedStatusCode": "DL",
+                "derivedStatus": "Delivered"
+              },
+              {
+                "date": "2025-06-16T20:02:00-07:00",
+                "eventType": "IT",
+                "eventDescription": "On the way",
+                "exceptionCode": "67",
+                "exceptionDescription": "A trusted third-party vendor is on the way with your package.",
+                "scanLocation": {
+                  "streetLines": [
+                    ""
+                  ],
+                  "city": "LA PAZ",
+                  "stateOrProvinceCode": "BS",
+                  "postalCode": "23050",
+                  "countryCode": "MX",
+                  "residential": false,
+                  "countryName": "Mexico"
+                },
+                "locationId": "LAPA",
+                "locationType": "FEDEX_FACILITY",
+                "derivedStatusCode": "IT",
+                "derivedStatus": "In transit"
+              },
+              {
+                "date": "2025-06-14T14:49:00-07:00",
+                "eventType": "AR",
+                "eventDescription": "At local FedEx facility",
+                "exceptionCode": "41",
+                "exceptionDescription": "Your package is expected to arrive on the scheduled delivery date",
+                "scanLocation": {
+                  "streetLines": [
+                    ""
+                  ],
+                  "city": "LA PAZ",
+                  "stateOrProvinceCode": "BS",
+                  "postalCode": "23050",
+                  "countryCode": "MX",
+                  "residential": false,
+                  "countryName": "Mexico"
+                },
+                "locationId": "LAPA",
+                "locationType": "DESTINATION_FEDEX_FACILITY",
+                "derivedStatusCode": "IT",
+                "derivedStatus": "In transit"
+              },
+              {
+                "date": "2025-06-14T14:44:00-07:00",
+                "eventType": "AR",
+                "eventDescription": "At local FedEx facility",
+                "exceptionCode": "",
+                "exceptionDescription": "",
+                "scanLocation": {
+                  "streetLines": [
+                    ""
+                  ],
+                  "city": "LA PAZ",
+                  "stateOrProvinceCode": "BS",
+                  "postalCode": "23050",
+                  "countryCode": "MX",
+                  "residential": false,
+                  "countryName": "Mexico"
+                },
+                "locationId": "LAPA",
+                "locationType": "DESTINATION_FEDEX_FACILITY",
+                "derivedStatusCode": "IT",
+                "derivedStatus": "In transit"
+              },
+              {
+                "date": "2025-06-14T14:43:00-07:00",
+                "eventType": "AF",
+                "eventDescription": "At local FedEx facility",
+                "exceptionCode": "",
+                "exceptionDescription": "",
+                "scanLocation": {
+                  "streetLines": [
+                    ""
+                  ],
+                  "city": "LA PAZ",
+                  "stateOrProvinceCode": "BS",
+                  "postalCode": "23050",
+                  "countryCode": "MX",
+                  "residential": false,
+                  "countryName": "Mexico"
+                },
+                "locationId": "LAPA",
+                "locationType": "FEDEX_FACILITY",
+                "derivedStatusCode": "IT",
+                "derivedStatus": "In transit"
+              },
+              {
+                "date": "2025-06-13T16:58:00-07:00",
+                "eventType": "AR",
+                "eventDescription": "At destination sort facility",
+                "exceptionCode": "",
+                "exceptionDescription": "",
+                "scanLocation": {
+                  "streetLines": [
+                    ""
+                  ],
+                  "city": "LOS MOCHIS",
+                  "stateOrProvinceCode": "SI",
+                  "postalCode": "81200",
+                  "countryCode": "MX",
+                  "residential": false,
+                  "countryName": "Mexico"
+                },
+                "locationId": "LMMA",
+                "locationType": "SORT_FACILITY",
+                "derivedStatusCode": "IT",
+                "derivedStatus": "In transit"
+              },
+              {
+                "date": "2025-06-12T10:18:00-06:00",
+                "eventType": "DP",
+                "eventDescription": "Departed FedEx hub",
+                "exceptionCode": "",
+                "exceptionDescription": "",
+                "scanLocation": {
+                  "streetLines": [
+                    ""
+                  ],
+                  "city": "CUAUTITLAN IZCALLI",
+                  "stateOrProvinceCode": "EM",
+                  "postalCode": "54769",
+                  "countryCode": "MX",
+                  "residential": false,
+                  "countryName": "Mexico"
+                },
+                "locationId": "CUAH",
+                "locationType": "FEDEX_FACILITY",
+                "derivedStatusCode": "IT",
+                "derivedStatus": "In transit"
+              },
+              {
+                "date": "2025-06-12T06:45:00-06:00",
+                "eventType": "AR",
+                "eventDescription": "Arrived at FedEx hub",
+                "exceptionCode": "",
+                "exceptionDescription": "",
+                "scanLocation": {
+                  "streetLines": [
+                    ""
+                  ],
+                  "city": "CUAUTITLAN IZCALLI",
+                  "stateOrProvinceCode": "EM",
+                  "postalCode": "54769",
+                  "countryCode": "MX",
+                  "residential": false,
+                  "countryName": "Mexico"
+                },
+                "locationId": "CUAH",
+                "locationType": "FEDEX_FACILITY",
+                "derivedStatusCode": "IT",
+                "derivedStatus": "In transit"
+              },
+              {
+                "date": "2025-06-11T18:28:00-07:00",
+                "eventType": "IT",
+                "eventDescription": "On the way",
+                "exceptionCode": "",
+                "exceptionDescription": "",
+                "scanLocation": {
+                  "streetLines": [
+                    ""
+                  ],
+                  "city": "CHIHUAHUA",
+                  "stateOrProvinceCode": "CH",
+                  "postalCode": "31105",
+                  "countryCode": "MX",
+                  "residential": false,
+                  "countryName": "Mexico"
+                },
+                "locationId": "CUUA",
+                "locationType": "FEDEX_FACILITY",
+                "derivedStatusCode": "IT",
+                "derivedStatus": "In transit"
+              },
+              {
+                "date": "2025-06-11T18:22:00-07:00",
+                "eventType": "IT",
+                "eventDescription": "On the way",
+                "exceptionCode": "",
+                "exceptionDescription": "",
+                "scanLocation": {
+                  "streetLines": [
+                    ""
+                  ],
+                  "city": "CHIHUAHUA",
+                  "stateOrProvinceCode": "CH",
+                  "postalCode": "31105",
+                  "countryCode": "MX",
+                  "residential": false,
+                  "countryName": "Mexico"
+                },
+                "locationId": "CUUA",
+                "locationType": "FEDEX_FACILITY",
+                "derivedStatusCode": "IT",
+                "derivedStatus": "In transit"
+              },
+              {
+                "date": "2025-06-11T04:00:00-06:00",
+                "eventType": "IT",
+                "eventDescription": "On the way",
+                "exceptionCode": "",
+                "exceptionDescription": "",
+                "scanLocation": {
+                  "streetLines": [
+                    ""
+                  ],
+                  "city": "GENERAL ESCOBEDO",
+                  "stateOrProvinceCode": "NL",
+                  "postalCode": "66050",
+                  "countryCode": "MX",
+                  "residential": false,
+                  "countryName": "Mexico"
+                },
+                "locationId": "MTYH",
+                "locationType": "FEDEX_FACILITY",
+                "derivedStatusCode": "IT",
+                "derivedStatus": "In transit"
+              },
+              {
+                "date": "2025-06-11T01:00:00-06:00",
+                "eventType": "IT",
+                "eventDescription": "On the way",
+                "exceptionCode": "",
+                "exceptionDescription": "",
+                "scanLocation": {
+                  "streetLines": [
+                    ""
+                  ],
+                  "city": "GENERAL ESCOBEDO",
+                  "stateOrProvinceCode": "NL",
+                  "postalCode": "66050",
+                  "countryCode": "MX",
+                  "residential": false,
+                  "countryName": "Mexico"
+                },
+                "locationId": "MTYH",
+                "locationType": "FEDEX_FACILITY",
+                "derivedStatusCode": "IT",
+                "derivedStatus": "In transit"
+              },
+              {
+                "date": "2025-06-10T11:58:00-05:00",
+                "eventType": "DP",
+                "eventDescription": "Left FedEx origin facility",
+                "exceptionCode": "",
+                "exceptionDescription": "",
+                "scanLocation": {
+                  "streetLines": [
+                    ""
+                  ],
+                  "city": "REYNOSA",
+                  "stateOrProvinceCode": "TM",
+                  "postalCode": "88754",
+                  "countryCode": "MX",
+                  "residential": false,
+                  "countryName": "Mexico"
+                },
+                "locationId": "REXA",
+                "locationType": "ORIGIN_FEDEX_FACILITY",
+                "derivedStatusCode": "IT",
+                "derivedStatus": "In transit"
+              },
+              {
+                "date": "2025-06-10T11:56:00-05:00",
+                "eventType": "PU",
+                "eventDescription": "Picked up",
+                "exceptionCode": "",
+                "exceptionDescription": "",
+                "scanLocation": {
+                  "streetLines": [
+                    ""
+                  ],
+                  "city": "REYNOSA",
+                  "stateOrProvinceCode": "TM",
+                  "postalCode": "88754",
+                  "countryCode": "MX",
+                  "residential": false,
+                  "countryName": "Mexico"
+                },
+                "locationId": "REXA",
+                "locationType": "PICKUP_LOCATION",
+                "derivedStatusCode": "PU",
+                "derivedStatus": "Picked up"
+              }
+            ],
+            "availableNotifications": [
+              "ON_DELIVERY"
+            ],
+            "deliveryDetails": {
+              "actualDeliveryAddress": {
+                "residential": false
+              },
+              "locationType": "RECEPTIONIST_OR_FRONT_DESK",
+              "locationDescription": "Receptionist/Front Desk",
+              "deliveryAttempts": "0",
+              "receivedByName": "A.RELY OCAMPO",
+              "deliveryOptionEligibilityDetails": [
+                {
+                  "option": "INDIRECT_SIGNATURE_RELEASE",
+                  "eligibility": "INELIGIBLE"
+                },
+                {
+                  "option": "REDIRECT_TO_HOLD_AT_LOCATION",
+                  "eligibility": "INELIGIBLE"
+                },
+                {
+                  "option": "REROUTE",
+                  "eligibility": "INELIGIBLE"
+                },
+                {
+                  "option": "RESCHEDULE",
+                  "eligibility": "INELIGIBLE"
+                },
+                {
+                  "option": "RETURN_TO_SHIPPER",
+                  "eligibility": "INELIGIBLE"
+                },
+                {
+                  "option": "DISPUTE_DELIVERY",
+                  "eligibility": "INELIGIBLE"
+                },
+                {
+                  "option": "SUPPLEMENT_ADDRESS",
+                  "eligibility": "INELIGIBLE"
+                }
+              ]
+            },
+            "originLocation": {
+              "locationContactAndAddress": {
+                "address": {
+                  "city": "REYNOSA",
+                  "stateOrProvinceCode": "TM",
+                  "countryCode": "MX",
+                  "residential": false,
+                  "countryName": "Mexico"
+                }
+              },
+              "locationId": "REXA"
+            },
+            "destinationLocation": {
+              "locationContactAndAddress": {
+                "address": {
+                  "residential": false
+                }
+              },
+              "locationType": ""
+            },
+            "lastUpdatedDestinationAddress": {
+              "city": "SAN JOSE DEL CABO",
+              "stateOrProvinceCode": "BS",
+              "countryCode": "MX",
+              "residential": false,
+              "countryName": "Mexico"
+            },
+            "serviceDetail": {
+              "type": "FEDEX_EXPRESS_SAVER",
+              "description": "FedEx Nacional Economico",
+              "shortDescription": "XS"
+            },
+            "standardTransitTimeWindow": {
+              "window": {
+                "ends": "2025-06-19T21:00:00-07:00"
+              }
+            },
+            "estimatedDeliveryTimeWindow": {
+              "window": {}
+            },
+            "goodsClassificationCode": "",
+            "returnDetail": {}
+          }
+        ]
+      }
+    ]
+  }
+}

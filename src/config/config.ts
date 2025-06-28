@@ -3,8 +3,6 @@ import { DataSourceOptions } from 'typeorm';
 import * as path from 'path';
 
 export const config = () => {
-    const isProd = process.env.NODE_ENV === 'prod';
-
     return {
         port: Number(process.env.PORT),
         jwtSecret: process.env.JWT_SECRET,

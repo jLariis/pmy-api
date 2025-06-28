@@ -26,8 +26,16 @@ export class IncomeController {
     @Param('firstDay') firstDay: string,
     @Param('lastDay') lastDay: string,
   ) {
+    
+    console.log("🚀 ~ IncomeController ~ lastDay:", lastDay)
+    console.log("🚀 ~ IncomeController ~ firstDay:", firstDay)
     const firstDayOfWeek= new Date(firstDay);
     const lastDayOfWeek = new Date(lastDay);
+
+    console.log("🚀 ~ IncomeController ~ firstDayOfWeek:", firstDayOfWeek)
+    console.log("🚀 ~ IncomeController ~ lastDayOfWeek:", lastDayOfWeek)
+
+    
     return this.incomeService.getWeecklyShipmentReport(subsiary,firstDayOfWeek,lastDayOfWeek)  
   }
 
@@ -62,6 +70,7 @@ export class IncomeController {
     return this.incomeService.getFinantialDataForDashboard(subsiaryId);
   }
 
+  /*** Método que llena la tabla de ingresos dentro de finanzas */
   @Get('bySucursal/:subsidiaryId')
   getIncomeBySucursalAndDates(
     @Param('subsidiaryId') subsidiaryId: string,
@@ -71,7 +80,7 @@ export class IncomeController {
 
     const fDate = new Date(fromDate);
     const tDate = new Date(toDate);
-
+        
     return this.incomeService.getIncome(subsidiaryId, fDate, tDate)
   }
 

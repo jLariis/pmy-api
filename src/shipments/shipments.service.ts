@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, InternalServerErrorException, Logger } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Between, In, Repository } from 'typeorm';
 import { Shipment } from 'src/entities/shipment.entity';
@@ -14,27 +14,27 @@ import { endOfToday, format, startOfToday } from 'date-fns';
 import { ShipmentType } from 'src/common/enums/shipment-type.enum';
 import { Income, Payment, Subsidiary } from 'src/entities';
 import { PaymentStatus } from 'src/common/enums/payment-status.enum';
-import { DHLService } from './dhl.service';
+import { DHLService } from './dto/dhl.service';
 import { DhlShipmentDto } from './dto/dhl/dhl-shipment.dto';
 import { FedExScanEventDto, FedExTrackingResponseDto } from './dto/fedex/fedex-tracking-response.dto';
 import { SubsidiariesService } from 'src/subsidiaries/subsidiaries.service';
 import { Priority } from 'src/common/enums/priority.enum';
 import { IncomeStatus } from 'src/common/enums/income-status.enum';
 import * as stringSimilarity from 'string-similarity';
-import * as fs from 'fs';
+import * as fs from 'node:fs/promises';
 import * as path from 'path';
 import { Charge } from 'src/entities/charge.entity';
 import { ChargeShipment } from 'src/entities/charge-shipment.entity';
 import { ShipmentAndChargeDto } from './dto/shipment-and-charge.dto';
 import { ChargeWithStatusDto } from './dto/charge-with-status.dto';
 import { IncomeSourceType } from 'src/common/enums/income-source-type.enum';
+import { GetShipmentKpisDto } from './dto/get-shipment-kpis.dto';
 
 @Injectable()
 export class ShipmentsService {
   private readonly logger = new Logger(ShipmentsService.name);
   private PRECIO_ENTREGADO = 59.51;
-  private PRECIO_NO_ENTREGADO = 59.51;
-  private PRECIO_DHL = 45.00;
+
   /*** Temporal */
   private citiesNotClasified = [];
 
@@ -56,6 +56,92 @@ export class ShipmentsService {
     private readonly subsidiaryService: SubsidiariesService
   ) { }
 
+  async appendLogToFile(message: string) {
+    const logFilePath = path.resolve(__dirname, '../../logs/shipment-process-errors.log');
+    const timestamp = new Date().toISOString();
+    const logMessage = `[${timestamp}] ${message}\n`;
+    
+    try {
+      await fs.appendFile(logFilePath, logMessage);
+    } catch (error) {
+      console.error('Error escribiendo en el archivo de log:', error);
+    }
+  }
+
+  private async processScanEventsToStatuses(
+    scanEvents: FedExScanEventDto[],
+    shipment: Shipment
+  ): Promise<ShipmentStatus[]> {
+    const statuses: ShipmentStatus[] = [];
+    let hasException = false;
+    let hasDelivered = false;
+
+    // Ordenar eventos por fecha ascendente
+    const sortedEvents = scanEvents.sort(
+      (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()
+    );
+
+    // Mapear y construir la lista inicial de statuses
+    for (const event of sortedEvents) {
+      const code = event.derivedStatusCode;
+      const mappedStatus = mapFedexStatusToLocalStatus(code, event.exceptionCode);
+      /*if (mappedStatus === ShipmentStatusType.DESCONOCIDO) {
+        // Opcional: log para estados desconocidos
+        continue;
+      }*/
+
+      if (mappedStatus === ShipmentStatusType.NO_ENTREGADO) hasException = true;
+      if (mappedStatus === ShipmentStatusType.ENTREGADO) hasDelivered = true;
+
+      const statusEntry = new ShipmentStatus();
+      statusEntry.shipment = shipment;
+      statusEntry.status = mappedStatus;
+      statusEntry.exceptionCode = event.exceptionCode || undefined;
+      statusEntry.notes = event.exceptionCode
+        ? `${event.exceptionCode} - ${event.exceptionDescription}`
+        : `${event.eventType} - ${event.eventDescription}`;
+      statusEntry.timestamp = new Date(event.date);
+
+      statuses.push(statusEntry);
+
+      // Log cada registro
+      const logLine = `📝 [${shipment.trackingNumber}] Registrado status: ${statusEntry.status} - ${statusEntry.notes}`;
+      this.logger.log(logLine);
+      await this.appendLogToFile(`${logLine} at ${statusEntry.timestamp.toISOString()}`);
+    }
+
+    // Si hubo excepciones pero luego entrega, conservamos TODO
+    if (hasException && hasDelivered) {
+      const msg = `📦 [${shipment.trackingNumber}] Excepciones previas pero entrega exitosa. Conservando todos los estados.`;
+      this.logger.log(msg);
+      await this.appendLogToFile(msg);
+      return statuses;
+    }
+
+    // Si no hubo entrega y sí excepciones, eliminar EN_RUTA posteriores al último NO_ENTREGADO
+    if (!hasDelivered && hasException) {
+      // Índice del último NO_ENTREGADO
+      const lastNoEntIndex = statuses
+        .map((s, i) => (s.status === ShipmentStatusType.NO_ENTREGADO ? i : -1))
+        .filter((i) => i !== -1)
+        .pop();
+
+      if (lastNoEntIndex !== undefined && lastNoEntIndex < statuses.length - 1) {
+        const removed = statuses.splice(lastNoEntIndex + 1);
+        for (const rem of removed) {
+          if (rem.status === ShipmentStatusType.EN_RUTA) {
+            const warn = `🗑️ [${shipment.trackingNumber}] Eliminado EN_RUTA posterior a NO_ENTREGADO: ${rem.notes}`;
+            this.logger.warn(warn);
+            await this.appendLogToFile(warn);
+          }
+        }
+      }
+    }
+
+    return statuses;
+  }
+
+  /*** Puede quedar obsoleta */
   async processScanEvents(
     scanEvents: FedExScanEventDto[],
     fedexShipmentData: FedExTrackingResponseDto,
@@ -99,7 +185,7 @@ export class ShipmentsService {
         : mapFedexStatusToLocalStatus(scanEvent.eventDescription);
 
       newShipmentStatus.timestamp = eventDate;
-      newShipmentStatus.notes = this.generateNote(scanEvent, isInicialState);
+      newShipmentStatus.notes = scanEvent.exceptionCode ? `${scanEvent.exceptionCode} - ${scanEvent.exceptionDescription}` : `${scanEvent.eventType} - ${scanEvent.eventDescription}`//this.generateNote(scanEvent, isInicialState);
       newShipmentStatus.shipment = savedShipment;
 
       if (
@@ -107,6 +193,7 @@ export class ShipmentsService {
         scanEvent.exceptionCode &&
         targetExceptionCodes.includes(scanEvent.exceptionCode)
       ) {
+        this.logger.warn(`⛔ Se encontro no entregado tracking: ${newShipmentStatus.shipment.trackingNumber} evento: ${JSON.stringify(scanEvent)}`)
         newShipmentStatus.exceptionCode = scanEvent.exceptionCode;
         shipmentStatus.push(newShipmentStatus); // ✅ se guarda el evento actual
         break; // ⛔ se detiene aquí, no se guardan más
@@ -317,12 +404,12 @@ export class ShipmentsService {
   /** Nuevo método que toma todos los valores de Shipment y Charge */
   async findAllShipmentsAndCharges(): Promise<ShipmentAndChargeDto[]> {
     const shipments = await this.shipmentRepository.find({
-      relations: ['statusHistory', 'payment'],
+      relations: ['statusHistory', 'payment', 'subsidiary'],
       order: { commitDate: 'ASC' },
     });
 
     const charges = await this.chargeShipmentRepository.find({
-      relations: ['statusHistory', 'payment', 'charge'],
+      relations: ['statusHistory', 'payment', 'charge', 'subsidiary'],
       order: { commitDate: 'ASC' },
     });
 
@@ -345,7 +432,7 @@ export class ShipmentsService {
 
   async findAll() {
     return await this.shipmentRepository.find({
-      relations: ['statusHistory', 'payment'],
+      relations: ['statusHistory', 'payment', 'subsidiary'],
       order: {
         commitDate: "ASC",
     },
@@ -389,6 +476,7 @@ export class ShipmentsService {
     return { exist: count > 0, shipment: _[0] };
   }
 
+  /*** Procesar cargas cuando vienen los archivos separados */
   async processFileF2(file: Express.Multer.File, subsidiaryId: string) {
     if (!file) throw new BadRequestException('No file uploaded');
     this.logger.log(`📂 Start processing file: ${file.originalname}`);
@@ -527,178 +615,80 @@ export class ShipmentsService {
     return null;
   }
 
-  /*async validateMultipleSheetsShipmentFedex(file: Express.Multer.File, subsidiaryId?: string) {
-    this.logger.log(`📂 Start processing file: ${file?.originalname}`);
-
+  /*** ESTE ES EL BUENO */
+  async validateMultipleSheetsShipmentFedexWithSubsidaryNew(
+    file: Express.Multer.File,
+    subsidiaryId: string
+  ): Promise<Shipment[]> {
     if (!file) throw new BadRequestException('No file uploaded');
 
     const { buffer, originalname } = file;
-    if (!originalname.toLowerCase().match(/\.(csv|xlsx?)$/)) {
-      throw new BadRequestException('Unsupported file type');
+    const duplicatedTrackings: any[] = [];
+    const shipments: Shipment[] = [];
+
+    if (!originalname.match(/\.(csv|xlsx?)$/i)) {
+      throw new BadRequestException('Only .csv, .xls or .xlsx files are allowed');
     }
 
     const workbook = XLSX.read(buffer, { type: 'buffer' });
-    const potencialCity = await this.parseCityOfFile(originalname);
-    this.logger.log(`📍 Potential subsidiary city: ${JSON.stringify(potencialCity)}`);
+    const sheetName = workbook.SheetNames[0];
+    const sheet = workbook.Sheets[sheetName];
+    const rows: any[] = XLSX.utils.sheet_to_json(sheet);
 
-    const shipmentsToSave: ParsedShipmentDto[] = [];
+    for (const row of rows) {
+      const trackingNumber = row['Tracking']?.toString().trim();
 
-    for (const sheetName of workbook.SheetNames) {
-      const sheet = workbook.Sheets[sheetName];
-      const parsedShipments = parseDynamicSheet(sheet, { fileName: originalname, sheetName });
-      shipmentsToSave.push(...parsedShipments);
-    }
+      if (!trackingNumber) continue;
 
-    this.logger.log(`Shipments extracted from file...`);
+      const existingShipment = await this.shipmentRepository.findOneBy({
+        trackingNumber,
+        subsidiaryId,
+      });
 
-    const result = {
-      saved: 0,
-      failed: 0,
-      duplicated: 0,
-      duplicatedTrackings: [] as ParsedShipmentDto[],
-      failedTrackings: [] as { trackingNumber: string; reason: string }[],
-    };
-
-    const shipmentsWithError = {
-      duplicated: [] as ParsedShipmentDto[],
-      fedexError: [] as { trackingNumber: string; reason: string }[],
-      saveError: [] as { trackingNumber: string; reason: string }[],
-    };
-
-    for (const shipment of shipmentsToSave) {
-      const exists = await this.existShipment(shipment.trackingNumber, shipment.recipientCity);
-      if (exists) {
-        this.logger.log(`🚩 Duplicated shipment: ${shipment.trackingNumber} - ${shipment.recipientCity}`);
-        result.duplicated++;
-        result.duplicatedTrackings.push(shipment);
-        shipmentsWithError.duplicated.push(shipment);
+      if (existingShipment) {
+        duplicatedTrackings.push(trackingNumber);
         continue;
       }
 
-      const newShipment = new Shipment();
-      newShipment.trackingNumber = shipment.trackingNumber;
-      newShipment.recipientName = shipment.recipientName;
-      newShipment.recipientAddress = shipment.recipientAddress;
-      newShipment.recipientCity = shipment.recipientCity;
-      newShipment.recipientZip = shipment.recipientZip;
-      newShipment.commitDate = shipment.commitDate;
-      newShipment.commitTime = shipment.commitTime;
-      newShipment.recipientPhone = shipment.recipientPhone;
-      
-      let fedexShipmentData: FedExTrackingResponseDto;
+      // Obtener datos de FedEx
+      const fedexShipmentData = await this.fedexService.trackPackage(trackingNumber);
 
-      try {
-        fedexShipmentData = await this.fedexService.trackPackage(shipment.trackingNumber);
-      } catch (err) {
-        const reason = `Error al obtener tracking FedEx: ${err.message}`;
-        result.failed++;
-        result.failedTrackings.push({ trackingNumber: shipment.trackingNumber, reason });
-        shipmentsWithError.fedexError.push({ trackingNumber: shipment.trackingNumber, reason });
-        continue;
-      }
+      const trackResults = fedexShipmentData.output.completeTrackResults[0].trackResults;
 
-      try {
-        const histories = await this.createShipmentHistory(newShipment, fedexShipmentData);
-        const trackResult = fedexShipmentData.output.completeTrackResults[0]?.trackResults[0];
+      // Combinar todos los scanEvents de todos los resultados
+      const allScanEvents = trackResults.flatMap(result => result.scanEvents || []);
 
-        if (!shipment.commitDate) {
-          const rawDate = trackResult?.standardTransitTimeWindow?.window?.ends;
-          const formatted = rawDate
-            ? format(new Date(rawDate.replace(/([-+]\d{2}:\d{2})$/, '')), 'yyyy-MM-dd HH:mm:ss')
-            : format(new Date(), 'yyyy-MM-dd HH:mm:ss');
-          const [fecha, hora = '18:00:00'] = formatted.split(' ');
-          newShipment.commitDate = fecha;
-          newShipment.commitTime = hora;
-        }
+      const newShipment = this.shipmentRepository.create({
+        trackingNumber,
+        shipmentType: ShipmentType.FEDEX,
+        subsidiaryId,
+      });
 
-        newShipment.priority = getPriority(new Date(newShipment.commitDate));
-        newShipment.subsidiary = await this.cityClasification(
-          shipment.recipientCity ?? trackResult.recipientInformation.address.city
-        );
-        newShipment.statusHistory = histories;
-        newShipment.status = histories[0]?.status;
-        newShipment.receivedByName = trackResult?.deliveryDetails?.receivedByName;
-        newShipment.shipmentType = ShipmentType.FEDEX;
+      // Procesar todos los eventos
+      const histories = await this.processScanEventsToStatuses(allScanEvents, newShipment);
+      this.logger.debug(`📜 Historial generado para ${trackingNumber}: ${histories.map(h => h.status).join(", ")}`);
 
-        if (shipment.payment) {
-          const match = shipment.payment.match(/([0-9]+(?:\.[0-9]+)?)/);
-          const isPaymentComplete = histories.some(h => h.status === ShipmentStatusType.ENTREGADO);
-          if (match) {
-            const amount = parseFloat(match[1]);
-            if (!isNaN(amount) && amount > 0) {
-              const newPayment = new Payment();
-              newPayment.amount = amount;
-              newPayment.status = isPaymentComplete ? PaymentStatus.PAID : PaymentStatus.PENDING;
-              newShipment.payment = newPayment;
-            }
-          }
-        }
+      // Seleccionar el trackResult más relevante (entregado, si existe)
+      const trackResult = trackResults.find(r => r.latestStatusDetail?.derivedCode === 'DL') || trackResults[0];
 
-        if (!newShipment.subsidiary) {
-          const parsedSubsidiary = await this.subsidiaryService.getByName(
-            trackResult?.recipientInformation?.address?.city
-          );
-          newShipment.subsidiary = parsedSubsidiary ?? potencialCity;
-        }
+      newShipment.statusHistory = histories;
+      newShipment.status = histories[histories.length - 1]?.status;
+      newShipment.receivedByName = trackResult?.deliveryDetails?.receivedByName || null;
 
-        if (!newShipment.recipientCity) {
-          newShipment.recipientCity = newShipment.subsidiary.name;
-        }
-
-        const savedShipment = await this.shipmentRepository.save(newShipment);
-        result.saved++;
-
-        if ([ShipmentStatusType.ENTREGADO, ShipmentStatusType.NO_ENTREGADO].includes(savedShipment.status)) {
-          const matchedHistory = histories.find(h => h.status === savedShipment.status);
-          if (matchedHistory) {
-            await this.generateIncomes(savedShipment, fedexShipmentData, matchedHistory.timestamp);
-          }
-        }
-
-      } catch (err) {
-        const reason = `Error al guardar shipment: ${err.message}`;
-        result.failed++;
-        result.failedTrackings.push({ trackingNumber: shipment.trackingNumber, reason });
-        shipmentsWithError.saveError.push({ trackingNumber: shipment.trackingNumber, reason });
-      }
+      shipments.push(newShipment);
     }
 
-    const summarizedErrors = [
-      ...shipmentsWithError.duplicated.map(s => ({
-        trackingNumber: s.trackingNumber,
-        reason: "Duplicado"
-      })),
-      ...shipmentsWithError.fedexError,
-      ...shipmentsWithError.saveError
-    ];
+    await this.shipmentRepository.save(shipments);
 
-    if (summarizedErrors.length > 0) {
-      const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-      const outputPath = path.join(__dirname, `../../../storage/shipment-errors-${timestamp}.json`);
+    this.logger.debug(`📦 Nuevos envíos creados: ${shipments.length}, Duplicados: ${duplicatedTrackings.length}`);
 
-      await fs.promises.mkdir(path.dirname(outputPath), { recursive: true });
+    return shipments;
+  }
 
-      await fs.promises.writeFile(
-        outputPath,
-        JSON.stringify(shipmentsWithError, null, 2),
-        'utf-8'
-      );
 
-      this.logger.warn(`❌ Se guardaron errores de carga en: ${outputPath}`);
-    }
-
-    this.logger.log(`✅ Resultado FedEx: ${JSON.stringify(result)}`);
-
-    this.citiesNotClasified = []
-
-    return {
-      ...result,
-      errors: summarizedErrors
-    };
-  }*/
-
-  /**** Esta va a ser la nueva función que suplirá a validateMultipleSheetsShipmentFedex */
   async validateMultipleSheetsShipmentFedexWithSubsidary(file: Express.Multer.File, subsidiaryId?: string) {
+    const startTime = Date.now(); // tiempo inicio
+
     this.logger.log(`📂 Iniciando procesamiento de archivo: ${file?.originalname}`);
 
     if (!file) throw new BadRequestException('No se subió ningún archivo');
@@ -708,7 +698,6 @@ export class ShipmentsService {
       throw new BadRequestException('Tipo de archivo no soportado');
     }
 
-    // Obtener subsidiaria (una sola vez)
     const predefinedSubsidiary = subsidiaryId
       ? await this.subsidiaryService.findById(subsidiaryId)
       : null;
@@ -745,6 +734,7 @@ export class ShipmentsService {
     for (const shipment of shipmentsToSave) {
       const exists = await this.existShipment(shipment.trackingNumber, shipment.recipientCity);
       if (exists) {
+        this.logger.warn(`🔁 Envío duplicado: ${shipment.trackingNumber}`);
         result.duplicated++;
         result.duplicatedTrackings.push(shipment);
         shipmentsWithError.duplicated.push(shipment);
@@ -764,12 +754,16 @@ export class ShipmentsService {
         isPartOfCharge: shipment.isPartOfCharge,
       });
 
+      this.logger.debug(`📦 Procesando tracking: ${newShipment.trackingNumber}`);
+
       let fedexShipmentData: FedExTrackingResponseDto;
 
       try {
         fedexShipmentData = await this.fedexService.trackPackage(shipment.trackingNumber);
+        this.logger.debug(`📬 Datos FedEx recibidos para: ${shipment.trackingNumber}`);
       } catch (err) {
         const reason = `❌ Error FedEx (${shipment.trackingNumber}): ${err.message}`;
+        this.logger.error(reason);
         result.failed++;
         result.failedTrackings.push({ trackingNumber: shipment.trackingNumber, reason });
         shipmentsWithError.fedexError.push({ trackingNumber: shipment.trackingNumber, reason });
@@ -777,8 +771,13 @@ export class ShipmentsService {
       }
 
       try {
-        const histories = await this.createShipmentHistory(newShipment, fedexShipmentData);
-        const trackResult = fedexShipmentData.output.completeTrackResults[0]?.trackResults[0];
+        const trackResults = fedexShipmentData.output.completeTrackResults[0]?.trackResults;
+        const allScanEvents = trackResults.flatMap(result => result.scanEvents || []);
+        //const scanEvents = fedexShipmentData.output.completeTrackResults[0].trackResults[0].scanEvents;
+        const histories = await this.processScanEventsToStatuses(allScanEvents, newShipment);
+        
+        const trackResult = trackResults.find(r => r.latestStatusDetail?.derivedCode === 'DL') || trackResults[0];
+        this.logger.debug(`📜 Historial generado para ${shipment.trackingNumber}: ${histories.map(h => h.status).join(", ")}`);
 
         if (!shipment.commitDate) {
           const rawDate = trackResult?.standardTransitTimeWindow?.window?.ends;
@@ -793,9 +792,11 @@ export class ShipmentsService {
         newShipment.priority = getPriority(new Date(newShipment.commitDate));
         newShipment.subsidiary = predefinedSubsidiary;
         newShipment.statusHistory = histories;
-        newShipment.status = histories[0]?.status;
+        newShipment.status = histories[histories.length - 1]?.status;
         newShipment.receivedByName = trackResult?.deliveryDetails?.receivedByName;
         newShipment.shipmentType = ShipmentType.FEDEX;
+
+        this.logger.debug(`📌 Estatus inicial: ${newShipment.status} - Prioridad: ${newShipment.priority}`);
 
         if (shipment.payment) {
           const match = shipment.payment.match(/([0-9]+(?:\.[0-9]+)?)/);
@@ -807,11 +808,11 @@ export class ShipmentsService {
               newPayment.amount = amount;
               newPayment.status = isPaymentComplete ? PaymentStatus.PAID : PaymentStatus.PENDING;
               newShipment.payment = newPayment;
+              this.logger.debug(`💰 Monto de pago: $${amount} - Estatus: ${newPayment.status}`);
             }
           }
         }
 
-        // Si no hay ciudad, se usa la de la sucursal asignada
         if (!newShipment.recipientCity && predefinedSubsidiary) {
           newShipment.recipientCity = predefinedSubsidiary.name;
         }
@@ -820,21 +821,54 @@ export class ShipmentsService {
         result.saved++;
 
         if ([ShipmentStatusType.ENTREGADO, ShipmentStatusType.NO_ENTREGADO].includes(savedShipment.status)) {
-          const matchedHistory = histories.find(h => h.status === savedShipment.status);
-          if (matchedHistory) {
-            await this.generateIncomes(savedShipment, fedexShipmentData, matchedHistory.timestamp);
+          // Tomar la última historia cuyo status coincida
+          const matchedHistory = histories
+            .filter(h => h.status === savedShipment.status)
+            .pop();
+
+          if (!matchedHistory) {
+            this.logger.warn(`⚠️ No se encontró matchedHistory para: ${savedShipment.trackingNumber}, status: ${savedShipment.status}`);
+            return;
           }
+
+          // Log genérico para ambos casos
+          this.logger.log(`🧾 Generando income para ${savedShipment.trackingNumber} con status ${savedShipment.status}`);
+
+          if (savedShipment.status === ShipmentStatusType.NO_ENTREGADO) {
+            const ts = matchedHistory.timestamp.toISOString();
+            const logLine1 = `🧾 matchedHistory.timestamp: ${ts}`;
+            const logLine2 = `🧾 matchedHistory.exceptionCode: ${matchedHistory.exceptionCode}`;
+            const logLine3 = `🧾 matchedHistory.notes: ${matchedHistory.notes}`;
+
+            this.logger.log(logLine1);
+            this.logger.log(logLine2);
+            this.logger.log(logLine3);
+
+            await this.appendLogToFile(`${logLine1} at ${ts}`);
+            await this.appendLogToFile(`${logLine2} at ${ts}`);
+            await this.appendLogToFile(`${logLine3} at ${ts}`);
+          }
+
+          // Finalmente, generamos el income pasando el timestamp y exceptionCode de la última historia
+          await this.generateIncomes(
+            savedShipment,
+            matchedHistory.timestamp,
+            matchedHistory.exceptionCode
+          );
+
+        } else {
+          this.logger.warn(`🚫 No se generó income: status del envío ${savedShipment.status} no es elegible`);
         }
 
       } catch (err) {
         const reason = `❌ Error al guardar shipment ${shipment.trackingNumber}: ${err.message}`;
+        this.logger.error(reason);
         result.failed++;
         result.failedTrackings.push({ trackingNumber: shipment.trackingNumber, reason });
         shipmentsWithError.saveError.push({ trackingNumber: shipment.trackingNumber, reason });
       }
     }
 
-    // Guardar errores si hay
     const summarizedErrors = [
       ...shipmentsWithError.duplicated.map(s => ({ trackingNumber: s.trackingNumber, reason: "Duplicado" })),
       ...shipmentsWithError.fedexError,
@@ -843,12 +877,18 @@ export class ShipmentsService {
 
     if (summarizedErrors.length > 0) {
       const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-      const outputPath = path.join(__dirname, `../../../storage/shipment-errors-${timestamp}.json`);
-
-      await fs.promises.mkdir(path.dirname(outputPath), { recursive: true });
-      await fs.promises.writeFile(outputPath, JSON.stringify(shipmentsWithError, null, 2), 'utf-8');
+      const outputPath = path.join(__dirname, `../../logs/shipment-errors-${timestamp}.json`);
+      await fs.mkdir(path.dirname(outputPath), { recursive: true });
+      await fs.writeFile(outputPath, JSON.stringify(shipmentsWithError, null, 2), 'utf-8');
       this.logger.warn(`⚠️ Errores registrados en archivo: ${outputPath}`);
     }
+
+    const endTime = Date.now()                  // tiempo fin en ms
+    const durationMs = endTime - startTime      // ms transcurridos
+    const durationMin = (durationMs / 60000)    // lo convertimos a minutos
+      .toFixed(2)                               // con dos decimales
+
+    this.logger.log(`⏱️ Tiempo total de procesamiento: ${durationMin} minutos`);
 
     this.logger.log(`✅ Proceso finalizado: ${result.saved} guardados, ${result.duplicated} duplicados, ${result.failed} fallidos`);
 
@@ -858,16 +898,13 @@ export class ShipmentsService {
     };
   }
 
-  private async generateIncomes(shipment: Shipment, fedexShipmentData: FedExTrackingResponseDto, eventDate: Date) {
+  private async generateIncomes(shipment: Shipment, eventDate: Date, statusCode: string) {
     if (!shipment.trackingNumber || !eventDate || !shipment.subsidiary) {
       console.log("🚀 ~ ShipmentsService ~ generateIncomes ~ shipment.subsidiary:", shipment.subsidiary)
       console.log("🚀 ~ ShipmentsService ~ generateIncomes ~ eventDate:", eventDate)
       console.log("🚀 ~ ShipmentsService ~ generateIncomes ~ shipment.trackingNumber:", shipment.trackingNumber)
       throw new Error(`Datos incompletos para generar income del tracking ${shipment.trackingNumber}`);
     }
-
-    const trackResult = fedexShipmentData.output.completeTrackResults[0]?.trackResults[0];
-    const latestStatusDetail = trackResult?.latestStatusDetail;
 
     let incomeType: IncomeStatus;
     let incomeSubType = '';
@@ -879,14 +916,14 @@ export class ShipmentsService {
 
       case ShipmentStatusType.NO_ENTREGADO:
         incomeType = IncomeStatus.NO_ENTREGADO;
-        incomeSubType = latestStatusDetail?.ancillaryDetails?.[0]?.reason ?? '';
+        incomeSubType = statusCode ?? '';
         break;
 
       default:
         throw new Error(`Unhandled shipment status: ${shipment.status}`);
     }
 
-    /** Esta por el momento solo para fedex la parte del costo */
+    /** Esta por el momento solo para fedex la parte del costo faltaria para dhl*/
     const newIncome = this.incomeRepository.create({
       trackingNumber: shipment.trackingNumber,
       subsidiary: shipment.subsidiary,
@@ -895,11 +932,12 @@ export class ShipmentsService {
       notDeliveryStatus: incomeSubType,
       shipmentType: ShipmentType.FEDEX,
       cost: parseFloat(shipment.subsidiary.fedexCostPackage),
-      shipment,
       shipmentId: shipment.id,
     });
 
-    return this.incomeRepository.save(newIncome);
+    this.logger.log(`💸 Guardando income para ${shipment.trackingNumber}`);
+    const savedIncome = await this.incomeRepository.save(newIncome);
+    this.logger.log(`✅ Income guardado: ${savedIncome.id}`);
   }
 
   async processFileCharges(file: Express.Multer.File){
@@ -1331,6 +1369,53 @@ export class ShipmentsService {
       inventario: inventario,
       noEntregadosPercent: porcentajeNoEntregados,
       promedioEntrega: promedioEntrega
+    }
+  }
+
+  async getShipmentsKPIsForDashboard({ from, to, subsidiaryId }: GetShipmentKpisDto) {
+    const qb = this.shipmentRepository
+      .createQueryBuilder('shipment')
+      .leftJoinAndSelect('shipment.payment', 'payment')
+      .leftJoinAndSelect('shipment.statusHistory', 'statusHistory')
+      .leftJoinAndSelect('shipment.subsidiary', 'subsidiary') // << necesario para los costos
+      .where('shipment.createdAt BETWEEN :from AND :to', {
+        from: new Date(from),
+        to: new Date(to + 'T23:59:59'),
+      })
+
+    if (subsidiaryId) {
+      qb.andWhere('shipment.subsidiaryId = :subsidiaryId', { subsidiaryId })
+    }
+
+    const shipments = await qb.getMany()
+
+    const totalEnvios = shipments.length
+
+    const totalIngreso = shipments.reduce((acc, s) => {
+      const cost = s.shipmentType === ShipmentType.FEDEX
+        ? parseFloat(s.subsidiary?.fedexCostPackage || '0')
+        : parseFloat(s.subsidiary?.dhlCostPackage || '0')
+      return acc + cost
+    }, 0)
+
+    const totalEntregados = shipments.filter(s =>
+      s.statusHistory?.some(h => h.status === ShipmentStatusType.ENTREGADO)
+    ).length
+
+    const totalNoEntregados = shipments.filter(s =>
+      s.statusHistory?.some(h => h.status === ShipmentStatusType.NO_ENTREGADO)
+    ).length
+
+    const totalFedex = shipments.filter(s => s.shipmentType === ShipmentType.FEDEX).length
+    const totalDhl = shipments.filter(s => s.shipmentType === ShipmentType.DHL).length
+
+    return {
+      totalEnvios,
+      totalIngreso,
+      entregados: totalEntregados,
+      noEntregados: totalNoEntregados,
+      totalFedex,
+      totalDhl,
     }
   }
 

@@ -1,8 +1,8 @@
 import { Controller, Get, Post, Body, Patch, Param, Delete, Query } from '@nestjs/common';
 import { ExpensesService } from './expenses.service';
-import { CreateExpenseDto } from './dto/create-expense.dto';
 import { UpdateExpenseDto } from './dto/update-expense.dto';
 import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
+import { Expense } from 'src/entities';
 
 @ApiTags('expenses')
 @ApiBearerAuth()
@@ -11,7 +11,7 @@ export class ExpensesController {
   constructor(private readonly expensesService: ExpensesService) {}
 
   @Post()
-  create(@Body() createExpenseDto: CreateExpenseDto) {
+  create(@Body() createExpenseDto: Expense) {
     return this.expensesService.create(createExpenseDto);
   }
 
