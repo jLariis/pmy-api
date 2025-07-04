@@ -14,6 +14,8 @@ import { SubsidiariesModule } from './subsidiaries/subsidiaries.module';
 import { IncomeModule } from './income/income.module';
 import { CollectionModule } from './collections/collections.module';
 import { ExpensesModule } from './expenses/expenses.module';
+import { ConsolidatedModule } from './consolidated/consolidated.module';
+import { DashboardModule } from './dashboard/dashboard.module';
 
 @Module({
   imports: [
@@ -32,7 +34,9 @@ import { ExpensesModule } from './expenses/expenses.module';
     SubsidiariesModule,
     IncomeModule,
     CollectionModule,
-    ExpensesModule
+    ExpensesModule,
+    ConsolidatedModule,
+    DashboardModule
   ],
   controllers: [AppController],
   providers: [

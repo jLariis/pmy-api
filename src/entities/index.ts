@@ -9,3 +9,6 @@ export * from './shipment.entity';
 export * from './payment.entity';
 export * from './shipment-status.entity';
 export * from './collection.entity';
+export * from './charge.entity';
+export * from  './charge-shipment.entity';
+export * from  './consolidated.entity';

@@ -25,6 +25,9 @@ export class Charge{
     @Column({nullable: true})
     createdAt: string;
 
+    @Column({nullable: true, default: ''})
+    consNumber: string;
+
     @BeforeInsert()
     setDefaults() {
         const now = new Date();

@@ -79,6 +79,9 @@ export class Shipment {
   @Column({ nullable: true })
   subsidiaryId: string;
 
+  @Column({ nullable: true, default: null })
+  consolidatedId: string;
+
   @BeforeInsert()
   setDefaults() {
     const now = new Date();

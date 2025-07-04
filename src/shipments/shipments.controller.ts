@@ -43,19 +43,78 @@ export class ShipmentsController {
   })
   uploadFile(
     @UploadedFile() file: Express.Multer.File, 
-    @Body('subsidiaryId') subsidiaryId?: string
+    @Body('subsidiaryId') subsidiaryId: string,
+    @Body('consNumber') consNumber: string,
+    @Body('consDate') consDate?: string
   ) {
-    
-    if(file.originalname.toLowerCase().includes('cobro')){
-      console.log("Incluye cobro: ", file.originalname);
-      return this.shipmentsService.processFileCharges(file);
-    } else if(file.originalname.toLowerCase().includes('f2')){ 
-      console.log("Incluye F2/Fedex  ~ Es Carga: ", file.originalname);
-      return this.shipmentsService.processFileF2(file, subsidiaryId);
+    let dateForCons = null;
+
+    if(consDate) {
+      dateForCons = new Date(consDate);
     }
 
-    return this.shipmentsService.validateMultipleSheetsShipmentFedexWithSubsidary(file, subsidiaryId);
+    return this.shipmentsService.addConsMasterBySubsidiary(file, subsidiaryId, consNumber, dateForCons);
   }
+
+  @Post('upload-charge')
+  @UseInterceptors(FileInterceptor('file'))
+  @ApiOperation({ summary: 'Subir archivo Excel para procesar' })
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    description: 'Archivo Excel a procesar Cargas o F2',
+    schema: {
+      type: 'object',
+      properties: {
+        file: {
+          type: 'string',
+          format: 'binary',
+        },
+        subsidiaryId: {
+          type: 'string'
+        }
+      },
+    },
+  })
+  uploadChargeFile(
+    @UploadedFile() file: Express.Multer.File, 
+    @Body('subsidiaryId') subsidiaryId: string,
+    @Body('consNumber') consNumber: string,
+    @Body('consDate') consDate?: string
+  ) {
+    let dateForCons = null;
+
+    if(consDate) {
+      dateForCons = new Date(consDate);
+    }
+
+    return this.shipmentsService.processFileF2(file, subsidiaryId, consNumber, dateForCons);
+  }
+
+  @Post('upload-payment')
+  @UseInterceptors(FileInterceptor('file'))
+  @ApiOperation({ summary: 'Subir archivo Excel para procesar' })
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    description: 'Archivo Excel a procesar Cobros',
+    schema: {
+      type: 'object',
+      properties: {
+        file: {
+          type: 'string',
+          format: 'binary',
+        },
+        subsidiaryId: {
+          type: 'string'
+        }
+      },
+    },
+  })
+  uploadPaymentFile(
+    @UploadedFile() file: Express.Multer.File
+  ) {
+    return this.shipmentsService.processFileCharges(file);
+  }
+
 
   @Post('upload-dhl')
   @UseInterceptors(

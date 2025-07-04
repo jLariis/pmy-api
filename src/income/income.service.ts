@@ -104,31 +104,33 @@ export class IncomeService {
     }
 
 
-    async getFinantialDataForDashboard(subsidiaryId: string){
-      const today = new Date();
+    async getFinantialDataForDashboard(subsidiaryId: string, startDay: Date, endDay: Date){
+      //const today = new Date();
       
       //Obtener primer y último día del mes
-      const { start, end } = getStartAndEndOfMonth(today);
+      //const { start, end } = getStartAndEndOfMonth(today);
 
       // Incluir toda la fecha final (hasta las 23:59:59.999 del día 22)
-      const adjustedToDate = new Date(end);
+      const adjustedToDate = new Date(endDay);
       adjustedToDate.setHours(23, 59, 59, 999);
 
       const incomes = await this.incomeRepository.find({
         where: {
           subsidiaryId,
-          date: Between(start, adjustedToDate),
+          date: Between(startDay, adjustedToDate),
         },
         order: {
           date: 'ASC',
         },
       });
 
-      const income = await this.getTotalShipmentsIncome(subsidiaryId, start, adjustedToDate)
+      const income = await this.getTotalShipmentsIncome(subsidiaryId, startDay, adjustedToDate)
       
-      const formattedIncome = await this.formatIncomesNew(incomes, start, end);
-      const { totalExpenses, daily } = await this.getTotalExpenses(subsidiaryId, start, end)
+      const formattedIncome = await this.formatIncomesNew(incomes, startDay, adjustedToDate);
+      const { totalExpenses, daily } = await this.getTotalExpenses(subsidiaryId, startDay, adjustedToDate)
       const balance = income.totalIncome - totalExpenses;
+
+      console.log("Finalizo y retorna: ",  balance);
 
       return {
         incomes: formattedIncome,
@@ -137,7 +139,7 @@ export class IncomeService {
           income: income.totalIncome,
           expenses: totalExpenses,
           balance: balance,
-          period: `${format(start, 'dd/MM/yyyy')} - ${format(end, 'dd/MM/yyyy')}`
+          period: `${format(startDay, 'dd/MM/yyyy')} - ${format(adjustedToDate, 'dd/MM/yyyy')}`
         }
       }
     }

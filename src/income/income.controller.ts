@@ -51,23 +51,18 @@ export class IncomeController {
     return this.incomeService.getMonthShipmentReportBySucursal(subsiary,firstDayOfWeek,lastDayOfWeek)  
   }
 
-  @Get('finantial/:subsidiary/:firstDay/:lastDay')
-  getFinantialResume(
-    @Param('subsidiary') subsiary: string, 
-    @Param('firstDay') firstDay: string, 
-    @Param('lastDay') lastDay: string) {
-    const firstDayOfMonth = new Date(firstDay);
-    const lastDayOfMonth = new Date(lastDay);
-
-    return this.incomeService.getMonthShipmentReportBySucursal(subsiary, firstDayOfMonth, lastDayOfMonth);  
-  }
-
   /************ DE AQUI PARA ARRIBA QUITAR USAR LOS DE ABAJO ***********/
 
 
-  @Get('finantial/:subsidiaryId')
-  getFinantialForDashboard(@Param('subsidiaryId') subsiaryId: string){
-    return this.incomeService.getFinantialDataForDashboard(subsiaryId);
+  @Get('finantial/:subsidiaryId/:firstDay/:lastDay')
+  getFinantialForDashboard(
+    @Param('subsidiaryId') subsiaryId: string,
+    @Param('firstDay') firstDay: string, 
+    @Param('lastDay') lastDay: string
+  ){
+    const startDay= new Date(firstDay);
+    const endDay = new Date(lastDay);
+    return this.incomeService.getFinantialDataForDashboard(subsiaryId, startDay, endDay);
   }
 
   /*** Método que llena la tabla de ingresos dentro de finanzas */

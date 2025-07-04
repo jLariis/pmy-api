@@ -22,7 +22,7 @@ export class SubsidiariesService {
     });
   } 
 
-  async findById(id: string){
+  async findById(id: string): Promise<Subsidiary>{
     return await this.subsidiaryRepository.findOneBy({id});
   }
 
