@@ -2,10 +2,20 @@ import { Controller, Get, Post, Body, Patch, Param, Delete } from '@nestjs/commo
 import { ConsolidatedService } from './consolidated.service';
 import { CreateConsolidatedDto } from './dto/create-consolidated.dto';
 import { UpdateConsolidatedDto } from './dto/update-consolidated.dto';
+import { ShipmentsService } from 'src/shipments/shipments.service';
 
 @Controller('consolidated')
 export class ConsolidatedController {
-  constructor(private readonly consolidatedService: ConsolidatedService) {}
+  constructor(
+    private readonly consolidatedService: ConsolidatedService,
+    private readonly shipmentService: ShipmentsService
+  ) {}
+
+  @Get('update-fedex-status')
+  async updateFedexStatus() {
+    console.log("Actualizando estatus de FEDEX!")
+    return await this.shipmentService.checkStatusOnFedex();
+  }
 
   @Post()
   create(@Body() createConsolidatedDto: CreateConsolidatedDto) {
@@ -31,4 +41,5 @@ export class ConsolidatedController {
   remove(@Param('id') id: string) {
     return this.consolidatedService.remove(id);
   }
+
 }

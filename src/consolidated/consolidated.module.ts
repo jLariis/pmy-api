@@ -2,12 +2,16 @@ import { Module } from '@nestjs/common';
 import { ConsolidatedService } from './consolidated.service';
 import { ConsolidatedController } from './consolidated.controller';
 import { TypeOrmModule } from '@nestjs/typeorm';
-import { Consolidated, Shipment } from 'src/entities';
+import { Charge, ChargeShipment, Consolidated, Income, Shipment, ShipmentStatus, Subsidiary } from 'src/entities';
+import { ShipmentsService } from 'src/shipments/shipments.service';
+import { FedexService } from 'src/shipments/fedex.service';
+import { DHLService } from 'src/shipments/dto/dhl.service';
+import { SubsidiariesService } from 'src/subsidiaries/subsidiaries.service';
 
 @Module({
   controllers: [ConsolidatedController],
-  imports: [TypeOrmModule.forFeature([Consolidated, Shipment])],
-  providers: [ConsolidatedService],
+  imports: [TypeOrmModule.forFeature([Consolidated, Shipment, Income, Subsidiary, Charge, ChargeShipment, ShipmentStatus])],
+  providers: [ConsolidatedService, ShipmentsService, FedexService, DHLService, SubsidiariesService],
   exports: [ConsolidatedService]
 })
 export class ConsolidatedModule {}

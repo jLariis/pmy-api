@@ -1,4 +1,4 @@
-import { Column, Entity, ManyToOne, OneToMany, OneToOne, JoinColumn, PrimaryGeneratedColumn, BeforeInsert } from 'typeorm';
+import { Column, Entity, ManyToOne, OneToMany, OneToOne, JoinColumn, PrimaryGeneratedColumn, BeforeInsert, Index } from 'typeorm';
 import { Payment } from './payment.entity';
 import { ShipmentStatus } from './shipment-status.entity'
 import { Priority } from '../common/enums/priority.enum';
@@ -8,12 +8,15 @@ import { Subsidiary } from './subsidiary.entity';
 
 @Entity('shipment')
 export class Shipment {
+
+  @Index()
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
   @Column()
   trackingNumber: string;
 
+  @Index()
   @Column({
     type: 'enum',
     enum: ShipmentType,
@@ -42,6 +45,7 @@ export class Shipment {
   @Column()
   recipientPhone: string;
 
+  @Index()
   @Column({
     type: 'enum',
     enum: ShipmentStatusType,
@@ -76,9 +80,11 @@ export class Shipment {
   @JoinColumn({ name: 'subsidiaryId' })
   subsidiary: Subsidiary;
 
+  @Index()
   @Column({ nullable: true })
   subsidiaryId: string;
 
+  @Index()
   @Column({ nullable: true, default: null })
   consolidatedId: string;
 

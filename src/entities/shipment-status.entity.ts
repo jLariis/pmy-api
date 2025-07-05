@@ -1,4 +1,4 @@
-import { Column, Entity, ManyToOne, PrimaryGeneratedColumn } from 'typeorm';
+import { Column, Entity, Index, ManyToOne, PrimaryGeneratedColumn } from 'typeorm';
 import { Shipment } from './shipment.entity';
 import { ShipmentStatusType } from '../common/enums/shipment-status-type.enum';
 
@@ -18,6 +18,7 @@ export class ShipmentStatus {
   })
   status: ShipmentStatusType;
 
+  @Index()
   @Column({nullable: true, default: ''})
   exceptionCode?: string
 

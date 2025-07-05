@@ -2,6 +2,7 @@ import {
   BeforeInsert,
   Column,
   Entity,
+  Index,
   JoinColumn,
   ManyToOne,
   PrimaryGeneratedColumn,
@@ -55,6 +56,7 @@ export class Income {
   @JoinColumn({ name: 'shipmentId' })
   shipment?: Shipment;
 
+  @Index()
   @Column({ nullable: true })
   shipmentId?: string;
 
@@ -63,6 +65,7 @@ export class Income {
   @JoinColumn({ name: 'collectionId' })
   collection?: Collection;
 
+  @Index()
   @Column({ nullable: true })
   collectionId?: string;
 
@@ -71,6 +74,7 @@ export class Income {
   @JoinColumn({ name: 'chargeId' })
   charge?: Charge;
 
+  @Index()
   @Column({ nullable: true })
   chargeId?: string;
 
