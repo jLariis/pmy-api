@@ -4,6 +4,8 @@ import { UpdateConsolidatedDto } from './dto/update-consolidated.dto';
 import { Repository } from 'typeorm';
 import { Consolidated, Shipment } from 'src/entities';
 import { InjectRepository } from '@nestjs/typeorm';
+import { ShipmentConsolidatedDto } from './dto/shipment.dto';
+import { ConsolidatedDto } from './dto/consolidated.dto';
 
 @Injectable()
 export class ConsolidatedService {
@@ -19,7 +21,7 @@ export class ConsolidatedService {
     return await this.consolidatedRepository.save(newConsolidated);
   }
 
-  async findAll(subsidiaryId?: string, fromDate?: Date, toDate?: Date) {
+  async findAll(subsidiaryId?: string, fromDate?: Date, toDate?: Date): Promise<ConsolidatedDto[]> {
     // Construimos filtros para consolidateds
     const consolidatedWhere: any = {};
 
@@ -47,7 +49,7 @@ export class ConsolidatedService {
 
     // Agrupamos los shipments por consolidatedId
     const consolidatedMap = new Map<string, Shipment[]>();
-    
+
     for (const shipment of shipments) {
       if (!shipment.consolidatedId) continue;
       if (!consolidatedMap.has(shipment.consolidatedId)) {
@@ -56,9 +58,33 @@ export class ConsolidatedService {
       consolidatedMap.get(shipment.consolidatedId)!.push(shipment);
     }
 
+    // Función auxiliar para calcular diferencia en días
+    function daysDiff(fromDate: Date, toDate: Date) {
+      const diffMs = toDate.getTime() - fromDate.getTime();
+      return Math.floor(diffMs / (1000 * 60 * 60 * 24));
+    }
+
     // Formamos el resultado final
     return consolidates.map((consolidated) => {
       const relatedShipments = consolidatedMap.get(consolidated.id) ?? [];
+
+      relatedShipments.forEach((shipment) => {
+        if (shipment.statusHistory && shipment.statusHistory.length > 0) {
+          shipment.statusHistory.sort(
+            (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+          );
+        }
+
+        let daysInRoute = 0;
+        if (shipment.status === 'en_ruta') {
+          const consolidatedDate = new Date(consolidated.date);
+          const now = new Date();
+          daysInRoute = Math.floor((now.getTime() - consolidatedDate.getTime()) / (1000 * 60 * 60 * 24));
+        }
+
+        // Retornamos una copia tipo DTO con la propiedad extra
+        Object.assign(shipment, { daysInRoute });
+      });
 
       const isComplete =
         relatedShipments.length > 0 &&
@@ -67,11 +93,11 @@ export class ConsolidatedService {
       return {
         ...consolidated,
         isConsolidatedComplete: isComplete,
-        shipments: relatedShipments,
+        shipments: relatedShipments as ShipmentConsolidatedDto[],
+        consolidatedDate: consolidated.date,
       };
     });
   }
-
 
   async findOne(id: string) {
     return await this.consolidatedRepository.findOneBy({id});
