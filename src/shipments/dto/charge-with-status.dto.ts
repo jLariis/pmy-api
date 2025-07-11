@@ -4,11 +4,11 @@ import { Charge } from "src/entities/charge.entity"
 
 export class ChargeWithStatusDto implements Partial<Charge> {
   id: string
-  chargeDate: string
+  chargeDate: Date
   numberOfPackages: number
-  subsidiaryId: string | null
+  //subsidiaryId: string | null
   isChargeComplete: boolean
-  createdAt: string
+  createdAt: Date
 
   // Agregado
   shipments: ChargeShipment[]

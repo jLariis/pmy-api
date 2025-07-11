@@ -1,4 +1,10 @@
-import { Column, Entity, PrimaryGeneratedColumn } from 'typeorm';
+import {
+  Column,
+  Entity,
+  PrimaryGeneratedColumn,
+  BeforeInsert,
+  BeforeUpdate,
+} from 'typeorm';
 
 @Entity('subsidiary')
 export class Subsidiary {
@@ -17,33 +23,49 @@ export class Subsidiary {
   @Column({ default: true })
   active: boolean;
 
-  @Column({ default: '', nullable: true})
+  @Column({ default: '', nullable: true })
   officeManager: string;
 
-  @Column({ default: '', nullable: true})
+  @Column({ default: '', nullable: true })
   managerPhone: string;
 
   @Column({
-    type: "decimal",
+    type: 'decimal',
     precision: 10,
     scale: 2,
-    default: 0.00
+    default: 0.00,
   })
-  fedexCostPackage: string;
+  fedexCostPackage: number;
 
   @Column({
-    type: "decimal",
+    type: 'decimal',
     precision: 10,
     scale: 2,
-    default: 0.00
+    default: 0.00,
   })
-  dhlCostPackage: string;
+  dhlCostPackage: number;
 
   @Column({
-    type: "decimal",
+    type: 'decimal',
     precision: 10,
     scale: 2,
-    default: 0.00
+    default: 0.00,
   })
   chargeCost: number;
+
+  @Column({ type: 'datetime', default: () => 'CURRENT_TIMESTAMP' })
+  createdAt: Date;
+
+  @Column({ type: 'datetime', nullable: true })
+  updatedAt: Date;
+
+  @BeforeInsert()
+  setCreatedAt() {
+    this.createdAt = new Date(); // Fecha en UTC
+  }
+
+  @BeforeUpdate()
+  setUpdatedAt() {
+    this.updatedAt = new Date(); // Fecha en UTC
+  }
 }

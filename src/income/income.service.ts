@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ShipmentStatusType } from 'src/common/enums/shipment-status-type.enum';
 import { Expense, Income, Shipment } from 'src/entities';
@@ -6,7 +6,7 @@ import { formatCurrency, getStartAndEndOfMonth, localKey } from 'src/utils/forma
 import { Between, In, Raw, Repository } from 'typeorm';
 import { IncomeDto } from './dto/income.dto';
 import { Collection } from 'src/entities/collection.entity';
-import { toZonedTime, format } from 'date-fns-tz';
+import { toZonedTime, format, fromZonedTime } from 'date-fns-tz';
 import { groupBy } from 'lodash';
 import { FormatIncomesDto } from './dto/format-incomes.dto';
 import { IncomeSourceType } from 'src/common/enums/income-source-type.enum';
@@ -14,7 +14,8 @@ import { DailyExpenses } from './dto/daily-expenses.dto';
 
 @Injectable()
 export class IncomeService {
-  
+  private readonly logger = new Logger(Income.name);
+
   constructor(
     @InjectRepository(Shipment)
     private shipmentRepository: Repository<Shipment>,
@@ -29,7 +30,7 @@ export class IncomeService {
     private async getTotalShipmentsIncome(subsidiaryId: string, fromDate: Date, toDate: Date){      
         const incomes = await this.incomeRepository.find({
           where: {
-            subsidiaryId,
+            subsidiary: { id: subsidiaryId },
             date: Between(fromDate, toDate),
             sourceType: In([
               IncomeSourceType.SHIPMENT,
@@ -116,7 +117,7 @@ export class IncomeService {
 
       const incomes = await this.incomeRepository.find({
         where: {
-          subsidiaryId,
+          subsidiary: { id: subsidiaryId},
           date: Between(startDay, adjustedToDate),
         },
         order: {
@@ -273,71 +274,114 @@ export class IncomeService {
       fromDate: Date,
       toDate: Date
     ): Promise<FormatIncomesDto[]> {
+      this.logger.log(`📊 Iniciando formatIncomesNew para rango ${fromDate.toISOString()} a ${toDate.toISOString()}`);
       const report: FormatIncomesDto[] = [];
       const pad = (n: number) => String(n).padStart(2, '0');
       const timeZone = 'America/Mexico_City';
 
+      // Validate input dates
+      if (isNaN(fromDate.getTime()) || isNaN(toDate.getTime())) {
+        const reason = `Fechas inválidas: fromDate=${fromDate}, toDate=${toDate}`;
+        this.logger.error(`❌ ${reason}`);
+        throw new BadRequestException(reason);
+      }
+
+      // Convert UTC date to local date string (yyyy-MM-dd) in Mexico City timezone
       const localKey = (utcDate: Date): string => {
         const zonedDate = toZonedTime(utcDate, timeZone);
         return format(zonedDate, 'yyyy-MM-dd');
       };
 
+      // Format date for display in yyyy-MM-dd format (Mexico City)
       const localDisplay = (utcDate: Date): string => {
         const zonedDate = toZonedTime(utcDate, timeZone);
-        return zonedDate.toLocaleDateString('es-MX', {
-          timeZone,
-          day: '2-digit',
-          month: '2-digit',
-          year: 'numeric',
-        });
+        return format(zonedDate, 'yyyy-MM-dd');
       };
 
-      // Agrupamos incomes por fecha LOCAL (zona MX)
+      // Build a UTC date representing midnight in Mexico City timezone
+      const buildMidnightMX = (d: Date): Date => {
+        const zonedDate = toZonedTime(d, timeZone);
+        const yyyy = zonedDate.getFullYear();
+        const mm = pad(zonedDate.getMonth() + 1);
+        const dd = pad(zonedDate.getDate());
+        // Convert local midnight to UTC
+        return fromZonedTime(new Date(`${yyyy}-${mm}-${dd}T00:00:00`), timeZone);
+      };
+
+      // Group incomes by local date (yyyy-MM-dd in Mexico City)
       const grouped = groupBy(incomes, inc => localKey(new Date(inc.date)));
 
-      // Normalizamos las fechas desde medianoche en zona MX
-      const buildMidnightMX = (d: Date): Date => {
-        const yyyy = d.getUTCFullYear();
-        const mm = pad(d.getUTCMonth() + 1);
-        const dd = pad(d.getUTCDate());
-        return new Date(`${yyyy}-${mm}-${dd}T00:00:00-07:00`);
-      };
-
+      // Normalize date range to midnight Mexico City time (in UTC)
       let cursor = buildMidnightMX(fromDate);
       const endCursor = buildMidnightMX(toDate);
       const oneDayMs = 24 * 60 * 60 * 1000;
+
+      this.logger.log(`📅 Rango normalizado: desde ${cursor.toISOString()} hasta ${endCursor.toISOString()}`);
 
       while (cursor.getTime() <= endCursor.getTime()) {
         const key = localKey(cursor);
         const label = localDisplay(cursor);
 
-        const dayIncomes     = grouped[key] || [];
-        const dayShipments   = dayIncomes.filter(i => i.sourceType === 'shipment');
+        const dayIncomes = grouped[key] || [];
+
+        // Log warning if incomes have missing or invalid fields
+        if (dayIncomes.some(i => !i.sourceType || !i.cost)) {
+          this.logger.warn(`⚠️ Ingresos con datos incompletos para ${key}: ${JSON.stringify(dayIncomes.filter(i => !i.sourceType || !i.cost))}`);
+        }
+
+        const dayShipments = dayIncomes.filter(i => i.sourceType === 'shipment');
         const dayCollections = dayIncomes.filter(i => i.sourceType === 'collection');
-        const dayCharges     = dayIncomes.filter(i => i.sourceType === 'charge');
+        const dayCharges = dayIncomes.filter(i => i.sourceType === 'charge');
 
         const fedexIncomes = dayShipments.filter(i => i.shipmentType === 'fedex');
-        const dhlIncomes   = dayShipments.filter(i => i.shipmentType === 'dhl');
+        const dhlIncomes = dayShipments.filter(i => i.shipmentType === 'dhl');
 
         const fedexDelivered = fedexIncomes.filter(i => i.incomeType === 'entregado').length;
         const fedexNotDelivered = fedexIncomes.filter(i =>
           i.incomeType === 'no_entregado' &&
-          ['07', '08'].includes(i.notDeliveryStatus || '')
+          ['03', '07', '08'].includes(i.nonDeliveryStatus || '')
         ).length;
-        const fedexTotalIncome = fedexIncomes.reduce((sum, i) => sum + parseFloat(i.cost || '0'), 0);
+        const fedexTotalIncome = fedexIncomes.reduce((sum, i) => {
+          const cost = parseFloat(i.cost || '0');
+          if (isNaN(cost)) {
+            this.logger.warn(`⚠️ Costo inválido para ingreso fedex: ${JSON.stringify(i)}`);
+            return sum;
+          }
+          return sum + cost;
+        }, 0);
 
         const dhlDelivered = dhlIncomes.filter(i => i.deliveryStatus === 'BA').length;
         const dhlNotDelivered = dhlIncomes.filter(i => i.deliveryStatus === 'NE').length;
-        const dhlTotalIncome = dhlIncomes.reduce((sum, i) => sum + parseFloat(i.cost || '0'), 0);
+        const dhlTotalIncome = dhlIncomes.reduce((sum, i) => {
+          const cost = parseFloat(i.cost || '0');
+          if (isNaN(cost)) {
+            this.logger.warn(`⚠️ Costo inválido para ingreso dhl: ${JSON.stringify(i)}`);
+            return sum;
+          }
+          return sum + cost;
+        }, 0);
 
-        const collectionTotalIncome = dayCollections.reduce((sum, i) => sum + parseFloat(i.cost || '0'), 0);
-        const chargeTotalIncome = dayCharges.reduce((sum, i) => sum + parseFloat(i.cost || '0'), 0);
+        const collectionTotalIncome = dayCollections.reduce((sum, i) => {
+          const cost = parseFloat(i.cost || '0');
+          if (isNaN(cost)) {
+            this.logger.warn(`⚠️ Costo inválido para ingreso collection: ${JSON.stringify(i)}`);
+            return sum;
+          }
+          return sum + cost;
+        }, 0);
+        const chargeTotalIncome = dayCharges.reduce((sum, i) => {
+          const cost = parseFloat(i.cost || '0');
+          if (isNaN(cost)) {
+            this.logger.warn(`⚠️ Costo inválido para ingreso charge: ${JSON.stringify(i)}`);
+            return sum;
+          }
+          return sum + cost;
+        }, 0);
 
         const collectionsCount = dayCollections.length;
         const cargasCount = dayCharges.length;
         const totalCount = fedexDelivered + fedexNotDelivered + dhlDelivered + dhlNotDelivered + collectionsCount + cargasCount;
 
-        // ✅ Incluir collections en el total de ingreso
         const totalIncome = fedexTotalIncome + dhlTotalIncome + chargeTotalIncome + collectionTotalIncome;
 
         const incomeItems = dayShipments.map(i => ({
@@ -364,8 +408,12 @@ export class IncomeService {
           cost: parseFloat(i.cost || '0'),
         }));
 
+        // Log aggregation details for debugging
+        this.logger.log(`📊 Procesando ${key}: ${dayIncomes.length} ingresos, fedex=${fedexDelivered}+${fedexNotDelivered}, dhl=${dhlDelivered}+${dhlNotDelivered}, collections=${collectionsCount}, cargas=${cargasCount}`);
+
+        // Push report entry, including empty days
         report.push({
-          date: label,
+          date: label, // yyyy-MM-dd in Mexico City timezone
           fedex: {
             pod: fedexDelivered,
             dex: fedexNotDelivered,
@@ -388,29 +436,50 @@ export class IncomeService {
         cursor = new Date(cursor.getTime() + oneDayMs);
       }
 
+      // Log the full report for debugging
+      this.logger.log(`📊 Reporte final: ${JSON.stringify(report, null, 2)}`);
+      this.logger.log(`✅ Finalizado formatIncomesNew con ${report.length} días en el reporte`);
       return report;
     }
 
     async getIncome(subsidiaryId: string, fromDate: Date, toDate: Date) {
+      this.logger.log(`📊 Iniciando getIncome para subsidiaryId=${subsidiaryId}, fromDate=${fromDate.toISOString()}, toDate=${toDate.toISOString()}`);
+
+      // Validate input dates
       if (isNaN(fromDate.getTime()) || isNaN(toDate.getTime())) {
-        throw new Error('Invalid date format for startISO or endISO');
+        const reason = `Fechas inválidas: fromDate=${fromDate}, toDate=${toDate}`;
+        this.logger.error(`❌ ${reason}`);
+        throw new BadRequestException(reason);
       }
 
-      // Incluir toda la fecha final (hasta las 23:59:59.999 del día 22)
+      // Adjust toDate to end of day in UTC to capture full range
       const adjustedToDate = new Date(toDate);
       adjustedToDate.setHours(23, 59, 59, 999);
 
+      this.logger.log(`📅 Fechas ajustadas: fromDate=${fromDate.toISOString()}, adjustedToDate=${adjustedToDate.toISOString()}`);
+
+      // Query incomes assuming database stores dates in UTC
       const incomes = await this.incomeRepository.find({
         where: {
-          subsidiaryId,
-          date: Raw(alias => `${alias} >= :from AND ${alias} < :to`, { from: fromDate, to: adjustedToDate }),
+          subsidiary: { id: subsidiaryId },
+          date: Raw(alias => `${alias} >= :from AND ${alias} <= :to`, { from: fromDate, to: adjustedToDate }),
         },
         order: {
           date: 'ASC',
         },
       });
 
-      const incomeData = await this.formatIncomesNew(incomes, fromDate, toDate);
+      this.logger.log(`📈 Encontrados ${incomes.length} incomes para el rango`);
+
+      // Log a sample of incomes for debugging
+      if (incomes.length > 0) {
+        this.logger.log(`📄 Muestra de ingresos: ${JSON.stringify(incomes.slice(0, 3), null, 2)}`);
+      }
+
+      // Pass UTC dates to formatIncomesNew for processing
+      const incomeData = await this.formatIncomesNew(incomes, fromDate, adjustedToDate);
+
+      this.logger.log(`✅ Finalizado getIncome con ${incomeData.length} entradas en el reporte`);
       return incomeData;
     }
 
@@ -424,7 +493,7 @@ export class IncomeService {
 
         const incomes = await this.incomeRepository.find({
           where: {
-            subsidiaryId,
+            subsidiary: { id: subsidiaryId},
             date: 
               Between(fromDate, toDate)
           },
@@ -468,7 +537,7 @@ export class IncomeService {
 
         const collections = await this.collectionRepository.find({
           where: {
-            createdAt: Between(fromDate.toISOString(), toDate.toISOString())
+            createdAt: Between(fromDate, toDate)
           }
         })
         console.log("🚀 ~ IncomeService ~ getMonthlyShipmentReport ~ collections:", collections)
@@ -503,7 +572,7 @@ export class IncomeService {
 
         const collections = await this.collectionRepository.find({
           where: {
-            createdAt: Between(firstDay.toISOString(), lastDay.toISOString())
+            createdAt: Between(firstDay, lastDay)
           }
         })
 
@@ -529,7 +598,7 @@ export class IncomeService {
 
         const shipments = await this.shipmentRepository.find({
           where: {
-            subsidiaryId,
+            subsidiary: { id: subsidiaryId},
             statusHistory: {
               timestamp: Between(firstDay, lastDay),
               status: In(['entregado', 'no_entregado'])
@@ -545,7 +614,7 @@ export class IncomeService {
 
         const collections = await this.collectionRepository.find({
           where: {
-            createdAt: Between(firstDay.toISOString(), lastDay.toISOString())
+            createdAt: Between(firstDay, lastDay)
           }
         })
 

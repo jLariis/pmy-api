@@ -4,9 +4,11 @@ import {
   JoinColumn,
   ManyToOne,
   PrimaryGeneratedColumn,
+  BeforeInsert,
+  BeforeUpdate,
 } from 'typeorm';
 import { Subsidiary } from './subsidiary.entity';
-import { ExpenseCategory } from 'src/common/enums/category-enum';
+import { ExpenseCategory } from '../common/enums/category-enum';
 
 @Entity('expense')
 export class Expense {
@@ -27,7 +29,7 @@ export class Expense {
   })
   category?: ExpenseCategory;
 
-  @Column()
+  @Column({ type: 'datetime' })
   date: Date;
 
   @Column('decimal', { precision: 10, scale: 2, nullable: false })
@@ -44,4 +46,23 @@ export class Expense {
 
   @Column({ nullable: true })
   notes?: string;
+
+  @Column({ type: 'datetime', default: () => 'CURRENT_TIMESTAMP' })
+  createdAt: Date;
+
+  @Column({ type: 'datetime', nullable: true })
+  updatedAt: Date;
+
+  @BeforeInsert()
+  setCreatedAt() {
+    this.createdAt = new Date(); // Fecha en UTC
+    if (!this.date) {
+      this.date = new Date(); // Asignar fecha actual en UTC si no se proporciona
+    }
+  }
+
+  @BeforeUpdate()
+  setUpdatedAt() {
+    this.updatedAt = new Date(); // Fecha en UTC
+  }
 }

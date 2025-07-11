@@ -1,6 +1,6 @@
 import { Column, Entity, ManyToOne, OneToMany, OneToOne, JoinColumn, PrimaryGeneratedColumn, BeforeInsert, Index } from 'typeorm';
 import { Payment } from './payment.entity';
-import { ShipmentStatus } from './shipment-status.entity'
+import { ShipmentStatus } from './shipment-status.entity';
 import { Priority } from '../common/enums/priority.enum';
 import { ShipmentStatusType } from '../common/enums/shipment-status-type.enum';
 import { ShipmentType } from '../common/enums/shipment-type.enum';
@@ -8,7 +8,6 @@ import { Subsidiary } from './subsidiary.entity';
 
 @Entity('shipment')
 export class Shipment {
-
   @Index()
   @PrimaryGeneratedColumn('uuid')
   id: string;
@@ -36,11 +35,9 @@ export class Shipment {
   @Column()
   recipientZip: string;
 
-  @Column({ type: 'date' })
-  commitDate: string;
-
-  @Column({ type: 'time' })
-  commitTime: string;
+  // Combinar commitDate y commitTime en un solo campo
+  @Column({ type: 'datetime' })
+  commitDateTime: Date;
 
   @Column()
   recipientPhone: string;
@@ -67,22 +64,18 @@ export class Shipment {
   @OneToMany(() => ShipmentStatus, status => status.shipment, { cascade: true })
   statusHistory: ShipmentStatus[];
 
-  @Column({nullable: true})
+  @Column({ nullable: true })
   consNumber: string;
 
-  @Column({default: ''})
+  @Column({ default: '' })
   receivedByName: string;
 
-  @Column({nullable: true})
-  createdAt: string;
+  @Column({ type: 'datetime', default: () => 'CURRENT_TIMESTAMP' })
+  createdAt: Date;
 
   @ManyToOne(() => Subsidiary, { nullable: true })
   @JoinColumn({ name: 'subsidiaryId' })
   subsidiary: Subsidiary;
-
-  @Index()
-  @Column({ nullable: true })
-  subsidiaryId: string;
 
   @Index()
   @Column({ nullable: true, default: null })
@@ -90,7 +83,6 @@ export class Shipment {
 
   @BeforeInsert()
   setDefaults() {
-    const now = new Date();
-    this.createdAt = now.toISOString();
+    this.createdAt = new Date(); // Fecha en UTC (asegúrate de que el servidor esté en UTC)
   }
 }

@@ -16,4 +16,7 @@ export class Driver {
 
   @Column()
   status: 'active' | 'inactive';
+
+  @Column({ type: 'datetime', default: () => 'CURRENT_TIMESTAMP' })
+  createdAt: Date;
 }

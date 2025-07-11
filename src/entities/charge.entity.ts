@@ -7,7 +7,8 @@ export class Charge{
     id: string;
 
     @Column()
-    chargeDate: string;
+    @Column({ type: 'datetime' })
+    chargeDate: Date;
     
     @Column({nullable: false})
     numberOfPackages: number;
@@ -16,14 +17,11 @@ export class Charge{
     @JoinColumn({ name: 'subsidiaryId' })
     subsidiary: Subsidiary;
 
-    @Column({ nullable: true })
-    subsidiaryId: string;
-
     @Column({ default: false})
     isChargeComplete: boolean;
 
-    @Column({nullable: true})
-    createdAt: string;
+    @Column({ type: 'datetime', default: () => 'CURRENT_TIMESTAMP' })
+    createdAt: Date;
 
     @Column({nullable: true, default: ''})
     consNumber: string;
@@ -31,6 +29,6 @@ export class Charge{
     @BeforeInsert()
     setDefaults() {
         const now = new Date();
-        this.createdAt = now.toISOString();
+        this.createdAt = now;
     }
 }

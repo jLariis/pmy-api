@@ -31,7 +31,7 @@ export class CollectionsService {
       const savedCollections = await this.collectionRepository.save(newCollections);
 
       // Obtener la subsidiaria (asumo que todas las collections tienen la misma)
-      const subsidiary = await this.subsidiaryRepository.findOneBy({id: collectionDto[0].subsidiaryId})
+      const subsidiary = await this.subsidiaryRepository.findOneBy({id: savedCollections[0].subsidiary.id})
   
       // Crear un array para guardar los incomes que vamos a crear
       const newIncomes = savedCollections.map((collection) => {
@@ -40,11 +40,11 @@ export class CollectionsService {
           trackingNumber: collection.trackingNumber,
           shipmentType: ShipmentType.FEDEX, // Esto depende de tu lógica, ¿es siempre FEDEX?
           incomeType: IncomeStatus.ENTREGADO,
-          cost: parseFloat(subsidiary.fedexCostPackage),
+          cost: subsidiary.fedexCostPackage,
           isGrouped: false,
           sourceType: IncomeSourceType.COLLECTION,
-          collectionId: collection.id, // Relación con la collection ya guardada
-          date: new Date('2025-06-21'),
+          collection: {id: collection.id}, // Relación con la collection ya guardada
+          date: savedCollections[0].createdAt,
         });
       });
 

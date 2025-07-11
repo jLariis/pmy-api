@@ -20,16 +20,34 @@ export class ConsolidatedService {
   }
 
   async findAll(subsidiaryId?: string, fromDate?: Date, toDate?: Date) {
+    // Construimos filtros para consolidateds
+    const consolidatedWhere: any = {};
+
+    if (subsidiaryId) consolidatedWhere.subsidiary = { id: subsidiaryId };
+    if (fromDate || toDate) {
+      consolidatedWhere.date = {};
+      if (fromDate) consolidatedWhere.date['$gte'] = fromDate;
+      if (toDate) consolidatedWhere.date['$lte'] = toDate;
+    }
+
     const consolidates = await this.consolidatedRepository.find({
-      relations: ['subsidiary'], // Incluye relaciones si aplica
+      where: consolidatedWhere,
+      relations: ['subsidiary'],
+      order: { date: 'DESC' }, // Orden por fecha de mayor a menor
     });
 
+    // Construimos filtros para shipments
+    const shipmentWhere: any = {};
+    if (subsidiaryId) shipmentWhere.subsidiary = { id: subsidiaryId };
+
     const shipments = await this.shipmentRepository.find({
+      where: shipmentWhere,
       relations: ['subsidiary', 'statusHistory'],
     });
 
+    // Agrupamos los shipments por consolidatedId
     const consolidatedMap = new Map<string, Shipment[]>();
-
+    
     for (const shipment of shipments) {
       if (!shipment.consolidatedId) continue;
       if (!consolidatedMap.has(shipment.consolidatedId)) {
@@ -38,6 +56,7 @@ export class ConsolidatedService {
       consolidatedMap.get(shipment.consolidatedId)!.push(shipment);
     }
 
+    // Formamos el resultado final
     return consolidates.map((consolidated) => {
       const relatedShipments = consolidatedMap.get(consolidated.id) ?? [];
 
@@ -50,8 +69,9 @@ export class ConsolidatedService {
         isConsolidatedComplete: isComplete,
         shipments: relatedShipments,
       };
-    }); 
+    });
   }
+
 
   async findOne(id: string) {
     return await this.consolidatedRepository.findOneBy({id});

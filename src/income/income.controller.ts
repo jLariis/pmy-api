@@ -9,7 +9,7 @@ export class IncomeController {
   constructor(private readonly incomeService: IncomeService) {}
 
 
-  @Get('month/:firstDay/:lastDay')
+  /*@Get('month/:firstDay/:lastDay')
   getIncomeMonthlyAll(
     @Param('firstDay') firstDay: string,
     @Param('lastDay') lastDay: string,
@@ -37,10 +37,10 @@ export class IncomeController {
 
     
     return this.incomeService.getWeecklyShipmentReport(subsiary,firstDayOfWeek,lastDayOfWeek)  
-  }
+  }*/
 
   /**** Sera para lo usuarios que no tengan role admin*/
-  @Get('monthAndSubsidiary/:subsidiary/:firstDay/:lastDay')
+  /*@Get('monthAndSubsidiary/:subsidiary/:firstDay/:lastDay')
   getIncomeMonthlyBySucursal(
     @Param('subsidiary') subsiary: string,
     @Param('firstDay') firstDay: string,
@@ -49,22 +49,9 @@ export class IncomeController {
     const firstDayOfWeek= new Date(firstDay);
     const lastDayOfWeek = new Date(lastDay);
     return this.incomeService.getMonthShipmentReportBySucursal(subsiary,firstDayOfWeek,lastDayOfWeek)  
-  }
+  }*/
 
   /************ DE AQUI PARA ARRIBA QUITAR USAR LOS DE ABAJO ***********/
-
-
-  @Get('finantial/:subsidiaryId/:firstDay/:lastDay')
-  getFinantialForDashboard(
-    @Param('subsidiaryId') subsiaryId: string,
-    @Param('firstDay') firstDay: string, 
-    @Param('lastDay') lastDay: string
-  ){
-    const startDay= new Date(firstDay);
-    const endDay = new Date(lastDay);
-    return this.incomeService.getFinantialDataForDashboard(subsiaryId, startDay, endDay);
-  }
-
   /*** Método que llena la tabla de ingresos dentro de finanzas */
   @Get('bySucursal/:subsidiaryId')
   getIncomeBySucursalAndDates(
@@ -76,7 +63,19 @@ export class IncomeController {
     const fDate = new Date(fromDate);
     const tDate = new Date(toDate);
         
+    console.log("Working!!!")
     return this.incomeService.getIncome(subsidiaryId, fDate, tDate)
+  }
+
+  @Get('finantial/:subsidiaryId/:firstDay/:lastDay')
+  getFinantialForDashboard(
+    @Param('subsidiaryId') subsiaryId: string,
+    @Param('firstDay') firstDay: string, 
+    @Param('lastDay') lastDay: string
+  ){
+    const startDay= new Date(firstDay);
+    const endDay = new Date(lastDay);
+    return this.incomeService.getFinantialDataForDashboard(subsiaryId, startDay, endDay);
   }
 
 }

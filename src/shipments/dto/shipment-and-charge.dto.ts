@@ -10,8 +10,7 @@ export class ShipmentAndChargeDto {
     recipientAddress: string;
     recipientCity: string;
     recipientZip: string;
-    commitDate: string;
-    commitTime: string;
+    commitDateTime: Date;
     recipientPhone: string;
     status: ShipmentStatusType;
     priority: Priority;
@@ -19,8 +18,8 @@ export class ShipmentAndChargeDto {
     statusHistory: ShipmentStatus[];
     consNumber: string;
     receivedByName: string;
-    subsidiaryId: string; // o toda la sucursal?
+    subsidiary: Subsidiary; // o toda la sucursal?
     isChargePackage?: boolean;
     chargeId?: string; // o  todo el objeto de carga?
-    createdAt: string;
+    createdAt: Date;
 }

@@ -1,4 +1,12 @@
-import { Column, Entity, PrimaryGeneratedColumn, OneToMany } from 'typeorm';
+import {
+  Column,
+  Entity,
+  PrimaryGeneratedColumn,
+  OneToMany,
+  BeforeInsert,
+  BeforeUpdate,
+} from 'typeorm';
+import { Exclude } from 'class-transformer';
 import { Route } from './route.entity';
 import { VehicleStatus } from '../common/enums/vehicle-status.enum';
 
@@ -23,6 +31,23 @@ export class Vehicle {
   })
   status: VehicleStatus;
 
-  @OneToMany(() => Route, route => route.vehicle)
+  @OneToMany(() => Route, (route) => route.vehicle)
+  @Exclude() // Evitar serializar routes
   routes: Route[];
+
+  @Column({ type: 'datetime', default: () => 'CURRENT_TIMESTAMP' })
+  createdAt: Date;
+
+  @Column({ type: 'datetime', nullable: true })
+  updatedAt: Date;
+
+  @BeforeInsert()
+  setCreatedAt() {
+    this.createdAt = new Date(); // Fecha en UTC
+  }
+
+  @BeforeUpdate()
+  setUpdatedAt() {
+    this.updatedAt = new Date(); // Fecha en UTC
+  }
 }

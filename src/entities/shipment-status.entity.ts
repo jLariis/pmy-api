@@ -1,4 +1,12 @@
-import { Column, Entity, Index, ManyToOne, PrimaryGeneratedColumn } from 'typeorm';
+import {
+  Column,
+  Entity,
+  Index,
+  ManyToOne,
+  PrimaryGeneratedColumn,
+  BeforeInsert,
+  JoinColumn,
+} from 'typeorm';
 import { Shipment } from './shipment.entity';
 import { ShipmentStatusType } from '../common/enums/shipment-status-type.enum';
 
@@ -7,9 +15,11 @@ export class ShipmentStatus {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
-  @ManyToOne(() => Shipment, shipment => shipment.statusHistory, {
+  @Index()
+  @ManyToOne(() => Shipment, (shipment) => shipment.statusHistory, {
     onDelete: 'CASCADE',
   })
+  @JoinColumn({ name: 'shipmentId'})
   shipment: Shipment;
 
   @Column({
@@ -19,24 +29,24 @@ export class ShipmentStatus {
   status: ShipmentStatusType;
 
   @Index()
-  @Column({nullable: true, default: ''})
-  exceptionCode?: string
+  @Column({ nullable: true, default: '' })
+  exceptionCode?: string;
 
-  @Column({
-    type: 'timestamp',
-    precision: 3,
-    transformer: {
-      to: (value: Date) => {
-        return new Date(value.getTime() - (value.getTimezoneOffset() * 60000));
-      },
-      from: (value: string) => {
-        const date = new Date(value);
-        return new Date(date.getTime() + (date.getTimezoneOffset() * 60000));
-      }
-    }
-  })
+  @Column({ type: 'datetime' })
   timestamp: Date;
 
   @Column({ nullable: true })
   notes?: string;
+
+  @Column({ type: 'datetime', default: () => 'CURRENT_TIMESTAMP' })
+  createdAt: Date;
+
+  @BeforeInsert()
+  setDefaults() {
+    this.createdAt = new Date(); // Fecha en UTC
+    if (!this.timestamp) {
+      this.timestamp = new Date(); // Asignar fecha actual en UTC si no se proporciona
+    }
+  }
+
 }

@@ -9,6 +9,8 @@ import { ValidationPipe } from '@nestjs/common';
 
 
 async function bootstrap() {
+  process.env.TZ = 'UTC'; // Configurar zona horaria
+  
   const app = await NestFactory.create(AppModule, {
     logger: WinstonModule.createLogger({
       transports: [

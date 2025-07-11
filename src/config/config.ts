@@ -15,6 +15,7 @@ export const config = () => {
         database: process.env.DB_NAME,
         synchronize: JSON.parse(process.env.DB_SYNC),
         logging: JSON.parse(process.env.DB_LOGGING),
+        timezone: "Z",
         entities: [__dirname + '/../entities/*.entity.{js,ts}'],
         ssl: {
             ca: readFileSync(path.join(__dirname, '../ssl', 'ca.pem')).toString(),

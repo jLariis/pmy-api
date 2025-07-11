@@ -1,16 +1,16 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
+import { Repository, Between } from 'typeorm';
 import { ConsolidatedType } from 'src/common/enums/consolidated-type.enum';
 import { ShipmentStatusType } from 'src/common/enums/shipment-status-type.enum';
 import { ShipmentType } from 'src/common/enums/shipment-type.enum';
 import { Charge, ChargeShipment, Consolidated, Expense, Income, Shipment, ShipmentStatus, Subsidiary } from 'src/entities';
-import { Repository, Between, In } from 'typeorm';
-
+import { startOfDay, endOfDay } from 'date-fns';
 
 @Injectable()
 export class KpiService {
   private readonly logger = new Logger(KpiService.name);
-  
+
   constructor(
     @InjectRepository(Charge)
     private chargeRepository: Repository<Charge>,
@@ -27,18 +27,18 @@ export class KpiService {
     @InjectRepository(ShipmentStatus)
     private shipmentStatusRepository: Repository<ShipmentStatus>,
     @InjectRepository(Expense)
-    private expenseRepository: Repository<Expense>
+    private expenseRepository: Repository<Expense>,
   ) {}
 
   /**
    * Comprehensive KPI: Detailed metrics per subsidiary with organized undelivered packages
    */
   async getSubsidiaryKpis(startDate: string, endDate: string) {
-    // Convert string dates to Date objects for Income.date and Expense.date
-    const startDateObj = new Date(startDate);
-    const endDateObj = new Date(endDate);
+    // Convertir fechas ISO 8601 a objetos Date
+    const startDateObj = startOfDay(new Date(startDate));
+    const endDateObj = endOfDay(new Date(endDate));
 
-    // Validate date inputs
+    // Validar fechas
     if (isNaN(startDateObj.getTime()) || isNaN(endDateObj.getTime())) {
       throw new Error('Invalid date format. Please use ISO 8601 format (e.g., YYYY-MM-DD).');
     }
@@ -51,19 +51,19 @@ export class KpiService {
 
     // Fetch all necessary data
     const shipments = await this.shipmentRepository.find({
-      where: { createdAt: Between(startDate, endDate) },
+      where: { createdAt: Between(startDateObj, endDateObj) },
       relations: ['subsidiary', 'statusHistory'],
     });
     this.logger.log(`Found ${shipments.length} shipments`);
 
     const charges = await this.chargeRepository.find({
-      where: { chargeDate: Between(startDate, endDate) },
+      where: { chargeDate: Between(startDateObj, endDateObj) },
       relations: ['subsidiary'],
     });
     this.logger.log(`Found ${charges.length} charges`);
 
     const consolidations = await this.consolidatedRepository.find({
-      where: { date: Between(startDate, endDate) },
+      where: { date: Between(startDateObj, endDateObj) },
       relations: ['subsidiary'],
     });
     this.logger.log(`Found ${consolidations.length} consolidations`);
@@ -82,8 +82,8 @@ export class KpiService {
 
     const result = subsidiaries.map((subsidiary) => {
       // Total packages (from Shipments and Charges)
-      const subsidiaryShipments = shipments.filter((s) => s.subsidiaryId === subsidiary.id);
-      const subsidiaryCharges = charges.filter((c) => c.subsidiaryId === subsidiary.id);
+      const subsidiaryShipments = shipments.filter((s) => s.subsidiary?.id === subsidiary.id);
+      const subsidiaryCharges = charges.filter((c) => c.subsidiary?.id === subsidiary.id);
       const totalPackagesFromShipments = subsidiaryShipments.length;
       const totalPackagesFromCharges = subsidiaryCharges.reduce(
         (sum, charge) => sum + (charge.numberOfPackages || 0),
@@ -130,7 +130,7 @@ export class KpiService {
       this.logger.debug(`Subsidiary ${subsidiary.name}: ${totalCharges} charges`);
 
       // Consolidations by type
-      const subsidiaryConsolidations = consolidations.filter((c) => c.subsidiaryId === subsidiary.id);
+      const subsidiaryConsolidations = consolidations.filter((c) => c.subsidiary?.id === subsidiary.id);
       const ordinaryConsolidations = subsidiaryConsolidations.filter(
         (c) => c.type === ConsolidatedType.ORDINARIA,
       ).length;
@@ -142,39 +142,37 @@ export class KpiService {
       );
 
       // Revenue per package and total revenue
-      const subsidiaryIncomes = incomes.filter((i) => i.subsidiaryId === subsidiary.id);
+      const subsidiaryIncomes = incomes.filter((i) => i.subsidiary?.id === subsidiary.id);
       const totalRevenue = subsidiaryIncomes.reduce(
-        (sum, income) => sum + parseFloat(String(income.cost)),
+        (sum, income) => sum + Number(income.cost || 0),
         0,
       );
 
       // Calculate average revenue per package using subsidiary-specific costs
       const totalIncomePackages = subsidiaryIncomes.reduce((sum, income) => {
         if (income.shipment) {
-          // Use subsidiary-specific cost for individual shipments
           if (income.shipment.shipmentType === ShipmentType.FEDEX) {
-            return sum + (parseFloat(subsidiary.fedexCostPackage) || 0);
+            return sum + (subsidiary.fedexCostPackage || 0);
           } else if (income.shipment.shipmentType === ShipmentType.DHL) {
-            return sum + (parseFloat(subsidiary.dhlCostPackage) || 0);
+            return sum + (subsidiary.dhlCostPackage || 0);
           }
           return sum + 1; // Fallback for other shipment types
         }
         if (income.charge) {
-          const charge = charges.find((c) => c.id === income.chargeId);
+          const charge = charges.find((c) => c.id === income.charge?.id);
           return sum + (charge?.numberOfPackages || 0);
         }
         return sum;
       }, 0);
-      const averageRevenuePerPackage =
-        totalPackages > 0 ? totalRevenue / totalPackages : 0;
+      const averageRevenuePerPackage = totalPackages > 0 ? totalRevenue / totalPackages : 0;
       this.logger.debug(
         `Subsidiary ${subsidiary.name}: totalRevenue=${totalRevenue}, totalPackages=${totalPackages}, avgRevenue=${averageRevenuePerPackage}`,
       );
 
       // Expenses (from Expense entity)
-      const subsidiaryExpenses = expenses.filter((e) => e.subsidiaryId === subsidiary.id);
+      const subsidiaryExpenses = expenses.filter((e) => e.subsidiary?.id === subsidiary.id);
       const totalExpenses = subsidiaryExpenses.reduce(
-        (sum, expense) => sum + parseFloat(String(expense.amount)),
+        (sum, expense) => sum + Number(expense.amount || 0),
         0,
       );
       this.logger.debug(
