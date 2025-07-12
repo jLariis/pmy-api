@@ -533,14 +533,16 @@ export class IncomeService {
       const startOfRange = startOfDay(fromDate);
       const endOfRange = endOfDay(toDate);
 
-      // Consulta a la base de datos
-      const incomes = await this.incomeRepository.find({
-          where: {
+      // Consulta a la base de datos con LEFT JOIN a Shipment
+      const incomes = await this.incomeRepository.createQueryBuilder('income')
+          .leftJoinAndSelect('income.shipment', 'shipment')
+          .leftJoinAndSelect('shipment.statusHistory', 'statusHistory')
+          .where({
               subsidiary: { id: subsidiaryId },
               date: Between(startOfRange, endOfRange),
-          },
-          order: { date: 'ASC' },
-      });
+          })
+          .orderBy('income.date', 'ASC')
+          .getMany();
 
       return this.formatIncomesNew(incomes, startOfRange, endOfRange);
     }
@@ -553,7 +555,7 @@ export class IncomeService {
         const report: FormatIncomesDto[] = [];
         const oneDayMs = 24 * 60 * 60 * 1000;
 
-        // Filtrar ingresos (ajustado para usar nonDeliveryStatus)
+        // Filtrar ingresos
         const filteredIncomes = incomes.filter(i => {
             return !(i.sourceType === 'shipment' && 
                   i.shipmentType === 'fedex' && 
@@ -592,7 +594,7 @@ export class IncomeService {
             ).length;
             const fedexTotalIncome = fedexIncomes.reduce((sum, i) => sum + (i.cost || 0), 0);
 
-            // DHL (ajustado para usar incomeType en lugar de deliveryStatus)
+            // DHL
             const dhlIncomes = dayShipments.filter(i => i.shipmentType === 'dhl');
             const dhlDelivered = dhlIncomes.filter(i => i.incomeType === 'entregado').length;
             const dhlNotDelivered = dhlIncomes.filter(i => i.incomeType === 'no_entregado').length;
@@ -602,7 +604,7 @@ export class IncomeService {
             const collectionTotalIncome = dayCollections.reduce((sum, i) => sum + (i.cost || 0), 0);
             const chargeTotalIncome = dayCharges.reduce((sum, i) => sum + (i.cost || 0), 0);
 
-            // Items detallados (ajustado para usar el tipo correcto de cost)
+            // Items detallados
             const items = [
                 ...dayShipments.map(i => ({
                     type: 'shipment' as const,
@@ -611,12 +613,15 @@ export class IncomeService {
                     status: i.incomeType,
                     date: (typeof i.date === 'string' ? parseISO(i.date) : new Date(i.date)).toISOString(),
                     cost: i.cost || 0,
+                    statusHistory: i.shipment?.statusHistory || [], // Solo para shipments
+                    commitDateTime: i.shipment?.commitDateTime // Fecha compromiso de shipment
                 })),
                 ...dayCollections.map(i => ({
                     type: 'collection' as const,
                     trackingNumber: i.trackingNumber,
                     date: (typeof i.date === 'string' ? parseISO(i.date) : new Date(i.date)).toISOString(),
                     cost: i.cost || 0,
+                    // Sin statusHistory para collections
                 })),
                 ...dayCharges.map(i => ({
                     type: 'carga' as const,
@@ -624,6 +629,7 @@ export class IncomeService {
                     shipmentType: i.shipmentType,
                     date: (typeof i.date === 'string' ? parseISO(i.date) : new Date(i.date)).toISOString(),
                     cost: i.cost || 0,
+                    // Sin statusHistory para charges
                 }))
             ];
 

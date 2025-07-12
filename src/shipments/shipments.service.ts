@@ -40,9 +40,10 @@ export class ShipmentsService {
   /*** Temporal */
   private citiesNotClasified = [];
 
+  private timestamp = new Date().toISOString();
   private logBuffer: string[] = [];
   private shipmentBatch: Shipment[] = [];
-  private readonly logFilePath = path.join(__dirname, '../../logs/shipment-logs.log');
+  private readonly logFilePath = path.join(__dirname, `../../logs/shipment-logs${this.timestamp}.log`);
   private readonly BATCH_SIZE = 100;
 
   constructor(
@@ -65,10 +66,10 @@ export class ShipmentsService {
   ) { }
 
   async appendLogToFile(message: string) {
-    const logFilePath = path.resolve(__dirname, '../../logs/shipment-process-errors.log');
     const timestamp = new Date().toISOString();
     const logMessage = `[${timestamp}] ${message}\n`;
-    
+    const logFilePath = path.resolve(__dirname, `../../logs/shipment-process-errors-${timestamp}.log`);
+        
     try {
       await fs.appendFile(logFilePath, logMessage);
     } catch (error) {
@@ -1184,6 +1185,34 @@ export class ShipmentsService {
       return statuses;
     }
 
+    /*if (!hasDelivered && hasException) {
+      const lastNoEntIndex = statuses.reduce(
+        (last, s, i) => (s.status === ShipmentStatusType.NO_ENTREGADO ? i : last),
+        -1
+      );
+
+      if (lastNoEntIndex >= 0 && lastNoEntIndex < statuses.length - 1) {
+        // Filtrar los eventos EN_RUTA posteriores a NO_ENTREGADO
+        const removed = statuses.splice(lastNoEntIndex + 1).filter(
+          (s) => {
+            // Mantener los eventos EN_RUTA que tengan exceptionCode 67
+            if (s.status === ShipmentStatusType.EN_RUTA && s.exceptionCode === '67') {
+              const info = `✅ [${shipment.trackingNumber}] Conservando EN_RUTA con exceptionCode 67: ${s.notes}`;
+              this.logger.log(info);
+              this.logBuffer.push(info);
+              return false; // No remover este evento
+            }
+            return s.status === ShipmentStatusType.EN_RUTA;
+          }
+        );
+        
+        for (const rem of removed) {
+          const warn = `🗑️ [${shipment.trackingNumber}] Eliminado EN_RUTA posterior a NO_ENTREGADO: ${rem.notes}`;
+          this.logger.warn(warn);
+          this.logBuffer.push(warn);
+        }
+      }
+    }*/
     if (!hasDelivered && hasException) {
       const lastNoEntIndex = statuses.reduce(
         (last, s, i) => (s.status === ShipmentStatusType.NO_ENTREGADO ? i : last),
@@ -1191,9 +1220,31 @@ export class ShipmentsService {
       );
 
       if (lastNoEntIndex >= 0 && lastNoEntIndex < statuses.length - 1) {
-        const removed = statuses.splice(lastNoEntIndex + 1).filter(
-          (s) => s.status === ShipmentStatusType.EN_RUTA
+        // Separar los eventos posteriores al último NO_ENTREGADO
+        const eventsAfterNoEnt = statuses.splice(lastNoEntIndex + 1);
+        
+        // Filtrar solo los eventos EN_RUTA que NO tienen exceptionCode 67
+        const removed = eventsAfterNoEnt.filter(
+          (s) => s.status === ShipmentStatusType.EN_RUTA && s.exceptionCode !== '67'
         );
+        
+        // Reincorporar los eventos que no deben ser eliminados
+        const keptEvents = eventsAfterNoEnt.filter(
+          (s) => s.status !== ShipmentStatusType.EN_RUTA || s.exceptionCode === '67'
+        );
+        
+        statuses.push(...keptEvents);
+        
+        // Loggear los eventos conservados con exceptionCode 67
+        keptEvents
+          .filter(s => s.exceptionCode === '67')
+          .forEach(s => {
+            const info = `✅ [${shipment.trackingNumber}] Conservando EN_RUTA con exceptionCode 67: ${s.notes}`;
+            this.logger.log(info);
+            this.logBuffer.push(info);
+          });
+        
+        // Loggear los eventos eliminados
         for (const rem of removed) {
           const warn = `🗑️ [${shipment.trackingNumber}] Eliminado EN_RUTA posterior a NO_ENTREGADO: ${rem.notes}`;
           this.logger.warn(warn);
@@ -1796,19 +1847,6 @@ export class ShipmentsService {
       const reason = `Fallo al guardar income para ${shipment.trackingNumber}: ${err.message}`;
       this.logger.error(`❌ ${reason}`);
       throw new Error(reason);
-    }
-  }
-
-  private async saveShipmentsInBatch(shipments: Shipment[]): Promise<void> {
-    this.logger.debug(`💾 Iniciando guardado de ${shipments.length} envíos en lote`);
-    try {
-      await this.shipmentRepository.save(shipments, { chunk: 50 });
-      this.logger.debug(`✅ Guardado exitoso de ${shipments.length} envíos`);
-    } catch (err) {
-      const reason = `Error al guardar lote de envíos: ${err.message}`;
-      this.logger.error(`❌ ${reason}`);
-      this.logBuffer.push(reason);
-      throw err;
     }
   }
 
