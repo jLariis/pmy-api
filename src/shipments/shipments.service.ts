@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Between, EntityManager, In, Repository } from 'typeorm';
+import { Between, EntityManager, Repository } from 'typeorm';
 import { Shipment } from 'src/entities/shipment.entity';
 import { ShipmentStatusType } from 'src/common/enums/shipment-status-type.enum';
 import * as XLSX from 'xlsx';
@@ -29,8 +29,6 @@ import { ShipmentAndChargeDto } from './dto/shipment-and-charge.dto';
 import { ChargeWithStatusDto } from './dto/charge-with-status.dto';
 import { IncomeSourceType } from 'src/common/enums/income-source-type.enum';
 import { GetShipmentKpisDto } from './dto/get-shipment-kpis.dto';
-import { first, map, catchError } from 'rxjs/operators';
-import { retry } from 'rxjs/operators';
 import { ConsolidatedService } from 'src/consolidated/consolidated.service';
 import { ConsolidatedType } from 'src/common/enums/consolidated-type.enum';
 import { toZonedTime } from 'date-fns-tz';
@@ -207,8 +205,6 @@ export class ShipmentsService {
   remove(id: string) {
     return this.shipmentRepository.delete(id);
   }
-
-
 
   async parseCityOfFile(filename: string): Promise<Subsidiary | null> {
     this.logger.log(`📂 Validating recipientCity on filename: ${filename}`);
@@ -657,7 +653,7 @@ export class ShipmentsService {
     });
 
     const chargeShipments = await this.chargeShipmentRepository.find({
-      relations: ['charge', 'subsidiary'],
+      relations: ['charge', 'subsidiary', 'statusHistory'],
     });
 
     const chargeMap = new Map<string, ChargeShipment[]>();
@@ -748,6 +744,7 @@ export class ShipmentsService {
       }
 
       try {
+        ///relations: ['subsidiary', 'statusHistory'], ver si ocupa tener también el historial
         const original = await this.shipmentRepository.findOne({
           where: { id: validation.shipment.id },
           relations: ['subsidiary'],
@@ -839,6 +836,7 @@ export class ShipmentsService {
   async checkStatusOnFedex(): Promise<void> {
     const shipmentsWithError: { trackingNumber: string; reason: string }[] = [];
     const unusualCodes: { trackingNumber: string; derivedCode: string; exceptionCode?: string; eventDate: string; statusByLocale?: string }[] = [];
+    const shipmentsWithOD: { trackingNumber: string; eventDate: string }[] = [];
     try {
       this.logger.debug(`🚀 Iniciando checkStatusOnFedex`);
       const pendingShipments = await this.getShipmentsToValidate();
@@ -881,9 +879,9 @@ export class ShipmentsService {
               const mappedStatus = mapFedexStatusToLocalStatus(latestStatusDetail?.derivedCode, latestStatusDetail?.ancillaryDetails?.[0]?.reason);
               const exceptionCode = latestStatusDetail?.ancillaryDetails?.[0]?.reason || trackResult.scanEvents[0]?.exceptionCode;
 
-              // Registrar códigos inusuales solo por exceptionCode
-              const knownExceptionCodes = ['07', '03', '08', '17', '67', '14'];
-              if (exceptionCode && (['005', '16'].includes(exceptionCode) || !knownExceptionCodes.includes(exceptionCode))) {
+              // Registrar códigos inusuales
+              const knownExceptionCodes = ['07', '03', '08', '17', '67', '14', '16', 'OD'];
+              if (exceptionCode && (['005'].includes(exceptionCode) || !knownExceptionCodes.includes(exceptionCode))) {
                 unusualCodes.push({
                   trackingNumber,
                   derivedCode: latestStatusDetail?.derivedCode || 'N/A',
@@ -908,7 +906,7 @@ export class ShipmentsService {
                 return;
               }
 
-              // Buscar el evento correspondiente, más flexible
+              // Buscar el evento correspondiente
               const event = trackResult.scanEvents.find(
                 (e) =>
                   e.eventType === 'DL' ||
@@ -918,7 +916,7 @@ export class ShipmentsService {
                   (mappedStatus === ShipmentStatusType.PENDIENTE && ['TA', 'TD', 'HL'].includes(e.eventType)) ||
                   (mappedStatus === ShipmentStatusType.EN_RUTA && ['OC'].includes(e.eventType)) ||
                   (mappedStatus === ShipmentStatusType.RECOLECCION && ['PU'].includes(e.eventType))
-              ) || trackResult.scanEvents[0]; // Fallback al primer evento
+              ) || trackResult.scanEvents[0];
               if (!event) {
                 const reason = `No se encontró evento para el estatus ${latestStatusDetail?.derivedCode} en ${trackingNumber}`;
                 this.logger.warn(`⚠️ ${reason}`);
@@ -946,17 +944,56 @@ export class ShipmentsService {
               // Initialize statusHistory if undefined
               shipment.statusHistory = shipment.statusHistory || [];
 
-              // Verificar si el estado más reciente tiene exceptionCode 07 o 03
-              const latestStatusHistory = shipment.statusHistory.length
-                ? shipment.statusHistory.reduce((latest, current) =>
-                    new Date(current.timestamp) > new Date(latest.timestamp) ? current : latest
-                  )
-                : null;
-              if (latestStatusHistory && ['07', '03'].includes(latestStatusHistory.exceptionCode)) {
-                const reason = `No se actualiza ${trackingNumber}: último exceptionCode=${latestStatusHistory.exceptionCode} bloquea actualización`;
-                this.logger.warn(`🚫 ${reason}`);
-                this.logBuffer.push(reason);
-                return;
+              // Apply validation rules for income generation
+              if ([ShipmentStatusType.ENTREGADO, ShipmentStatusType.NO_ENTREGADO].includes(mappedStatus)) {
+                const histories = shipment.statusHistory;
+
+                // 1. NO_ENTREGADO con excepción 03
+                if (mappedStatus === ShipmentStatusType.NO_ENTREGADO && exceptionCode === '03') {
+                  const reason = `❌ Excluido de income: NO_ENTREGADO con excepción 03 (${trackingNumber})`;
+                  this.logger.warn(reason);
+                  this.logBuffer.push(reason);
+                  return;
+                }
+
+                // 2. ENTREGADO con excepción 16
+                if (mappedStatus === ShipmentStatusType.ENTREGADO && exceptionCode === '16') {
+                  const alt = histories.find(
+                    (h) => h.status === ShipmentStatusType.ENTREGADO && h.exceptionCode !== '16'
+                  );
+                  if (alt) {
+                    eventDate = alt.timestamp;
+                    this.logger.debug(`📅 Usando timestamp alternativo para ENTREGADO con excepción 16: ${eventDate.toISOString()}`);
+                  } else {
+                    const reason = `❌ Excluido de income: ENTREGADO con excepción 16 sin entrega previa válida (${trackingNumber})`;
+                    this.logger.warn(reason);
+                    this.logBuffer.push(reason);
+                    return;
+                  }
+                }
+
+                // 3. Excepción 08 requiere 3 días distintos
+                if (exceptionCode === '08') {
+                  const fechas08 = histories
+                    .filter((h) => h.exceptionCode === '08')
+                    .map((h) => format(h.timestamp, 'yyyy-MM-dd'));
+                  const diasUnicos = new Set(fechas08);
+                  if (diasUnicos.size < 3) {
+                    const reason = `❌ Excluido de income: excepción 08 sin 3 días distintos (${trackingNumber})`;
+                    this.logger.warn(reason);
+                    this.logBuffer.push(reason);
+                    return;
+                  }
+                }
+
+                // 4. Excepción "OD"
+                if (exceptionCode === 'OD') {
+                  const reason = `📦 Shipment con excepción "OD" excluido del income y marcado para procesamiento especial: ${trackingNumber}`;
+                  this.logger.warn(reason);
+                  this.logBuffer.push(reason);
+                  shipmentsWithOD.push({ trackingNumber, eventDate: eventDate.toISOString() });
+                  return;
+                }
               }
 
               // Verificar si el estado ya existe en ShipmentStatus
@@ -964,11 +1001,17 @@ export class ShipmentsService {
               const isDuplicateStatus = shipment.statusHistory.some((s) =>
                 isException08
                   ? s.status === mappedStatus && s.exceptionCode === exceptionCode && isSameDay(s.timestamp, eventDate)
-                  : s.status === mappedStatus && isSameDay(s.timestamp, eventDate) // Require same-day check for all statuses
+                  : s.status === mappedStatus && isSameDay(s.timestamp, eventDate)
               );
 
-              // Permitir actualización si el evento es más reciente o es ENTREGADO
+              // Permitir actualización si el evento es más reciente
+              const latestStatusHistory = shipment.statusHistory.length
+                ? shipment.statusHistory.reduce((latest, current) =>
+                    new Date(current.timestamp) > new Date(latest.timestamp) ? current : latest
+                  )
+                : null;
               const isNewerEvent = !latestStatusHistory || new Date(eventDate) > new Date(latestStatusHistory.timestamp);
+
               if (isDuplicateStatus && !isNewerEvent) {
                 this.logger.debug(`📌 Estado ${mappedStatus}${isException08 ? ` (exceptionCode=${exceptionCode})` : ''} ya existe para ${trackingNumber} en la misma fecha`);
                 return;
@@ -1061,6 +1104,16 @@ export class ShipmentsService {
       if (unusualCodes.length) {
         await this.logUnusualCodes(unusualCodes);
         this.logger.warn(`⚠️ ${unusualCodes.length} códigos inusuales registrados`);
+      }
+      if (shipmentsWithOD.length) {
+        await this.logUnusualCodes(shipmentsWithOD.map(({ trackingNumber, eventDate }) => ({
+          trackingNumber,
+          derivedCode: 'N/A',
+          exceptionCode: 'OD',
+          eventDate,
+          statusByLocale: 'N/A',
+        })));
+        this.logger.warn(`⚠️ ${shipmentsWithOD.length} envíos con excepción OD registrados`);
       }
     } catch (err) {
       const reason = `Error general en checkStatusOnFedex: ${err.message}`;
@@ -1157,7 +1210,8 @@ export class ShipmentsService {
     file: Express.Multer.File,
     subsidiaryId: string,
     consNumber: string,
-    consDate?: Date
+    consDate?: Date,
+    isAereo?: boolean
   ): Promise<{
     saved: number;
     failed: number;
@@ -1198,13 +1252,14 @@ export class ShipmentsService {
     const shipmentsToSave = workbook.SheetNames.flatMap((sheetName) =>
       parseDynamicSheet(workbook.Sheets[sheetName], { fileName: file.originalname, sheetName })
     );
+    
     this.logger.log(`📄 Total de envíos procesados desde archivo: ${shipmentsToSave.length}`);
 
     // Crear Consolidated
     this.logger.debug(`📦 Creando consolidado para ${shipmentsToSave.length} envíos`);
     const consolidated = Object.assign(new Consolidated(), {
       date: consDate || new Date(),
-      type: ConsolidatedType.ORDINARIA,
+      type: isAereo ? ConsolidatedType.AEREO : ConsolidatedType.ORDINARIA,
       numberOfPackages: shipmentsToSave.length,
       subsidiary: predefinedSubsidiary,
       subsidiaryId: predefinedSubsidiary.id,
@@ -1477,6 +1532,7 @@ export class ShipmentsService {
     });
 
     let fedexShipmentData: FedExTrackingResponseDto;
+
     try {
       this.logger.debug(`📬 Consultando FedEx para ${trackingNumber}`);
       fedexShipmentData = await this.trackPackageWithRetry(trackingNumber);
@@ -1540,7 +1596,7 @@ export class ShipmentsService {
       newShipment.commitDateTime = commitDateTime;
       newShipment.priority = getPriority(commitDateTime);
 
-      this.logger.debug(`📅 Fecha final asignada para ${trackingNumber} desde ${dateSource}: commitDateTime=${commitDateTime.toISOString()}`);
+      this.logger.log(`📅 Fecha final asignada para ${trackingNumber} desde ${dateSource}: commitDateTime=${commitDateTime.toISOString()}`);
 
       Object.assign(newShipment, {
         statusHistory: histories,
@@ -1571,32 +1627,93 @@ export class ShipmentsService {
       this.shipmentBatch.push(newShipment);
       result.saved++;
 
-      // Collect shipments eligible for income generation
+      // Validación para income con reglas extendidas
       if ([ShipmentStatusType.ENTREGADO, ShipmentStatusType.NO_ENTREGADO].includes(newShipment.status)) {
         const matchedHistory = histories
           .filter((h) => h.status === newShipment.status)
           .pop();
 
-        if (!matchedHistory) {
-          const reason = `No se encontró matchedHistory para: ${trackingNumber}, status: ${newShipment.status}`;
-          this.logger.warn(`⚠️ ${reason}`);
-          result.failed++;
-          result.saved--;
-          result.failedTrackings.push({ trackingNumber, reason });
-          shipmentsWithError.saveError.push({ trackingNumber, reason });
+        const exceptionCodes = histories.map((h) => h.exceptionCode).filter(Boolean);
+
+        /**
+         * 📋 Reglas de exclusión para generación de incomes:
+         * 
+         * 1. ❌ NO_ENTREGADO con excepción 03 no genera income.
+         * 2. ❌ ENTREGADO con excepción 16 busca una entrega anterior sin ese código para usar su timestamp.
+         * 3. ❌ Envíos con excepción 08 solo generan income si hay al menos 3 eventos en días distintos.
+         * 4. ❌ Envíos con excepción "OD" no generan income y deben ser agregados a una lista especial (para tabla aparte).
+         */
+
+        // 1. NO_ENTREGADO con excepción 03
+        if (newShipment.status === ShipmentStatusType.NO_ENTREGADO && exceptionCodes.includes('03')) {
+          const reason = `❌ Excluido de income: NO_ENTREGADO con excepción 03 (${trackingNumber})`;
+          this.logger.warn(reason);
           this.logBuffer.push(reason);
           return;
         }
 
-        shipmentsToGenerateIncomes.push({
-          shipment: newShipment,
-          timestamp: matchedHistory.timestamp,
-          exceptionCode: matchedHistory.exceptionCode,
-        });
-      } else {
-        const reason = `No se generó income: status del envío ${newShipment.status} no es elegible`;
-        this.logger.warn(`🚫 ${reason}`);
-        this.logBuffer.push(reason);
+        // 2. ENTREGADO con excepción 16
+        if (newShipment.status === ShipmentStatusType.ENTREGADO && exceptionCodes.includes('16')) {
+          const alt = histories.find(
+            (h) => h.status === ShipmentStatusType.ENTREGADO && h.exceptionCode !== '16'
+          );
+          if (alt) {
+            shipmentsToGenerateIncomes.push({
+              shipment: newShipment,
+              timestamp: alt.timestamp,
+              exceptionCode: alt.exceptionCode,
+            });
+            return;
+          } else {
+            const reason = `❌ Excluido de income: ENTREGADO con excepción 16 sin entrega previa válida (${trackingNumber})`;
+            this.logger.warn(reason);
+            this.logBuffer.push(reason);
+            return;
+          }
+        }
+
+        // 3. Excepción 08 requiere 3 días distintos
+        if (exceptionCodes.includes('08')) {
+          const fechas08 = histories
+            .filter((h) => h.exceptionCode === '08')
+            .map((h) => format(h.timestamp, 'yyyy-MM-dd'));
+
+          const diasUnicos = new Set(fechas08);
+          if (diasUnicos.size < 3) {
+            const reason = `❌ Excluido de income: excepción 08 sin 3 días distintos (${trackingNumber})`;
+            this.logger.warn(reason);
+            this.logBuffer.push(reason);
+            return;
+          }
+        }
+
+        // 4. Excepción "OD" se ignora, se enviará a una tabla especial (registrar en log)
+        if (exceptionCodes.includes('OD')) {
+          const reason = `📦 Shipment con excepción "OD" excluido del income y marcado para procesamiento especial: ${trackingNumber}`;
+          this.logger.warn(reason);
+          this.logBuffer.push(reason);
+          // 👉 Aquí podrías acumular en un arreglo `shipmentsWithOD` para insertarlo luego en una tabla especial
+          // Por ahora solo lo registramos
+          return;
+        }
+
+        // ✅ Agregar income si pasó todas las validaciones
+        if (matchedHistory) {
+          shipmentsToGenerateIncomes.push({
+            shipment: newShipment,
+            timestamp: matchedHistory.timestamp,
+            exceptionCode: matchedHistory.exceptionCode,
+          });
+        } else {
+          const reason = `❌ No se encontró matchedHistory válido para income: ${trackingNumber}`;
+          this.logger.warn(reason);
+          this.logBuffer.push(reason);
+          result.failed++;
+          result.saved--;
+          result.failedTrackings.push({ trackingNumber, reason });
+          shipmentsWithError.saveError.push({ trackingNumber, reason });
+          return;
+        }
       }
     } catch (err) {
       const reason = `Error al procesar shipment ${trackingNumber}: ${err.message}`;

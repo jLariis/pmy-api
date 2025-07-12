@@ -14,7 +14,7 @@ export class Collection {
   @JoinColumn({ name: 'subsidiaryId' })
   subsidiary: Subsidiary;
 
-  @Column({ default: '' })
+  @Column({ default: '' , nullable: true})
   status: string;
 
   @Column({ default: false })

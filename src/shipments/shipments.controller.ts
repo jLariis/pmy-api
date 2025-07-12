@@ -45,15 +45,21 @@ export class ShipmentsController {
     @UploadedFile() file: Express.Multer.File, 
     @Body('subsidiaryId') subsidiaryId: string,
     @Body('consNumber') consNumber: string,
-    @Body('consDate') consDate?: string
+    @Body('consDate') consDate?: string,
+    @Body('isAereo') isAereo?: string
   ) {
+
+    const isAereoBoolean = typeof isAereo === 'string' 
+      ? isAereo.toLowerCase() === 'true' 
+      : Boolean(isAereo);
+
     let dateForCons = null;
 
     if(consDate) {
       dateForCons = new Date(consDate);
     }
 
-    return this.shipmentsService.addConsMasterBySubsidiary(file, subsidiaryId, consNumber, dateForCons);
+    return this.shipmentsService.addConsMasterBySubsidiary(file, subsidiaryId, consNumber, dateForCons, isAereoBoolean);
   }
 
   @Post('upload-charge')

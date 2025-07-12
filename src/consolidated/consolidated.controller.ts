@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete } from '@nestjs/common';
+import { Controller, Get, Post, Body, Patch, Param, Delete, Query } from '@nestjs/common';
 import { ConsolidatedService } from './consolidated.service';
 import { CreateConsolidatedDto } from './dto/create-consolidated.dto';
 import { UpdateConsolidatedDto } from './dto/update-consolidated.dto';
@@ -22,9 +22,16 @@ export class ConsolidatedController {
     return this.consolidatedService.create(createConsolidatedDto);
   }
 
-  @Get()
-  findAll() {
-    return this.consolidatedService.findAll();
+  @Get('')
+  findAll(
+    @Query('subsidiaryId') subsidiaryId: string,
+    @Query('fromDate') fromDate: string,
+    @Query('toDate') toDate: string,
+  ) {
+    const fDate = new Date(fromDate);
+    const tDate = new Date(toDate);
+
+    return this.consolidatedService.findAll(subsidiaryId, fDate, tDate);
   }
 
   @Get(':id')
