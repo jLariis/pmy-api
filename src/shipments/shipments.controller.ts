@@ -121,7 +121,6 @@ export class ShipmentsController {
     return this.shipmentsService.processFileCharges(file);
   }
 
-
   @Post('upload-dhl')
   @UseInterceptors(
     FileFieldsInterceptor([
@@ -202,6 +201,16 @@ export class ShipmentsController {
     return await this.shipmentsService.getAllChargesWithStatus();
   }
 
+  @Get(':trackingNumber')
+  async getShipmentById(@Param('trackingNumber') trackingNumber: string) {
+    return this.shipmentsService.findByTrackingNumber(trackingNumber);
+  }
+
+  @Get(':trackingNumber/history')
+  async getShipmentStatusHistory(@Param('trackingNumber') trackingNumber: string) {
+    return this.shipmentsService.findStatusHistoryByTrackingNumber(trackingNumber);
+  }
+
   /****************************************** SOLO PRUEBAS *********************************************************/
   
     @Get('test-tracking/:trackingNumber')
@@ -238,7 +247,6 @@ export class ShipmentsController {
     normalizeCities() {
       return this.shipmentsService.normalizeCities();
     }
-
 
     @Get('test-cron')
     testCronJob() {

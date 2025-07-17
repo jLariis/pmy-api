@@ -43,7 +43,7 @@ export class ShipmentsService {
   private timestamp = new Date().toISOString();
   private logBuffer: string[] = [];
   private shipmentBatch: Shipment[] = [];
-  private readonly logFilePath = path.join(__dirname, `../../logs/shipment-logs${this.timestamp}.log`);
+  private readonly logFilePath = path.join(__dirname, `../../logs/shipment-logs.log`);
   private readonly BATCH_SIZE = 100;
 
   constructor(
@@ -839,7 +839,7 @@ export class ShipmentsService {
     const unusualCodes: { trackingNumber: string; derivedCode: string; exceptionCode?: string; eventDate: string; statusByLocale?: string }[] = [];
     const shipmentsWithOD: { trackingNumber: string; eventDate: string }[] = [];
     try {
-      this.logger.debug(`🚀 Iniciando checkStatusOnFedex`);
+      this.logger.log(`🚀 Iniciando checkStatusOnFedex`);
       const pendingShipments = await this.getShipmentsToValidate();
       if (!pendingShipments || !Array.isArray(pendingShipments)) {
         const reason = `pendingShipments no es un arreglo válido: ${JSON.stringify(pendingShipments)}`;
@@ -856,12 +856,12 @@ export class ShipmentsService {
 
       for (let i = 0; i < batches.length; i++) {
         const batch = batches[i];
-        this.logger.debug(`📦 Procesando lote ${i + 1}/${batches.length} con ${batch.length} envíos`);
+        this.logger.log(`📦 Procesando lote ${i + 1}/${batches.length} con ${batch.length} envíos`);
 
         await Promise.all(
           batch.map(async (shipment, index) => {
             const trackingNumber = shipment.trackingNumber;
-            this.logger.debug(`🚚 Procesando envío ${index + 1}/${batch.length} del lote ${i + 1}: ${trackingNumber}`);
+            this.logger.log(`🚚 Procesando envío ${index + 1}/${batch.length} del lote ${i + 1}: ${trackingNumber}`);
 
             try {
               const shipmentInfo: FedExTrackingResponseDto = await this.trackPackageWithRetry(trackingNumber);
@@ -875,7 +875,7 @@ export class ShipmentsService {
 
               const trackResult = shipmentInfo.output.completeTrackResults[0].trackResults[0];
               const latestStatusDetail = trackResult.latestStatusDetail;
-              this.logger.debug(`📣 Último estatus de FedEx para ${trackingNumber}: ${latestStatusDetail?.derivedCode} - ${latestStatusDetail?.statusByLocale}`);
+              this.logger.log(`📣 Último estatus de FedEx para ${trackingNumber}: ${latestStatusDetail?.derivedCode} - ${latestStatusDetail?.statusByLocale}`);
 
               const mappedStatus = mapFedexStatusToLocalStatus(latestStatusDetail?.derivedCode, latestStatusDetail?.ancillaryDetails?.[0]?.reason);
               const exceptionCode = latestStatusDetail?.ancillaryDetails?.[0]?.reason || trackResult.scanEvents[0]?.exceptionCode;
@@ -890,7 +890,7 @@ export class ShipmentsService {
                   eventDate: trackResult.scanEvents[0]?.date || 'N/A',
                   statusByLocale: latestStatusDetail?.statusByLocale || 'N/A',
                 });
-                this.logger.warn(`⚠️ Código inusual detectado para ${trackingNumber}: exceptionCode=${exceptionCode}`);
+                this.logger.warn(`⚠️ Código inusual detectado para ${trackingNumber}: exceptionCode=${exceptionCode}, derivedCode=${latestStatusDetail?.derivedCode}`);
                 return;
               }
 
@@ -903,7 +903,7 @@ export class ShipmentsService {
                   eventDate: trackResult.scanEvents[0]?.date || 'N/A',
                   statusByLocale: latestStatusDetail?.statusByLocale || 'N/A',
                 });
-                this.logger.warn(`⚠️ derivedCode desconocido para ${trackingNumber}: derivedCode=${latestStatusDetail?.derivedCode}`);
+                this.logger.warn(`⚠️ derivedCode desconocido para ${trackingNumber}: derivedCode=${latestStatusDetail?.derivedCode}, statusByLocale=${latestStatusDetail?.statusByLocale}`);
                 return;
               }
 
@@ -911,11 +911,12 @@ export class ShipmentsService {
               const event = trackResult.scanEvents.find(
                 (e) =>
                   e.eventType === 'DL' ||
+                  e.derivedStatusCode === 'DL' ||
                   e.derivedStatusCode === latestStatusDetail?.derivedCode ||
                   e.eventType === latestStatusDetail?.derivedCode ||
                   (mappedStatus === ShipmentStatusType.NO_ENTREGADO && ['DE', 'DU', 'RF'].includes(e.eventType)) ||
                   (mappedStatus === ShipmentStatusType.PENDIENTE && ['TA', 'TD', 'HL'].includes(e.eventType)) ||
-                  (mappedStatus === ShipmentStatusType.EN_RUTA && ['OC'].includes(e.eventType)) ||
+                  (mappedStatus === ShipmentStatusType.EN_RUTA && ['OC', 'IT', 'AR', 'AF', 'CP', 'CC'].includes(e.eventType)) ||
                   (mappedStatus === ShipmentStatusType.RECOLECCION && ['PU'].includes(e.eventType))
               ) || trackResult.scanEvents[0];
               if (!event) {
@@ -933,7 +934,7 @@ export class ShipmentsService {
                 if (isNaN(eventDate.getTime())) {
                   throw new Error(`Fecha inválida: ${event.date}`);
                 }
-                this.logger.debug(`📅 Fecha del evento para ${trackingNumber}: ${event.date} -> ${eventDate.toISOString()}`);
+                this.logger.log(`📅 Fecha del evento para ${trackingNumber}: ${event.date} -> ${eventDate.toISOString()}`);
               } catch (err) {
                 const reason = `Error al parsear event.date para ${trackingNumber}: ${err.message}`;
                 this.logger.error(`❌ ${reason}`);
@@ -942,13 +943,17 @@ export class ShipmentsService {
                 return;
               }
 
+              // Validar si el evento es reciente comparado con commitDateTime
+              if (shipment.commitDateTime && eventDate < shipment.commitDateTime && mappedStatus !== ShipmentStatusType.ENTREGADO) {
+                this.logger.warn(`⚠️ Evento (${mappedStatus}, ${eventDate.toISOString()}) es anterior a commitDateTime (${shipment.commitDateTime.toISOString()}) para ${trackingNumber}. Posible evento ENTREGADO faltante.`);
+              }
+
               // Initialize statusHistory if undefined
               shipment.statusHistory = shipment.statusHistory || [];
 
               // Apply validation rules for income generation
+              const exceptionCodes = shipment.statusHistory.map((h) => h.exceptionCode).filter(Boolean).concat(exceptionCode ? [exceptionCode] : []);
               if ([ShipmentStatusType.ENTREGADO, ShipmentStatusType.NO_ENTREGADO].includes(mappedStatus)) {
-                const histories = shipment.statusHistory;
-
                 // 1. NO_ENTREGADO con excepción 03
                 if (mappedStatus === ShipmentStatusType.NO_ENTREGADO && exceptionCode === '03') {
                   const reason = `❌ Excluido de income: NO_ENTREGADO con excepción 03 (${trackingNumber})`;
@@ -958,30 +963,26 @@ export class ShipmentsService {
                 }
 
                 // 2. ENTREGADO con excepción 16
-                if (mappedStatus === ShipmentStatusType.ENTREGADO && exceptionCode === '16') {
-                  const alt = histories.find(
-                    (h) => h.status === ShipmentStatusType.ENTREGADO && h.exceptionCode !== '16'
-                  );
-                  if (alt) {
-                    eventDate = alt.timestamp;
-                    this.logger.debug(`📅 Usando timestamp alternativo para ENTREGADO con excepción 16: ${eventDate.toISOString()}`);
+                if (mappedStatus === ShipmentStatusType.ENTREGADO && exceptionCodes.includes('16')) {
+                  const entregadoEvents = shipment.statusHistory.filter((h) => h.status === ShipmentStatusType.ENTREGADO);
+                  const firstEntregado = entregadoEvents.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime())[0];
+                  if (firstEntregado) {
+                    eventDate = firstEntregado.timestamp;
+                    this.logger.log(`✅ Incluido income para ENTREGADO con excepción 16 usando el primer evento: ${trackingNumber}`);
                   } else {
-                    const reason = `❌ Excluido de income: ENTREGADO con excepción 16 sin entrega previa válida (${trackingNumber})`;
-                    this.logger.warn(reason);
+                    const reason = `❌ Excluido de income: ENTREGADO con excepción 16 sin eventos ENTREGADO válidos (${trackingNumber})`;
+                    this.logger.log(reason);
                     this.logBuffer.push(reason);
                     return;
                   }
                 }
 
-                // 3. Excepción 08 requiere 3 días distintos
-                if (exceptionCode === '08') {
-                  const fechas08 = histories
-                    .filter((h) => h.exceptionCode === '08')
-                    .map((h) => format(h.timestamp, 'yyyy-MM-dd'));
-                  const diasUnicos = new Set(fechas08);
-                  if (diasUnicos.size < 3) {
-                    const reason = `❌ Excluido de income: excepción 08 sin 3 días distintos (${trackingNumber})`;
-                    this.logger.warn(reason);
+                // 3. Excepción 08 requiere 3 eventos
+                if (exceptionCodes.includes('08')) {
+                  const eventos08 = shipment.statusHistory.filter((h) => h.exceptionCode === '08');
+                  if (eventos08.length < 3) {
+                    const reason = `❌ Excluido de income: excepción 08 con menos de 3 eventos (${trackingNumber})`;
+                    this.logger.log(reason);
                     this.logBuffer.push(reason);
                     return;
                   }
@@ -990,7 +991,7 @@ export class ShipmentsService {
                 // 4. Excepción "OD"
                 if (exceptionCode === 'OD') {
                   const reason = `📦 Shipment con excepción "OD" excluido del income y marcado para procesamiento especial: ${trackingNumber}`;
-                  this.logger.warn(reason);
+                  this.logger.log(reason);
                   this.logBuffer.push(reason);
                   shipmentsWithOD.push({ trackingNumber, eventDate: eventDate.toISOString() });
                   return;
@@ -1014,7 +1015,7 @@ export class ShipmentsService {
               const isNewerEvent = !latestStatusHistory || new Date(eventDate) > new Date(latestStatusHistory.timestamp);
 
               if (isDuplicateStatus && !isNewerEvent) {
-                this.logger.debug(`📌 Estado ${mappedStatus}${isException08 ? ` (exceptionCode=${exceptionCode})` : ''} ya existe para ${trackingNumber} en la misma fecha`);
+                this.logger.log(`📌 Estado ${mappedStatus}${isException08 ? ` (exceptionCode=${exceptionCode})` : ''} ya existe para ${trackingNumber} en la misma fecha`);
                 return;
               }
 
@@ -1036,23 +1037,21 @@ export class ShipmentsService {
               // Asegurar commitDateTime
               if (!shipment.commitDateTime) {
                 shipment.commitDateTime = new Date();
-                this.logger.debug(`📅 commitDateTime asignado por defecto para ${trackingNumber}: ${shipment.commitDateTime.toISOString()}`);
+                this.logger.log(`📅 commitDateTime asignado por defecto para ${trackingNumber}: ${shipment.commitDateTime.toISOString()}`);
               }
 
               // Actualizar payment si existe
               if (shipment.payment) {
                 shipment.payment.status = mappedStatus === ShipmentStatusType.ENTREGADO ? PaymentStatus.PAID : PaymentStatus.PENDING;
-                this.logger.debug(`💰 Actualizado payment.status=${shipment.payment.status} para ${trackingNumber}`);
+                this.logger.log(`💰 Actualizado payment.status=${shipment.payment.status} para ${trackingNumber}`);
               }
 
               // Guardar Shipment y ShipmentStatus con transacción
               try {
                 await this.shipmentRepository.manager.transaction(async (transactionalEntityManager) => {
-                  // Save ShipmentStatus first
                   await transactionalEntityManager.save(ShipmentStatus, newShipmentStatus);
-                  this.logger.debug(`💾 ShipmentStatus guardado para ${trackingNumber} con status=${mappedStatus}`);
+                  this.logger.log(`💾 ShipmentStatus guardado para ${trackingNumber} con status=${mappedStatus}`);
 
-                  // Update Shipment without statusHistory
                   await transactionalEntityManager
                     .createQueryBuilder()
                     .update(Shipment)
@@ -1064,13 +1063,13 @@ export class ShipmentsService {
                     })
                     .where('id = :id', { id: shipment.id })
                     .execute();
-                  this.logger.debug(`💾 Shipment actualizado para ${trackingNumber} con status=${mappedStatus}`);
+                  this.logger.log(`💾 Shipment actualizado para ${trackingNumber} con status=${mappedStatus}`);
 
-                  // Generar Income para ENTREGADO o NO_ENTREGADO
+                  // Generar Income solo para ENTREGADO o NO_ENTREGADO
                   if ([ShipmentStatusType.ENTREGADO, ShipmentStatusType.NO_ENTREGADO].includes(mappedStatus) && isNewerEvent) {
                     try {
                       await this.generateIncomes(shipment, newShipmentStatus.timestamp, newShipmentStatus.exceptionCode, transactionalEntityManager);
-                      this.logger.debug(`✅ Income generado para ${trackingNumber}`);
+                      this.logger.log(`✅ Income generado para ${trackingNumber} con status=${mappedStatus}`);
                     } catch (err) {
                       const reason = `Error al generar income para ${trackingNumber}: ${err.message}`;
                       this.logger.error(`❌ ${reason}`);
@@ -1096,7 +1095,6 @@ export class ShipmentsService {
         );
       }
 
-      // Guardar logs y errores
       await this.flushLogBuffer();
       if (shipmentsWithError.length) {
         await this.logErrors({ fedexError: shipmentsWithError });
@@ -1129,7 +1127,7 @@ export class ShipmentsService {
     scanEvents: FedExScanEventDto[],
     shipment: Shipment
   ): Promise<ShipmentStatus[]> {
-    this.logger.debug(`🔍 Iniciando processScanEventsToStatuses para ${shipment.trackingNumber} con ${scanEvents.length} eventos`);
+    this.logger.log(`🔍 Iniciando processScanEventsToStatuses para ${shipment.trackingNumber} con ${scanEvents.length} eventos`);
     const { statuses, hasException, hasDelivered } = scanEvents
       .sort((a, b) => {
         const dateA = toZonedTime(parse(a.date, "yyyy-MM-dd'T'HH:mm:ssXXX", new Date()), 'UTC', { timeZone: 'America/Mexico_City' });
@@ -1142,7 +1140,7 @@ export class ShipmentsService {
         hasDelivered: boolean;
       }>(
         (acc, event, index) => {
-          this.logger.debug(`📌 Procesando evento ${index + 1}/${scanEvents.length} para ${shipment.trackingNumber}`);
+          this.logger.log(`📌 Procesando evento ${index + 1}/${scanEvents.length} para ${shipment.trackingNumber}`);
           const mappedStatus = mapFedexStatusToLocalStatus(event.derivedStatusCode, event.exceptionCode);
           if (mappedStatus === ShipmentStatusType.DESCONOCIDO) {
             this.logger.warn(`⚠️ Estado desconocido para evento: ${event.derivedStatusCode}`);
@@ -1185,34 +1183,6 @@ export class ShipmentsService {
       return statuses;
     }
 
-    /*if (!hasDelivered && hasException) {
-      const lastNoEntIndex = statuses.reduce(
-        (last, s, i) => (s.status === ShipmentStatusType.NO_ENTREGADO ? i : last),
-        -1
-      );
-
-      if (lastNoEntIndex >= 0 && lastNoEntIndex < statuses.length - 1) {
-        // Filtrar los eventos EN_RUTA posteriores a NO_ENTREGADO
-        const removed = statuses.splice(lastNoEntIndex + 1).filter(
-          (s) => {
-            // Mantener los eventos EN_RUTA que tengan exceptionCode 67
-            if (s.status === ShipmentStatusType.EN_RUTA && s.exceptionCode === '67') {
-              const info = `✅ [${shipment.trackingNumber}] Conservando EN_RUTA con exceptionCode 67: ${s.notes}`;
-              this.logger.log(info);
-              this.logBuffer.push(info);
-              return false; // No remover este evento
-            }
-            return s.status === ShipmentStatusType.EN_RUTA;
-          }
-        );
-        
-        for (const rem of removed) {
-          const warn = `🗑️ [${shipment.trackingNumber}] Eliminado EN_RUTA posterior a NO_ENTREGADO: ${rem.notes}`;
-          this.logger.warn(warn);
-          this.logBuffer.push(warn);
-        }
-      }
-    }*/
     if (!hasDelivered && hasException) {
       const lastNoEntIndex = statuses.reduce(
         (last, s, i) => (s.status === ShipmentStatusType.NO_ENTREGADO ? i : last),
@@ -1253,7 +1223,7 @@ export class ShipmentsService {
       }
     }
 
-    this.logger.debug(`✅ Finalizado processScanEventsToStatuses para ${shipment.trackingNumber} con ${statuses.length} estados`);
+    this.logger.log(`✅ Finalizado processScanEventsToStatuses para ${shipment.trackingNumber} con ${statuses.length} estados`);
     return statuses;
   }
 
@@ -1288,7 +1258,7 @@ export class ShipmentsService {
       throw new BadRequestException(reason);
     }
 
-    this.logger.debug(`🔍 Validando subsidiaria con ID: ${subsidiaryId}`);
+    this.logger.log(`🔍 Validando subsidiaria con ID: ${subsidiaryId}`);
     const predefinedSubsidiary = await this.subsidiaryService.findById(subsidiaryId);
 
     if (!predefinedSubsidiary) {
@@ -1298,7 +1268,7 @@ export class ShipmentsService {
       throw new BadRequestException(reason);
     }
 
-    this.logger.debug(`📄 Leyendo archivo Excel: ${file.originalname}`);
+    this.logger.log(`📄 Leyendo archivo Excel: ${file.originalname}`);
     const workbook = XLSX.read(file.buffer, { type: 'buffer' });
     const shipmentsToSave = workbook.SheetNames.flatMap((sheetName) =>
       parseDynamicSheet(workbook.Sheets[sheetName], { fileName: file.originalname, sheetName })
@@ -1307,7 +1277,7 @@ export class ShipmentsService {
     this.logger.log(`📄 Total de envíos procesados desde archivo: ${shipmentsToSave.length}`);
 
     // Crear Consolidated
-    this.logger.debug(`📦 Creando consolidado para ${shipmentsToSave.length} envíos`);
+    this.logger.log(`📦 Creando consolidado para ${shipmentsToSave.length} envíos`);
     const consolidated = Object.assign(new Consolidated(), {
       date: consDate || new Date(),
       type: isAereo ? ConsolidatedType.AEREO : ConsolidatedType.ORDINARIA,
@@ -1364,7 +1334,7 @@ export class ShipmentsService {
     await this.shipmentRepository.manager.transaction(async (transactionalEntityManager) => {
       for (let i = 0; i < batches.length; i++) {
         const batch = batches[i];
-        this.logger.debug(`📦 Iniciando lote ${i + 1}/${batches.length} con ${batch.length} envíos`);
+        this.logger.log(`📦 Iniciando lote ${i + 1}/${batches.length} con ${batch.length} envíos`);
         this.shipmentBatch = []; // Reset batch for each loop
 
         // Process shipments and collect valid ones
@@ -1379,7 +1349,8 @@ export class ShipmentsService {
               i + 1,
               index + 1,
               processedTrackingNumbers,
-              shipmentsToGenerateIncomes
+              shipmentsToGenerateIncomes, 
+              consolidated.id
             )
           )
         );
@@ -1417,7 +1388,7 @@ export class ShipmentsService {
               }
               try {
                 await this.generateIncomes(shipment, timestamp, exceptionCode, transactionalEntityManager);
-                this.logger.debug(`✅ Income generado para ${shipment.trackingNumber}`);
+                this.logger.log(`✅ Income generado para ${shipment.trackingNumber}`);
               } catch (err) {
                 const reason = `Error en generateIncomes para ${shipment.trackingNumber}: ${err.message}`;
                 this.logger.error(`❌ ${reason}`);
@@ -1441,7 +1412,7 @@ export class ShipmentsService {
             shipmentsToGenerateIncomes.length = 0;
           }
         }
-        this.logger.debug(`✅ Finalizado lote ${i + 1}/${batches.length}`);
+        this.logger.log(`✅ Finalizado lote ${i + 1}/${batches.length}`);
       }
     });
 
@@ -1452,7 +1423,7 @@ export class ShipmentsService {
       this.logBuffer.push(`⚠️ Todos los envíos son duplicados. Consolidado ${consolidated.id} eliminado.`);
     } else {
       // Actualizar consolidado
-      this.logger.debug(`📊 Actualizando consolidado ${consolidated.id}`);
+      this.logger.log(`📊 Actualizando consolidado ${consolidated.id}`);
       consolidated.isCompleted = true;
       consolidated.efficiency = shipmentsToSave.length
         ? (result.saved / shipmentsToSave.length) * 100
@@ -1497,11 +1468,12 @@ export class ShipmentsService {
     batchNumber: number,
     shipmentIndex: number,
     processedTrackingNumbers: Set<string>,
-    shipmentsToGenerateIncomes: { shipment: Shipment; timestamp: Date; exceptionCode: string | undefined }[]
+    shipmentsToGenerateIncomes: { shipment: Shipment; timestamp: Date; exceptionCode: string | undefined }[],
+    consolidatedId: string
   ): Promise<void> {
     const trackingNumber = shipment.trackingNumber;
-    this.logger.debug(`📦 Procesando envío ${shipmentIndex}/${this.BATCH_SIZE} del lote ${batchNumber}: ${trackingNumber}`);
-    this.logger.debug(`📅 commitDate desde archivo: ${shipment.commitDate}, commitTime desde archivo: ${shipment.commitTime}`);
+    this.logger.log(`📦 Procesando envío ${shipmentIndex}/${this.BATCH_SIZE} del lote ${batchNumber}: ${trackingNumber}`);
+    this.logger.log(`📅 commitDate desde archivo: ${shipment.commitDate}, commitTime desde archivo: ${shipment.commitTime}`);
 
     if (!consolidated.id) {
       const reason = `Error: consolidated.id no está definido para ${trackingNumber}`;
@@ -1525,7 +1497,7 @@ export class ShipmentsService {
     }
 
     // Check database duplicates
-    if (await this.existShipment(trackingNumber)) {
+    if (await this.existShipment(trackingNumber, consolidatedId)) {
       const reason = `Envío duplicado en la base de datos: ${trackingNumber}`;
       this.logger.warn(`🔁 ${reason}`);
       result.duplicated++;
@@ -1553,12 +1525,12 @@ export class ShipmentsService {
           commitTime = format(parsedTime, 'HH:mm:ss');
           commitDateTime = new Date(`${commitDate}T${commitTime}`);
           dateSource = 'Excel';
-          this.logger.debug(`📅 commitDateTime asignado desde Excel para ${trackingNumber}: ${commitDateTime.toISOString()} (commitDate=${commitDate}, commitTime=${commitTime})`);
+          this.logger.log(`📅 commitDateTime asignado desde Excel para ${trackingNumber}: ${commitDateTime.toISOString()} (commitDate=${commitDate}, commitTime=${commitTime})`);
         } else {
-          this.logger.warn(`⚠️ Formato inválido en Excel para ${trackingNumber}: commitDate=${shipment.commitDate}, commitTime=${shipment.commitTime}`);
+          this.logger.log(`⚠️ Formato inválido en Excel para ${trackingNumber}: commitDate=${shipment.commitDate}, commitTime=${shipment.commitTime}`);
         }
       } catch (err) {
-        this.logger.warn(`⚠️ Error al parsear datos de Excel para ${trackingNumber}: ${err.message}`);
+        this.logger.log(`⚠️ Error al parsear datos de Excel para ${trackingNumber}: ${err.message}`);
       }
     }
 
@@ -1585,9 +1557,9 @@ export class ShipmentsService {
     let fedexShipmentData: FedExTrackingResponseDto;
 
     try {
-      this.logger.debug(`📬 Consultando FedEx para ${trackingNumber}`);
+      this.logger.log(`📬 Consultando FedEx para ${trackingNumber}`);
       fedexShipmentData = await this.trackPackageWithRetry(trackingNumber);
-      this.logger.debug(`📬 Datos FedEx recibidos para: ${trackingNumber}`);
+      this.logger.log(`📬 Datos FedEx recibidos para: ${trackingNumber}`);
     } catch (err) {
       const reason = `Error FedEx (${trackingNumber}): ${err.message}`;
       this.logger.error(`❌ ${reason}`);
@@ -1607,7 +1579,7 @@ export class ShipmentsService {
 
       const trackResult =
         trackResults.find((r) => r.latestStatusDetail?.derivedCode === 'DL') || trackResults[0];
-      this.logger.debug(
+      this.logger.log(
         `📜 Historial generado para ${trackingNumber}: ${histories.map((h) => h.status).join(', ')}`
       );
 
@@ -1622,12 +1594,12 @@ export class ShipmentsService {
               commitTime = format(parsedFedexDate, 'HH:mm:ss');
               commitDateTime = parsedFedexDate;
               dateSource = 'FedEx';
-              this.logger.debug(`📅 commitDateTime asignado desde FedEx para ${trackingNumber}: ${commitDateTime.toISOString()} (commitDate=${commitDate}, commitTime=${commitTime})`);
+              this.logger.log(`📅 commitDateTime asignado desde FedEx para ${trackingNumber}: ${commitDateTime.toISOString()} (commitDate=${commitDate}, commitTime=${commitTime})`);
             } else {
-              this.logger.warn(`⚠️ Formato de fecha inválido en FedEx para ${trackingNumber}: ${rawDate}`);
+              this.logger.log(`⚠️ Formato de fecha inválido en FedEx para ${trackingNumber}: ${rawDate}`);
             }
           } catch (err) {
-            this.logger.warn(`⚠️ Error al parsear fecha de FedEx para ${trackingNumber}: ${err.message}`);
+            this.logger.log(`⚠️ Error al parsear fecha de FedEx para ${trackingNumber}: ${err.message}`);
           }
         }
       }
@@ -1638,7 +1610,7 @@ export class ShipmentsService {
         commitTime = '18:00:00';
         commitDateTime = new Date(`${commitDate}T${commitTime}`);
         dateSource = 'Default';
-        this.logger.warn(`⚠️ commitDateTime asignado por defecto para ${trackingNumber}: ${commitDateTime.toISOString()} (commitDate=${commitDate}, commitTime=${commitTime})`);
+        this.logger.log(`⚠️ commitDateTime asignado por defecto para ${trackingNumber}: ${commitDateTime.toISOString()} (commitDate=${commitDate}, commitTime=${commitTime})`);
       }
 
       // Update shipment with final date values
@@ -1667,7 +1639,7 @@ export class ShipmentsService {
                 ? PaymentStatus.PAID
                 : PaymentStatus.PENDING,
             });
-            this.logger.debug(
+            this.logger.log(
               `💰 Monto de pago: $${amount} - Estatus: ${newShipment.payment.status}`
             );
           }
@@ -1705,34 +1677,30 @@ export class ShipmentsService {
 
         // 2. ENTREGADO con excepción 16
         if (newShipment.status === ShipmentStatusType.ENTREGADO && exceptionCodes.includes('16')) {
-          const alt = histories.find(
-            (h) => h.status === ShipmentStatusType.ENTREGADO && h.exceptionCode !== '16'
-          );
-          if (alt) {
+          const entregadoEvents = histories.filter((h) => h.status === ShipmentStatusType.ENTREGADO);
+          const firstEntregado = entregadoEvents.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime())[0];
+          if (firstEntregado) {
             shipmentsToGenerateIncomes.push({
               shipment: newShipment,
-              timestamp: alt.timestamp,
-              exceptionCode: alt.exceptionCode,
+              timestamp: firstEntregado.timestamp,
+              exceptionCode: firstEntregado.exceptionCode,
             });
+            this.logger.log(`✅ Incluido income para ENTREGADO con excepción 16 usando el primer evento: ${trackingNumber}`);
             return;
           } else {
-            const reason = `❌ Excluido de income: ENTREGADO con excepción 16 sin entrega previa válida (${trackingNumber})`;
-            this.logger.warn(reason);
+            const reason = `❌ Excluido de income: ENTREGADO con excepción 16 sin eventos ENTREGADO válidos (${trackingNumber})`;
+            this.logger.log(reason);
             this.logBuffer.push(reason);
             return;
           }
         }
 
-        // 3. Excepción 08 requiere 3 días distintos
+        // 3. Excepción 08 requiere 3 en días distinto o no
         if (exceptionCodes.includes('08')) {
-          const fechas08 = histories
-            .filter((h) => h.exceptionCode === '08')
-            .map((h) => format(h.timestamp, 'yyyy-MM-dd'));
-
-          const diasUnicos = new Set(fechas08);
-          if (diasUnicos.size < 3) {
-            const reason = `❌ Excluido de income: excepción 08 sin 3 días distintos (${trackingNumber})`;
-            this.logger.warn(reason);
+          const eventos08 = histories.filter((h) => h.exceptionCode === '08');
+          if (eventos08.length < 3) {
+            const reason = `❌ Excluido de income: excepción 08 con menos de 3 eventos (${trackingNumber})`;
+            this.logger.log(reason);
             this.logBuffer.push(reason);
             return;
           }
@@ -1757,7 +1725,7 @@ export class ShipmentsService {
           });
         } else {
           const reason = `❌ No se encontró matchedHistory válido para income: ${trackingNumber}`;
-          this.logger.warn(reason);
+          this.logger.log(reason);
           this.logBuffer.push(reason);
           result.failed++;
           result.saved--;
@@ -1783,7 +1751,7 @@ export class ShipmentsService {
     exceptionCode: string | undefined,
     transactionalEntityManager: EntityManager
   ): Promise<void> {
-    this.logger.debug(`🧾 Generando income para ${shipment.trackingNumber}`);
+    this.logger.log(`🧾 Generando income para ${shipment.trackingNumber}`);
     const incomeStartTime = Date.now();
 
     // Validate required fields with defaults
@@ -1842,7 +1810,7 @@ export class ShipmentsService {
 
       await transactionalEntityManager.save(newIncome);
       const incomeDuration = ((Date.now() - incomeStartTime) / 1000).toFixed(2);
-      this.logger.debug(`✅ Income guardado para ${shipment.trackingNumber} en ${incomeDuration}s`);
+      this.logger.log(`✅ Income guardado para ${shipment.trackingNumber} en ${incomeDuration}s`);
     } catch (err) {
       const reason = `Fallo al guardar income para ${shipment.trackingNumber}: ${err.message}`;
       this.logger.error(`❌ ${reason}`);
@@ -1852,10 +1820,10 @@ export class ShipmentsService {
 
   private async flushLogBuffer(): Promise<void> {
     if (this.logBuffer.length) {
-      this.logger.debug(`📜 Escribiendo ${this.logBuffer.length} logs a archivo`);
+      this.logger.log(`📜 Escribiendo ${this.logBuffer.length} logs a archivo`);
       try {
         await fs.appendFile(this.logFilePath, this.logBuffer.join('\n') + '\n', 'utf-8');
-        this.logger.debug(`✅ Logs escritos a ${this.logFilePath}`);
+        this.logger.log(`✅ Logs escritos a ${this.logFilePath}`);
         this.logBuffer = [];
       } catch (err) {
         this.logger.error(`❌ Error escribiendo logs: ${err.message}`);
@@ -1871,7 +1839,7 @@ export class ShipmentsService {
     ) {
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
       const outputPath = path.join(__dirname, `../../logs/shipment-errors-${timestamp}.json`);
-      this.logger.debug(`📜 Generando archivo de errores: ${outputPath}`);
+      this.logger.log(`📜 Generando archivo de errores: ${outputPath}`);
       try {
         await fs.mkdir(path.dirname(outputPath), { recursive: true });
         await fs.writeFile(outputPath, JSON.stringify(shipmentsWithError, null, 2), 'utf-8');
@@ -1890,10 +1858,10 @@ export class ShipmentsService {
     const delayMs = 1000;
 
     while (attempts < maxAttempts) {
-      this.logger.debug(`📬 Intento ${attempts + 1}/${maxAttempts} para trackPackage: ${trackingNumber}`);
+      this.logger.log(`📬 Intento ${attempts + 1}/${maxAttempts} para trackPackage: ${trackingNumber}`);
       try {
         const result = await this.fedexService.trackPackage(trackingNumber);
-        this.logger.debug(`✅ trackPackage exitoso para ${trackingNumber}`);
+        this.logger.log(`✅ trackPackage exitoso para ${trackingNumber}`);
         return result;
       } catch (err) {
         attempts++;
@@ -1908,11 +1876,11 @@ export class ShipmentsService {
     throw new Error(`Failed to track package ${trackingNumber} after ${maxAttempts} attempts`);
   }
 
-  private async existShipment(trackingNumber: string): Promise<boolean> {
+  private async existShipment(trackingNumber: string, consolidatedId: string): Promise<boolean> {
     this.logger.log(`🔍 Verificando existencia de envío: ${trackingNumber}`);
     try {
       const exists = await this.shipmentRepository.exists({
-        where: { trackingNumber },
+        where: { trackingNumber, consolidatedId },
       });
       this.logger.log(`✅ Verificación completada para ${trackingNumber}: ${exists}`);
       return exists;
@@ -1922,7 +1890,44 @@ export class ShipmentsService {
     }
   }
 
-  
+
+
+  async findByTrackingNumber(trackingNumber: string) {
+    const shipment = await this.shipmentRepository.findOne({
+      where : {trackingNumber},
+      relations: ['statusHistory'],
+    });
+
+    if (!shipment) {
+      throw new Error('Shipment not found');
+    }
+
+    return {
+      trackingNumber: shipment.trackingNumber,
+      recipientName: shipment.recipientName,
+      recipientAddress: shipment.recipientAddress,
+      recipientPhone: shipment.recipientPhone,
+      status: shipment.status,
+      commitDate: shipment.commitDateTime,
+      shipmentType: shipment.shipmentType,
+      statusHistory: shipment.statusHistory,
+    };
+  }
+
+  async findStatusHistoryByTrackingNumber(trackingNumber: string) {
+    const shipment = await this.shipmentRepository.findOne({
+      where: { trackingNumber },
+      relations: ['statusHistory']
+    });
+
+    if (!shipment) {
+      throw new Error('Shipment not found');
+    }
+
+    return shipment.statusHistory;
+  }
+
+
   /********************  DHL ********************/
     async processDhlTxtFile(fileContent: string): Promise<{ success: number; errors: number }> {
       const shipmentsDto = this.dhlService.parseDhlText(fileContent);
@@ -2011,7 +2016,7 @@ export class ShipmentsService {
   
   /****** Métodos para el cron que valida los envios y actualiza los status ******************/
     private async getShipmentsToValidate(): Promise<Shipment[]> {
-      this.logger.debug(`🔍 Iniciando getShipmentsToValidate`);
+      this.logger.log(`🔍 Iniciando getShipmentsToValidate`);
       try {
         // Verificar nuevamente shipmentRepository
         if (!this.shipmentRepository || !this.shipmentRepository.createQueryBuilder) {
@@ -2021,7 +2026,7 @@ export class ShipmentsService {
           return [];
         }
 
-        this.logger.debug(`📋 Construyendo consultas para shipmentRepository`);
+        this.logger.log(`📋 Construyendo consultas para shipmentRepository`);
         const baseQuery = this.shipmentRepository
           .createQueryBuilder('shipment')
           .leftJoinAndSelect('shipment.payment', 'payment')
@@ -2029,7 +2034,7 @@ export class ShipmentsService {
           .leftJoinAndSelect('shipment.subsidiary', 'subsidiary')
           .where('shipment.shipmentType = :shipmentType', { shipmentType: ShipmentType.FEDEX });
 
-        this.logger.debug(`📋 Construyendo group1`);
+        this.logger.log(`📋 Construyendo group1`);
         const group1 = baseQuery
           .clone()
           .andWhere('shipment.status IN (:...statuses)', {
@@ -2040,7 +2045,7 @@ export class ShipmentsService {
             ],
           });
 
-        this.logger.debug(`📋 Construyendo group2`);
+        this.logger.log(`📋 Construyendo group2`);
         const group2 = this.shipmentRepository
           .createQueryBuilder('shipment')
           .leftJoinAndSelect('shipment.payment', 'payment')
@@ -2064,7 +2069,7 @@ export class ShipmentsService {
           })
           .setParameter('code', '08');
 
-        this.logger.debug(`📋 Construyendo group3`);
+        this.logger.log(`📋 Construyendo group3`);
         const group3 = this.shipmentRepository
           .createQueryBuilder('shipment')
           .leftJoinAndSelect('shipment.payment', 'payment')
@@ -2078,7 +2083,7 @@ export class ShipmentsService {
           })
           .andWhere('statusHistory.exceptionCode IN (:...codes)', { codes: ['03', '17'] });
 
-        this.logger.debug(`📋 Ejecutando consultas group1, group2, group3`);
+        this.logger.log(`📋 Ejecutando consultas group1, group2, group3`);
         const [g1, g2, g3] = await Promise.all([
           group1.getMany().catch(err => {
             this.logger.error(`❌ Error en group1: ${err.message}`);
@@ -2097,12 +2102,12 @@ export class ShipmentsService {
           }),
         ]);
 
-        this.logger.debug(`📋 Combinando resultados: g1=${g1?.length || 0}, g2=${g2?.length || 0}, g3=${g3?.length || 0}`);
+        this.logger.log(`📋 Combinando resultados: g1=${g1?.length || 0}, g2=${g2?.length || 0}, g3=${g3?.length || 0}`);
         const map = new Map<string, Shipment>();
         [...(g1 || []), ...(g2 || []), ...(g3 || [])].forEach((s) => map.set(s.id, s));
         const shipments = Array.from(map.values());
         this.logger.log(`📦 ${shipments.length} envíos obtenidos para validar en FedEx`);
-        this.logger.debug(`📋 Resultado de getShipmentsToValidate: ${JSON.stringify(shipments.map(s => s.trackingNumber))}`);
+        this.logger.log(`📋 Resultado de getShipmentsToValidate: ${JSON.stringify(shipments.map(s => s.trackingNumber))}`);
         return shipments;
       } catch (err) {
         const reason = `Error en getShipmentsToValidate: ${err.message}`;
@@ -2118,11 +2123,11 @@ export class ShipmentsService {
       if (unusualCodes.length) {
         const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
         const outputPath = path.join(__dirname, `../../logs/unusual-codes-${timestamp}.json`);
-        this.logger.debug(`📜 Generando archivo de códigos inusuales: ${outputPath}`);
+        this.logger.log(`📜 Generando archivo de códigos inusuales: ${outputPath}`);
         try {
           await fs.mkdir(path.dirname(outputPath), { recursive: true });
           await fs.writeFile(outputPath, JSON.stringify(unusualCodes, null, 2), 'utf-8');
-          this.logger.debug(`✅ Códigos inusuales registrados en: ${outputPath}`);
+          this.logger.log(`✅ Códigos inusuales registrados en: ${outputPath}`);
           this.logBuffer.push(`✅ Códigos inusuales registrados en: ${outputPath}`);
         } catch (err) {
           this.logger.error(`❌ Error escribiendo archivo de códigos inusuales: ${err.message}`);
