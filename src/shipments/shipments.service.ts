@@ -2156,7 +2156,7 @@ export class ShipmentsService {
           >
             <thead style="background-color: #f7f7f7; text-align: center;">
               <tr>
-                <th style="padding: 10px;">ID</th>
+                <th style="padding: 10px;">Tracking Number</th>
                 <th style="padding: 10px;">Destino</th>
                 <th style="padding: 10px;">Fecha Ingreso a Almacén</th>
                 <th style="padding: 10px;">Estatus</th>
@@ -2172,6 +2172,13 @@ export class ShipmentsService {
             Este correo ha sido enviado con <strong>alta prioridad</strong> debido a la criticidad de los envíos.
           </p>
 
+          <p style="margin-top: 20px;">
+            Para hacer un monitoreo detallado de los envíos, por favor visite: 
+            <a href="https://app-pmy.vercel.app/" target="_blank" style="color: #2980b9; text-decoration: none;">
+              https://app-pmy.vercel.app/
+            </a>
+          </p>
+
           <hr style="margin: 30px 0; border: none; border-top: 1px solid #eee;" />
 
           <p style="font-size: 0.9em; color: #7f8c8d;">
@@ -2180,6 +2187,7 @@ export class ShipmentsService {
           </p>
         </div>
       `;
+
 
       const result = await this.mailService.sendHighPriorityShipmentsEmail(
         {
