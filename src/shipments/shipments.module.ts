@@ -9,11 +9,12 @@ import { DHLService } from './dto/dhl.service';
 import { SubsidiariesService } from 'src/subsidiaries/subsidiaries.service';
 import { Income, ShipmentStatus, Subsidiary, Charge, ChargeShipment, Consolidated } from 'src/entities';
 import { ConsolidatedService } from 'src/consolidated/consolidated.service';
+import { MailService } from 'src/mail/mail.service';
 
 @Module({
   controllers: [ShipmentsController],
   imports: [TypeOrmModule.forFeature([Shipment, ShipmentStatus,Subsidiary, Income, Charge, ChargeShipment, Consolidated]),TrackingModule],
-  providers: [ShipmentsService, FedexService, DHLService, SubsidiariesService, ConsolidatedService],
+  providers: [ShipmentsService, FedexService, DHLService, SubsidiariesService, ConsolidatedService, MailService],
   exports: [ShipmentsService],
 })
 export class ShipmentsModule { }

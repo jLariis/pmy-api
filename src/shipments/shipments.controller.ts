@@ -121,6 +121,31 @@ export class ShipmentsController {
     return this.shipmentsService.processFileCharges(file);
   }
 
+  @Post('upload-hv')
+  @UseInterceptors(FileInterceptor('file'))
+  @ApiOperation({ summary: 'Subir archivo Excel para procesar' })
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    description: 'Archivo Excel a procesar High Values',
+    schema: {
+      type: 'object',
+      properties: {
+        file: {
+          type: 'string',
+          format: 'binary',
+        },
+        subsidiaryId: {
+          type: 'string'
+        }
+      },
+    },
+  })
+  uploadHighValueShipment(
+    @UploadedFile() file: Express.Multer.File
+  ) {
+    return this.shipmentsService.processHihValueShipments(file);
+  }
+
   @Post('upload-dhl')
   @UseInterceptors(
     FileFieldsInterceptor([
@@ -201,6 +226,11 @@ export class ShipmentsController {
     return await this.shipmentsService.getAllChargesWithStatus();
   }
 
+  @Get('test-email')
+  testSendEmail(){
+    return this.shipmentsService.sendEmailWithHighPriorities();
+  }
+
   @Get(':trackingNumber')
   async getShipmentById(@Param('trackingNumber') trackingNumber: string) {
     return this.shipmentsService.findByTrackingNumber(trackingNumber);
@@ -252,6 +282,8 @@ export class ShipmentsController {
     testCronJob() {
       return this.shipmentsService.checkStatusOnFedex();
     }
+
+
 
   /**************************************************************************************************************** */
 

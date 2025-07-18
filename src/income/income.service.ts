@@ -148,373 +148,6 @@ export class IncomeService {
     }
 
     /******* DE AQUI EMPIEZA PARA GENERAR LOS INGRESOS */
-    async formatIncomesNewRespaldo(
-      incomes: Income[],
-      fromDate: Date,
-      toDate: Date
-    ): Promise<FormatIncomesDto[]> {
-      const report: FormatIncomesDto[] = [];
-      const pad = (n: number) => String(n).padStart(2, '0');
-
-      // Función que, dado un Date ISO, devuelve la clave "yyyy-MM-dd" en zona MX.
-      const localKey = (d: Date) =>
-        d.toLocaleDateString('sv', { timeZone: 'America/Mexico_City' });
-
-      // Función para mostrar "dd-MM-yyyy" en zona MX.
-      const localDisplay = (d: Date) =>
-        d.toLocaleDateString('es-MX', {
-          timeZone: 'America/Mexico_City',
-          day: '2-digit',
-          month: '2-digit',
-          year: 'numeric',
-        });
-
-      // 1) Agrupamos todos los incomes POR SU FECHA LOCAL.
-      const grouped = groupBy(incomes, inc => localKey(new Date(inc.date)));
-
-      // 2) Construimos startDate/endDate en *medianoche MX* explicitando la zona.
-      //    Para ello montamos un ISO con -07:00.
-      const buildMidnightMX = (d: Date): Date => {
-        const yyyy = d.getUTCFullYear();
-        const mm = pad(d.getUTCMonth() + 1);
-        const dd = pad(d.getUTCDate());
-        // 00:00:00 zona -07
-        return new Date(`${yyyy}-${mm}-${dd}T00:00:00-07:00`);
-      };
-      let cursor = buildMidnightMX(fromDate);
-      const endCursor = buildMidnightMX(toDate);
-
-      const oneDayMs = 24 * 60 * 60 * 1000;
-      while (cursor.getTime() <= endCursor.getTime()) {
-        const key   = localKey(cursor);      // "2025-06-16"
-        const label = localDisplay(cursor);  // "16-06-2025"
-
-        const dayIncomes     = grouped[key] || [];
-        const dayShipments   = dayIncomes.filter(i => i.sourceType === 'shipment');
-        const dayCollections = dayIncomes.filter(i => i.sourceType === 'collection');
-        console.log("🚀 ~ IncomeService ~ dayCollections:", dayCollections)
-        const dayCharges     = dayIncomes.filter(i => i.sourceType === 'charge');
-
-        // ---- FEDEx / DHL ----
-        const fedexIncomes = dayShipments.filter(i => i.shipmentType === 'fedex');
-        const dhlIncomes   = dayShipments.filter(i => i.shipmentType === 'dhl');
-
-        const fedexDelivered    = fedexIncomes.filter(i => i.incomeType === 'entregado').length;
-        const fedexNotDelivered = fedexIncomes.filter(i =>
-          i.incomeType === 'no_entregado' &&
-          ['07','08','17','03'].includes(i.notDeliveryStatus || '')
-        ).length;
-        const fedexTotalIncome = fedexIncomes.reduce((s,i) => s + parseFloat(i.cost||'0'), 0);
-
-        const dhlDelivered    = dhlIncomes.filter(i => i.deliveryStatus === 'BA').length;
-        const dhlNotDelivered = dhlIncomes.filter(i => i.deliveryStatus === 'NE').length;
-        const dhlTotalIncome  = dhlIncomes.reduce((s,i) => s + parseFloat(i.cost||'0'), 0);
-
-        // ---- CARGAS ----
-        const chargeTotalIncome = dayCharges.reduce((s,i) => s + parseFloat(i.cost||'0'), 0);
-
-        // ---- RESUMEN ----
-        const collectionsCount = dayCollections.length;
-        const cargasCount      = dayCharges.length;
-        const totalCount       = fedexDelivered + fedexNotDelivered
-                              + dhlDelivered + dhlNotDelivered
-                              + collectionsCount + cargasCount;
-        const totalIncome      = fedexTotalIncome + dhlTotalIncome + chargeTotalIncome;
-
-        // ---- ITEMS ----
-        const incomeItems = dayShipments.map(i => ({
-          type: 'shipment' as const,
-          trackingNumber: i.trackingNumber,
-          shipmentType: i.shipmentType,
-          status: i.incomeType,
-          date: new Date(i.date).toISOString(),
-          cost: parseFloat(i.cost || '0'),
-        }));
-        const collectionItems = dayCollections.map(i => ({
-          type: 'collection' as const,
-          trackingNumber: i.trackingNumber,
-          date: new Date(i.date).toISOString(),
-        }));
-        const cargaItems = dayCharges.map(i => ({
-          type: 'carga' as const,
-          trackingNumber: i.trackingNumber,
-          shipmentType: i.shipmentType,
-          date: new Date(i.date).toISOString(),
-          cost: parseFloat(i.cost || '0'),
-        }));
-
-        report.push({
-          date: label,
-          fedex: {
-            pod: fedexDelivered,
-            dex: fedexNotDelivered,
-            total: fedexDelivered + fedexNotDelivered,
-            totalIncome: formatCurrency(fedexTotalIncome),
-          },
-          dhl: {
-            ba: dhlDelivered,
-            ne: dhlNotDelivered,
-            total: dhlDelivered + dhlNotDelivered,
-            totalIncome: formatCurrency(dhlTotalIncome),
-          },
-          collections: collectionsCount,
-          cargas: cargasCount,
-          total: totalCount,
-          totalIncome: formatCurrency(totalIncome),
-          items: [...incomeItems, ...collectionItems, ...cargaItems],
-        });
-
-        // Avanzar 1 día (milisegundos) SIN depender de getDate()/UTC
-        cursor = new Date(cursor.getTime() + oneDayMs);
-      }
-
-      return report;
-    }
-
-    async getIncomeRespaldo(subsidiaryId: string, fromDate: Date, toDate: Date) {
-      this.logger.log(`📊 Iniciando getIncome para subsidiaryId=${subsidiaryId}, fromDate=${fromDate.toISOString()}, toDate=${toDate.toISOString()}`);
-
-      // Validate input dates
-      if (isNaN(fromDate.getTime()) || isNaN(toDate.getTime())) {
-        const reason = `Fechas inválidas: fromDate=${fromDate}, toDate=${toDate}`;
-        this.logger.error(`❌ ${reason}`);
-        throw new BadRequestException(reason);
-      }
-
-      // Normalize to start and end of day in UTC
-      const utcFromDate = startOfDay(new Date(fromDate));
-      const utcToDate = endOfDay(new Date(toDate));
-
-      this.logger.log(`📅 Fechas ajustadas: fromDate=${utcFromDate.toISOString()}, toDate=${utcToDate.toISOString()}`);
-
-      // Query incomes
-      const incomes = await this.incomeRepository.find({
-        where: {
-          subsidiary: { id: subsidiaryId },
-          date: Raw(alias => `${alias} >= :from AND ${alias} <= :to`, { from: utcFromDate, to: utcToDate }),
-        },
-        order: {
-          date: 'ASC',
-        },
-      });
-
-      this.logger.log(`📈 Encontrados ${incomes.length} incomes para el rango`);
-      if (incomes.length > 0) {
-        this.logger.log(`📄 Muestra de ingresos: ${JSON.stringify(incomes.slice(0, 3), null, 2)}`);
-        this.logger.log(`📄 Ingresos para 5-6 de julio: ${JSON.stringify(
-          incomes.filter(i => {
-            const date = typeof i.date === 'string' ? parseISO(i.date) : new Date(i.date);
-            return date.toISOString().startsWith('2025-07-05') || date.toISOString().startsWith('2025-07-06');
-          }), null, 2
-        )}`);
-      }
-
-      const incomeData = await this.formatIncomesNew(incomes, utcFromDate, utcToDate);
-
-      this.logger.log(`✅ Finalizado getIncome con ${incomeData.length} entradas en el reporte`);
-      return incomeData;
-    }
-
-    async formatIncomesNewRespaldo12072025(
-      incomes: Income[],
-      fromDate: Date,
-      toDate: Date
-    ): Promise<FormatIncomesDto[]> {
-      this.logger.log(`📊 Iniciando formatIncomesNew para rango ${fromDate.toISOString()} a ${toDate.toISOString()}`);
-      const report: FormatIncomesDto[] = [];
-      const timeZone = 'America/Mexico_City';
-      const oneDayMs = 24 * 60 * 60 * 1000;
-
-      // Validate input dates
-      if (isNaN(fromDate.getTime()) || isNaN(toDate.getTime())) {
-        const reason = `Fechas inválidas: fromDate=${fromDate}, toDate=${toDate}`;
-        this.logger.error(`❌ ${reason}`);
-        throw new BadRequestException(reason);
-      }
-
-      // Filter out FedEx shipments with nonDeliveryStatus '03'
-      const filteredIncomes = incomes.filter(i => {
-        if (i.sourceType === 'shipment' && i.shipmentType === 'fedex' && i.incomeType === 'no_entregado' && i.nonDeliveryStatus === '03') {
-          this.logger.log(`📅 Excluyendo ingreso: tracking=${i.trackingNumber}, nonDeliveryStatus=${i.nonDeliveryStatus}`);
-          return false;
-        }
-        return true;
-      });
-
-      this.logger.log(`📈 Ingresos filtrados: ${filteredIncomes.length} de ${incomes.length} originales`);
-
-      // Group by UTC date (yyyy-MM-dd in UTC)
-      const utcKey = (utcDate: Date): string => {
-        if (isNaN(utcDate.getTime())) {
-          this.logger.error(`❌ Invalid date in utcKey: ${utcDate}`);
-          return 'invalid';
-        }
-        const key = format(utcDate, 'yyyy-MM-dd', { timeZone: 'UTC' });
-        this.logger.log(`📅 utcKey input: ${utcDate.toISOString()}, output: ${key}`);
-        return key;
-      };
-
-      // Format date for display in yyyy-MM-dd format (Mexico City)
-      const localDisplay = (utcDate: Date): string => {
-        const zonedDate = toZonedTime(utcDate, timeZone);
-        return format(zonedDate, 'yyyy-MM-dd', { timeZone });
-      };
-
-      // Build a UTC date representing midnight in UTC
-      const buildMidnightUTC = (d: Date): Date => {
-        const utcMidnight = startOfDay(new Date(d));
-        this.logger.log(`📅 buildMidnightUTC input: ${d.toISOString()}, output: ${utcMidnight.toISOString()}`);
-        return utcMidnight;
-      };
-
-      // Group incomes by UTC date
-      const grouped = groupBy(filteredIncomes, inc => {
-        const date = typeof inc.date === 'string' ? parseISO(inc.date) : new Date(inc.date);
-        if (isNaN(date.getTime())) {
-          this.logger.error(`❌ Invalid date for income: ${JSON.stringify(inc)}`);
-          return 'invalid';
-        }
-        const key = utcKey(date);
-        this.logger.log(`📅 Grouping income: ${inc.date}, parsed: ${date.toISOString()}, key: ${key}`);
-        return key;
-      });
-
-      // Normalize date range to midnight UTC
-      let cursor = buildMidnightUTC(fromDate);
-      const endCursor = buildMidnightUTC(toDate);
-
-      this.logger.log(`📅 Rango normalizado: desde ${cursor.toISOString()} hasta ${endCursor.toISOString()}`);
-
-      while (cursor.getTime() <= endCursor.getTime()) {
-        const key = utcKey(cursor);
-        const label = localDisplay(cursor);
-
-        this.logger.log(`📅 Procesando día: ${key}, label: ${label}`);
-
-        const dayIncomes = grouped[key] || [];
-
-        // Log warning if incomes have missing or invalid fields
-        if (dayIncomes.some(i => !i.sourceType || !i.cost)) {
-          this.logger.warn(`⚠️ Ingresos con datos incompletos para ${key}: ${JSON.stringify(dayIncomes.filter(i => !i.sourceType || !i.cost))}`);
-        }
-
-        const dayShipments = dayIncomes.filter(i => i.sourceType === 'shipment');
-        const dayCollections = dayIncomes.filter(i => i.sourceType === 'collection');
-        const dayCharges = dayIncomes.filter(i => i.sourceType === 'charge');
-
-        const fedexIncomes = dayShipments.filter(i => i.shipmentType === 'fedex');
-        const dhlIncomes = dayShipments.filter(i => i.shipmentType === 'dhl');
-
-        const fedexDelivered = fedexIncomes.filter(i => i.incomeType === 'entregado').length;
-        const fedexNotDelivered = fedexIncomes.filter(i => {
-          if (i.incomeType !== 'no_entregado') return false;
-          const status = i.nonDeliveryStatus || '';
-          const included = ['07', '08'].includes(status);
-          this.logger.log(`📅 FedEx no_entregado: tracking=${i.trackingNumber}, nonDeliveryStatus=${status}, included=${included}`);
-          return included;
-        }).length;
-
-        const fedexTotalIncome = fedexIncomes.reduce((sum, i) => {
-          const cost = parseFloat(i.cost || '0');
-          if (isNaN(cost)) {
-            this.logger.warn(`⚠️ Costo inválido para ingreso fedex: ${JSON.stringify(i)}`);
-            return sum;
-          }
-          return sum + cost;
-        }, 0);
-
-        const dhlDelivered = dhlIncomes.filter(i => i.deliveryStatus === 'BA').length;
-        const dhlNotDelivered = dhlIncomes.filter(i => i.deliveryStatus === 'NE').length;
-        const dhlTotalIncome = dhlIncomes.reduce((sum, i) => {
-          const cost = parseFloat(i.cost || '0');
-          if (isNaN(cost)) {
-            this.logger.warn(`⚠️ Costo inválido para ingreso dhl: ${JSON.stringify(i)}`);
-            return sum;
-          }
-          return sum + cost;
-        }, 0);
-
-        const collectionTotalIncome = dayCollections.reduce((sum, i) => {
-          const cost = parseFloat(i.cost || '0');
-          if (isNaN(cost)) {
-            this.logger.warn(`⚠️ Costo inválido para ingreso collection: ${JSON.stringify(i)}`);
-            return sum;
-          }
-          return sum + cost;
-        }, 0);
-        const chargeTotalIncome = dayCharges.reduce((sum, i) => {
-          const cost = parseFloat(i.cost || '0');
-          if (isNaN(cost)) {
-            this.logger.warn(`⚠️ Costo inválido para ingreso charge: ${JSON.stringify(i)}`);
-            return sum;
-          }
-          return sum + cost;
-        }, 0);
-
-        const collectionsCount = dayCollections.length;
-        const cargasCount = dayCharges.length;
-        const totalCount = fedexDelivered + fedexNotDelivered + dhlDelivered + dhlNotDelivered + collectionsCount + cargasCount;
-
-        const totalIncome = fedexTotalIncome + dhlTotalIncome + chargeTotalIncome + collectionTotalIncome;
-
-        const incomeItems = dayShipments.map(i => ({
-          type: 'shipment' as const,
-          trackingNumber: i.trackingNumber,
-          shipmentType: i.shipmentType,
-          status: i.incomeType,
-          date: (typeof i.date === 'string' ? parseISO(i.date) : new Date(i.date)).toISOString(),
-          cost: parseFloat(i.cost || '0'),
-        }));
-
-        const collectionItems = dayCollections.map(i => ({
-          type: 'collection' as const,
-          trackingNumber: i.trackingNumber,
-          date: (typeof i.date === 'string' ? parseISO(i.date) : new Date(i.date)).toISOString(),
-          cost: parseFloat(i.cost || '0'),
-        }));
-
-        const cargaItems = dayCharges.map(i => ({
-          type: 'carga' as const,
-          trackingNumber: i.trackingNumber,
-          shipmentType: i.shipmentType,
-          date: (typeof i.date === 'string' ? parseISO(i.date) : new Date(i.date)).toISOString(),
-          cost: parseFloat(i.cost || '0'),
-        }));
-
-        // Log aggregation details for debugging
-        this.logger.log(`📊 Procesando ${key}: ${dayIncomes.length} ingresos, fedex=${fedexDelivered}+${fedexNotDelivered}, dhl=${dhlDelivered}+${dhlNotDelivered}, collections=${collectionsCount}, cargas=${cargasCount}`);
-
-        // Push report entry, including empty days
-        report.push({
-          date: label, // yyyy-MM-dd in Mexico City timezone for display
-          fedex: {
-            pod: fedexDelivered,
-            dex: fedexNotDelivered,
-            total: fedexDelivered + fedexNotDelivered,
-            totalIncome: formatCurrency(fedexTotalIncome),
-          },
-          dhl: {
-            ba: dhlDelivered,
-            ne: dhlNotDelivered,
-            total: dhlDelivered + dhlNotDelivered,
-            totalIncome: formatCurrency(dhlTotalIncome),
-          },
-          collections: collectionsCount,
-          cargas: cargasCount,
-          total: totalCount,
-          totalIncome: formatCurrency(totalIncome),
-          items: [...incomeItems, ...collectionItems, ...cargaItems],
-        });
-
-        cursor = new Date(cursor.getTime() + oneDayMs);
-      }
-
-      // Log the full report for debugging
-      this.logger.log(`📊 Reporte final: ${JSON.stringify(report, null, 2)}`);
-      this.logger.log(`✅ Finalizado formatIncomesNew con ${report.length} días en el reporte`);
-      return report;
-    }
-
     async getIncome(subsidiaryId: string, fromDate: Date, toDate: Date) {
       this.logger.log(`📊 Iniciando getIncome para subsidiaryId=${subsidiaryId}, fromDate=${fromDate.toISOString()}, toDate=${toDate.toISOString()}`);
 
@@ -555,12 +188,12 @@ export class IncomeService {
         const report: FormatIncomesDto[] = [];
         const oneDayMs = 24 * 60 * 60 * 1000;
 
-        // Filtrar ingresos
+        // Filtrar ingresos para excluir nonDeliveryStatus = '03'
         const filteredIncomes = incomes.filter(i => {
             return !(i.sourceType === 'shipment' && 
-                  i.shipmentType === 'fedex' && 
-                  i.incomeType === 'no_entregado' && 
-                  i.nonDeliveryStatus === '03');
+                    i.shipmentType === 'fedex' && 
+                    i.incomeType === 'no_entregado' && 
+                    i.nonDeliveryStatus === '03');
         });
 
         // Agrupar por fecha UTC
@@ -588,9 +221,13 @@ export class IncomeService {
             // FedEx
             const fedexIncomes = dayShipments.filter(i => i.shipmentType === 'fedex');
             const fedexDelivered = fedexIncomes.filter(i => i.incomeType === 'entregado').length;
-            const fedexNotDelivered = fedexIncomes.filter(i => 
+            const fedexDex07 = fedexIncomes.filter(i => 
                 i.incomeType === 'no_entregado' && 
-                ['07', '08'].includes(i.nonDeliveryStatus || '')
+                i.nonDeliveryStatus === '07'
+            ).length;
+            const fedexDex08 = fedexIncomes.filter(i => 
+                i.incomeType === 'no_entregado' && 
+                i.nonDeliveryStatus === '08'
             ).length;
             const fedexTotalIncome = fedexIncomes.reduce((sum, i) => sum + (i.cost || 0), 0);
 
@@ -610,18 +247,19 @@ export class IncomeService {
                     type: 'shipment' as const,
                     trackingNumber: i.trackingNumber,
                     shipmentType: i.shipmentType,
-                    status: i.incomeType,
+                    status: i.shipmentType === 'fedex' && i.incomeType === 'no_entregado' && ['07', '08'].includes(i.nonDeliveryStatus ?? '')
+                        ? `DEX${i.nonDeliveryStatus}`
+                        : i.incomeType,
                     date: (typeof i.date === 'string' ? parseISO(i.date) : new Date(i.date)).toISOString(),
                     cost: i.cost || 0,
-                    statusHistory: i.shipment?.statusHistory || [], // Solo para shipments
-                    commitDateTime: i.shipment?.commitDateTime // Fecha compromiso de shipment
+                    statusHistory: i.shipment?.statusHistory || [],
+                    commitDateTime: i.shipment?.commitDateTime
                 })),
                 ...dayCollections.map(i => ({
                     type: 'collection' as const,
                     trackingNumber: i.trackingNumber,
                     date: (typeof i.date === 'string' ? parseISO(i.date) : new Date(i.date)).toISOString(),
                     cost: i.cost || 0,
-                    // Sin statusHistory para collections
                 })),
                 ...dayCharges.map(i => ({
                     type: 'carga' as const,
@@ -629,7 +267,6 @@ export class IncomeService {
                     shipmentType: i.shipmentType,
                     date: (typeof i.date === 'string' ? parseISO(i.date) : new Date(i.date)).toISOString(),
                     cost: i.cost || 0,
-                    // Sin statusHistory para charges
                 }))
             ];
 
@@ -637,8 +274,9 @@ export class IncomeService {
                 date: dateKey,
                 fedex: {
                     pod: fedexDelivered,
-                    dex: fedexNotDelivered,
-                    total: fedexDelivered + fedexNotDelivered,
+                    dex07: fedexDex07,
+                    dex08: fedexDex08,
+                    total: fedexDelivered + fedexDex07 + fedexDex08,
                     totalIncome: formatCurrency(fedexTotalIncome),
                 },
                 dhl: {
@@ -649,7 +287,7 @@ export class IncomeService {
                 },
                 collections: dayCollections.length,
                 cargas: dayCharges.length,
-                total: fedexDelivered + fedexNotDelivered + dhlDelivered + dhlNotDelivered + dayCollections.length + dayCharges.length,
+                total: fedexDelivered + fedexDex07 + fedexDex08 + dhlDelivered + dhlNotDelivered + dayCollections.length + dayCharges.length,
                 totalIncome: formatCurrency(fedexTotalIncome + dhlTotalIncome + chargeTotalIncome + collectionTotalIncome),
                 items,
             });

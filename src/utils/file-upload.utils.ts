@@ -137,6 +137,30 @@ export function parseDynamicSheetCharge(sheet: XLSX.Sheet) {
     return shipmentsWithCharge;
 }
 
+export function parseDynamicHighValue(sheet: XLSX.Sheet) {
+    const highValueShipments = [];    
+    const allRows: any[][] = XLSX.utils.sheet_to_json(sheet, {
+        header: 1,
+        range: 0,
+        blankrows: false
+    });
+
+    const { map: headerMap, headerRowIndex } = getHeaderIndexMap(sheet,20, true);
+    
+    console.log("🚀 ~ parseHighValueShipments ~ headerMap:", headerMap)
+
+    const dataRows = allRows.slice(headerRowIndex + 1);
+
+    dataRows.map(row => {
+        highValueShipments.push({
+            trackingNumber: row[headerMap['trackingNumber']],
+            recipientAddress: row[headerMap['recipientAddress']],
+        });
+    });
+
+    return highValueShipments;
+}
+
 export function parseDynamicSheetDHL(sheet: XLSX.Sheet) {
     const allRows: any[][] = XLSX.utils.sheet_to_json(sheet, {
         header: 1,

@@ -13,6 +13,18 @@ export class TrackingCronService {
     this.logger.log('🕐 Ejecutando verificación de envíos...');
     await this.shipmentService.checkStatusOnFedex();
   }
+
+  @Cron(CronExpression.EVERY_DAY_AT_1AM)
+  async handleUpdatePriotiry(){
+    this.logger.log('🕐 Ejecutando actualización de prioridades...');
+    await this.shipmentService.updatePriorities();
+  }
+
+  @Cron(CronExpression.EVERY_DAY_AT_2AM)
+  async handleSendPriorityShipments(){
+    this.logger.log('🕐 Ejecutando el envio de correo con envíos que deben ser proritarios...');
+    await this.shipmentService.sendEmailWithHighPriorities();
+  }
 }
 
 

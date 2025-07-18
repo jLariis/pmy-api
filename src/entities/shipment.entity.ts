@@ -81,6 +81,9 @@ export class Shipment {
   @Column({ nullable: true, default: null })
   consolidatedId: string;
 
+  @Column({ nullable: true, default: false})
+  isHighValue: boolean;
+
   @BeforeInsert()
   setDefaults() {
     this.createdAt = new Date(); // Fecha en UTC (asegúrate de que el servidor esté en UTC)

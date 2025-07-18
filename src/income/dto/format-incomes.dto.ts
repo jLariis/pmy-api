@@ -13,7 +13,8 @@ export class FormatIncomesDto {
   date: string;
   fedex: {
     pod: number;
-    dex: number;
+    dex07: number;
+    dex08: number;
     total: number;
     totalIncome: string;
   };

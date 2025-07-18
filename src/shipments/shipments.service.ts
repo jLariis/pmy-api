@@ -1,12 +1,12 @@
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Between, EntityManager, Repository } from 'typeorm';
+import { Between, EntityManager, In, Repository } from 'typeorm';
 import { Shipment } from 'src/entities/shipment.entity';
 import { ShipmentStatusType } from 'src/common/enums/shipment-status-type.enum';
 import * as XLSX from 'xlsx';
 import { FedexService } from './fedex.service';
 import { ShipmentStatus } from 'src/entities/shipment-status.entity';
-import { getPriority, parseDynamicFileF2, parseDynamicSheet, parseDynamicSheetCharge, parseDynamicSheetDHL } from 'src/utils/file-upload.utils';
+import { getPriority, parseDynamicFileF2, parseDynamicHighValue, parseDynamicSheet, parseDynamicSheetCharge, parseDynamicSheetDHL } from 'src/utils/file-upload.utils';
 import { scanEventsFilter } from 'src/utils/scan-events-filter';
 import { ParsedShipmentDto } from './dto/parsed-shipment.dto';
 import { mapFedexStatusToLocalStatus } from 'src/utils/fedex.utils';
@@ -32,6 +32,7 @@ import { GetShipmentKpisDto } from './dto/get-shipment-kpis.dto';
 import { ConsolidatedService } from 'src/consolidated/consolidated.service';
 import { ConsolidatedType } from 'src/common/enums/consolidated-type.enum';
 import { toZonedTime } from 'date-fns-tz';
+import { MailService } from 'src/mail/mail.service';
 
 @Injectable()
 export class ShipmentsService {
@@ -62,7 +63,8 @@ export class ShipmentsService {
     private readonly fedexService: FedexService,
     private readonly dhlService: DHLService,
     private readonly subsidiaryService: SubsidiariesService,
-    private readonly consolidatedService: ConsolidatedService
+    private readonly consolidatedService: ConsolidatedService,
+    private readonly mailService: MailService
   ) { }
 
   async appendLogToFile(message: string) {
@@ -834,6 +836,107 @@ export class ShipmentsService {
     return shipmentsWithCharge;
   }
 
+  async processHihValueShipments(file: Express.Multer.File){
+    if (!file) throw new BadRequestException('No file uploaded');
+
+    const { buffer, originalname } = file;
+
+    if (!originalname.match(/\.(csv|xlsx?)$/i)) {
+      throw new BadRequestException('Unsupported file type');
+    }
+
+    const workbook = XLSX.read(buffer, { type: 'buffer' });
+    const sheet = workbook.Sheets[workbook.SheetNames[0]];
+
+    const highValueShipments = parseDynamicHighValue(sheet);
+
+    if(highValueShipments.length === 0) return 'No se encontraron envios con cobro.'
+
+     for(const { trackingNumber, recipientAddress }of highValueShipments) {
+      let shipmentToUpdate = await this.shipmentRepository.findOneBy({
+        trackingNumber,
+        recipientAddress
+      })
+
+      if(shipmentToUpdate) {
+        shipmentToUpdate.isHighValue = true;
+        await this.shipmentRepository.save(shipmentToUpdate);
+      }
+
+    }
+
+    return highValueShipments;
+
+  }
+
+  private async applyIncomeValidationRules(
+    shipment: Shipment,
+    mappedStatus: ShipmentStatusType,
+    exceptionCodes: string[],
+    histories: ShipmentStatus[],
+    trackingNumber: string,
+    eventDate: Date
+  ): Promise<{ isValid: boolean; timestamp: Date; reason?: string; isOD?: boolean }> {
+    this.logger.debug(`📋 Aplicando reglas de validación de income para ${trackingNumber}`);
+
+    // Global rules applicable to all subsidiaries
+    // 1. NO_ENTREGADO con excepción 03
+    if (mappedStatus === ShipmentStatusType.NO_ENTREGADO && exceptionCodes.includes('03')) {
+      const reason = `❌ Excluido de income: NO_ENTREGADO con excepción 03 (${trackingNumber})`;
+      this.logger.warn(reason);
+      this.logBuffer.push(reason);
+      return { isValid: false, timestamp: eventDate, reason };
+    }
+
+    // 2. ENTREGADO con excepción 16
+    if (mappedStatus === ShipmentStatusType.ENTREGADO && exceptionCodes.includes('16')) {
+      const entregadoEvents = histories.filter((h) => h.status === ShipmentStatusType.ENTREGADO);
+      const firstEntregado = entregadoEvents.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime())[0];
+      if (firstEntregado) {
+        this.logger.log(`✅ Incluido income para ENTREGADO con excepción 16 usando el primer evento: ${trackingNumber}`);
+        return { isValid: true, timestamp: firstEntregado.timestamp };
+      } else {
+        const reason = `❌ Excluido de income: ENTREGADO con excepción 16 sin eventos ENTREGADO válidos (${trackingNumber})`;
+        this.logger.warn(reason);
+        this.logBuffer.push(reason);
+        return { isValid: false, timestamp: eventDate, reason };
+      }
+    }
+
+    // 3. Excepción OD (global)
+    if (exceptionCodes.includes('OD')) {
+      const reason = `📦 Shipment con excepción "OD" excluido del income y marcado para procesamiento especial: ${trackingNumber}`;
+      this.logger.warn(reason);
+      this.logBuffer.push(reason);
+      return { isValid: false, timestamp: eventDate, reason, isOD: true };
+    }
+
+    // Subsidiary-specific rules for exceptionCode 08
+    if (exceptionCodes.includes('08')) {
+      const subsidiaryId = shipment.subsidiary?.id || 'DEFAULT';
+      // Example configuration: Some subsidiaries require 3 events, others may have different thresholds
+      const subsidiaryRules = {
+        'mexico-city': { minEvents08: 3 }, // Example: Mexico City requires 3 events
+        'guadalajara': { minEvents08: 2 }, // Example: Guadalajara requires 2 events
+        'DEFAULT': { minEvents08: 3 }, // Default for other subsidiaries
+      };
+
+      const rule = subsidiaryRules[subsidiaryId] || subsidiaryRules['DEFAULT'];
+      const eventos08 = histories.filter((h) => h.exceptionCode === '08');
+
+      if (eventos08.length < rule.minEvents08) {
+        const reason = `❌ Excluido de income: excepción 08 con menos de ${rule.minEvents08} eventos para sucursal ${subsidiaryId} (${trackingNumber})`;
+        this.logger.warn(reason);
+        this.logBuffer.push(reason);
+        return { isValid: false, timestamp: eventDate, reason };
+      }
+    }
+
+    // If no exclusion rules apply, allow income generation
+    this.logger.log(`✅ Income permitido para ${trackingNumber} con status=${mappedStatus}`);
+    return { isValid: true, timestamp: eventDate };
+  }
+
   async checkStatusOnFedex(): Promise<void> {
     const shipmentsWithError: { trackingNumber: string; reason: string }[] = [];
     const unusualCodes: { trackingNumber: string; derivedCode: string; exceptionCode?: string; eventDate: string; statusByLocale?: string }[] = [];
@@ -873,12 +976,17 @@ export class ShipmentsService {
                 return;
               }
 
-              const trackResult = shipmentInfo.output.completeTrackResults[0].trackResults[0];
-              const latestStatusDetail = trackResult.latestStatusDetail;
+              const trackResults = shipmentInfo.output.completeTrackResults[0].trackResults;
+              const latestTrackResult = trackResults.find((r) => r.latestStatusDetail?.derivedCode === 'DL') || trackResults.sort((a, b) => {
+                const dateA = a.scanEvents[0]?.date ? new Date(a.scanEvents[0].date).getTime() : 0;
+                const dateB = b.scanEvents[0]?.date ? new Date(b.scanEvents[0].date).getTime() : 0;
+                return dateB - dateA;
+              })[0];
+              const latestStatusDetail = latestTrackResult.latestStatusDetail;
               this.logger.log(`📣 Último estatus de FedEx para ${trackingNumber}: ${latestStatusDetail?.derivedCode} - ${latestStatusDetail?.statusByLocale}`);
 
               const mappedStatus = mapFedexStatusToLocalStatus(latestStatusDetail?.derivedCode, latestStatusDetail?.ancillaryDetails?.[0]?.reason);
-              const exceptionCode = latestStatusDetail?.ancillaryDetails?.[0]?.reason || trackResult.scanEvents[0]?.exceptionCode;
+              const exceptionCode = latestStatusDetail?.ancillaryDetails?.[0]?.reason || latestTrackResult.scanEvents[0]?.exceptionCode;
 
               // Registrar códigos inusuales
               const knownExceptionCodes = ['07', '03', '08', '17', '67', '14', '16', 'OD'];
@@ -887,7 +995,7 @@ export class ShipmentsService {
                   trackingNumber,
                   derivedCode: latestStatusDetail?.derivedCode || 'N/A',
                   exceptionCode,
-                  eventDate: trackResult.scanEvents[0]?.date || 'N/A',
+                  eventDate: latestTrackResult.scanEvents[0]?.date || 'N/A',
                   statusByLocale: latestStatusDetail?.statusByLocale || 'N/A',
                 });
                 this.logger.warn(`⚠️ Código inusual detectado para ${trackingNumber}: exceptionCode=${exceptionCode}, derivedCode=${latestStatusDetail?.derivedCode}`);
@@ -900,15 +1008,16 @@ export class ShipmentsService {
                   trackingNumber,
                   derivedCode: latestStatusDetail?.derivedCode || 'N/A',
                   exceptionCode,
-                  eventDate: trackResult.scanEvents[0]?.date || 'N/A',
+                  eventDate: latestTrackResult.scanEvents[0]?.date || 'N/A',
                   statusByLocale: latestStatusDetail?.statusByLocale || 'N/A',
                 });
                 this.logger.warn(`⚠️ derivedCode desconocido para ${trackingNumber}: derivedCode=${latestStatusDetail?.derivedCode}, statusByLocale=${latestStatusDetail?.statusByLocale}`);
                 return;
               }
 
-              // Buscar el evento correspondiente
-              const event = trackResult.scanEvents.find(
+              // Aggregate scanEvents from all trackResults
+              const allScanEvents = trackResults.flatMap((result) => result.scanEvents || []);
+              const event = allScanEvents.find(
                 (e) =>
                   e.eventType === 'DL' ||
                   e.derivedStatusCode === 'DL' ||
@@ -918,7 +1027,7 @@ export class ShipmentsService {
                   (mappedStatus === ShipmentStatusType.PENDIENTE && ['TA', 'TD', 'HL'].includes(e.eventType)) ||
                   (mappedStatus === ShipmentStatusType.EN_RUTA && ['OC', 'IT', 'AR', 'AF', 'CP', 'CC'].includes(e.eventType)) ||
                   (mappedStatus === ShipmentStatusType.RECOLECCION && ['PU'].includes(e.eventType))
-              ) || trackResult.scanEvents[0];
+              ) || allScanEvents.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())[0];
               if (!event) {
                 const reason = `No se encontró evento para el estatus ${latestStatusDetail?.derivedCode} en ${trackingNumber}`;
                 this.logger.warn(`⚠️ ${reason}`);
@@ -954,48 +1063,19 @@ export class ShipmentsService {
               // Apply validation rules for income generation
               const exceptionCodes = shipment.statusHistory.map((h) => h.exceptionCode).filter(Boolean).concat(exceptionCode ? [exceptionCode] : []);
               if ([ShipmentStatusType.ENTREGADO, ShipmentStatusType.NO_ENTREGADO].includes(mappedStatus)) {
-                // 1. NO_ENTREGADO con excepción 03
-                if (mappedStatus === ShipmentStatusType.NO_ENTREGADO && exceptionCode === '03') {
-                  const reason = `❌ Excluido de income: NO_ENTREGADO con excepción 03 (${trackingNumber})`;
-                  this.logger.warn(reason);
-                  this.logBuffer.push(reason);
-                  return;
-                }
-
-                // 2. ENTREGADO con excepción 16
-                if (mappedStatus === ShipmentStatusType.ENTREGADO && exceptionCodes.includes('16')) {
-                  const entregadoEvents = shipment.statusHistory.filter((h) => h.status === ShipmentStatusType.ENTREGADO);
-                  const firstEntregado = entregadoEvents.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime())[0];
-                  if (firstEntregado) {
-                    eventDate = firstEntregado.timestamp;
-                    this.logger.log(`✅ Incluido income para ENTREGADO con excepción 16 usando el primer evento: ${trackingNumber}`);
-                  } else {
-                    const reason = `❌ Excluido de income: ENTREGADO con excepción 16 sin eventos ENTREGADO válidos (${trackingNumber})`;
-                    this.logger.log(reason);
-                    this.logBuffer.push(reason);
-                    return;
-                  }
-                }
-
-                // 3. Excepción 08 requiere 3 eventos
-                if (exceptionCodes.includes('08')) {
-                  const eventos08 = shipment.statusHistory.filter((h) => h.exceptionCode === '08');
-                  if (eventos08.length < 3) {
-                    const reason = `❌ Excluido de income: excepción 08 con menos de 3 eventos (${trackingNumber})`;
-                    this.logger.log(reason);
-                    this.logBuffer.push(reason);
-                    return;
-                  }
-                }
-
-                // 4. Excepción "OD"
-                if (exceptionCode === 'OD') {
-                  const reason = `📦 Shipment con excepción "OD" excluido del income y marcado para procesamiento especial: ${trackingNumber}`;
-                  this.logger.log(reason);
-                  this.logBuffer.push(reason);
+                const validationResult = await this.applyIncomeValidationRules(
+                  shipment,
+                  mappedStatus,
+                  exceptionCodes,
+                  shipment.statusHistory,
+                  trackingNumber,
+                  eventDate
+                );
+                if (!validationResult.isValid) {
                   shipmentsWithOD.push({ trackingNumber, eventDate: eventDate.toISOString() });
                   return;
                 }
+                eventDate = validationResult.timestamp;
               }
 
               // Verificar si el estado ya existe en ShipmentStatus
@@ -1032,7 +1112,7 @@ export class ShipmentsService {
               // Actualizar Shipment
               shipment.status = mappedStatus;
               shipment.statusHistory.push(newShipmentStatus);
-              shipment.receivedByName = trackResult.deliveryDetails?.receivedByName || shipment.receivedByName;
+              shipment.receivedByName = latestTrackResult.deliveryDetails?.receivedByName || shipment.receivedByName;
 
               // Asegurar commitDateTime
               if (!shipment.commitDateTime) {
@@ -1065,16 +1145,26 @@ export class ShipmentsService {
                     .execute();
                   this.logger.log(`💾 Shipment actualizado para ${trackingNumber} con status=${mappedStatus}`);
 
-                  // Generar Income solo para ENTREGADO o NO_ENTREGADO
+                  // Generar Income solo para ENTREGADO o NO_ENTREGADO si pasa validación
                   if ([ShipmentStatusType.ENTREGADO, ShipmentStatusType.NO_ENTREGADO].includes(mappedStatus) && isNewerEvent) {
-                    try {
-                      await this.generateIncomes(shipment, newShipmentStatus.timestamp, newShipmentStatus.exceptionCode, transactionalEntityManager);
-                      this.logger.log(`✅ Income generado para ${trackingNumber} con status=${mappedStatus}`);
-                    } catch (err) {
-                      const reason = `Error al generar income para ${trackingNumber}: ${err.message}`;
-                      this.logger.error(`❌ ${reason}`);
-                      this.logBuffer.push(reason);
-                      shipmentsWithError.push({ trackingNumber, reason });
+                    const validationResult = await this.applyIncomeValidationRules(
+                      shipment,
+                      mappedStatus,
+                      exceptionCodes,
+                      shipment.statusHistory,
+                      trackingNumber,
+                      eventDate
+                    );
+                    if (validationResult.isValid) {
+                      try {
+                        await this.generateIncomes(shipment, validationResult.timestamp, newShipmentStatus.exceptionCode, transactionalEntityManager);
+                        this.logger.log(`✅ Income generado para ${trackingNumber} con status=${mappedStatus}`);
+                      } catch (err) {
+                        const reason = `Error al generar income para ${trackingNumber}: ${err.message}`;
+                        this.logger.error(`❌ ${reason}`);
+                        this.logBuffer.push(reason);
+                        shipmentsWithError.push({ trackingNumber, reason });
+                      }
                     }
                   }
                 });
@@ -1515,7 +1605,6 @@ export class ShipmentsService {
     let commitDateTime: Date | undefined;
     let dateSource = '';
 
-    // Try Excel file first
     if (shipment.commitDate && shipment.commitTime) {
       try {
         const parsedDate = parse(shipment.commitDate, 'yyyy-MM-dd', new Date());
@@ -1576,9 +1665,11 @@ export class ShipmentsService {
         trackResults.flatMap((result) => result.scanEvents || []),
         newShipment
       );
-
-      const trackResult =
-        trackResults.find((r) => r.latestStatusDetail?.derivedCode === 'DL') || trackResults[0];
+      const trackResult = trackResults.find((r) => r.latestStatusDetail?.derivedCode === 'DL') || trackResults.sort((a, b) => {
+        const dateA = a.scanEvents[0]?.date ? new Date(a.scanEvents[0].date).getTime() : 0;
+        const dateB = b.scanEvents[0]?.date ? new Date(b.scanEvents[0].date).getTime() : 0;
+        return dateB - dateA;
+      })[0];
       this.logger.log(
         `📜 Historial generado para ${trackingNumber}: ${histories.map((h) => h.status).join(', ')}`
       );
@@ -1654,77 +1745,27 @@ export class ShipmentsService {
       if ([ShipmentStatusType.ENTREGADO, ShipmentStatusType.NO_ENTREGADO].includes(newShipment.status)) {
         const matchedHistory = histories
           .filter((h) => h.status === newShipment.status)
-          .pop();
-
+          .sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime())[0];
         const exceptionCodes = histories.map((h) => h.exceptionCode).filter(Boolean);
 
-        /**
-         * 📋 Reglas de exclusión para generación de incomes:
-         * 
-         * 1. ❌ NO_ENTREGADO con excepción 03 no genera income.
-         * 2. ❌ ENTREGADO con excepción 16 busca una entrega anterior sin ese código para usar su timestamp.
-         * 3. ❌ Envíos con excepción 08 solo generan income si hay al menos 3 eventos en días distintos.
-         * 4. ❌ Envíos con excepción "OD" no generan income y deben ser agregados a una lista especial (para tabla aparte).
-         */
+        const validationResult = await this.applyIncomeValidationRules(
+          newShipment,
+          newShipment.status,
+          exceptionCodes,
+          histories,
+          trackingNumber,
+          matchedHistory?.timestamp || new Date()
+        );
 
-        // 1. NO_ENTREGADO con excepción 03
-        if (newShipment.status === ShipmentStatusType.NO_ENTREGADO && exceptionCodes.includes('03')) {
-          const reason = `❌ Excluido de income: NO_ENTREGADO con excepción 03 (${trackingNumber})`;
-          this.logger.warn(reason);
-          this.logBuffer.push(reason);
-          return;
-        }
-
-        // 2. ENTREGADO con excepción 16
-        if (newShipment.status === ShipmentStatusType.ENTREGADO && exceptionCodes.includes('16')) {
-          const entregadoEvents = histories.filter((h) => h.status === ShipmentStatusType.ENTREGADO);
-          const firstEntregado = entregadoEvents.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime())[0];
-          if (firstEntregado) {
-            shipmentsToGenerateIncomes.push({
-              shipment: newShipment,
-              timestamp: firstEntregado.timestamp,
-              exceptionCode: firstEntregado.exceptionCode,
-            });
-            this.logger.log(`✅ Incluido income para ENTREGADO con excepción 16 usando el primer evento: ${trackingNumber}`);
-            return;
-          } else {
-            const reason = `❌ Excluido de income: ENTREGADO con excepción 16 sin eventos ENTREGADO válidos (${trackingNumber})`;
-            this.logger.log(reason);
-            this.logBuffer.push(reason);
-            return;
-          }
-        }
-
-        // 3. Excepción 08 requiere 3 en días distinto o no
-        if (exceptionCodes.includes('08')) {
-          const eventos08 = histories.filter((h) => h.exceptionCode === '08');
-          if (eventos08.length < 3) {
-            const reason = `❌ Excluido de income: excepción 08 con menos de 3 eventos (${trackingNumber})`;
-            this.logger.log(reason);
-            this.logBuffer.push(reason);
-            return;
-          }
-        }
-
-        // 4. Excepción "OD" se ignora, se enviará a una tabla especial (registrar en log)
-        if (exceptionCodes.includes('OD')) {
-          const reason = `📦 Shipment con excepción "OD" excluido del income y marcado para procesamiento especial: ${trackingNumber}`;
-          this.logger.warn(reason);
-          this.logBuffer.push(reason);
-          // 👉 Aquí podrías acumular en un arreglo `shipmentsWithOD` para insertarlo luego en una tabla especial
-          // Por ahora solo lo registramos
-          return;
-        }
-
-        // ✅ Agregar income si pasó todas las validaciones
-        if (matchedHistory) {
+        if (validationResult.isValid && matchedHistory) {
           shipmentsToGenerateIncomes.push({
             shipment: newShipment,
-            timestamp: matchedHistory.timestamp,
+            timestamp: validationResult.timestamp,
             exceptionCode: matchedHistory.exceptionCode,
           });
+          this.logger.log(`✅ Incluido income para ${newShipment.status}: ${trackingNumber}`);
         } else {
-          const reason = `❌ No se encontró matchedHistory válido para income: ${trackingNumber}`;
+          const reason = validationResult.reason || `❌ No se encontró matchedHistory válido para income: ${trackingNumber}`;
           this.logger.log(reason);
           this.logBuffer.push(reason);
           result.failed++;
@@ -1890,8 +1931,6 @@ export class ShipmentsService {
     }
   }
 
-
-
   async findByTrackingNumber(trackingNumber: string) {
     const shipment = await this.shipmentRepository.findOne({
       where : {trackingNumber},
@@ -2013,7 +2052,152 @@ export class ShipmentsService {
     }
   /******************************************* */
 
-  
+  /****** Métodos para el cron que actualiza las prioridades y enviar correo con las prioridades Altas ******************/
+    async updatePriorities() {
+      const shipments = await this.shipmentRepository.find({
+        where: {
+          status: In([
+            ShipmentStatusType.EN_RUTA,
+            ShipmentStatusType.PENDIENTE,
+            ShipmentStatusType.RECOLECCION
+          ]),
+        },
+      });
+
+      for (const shipment of shipments) {
+        shipment.priority = getPriority(shipment.commitDateTime);
+      }
+
+      // Guardar todos en una sola operación
+      const updatedShipments = await this.shipmentRepository.save(shipments);
+
+      return updatedShipments;
+    }
+
+    async sendEmailWithHighPriorities() {
+      const today = new Date();
+
+      // QueryBuilder con join manual a consolidated
+      const shipmentsRaw = await this.shipmentRepository
+        .createQueryBuilder('shipment')
+        .leftJoinAndSelect('shipment.subsidiary', 'subsidiary')
+        .leftJoin(
+          'consolidated',
+          'consolidated',
+          'consolidated.id = shipment.consolidatedId'
+        )
+        .addSelect(['consolidated.date'])
+        .where('shipment.status IN (:...statuses)', {
+          statuses: [
+            ShipmentStatusType.EN_RUTA,
+            ShipmentStatusType.PENDIENTE,
+            ShipmentStatusType.RECOLECCION,
+          ],
+        })
+        .andWhere('shipment.priority = :priority', { priority: Priority.ALTA })
+        .getRawMany();
+
+      if (shipmentsRaw.length === 0) return;
+
+      // La estructura raw tiene campos con alias como shipment_id, consolidated_date, subsidiary_name, etc.
+      // Ajustamos para mapear y calcular días en almacén
+      const shipments = shipmentsRaw
+        .map((row) => {
+          const consolidatedDate = row['consolidated_date'];
+          let daysInWarehouse: number | string = 'N/A';
+          if (consolidatedDate) {
+            const diffMs = today.getTime() - new Date(consolidatedDate).getTime();
+            daysInWarehouse = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+          }
+          return {
+            trackingNumber: row['shipment_trackingNumber'],
+            subsidiaryName: row['subsidiary_name'] || 'N/A',
+            consolidatedDate,
+            status: row['shipment_status'],
+            daysInWarehouse,
+          };
+        })
+        .sort((a, b) => {
+          const aDays = typeof a.daysInWarehouse === 'number' ? a.daysInWarehouse : -1;
+          const bDays = typeof b.daysInWarehouse === 'number' ? b.daysInWarehouse : -1;
+          return bDays - aDays;
+        });
+
+
+      const htmlRows = shipments
+        .map(
+          (s) => `
+          <tr style="border-bottom: 1px solid #ddd;">
+            <td style="padding: 8px; text-align: center;">${s.trackingNumber}</td>
+            <td style="padding: 8px;">${s.subsidiaryName}</td>
+            <td style="padding: 8px; text-align: center;">${s.consolidatedDate ? new Date(s.consolidatedDate).toLocaleDateString() : 'Sin fecha'}</td>
+            <td style="padding: 8px; text-align: center;">${s.status}</td>
+            <td style="padding: 8px; text-align: center;">${s.daysInWarehouse !== 'N/A' ? s.daysInWarehouse + ' días' : 'N/A'}</td>
+          </tr>
+        `
+        )
+        .join('');
+
+      const htmlContent = `
+        <div style="font-family: Arial, sans-serif; color: #2c3e50; max-width: 800px; margin: auto;">
+          <h2 style="border-bottom: 3px solid #e74c3c; padding-bottom: 8px;">
+            Reporte de Envíos con Prioridad Alta
+          </h2>
+          <p>
+            Se han detectado los siguientes envíos con prioridad <strong>ALTA</strong> en estado En Ruta, Pendiente o Recolección:
+          </p>
+          <p><em>Por favor considere la fecha de recepción de este correo (<strong>${today.toLocaleDateString()}</strong>) para el seguimiento y gestión de estos envíos.</em></p>
+
+          <table 
+            border="0" 
+            cellpadding="0" 
+            cellspacing="0" 
+            style="border-collapse: collapse; width: 100%; box-shadow: 0 0 10px rgba(0,0,0,0.05);"
+          >
+            <thead style="background-color: #f7f7f7; text-align: center;">
+              <tr>
+                <th style="padding: 10px;">ID</th>
+                <th style="padding: 10px;">Destino</th>
+                <th style="padding: 10px;">Fecha Ingreso a Almacén</th>
+                <th style="padding: 10px;">Estatus</th>
+                <th style="padding: 10px;">Días en Almacén</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${htmlRows}
+            </tbody>
+          </table>
+
+          <p style="margin-top: 20px; font-weight: bold; color: #c0392b;">
+            Este correo ha sido enviado con <strong>alta prioridad</strong> debido a la criticidad de los envíos.
+          </p>
+
+          <hr style="margin: 30px 0; border: none; border-top: 1px solid #eee;" />
+
+          <p style="font-size: 0.9em; color: #7f8c8d;">
+            Este correo fue enviado automáticamente por el sistema.<br />
+            Por favor, no responda a este mensaje.
+          </p>
+        </div>
+      `;
+
+      const result = await this.mailService.sendHighPriorityShipmentsEmail(
+        {
+          to: 'javier.rappaz@gmail.com',
+          cc: ['josejuanurena@paqueteriaymensajeriadelyaqui.com', 'gerardorobles@paqueteriaymensajeriadelyaqui.com'],
+          htmlContent
+        }
+      );
+
+      console.log('Correo enviado correctamente:', result);
+    }
+
+
+
+      
+  /****************************************************************************************** */
+
+
   /****** Métodos para el cron que valida los envios y actualiza los status ******************/
     private async getShipmentsToValidate(): Promise<Shipment[]> {
       this.logger.log(`🔍 Iniciando getShipmentsToValidate`);
@@ -2116,8 +2300,6 @@ export class ShipmentsService {
         return [];
       }
     }
-
-    
 
     private async logUnusualCodes(unusualCodes: { trackingNumber: string; derivedCode: string; exceptionCode?: string; eventDate: string; statusByLocale?: string }[]): Promise<void> {
       if (unusualCodes.length) {
