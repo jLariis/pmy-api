@@ -16,7 +16,7 @@ import { Consolidated, Income, Payment, Subsidiary } from 'src/entities';
 import { PaymentStatus } from 'src/common/enums/payment-status.enum';
 import { DHLService } from './dto/dhl.service';
 import { DhlShipmentDto } from './dto/dhl/dhl-shipment.dto';
-import { FedExScanEventDto, FedExTrackingResponseDto } from './dto/fedex/fedex-tracking-response.dto';
+import { FedExScanEventDto, FedExStatusDetailDto, FedExTrackingResponseDto } from './dto/fedex/fedex-tracking-response.dto';
 import { SubsidiariesService } from 'src/subsidiaries/subsidiaries.service';
 import { Priority } from 'src/common/enums/priority.enum';
 import { IncomeStatus } from 'src/common/enums/income-status.enum';
@@ -33,6 +33,9 @@ import { ConsolidatedService } from 'src/consolidated/consolidated.service';
 import { ConsolidatedType } from 'src/common/enums/consolidated-type.enum';
 import { toZonedTime } from 'date-fns-tz';
 import { MailService } from 'src/mail/mail.service';
+import { SubsidiaryRules } from './dto/subsidiary-rules';
+import { ShipmentCheckResult, ShipmentStatusChange } from './dto/check-status-fedex-test';
+import { LatestStatusDetailDto } from './dto/fedex/latest-status-detail.dto';
 
 @Injectable()
 export class ShipmentsService {
@@ -936,6 +939,426 @@ export class ShipmentsService {
     this.logger.log(`✅ Income permitido para ${trackingNumber} con status=${mappedStatus}`);
     return { isValid: true, timestamp: eventDate };
   }
+
+  async checkStatusOnFedexBySubsidiaryRules(): Promise<void> {
+    const shipmentsWithError: { trackingNumber: string; reason: string }[] = [];
+    const unusualCodes: { trackingNumber: string; derivedCode: string; exceptionCode?: string; eventDate: string; statusByLocale?: string }[] = [];
+    const shipmentsWithOD: { trackingNumber: string; eventDate: string }[] = [];
+    try {
+      this.logger.log(`🚀 Iniciando checkStatusOnFedex`);
+      const pendingShipments = await this.getShipmentsToValidate();
+      if (!pendingShipments || !Array.isArray(pendingShipments)) {
+        const reason = `pendingShipments no es un arreglo válido: ${JSON.stringify(pendingShipments)}`;
+        this.logger.error(`❌ ${reason}`);
+        this.logBuffer.push(reason);
+        throw new BadRequestException(reason);
+      }
+      this.logger.log(`📦🕐 Procesando ${pendingShipments.length} envíos para validar en FedEx`);
+
+      // Fetch subsidiary rules
+      const subsidiaryRules = await this.getSubsidiaryRules();
+      this.logger.log(`📜 Reglas por sucursal cargadas: ${JSON.stringify(Object.keys(subsidiaryRules))}`);
+
+      const batches = Array.from(
+        { length: Math.ceil(pendingShipments.length / this.BATCH_SIZE) },
+        (_, i) => pendingShipments.slice(i * this.BATCH_SIZE, (i + 1) * this.BATCH_SIZE)
+      );
+
+      for (let i = 0; i < batches.length; i++) {
+        const batch = batches[i];
+        this.logger.log(`📦 Procesando lote ${i + 1}/${batches.length} con ${batch.length} envíos`);
+
+        await Promise.all(
+          batch.map(async (shipment, index) => {
+            const trackingNumber = shipment.trackingNumber;
+            const subsidiaryId = shipment.subsidiary.id || 'default';
+            const rules = subsidiaryRules[subsidiaryId] || {
+              allowedExceptionCodes: ['07', '08', '17', '67', '14', '16', 'OD'],
+              allowedStatuses: Object.values(ShipmentStatusType),
+              maxEventAgeDays: 30,
+              allowDuplicateStatuses: false,
+              allowedEventTypes: ['DL', 'DE', 'DU', 'RF', 'TA', 'TD', 'HL', 'OC', 'IT', 'AR', 'AF', 'CP', 'CC', 'PU'],
+              noIncomeExceptionCodes: [],
+              notFoundExceptionCodes: [],
+              minEvents08: 3,
+              allowException03: false,
+              allowException16: false,
+              allowExceptionOD: false,
+            };
+            this.logger.log(`🚚 Procesando envío ${index + 1}/${batch.length} del lote ${i + 1}: ${trackingNumber} (sucursal: ${subsidiaryId})`);
+
+            try {
+              const shipmentInfo: FedExTrackingResponseDto = await this.trackPackageWithRetry(trackingNumber);
+              if (!shipmentInfo?.output?.completeTrackResults?.length || !shipmentInfo.output.completeTrackResults[0]?.trackResults?.length) {
+                const reason = `No se encontró información válida del envío ${trackingNumber}: completeTrackResults vacíos o inválidos`;
+                this.logger.error(`❌ ${reason}`);
+                this.logBuffer.push(reason);
+                shipmentsWithError.push({ trackingNumber, reason });
+                return;
+              }
+
+              const trackResults = shipmentInfo.output.completeTrackResults[0].trackResults;
+              const latestTrackResult = trackResults.find((r) => r.latestStatusDetail?.derivedCode === 'DL') || trackResults.sort((a, b) => {
+                const dateA = a.scanEvents[0]?.date ? new Date(a.scanEvents[0].date).getTime() : 0;
+                const dateB = b.scanEvents[0]?.date ? new Date(b.scanEvents[0].date).getTime() : 0;
+                return dateB - dateA;
+              })[0];
+              const latestStatusDetail = latestTrackResult.latestStatusDetail;
+              this.logger.log(`📣 Último estatus de FedEx para ${trackingNumber}: ${latestStatusDetail?.derivedCode} - ${latestStatusDetail?.statusByLocale}`);
+
+              const mappedStatus = mapFedexStatusToLocalStatus(latestStatusDetail?.derivedCode, latestStatusDetail?.ancillaryDetails?.[0]?.reason);
+              const exceptionCode = latestStatusDetail?.ancillaryDetails?.[0]?.reason || latestTrackResult.scanEvents[0]?.exceptionCode;
+
+              // Validar exceptionCode
+              if (exceptionCode && !rules.allowedExceptionCodes.includes(exceptionCode)) {
+                unusualCodes.push({
+                  trackingNumber,
+                  derivedCode: latestStatusDetail?.derivedCode || 'N/A',
+                  exceptionCode,
+                  eventDate: latestTrackResult.scanEvents[0]?.date || 'N/A',
+                  statusByLocale: latestStatusDetail?.statusByLocale || 'N/A',
+                });
+                this.logger.warn(`⚠️ exceptionCode=${exceptionCode} no permitido para sucursal ${subsidiaryId} en ${trackingNumber}`);
+                return;
+              }
+
+              // Validar estatus permitido
+              if (!rules.allowedStatuses.includes(mappedStatus)) {
+                unusualCodes.push({
+                  trackingNumber,
+                  derivedCode: latestStatusDetail?.derivedCode || 'N/A',
+                  exceptionCode,
+                  eventDate: latestTrackResult.scanEvents[0]?.date || 'N/A',
+                  statusByLocale: latestStatusDetail?.statusByLocale || 'N/A',
+                });
+                this.logger.warn(`⚠️ Estatus ${mappedStatus} no permitido para sucursal ${subsidiaryId} en ${trackingNumber}`);
+                return;
+              }
+
+              // Aggregate scanEvents
+              const allScanEvents = trackResults.flatMap((result) => result.scanEvents || []).filter(
+                (e) => !rules.allowedEventTypes || rules.allowedEventTypes.includes(e.eventType)
+              );
+              const event = allScanEvents.find(
+                (e) =>
+                  e.eventType === 'DL' ||
+                  e.derivedStatusCode === 'DL' ||
+                  e.derivedStatusCode === latestStatusDetail?.derivedCode ||
+                  e.eventType === latestStatusDetail?.derivedCode ||
+                  (mappedStatus === ShipmentStatusType.NO_ENTREGADO && ['DE', 'DU', 'RF', 'TD'].includes(e.eventType) && rules.allowedEventTypes.includes(e.eventType)) ||
+                  (mappedStatus === ShipmentStatusType.PENDIENTE && ['TA', 'HL'].includes(e.eventType) && rules.allowedEventTypes.includes(e.eventType)) ||
+                  (mappedStatus === ShipmentStatusType.EN_RUTA && ['OC', 'IT', 'AR', 'AF', 'CP', 'CC'].includes(e.eventType) && rules.allowedEventTypes.includes(e.eventType)) ||
+                  (mappedStatus === ShipmentStatusType.RECOLECCION && ['PU'].includes(e.eventType) && rules.allowedEventTypes.includes(e.eventType))
+              ) || allScanEvents.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())[0];
+              if (!event) {
+                const reason = `No se encontró evento válido para el estatus ${latestStatusDetail?.derivedCode} en ${trackingNumber} (sucursal: ${subsidiaryId})`;
+                this.logger.warn(`⚠️ ${reason}`);
+                this.logBuffer.push(reason);
+                shipmentsWithError.push({ trackingNumber, reason });
+                return;
+              }
+
+              // Validar y parsear event.date
+              let eventDate: Date;
+              try {
+                eventDate = parseISO(event.date);
+                if (isNaN(eventDate.getTime())) {
+                  throw new Error(`Fecha inválida: ${event.date}`);
+                }
+                const maxAgeDays = rules.maxEventAgeDays || 30;
+                const maxAgeDate = new Date();
+                maxAgeDate.setDate(maxAgeDate.getDate() - maxAgeDays);
+                if (eventDate < maxAgeDate) {
+                  const reason = `Evento para ${trackingNumber} demasiado antiguo: ${eventDate.toISOString()} (límite: ${maxAgeDate.toISOString()})`;
+                  this.logger.warn(`⚠️ ${reason}`);
+                  this.logBuffer.push(reason);
+                  shipmentsWithError.push({ trackingNumber, reason });
+                  return;
+                }
+                this.logger.log(`📅 Fecha del evento para ${trackingNumber}: ${event.date} -> ${eventDate.toISOString()}`);
+              } catch (err) {
+                const reason = `Error al parsear event.date para ${trackingNumber}: ${err.message}`;
+                this.logger.error(`❌ ${reason}`);
+                this.logBuffer.push(reason);
+                shipmentsWithError.push({ trackingNumber, reason });
+                return;
+              }
+
+              // Validar si el evento es reciente
+              if (shipment.commitDateTime && eventDate < shipment.commitDateTime && mappedStatus !== ShipmentStatusType.ENTREGADO) {
+                this.logger.warn(`⚠️ Evento (${mappedStatus}, ${eventDate.toISOString()}) es anterior a commitDateTime (${shipment.commitDateTime.toISOString()}) para ${trackingNumber}`);
+              }
+
+              // Initialize statusHistory
+              shipment.statusHistory = shipment.statusHistory || [];
+
+              // Apply income validation rules
+              const exceptionCodes = shipment.statusHistory.map((h) => h.exceptionCode).filter(Boolean).concat(exceptionCode ? [exceptionCode] : []);
+              if ([ShipmentStatusType.ENTREGADO, ShipmentStatusType.NO_ENTREGADO].includes(mappedStatus)) {
+                const validationResult = await this.applyIncomeValidationRulesBySubsidiary(
+                  shipment,
+                  mappedStatus,
+                  exceptionCodes,
+                  shipment.statusHistory,
+                  trackingNumber,
+                  eventDate,
+                  rules
+                );
+                if (!validationResult.isValid) {
+                  if (validationResult.isOD) {
+                    shipmentsWithOD.push({ trackingNumber, eventDate: eventDate.toISOString() });
+                  } else {
+                    shipmentsWithError.push({ trackingNumber, reason: validationResult.reason || 'Validación de income fallida' });
+                  }
+                  return;
+                }
+                eventDate = validationResult.timestamp;
+              }
+
+              // Verificar duplicados
+              const isException08 = mappedStatus === ShipmentStatusType.NO_ENTREGADO && exceptionCode === '08';
+              const isDuplicateStatus = !rules.allowDuplicateStatuses && shipment.statusHistory.some((s) =>
+                isException08
+                  ? s.status === mappedStatus && s.exceptionCode === exceptionCode && isSameDay(s.timestamp, eventDate)
+                  : s.status === mappedStatus && isSameDay(s.timestamp, eventDate)
+              );
+
+              // Permitir actualización si el evento es más reciente
+              const latestStatusHistory = shipment.statusHistory.length
+                ? shipment.statusHistory.reduce((latest, current) =>
+                    new Date(current.timestamp) > new Date(latest.timestamp) ? current : latest
+                  )
+                : null;
+              const isNewerEvent = !latestStatusHistory || new Date(eventDate) > new Date(latestStatusHistory.timestamp);
+
+              if (isDuplicateStatus && !isNewerEvent) {
+                this.logger.log(`📌 Estado ${mappedStatus}${isException08 ? ` (exceptionCode=${exceptionCode})` : ''} ya existe para ${trackingNumber}`);
+                return;
+              }
+
+              // Crear nuevo ShipmentStatus
+              const newShipmentStatus = new ShipmentStatus();
+              newShipmentStatus.status = mappedStatus;
+              newShipmentStatus.timestamp = eventDate;
+              newShipmentStatus.notes = latestStatusDetail?.ancillaryDetails?.[0]
+                ? `${latestStatusDetail.ancillaryDetails[0].reason} - ${latestStatusDetail.ancillaryDetails[0].actionDescription}`
+                : `${event.eventType} - ${event.eventDescription}`;
+              newShipmentStatus.exceptionCode = exceptionCode;
+              newShipmentStatus.shipment = shipment;
+
+              // Actualizar Shipment
+              shipment.status = mappedStatus;
+              shipment.statusHistory.push(newShipmentStatus);
+              shipment.receivedByName = latestTrackResult.deliveryDetails?.receivedByName || shipment.receivedByName;
+
+              // Actualizar payment
+              if (shipment.payment) {
+                shipment.payment.status = mappedStatus === ShipmentStatusType.ENTREGADO ? PaymentStatus.PAID : PaymentStatus.PENDING;
+                this.logger.log(`💰 Actualizado payment.status=${shipment.payment.status} para ${trackingNumber}`);
+              }
+
+              // Guardar con transacción
+              try {
+                await this.shipmentRepository.manager.transaction(async (transactionalEntityManager) => {
+                  await transactionalEntityManager.save(ShipmentStatus, newShipmentStatus);
+                  this.logger.log(`💾 ShipmentStatus guardado para ${trackingNumber} con status=${mappedStatus}`);
+
+                  await transactionalEntityManager
+                    .createQueryBuilder()
+                    .update(Shipment)
+                    .set({
+                      status: shipment.status,
+                      receivedByName: shipment.receivedByName,
+                      payment: shipment.payment,
+                    })
+                    .where('id = :id', { id: shipment.id })
+                    .execute();
+                  this.logger.log(`💾 Shipment actualizado para ${trackingNumber} con status=${mappedStatus}`);
+
+                  // Generar Income
+                  if ([ShipmentStatusType.ENTREGADO, ShipmentStatusType.NO_ENTREGADO].includes(mappedStatus) && isNewerEvent) {
+                    const validationResult = await this.applyIncomeValidationRulesBySubsidiary(
+                      shipment,
+                      mappedStatus,
+                      exceptionCodes,
+                      shipment.statusHistory,
+                      trackingNumber,
+                      eventDate,
+                      rules
+                    );
+                    if (validationResult.isValid) {
+                      try {
+                        await this.generateIncomes(shipment, validationResult.timestamp, newShipmentStatus.exceptionCode, transactionalEntityManager);
+                        this.logger.log(`✅ Income generado para ${trackingNumber} con status=${mappedStatus}`);
+                      } catch (err) {
+                        const reason = `Error al generar income para ${trackingNumber}: ${err.message}`;
+                        this.logger.error(`❌ ${reason}`);
+                        this.logBuffer.push(reason);
+                        shipmentsWithError.push({ trackingNumber, reason });
+                      }
+                    }
+                  }
+                });
+              } catch (err) {
+                const reason = `Error al guardar shipment ${trackingNumber}: ${err.message}`;
+                this.logger.error(`❌ ${reason}`);
+                this.logBuffer.push(reason);
+                shipmentsWithError.push({ trackingNumber, reason });
+                return;
+              }
+            } catch (err) {
+              const reason = `Error procesando envío ${trackingNumber}: ${err.message}`;
+              this.logger.error(`❌ ${reason}`);
+              this.logBuffer.push(reason);
+              shipmentsWithError.push({ trackingNumber, reason });
+            }
+          })
+        );
+      }
+
+      await this.flushLogBuffer();
+      if (shipmentsWithError.length) {
+        await this.logErrors({ fedexError: shipmentsWithError });
+        this.logger.warn(`⚠️ ${shipmentsWithError.length} envíos con errores durante la validación`);
+      }
+      if (unusualCodes.length) {
+        await this.logUnusualCodes(unusualCodes);
+        this.logger.warn(`⚠️ ${unusualCodes.length} códigos inusuales registrados`);
+      }
+      if (shipmentsWithOD.length) {
+        await this.logUnusualCodes(shipmentsWithOD.map(({ trackingNumber, eventDate }) => ({
+          trackingNumber,
+          derivedCode: 'N/A',
+          exceptionCode: 'OD',
+          eventDate,
+          statusByLocale: 'N/A',
+        })));
+        this.logger.warn(`⚠️ ${shipmentsWithOD.length} envíos con excepción OD registrados`);
+      }
+    } catch (err) {
+      const reason = `Error general en checkStatusOnFedex: ${err.message}`;
+      this.logger.error(`❌ ${reason}`);
+      this.logBuffer.push(reason);
+      await this.flushLogBuffer();
+      throw new BadRequestException(reason);
+    }
+  }
+
+  // Placeholder for fetching subsidiary rules
+  async getSubsidiaryRules(): Promise<Record<string, SubsidiaryRules>> {
+    // TODO: Fetch from database or configuration
+    return {
+      'default': {
+        allowedExceptionCodes: ['07', '08', '17', '67', '14', '16', 'OD'],
+        allowedStatuses: [ShipmentStatusType.ENTREGADO, ShipmentStatusType.NO_ENTREGADO, ShipmentStatusType.PENDIENTE, ShipmentStatusType.EN_RUTA, ShipmentStatusType.RECOLECCION],
+        maxEventAgeDays: 30,
+        allowDuplicateStatuses: false,
+        allowedEventTypes: ['DL', 'DE', 'DU', 'RF', 'TA', 'TD', 'HL', 'OC', 'IT', 'AR', 'AF', 'CP', 'CC', 'PU'],
+        noIncomeExceptionCodes: [],
+        notFoundExceptionCodes: [],
+        minEvents08: 3,
+        allowException03: false,
+        allowException16: false,
+        allowExceptionOD: false,
+      },
+      '356ec2b4-980e-45e2-abb5-7a62e7858fbb': {
+        allowedExceptionCodes: ['07', '08', '17', '67', '14', '16', 'OD'],
+        allowedStatuses: [
+          ShipmentStatusType.ENTREGADO,
+          ShipmentStatusType.NO_ENTREGADO,
+          ShipmentStatusType.PENDIENTE,
+          ShipmentStatusType.EN_RUTA,
+          ShipmentStatusType.RECOLECCION,
+        ],
+        maxEventAgeDays: 30,
+        allowDuplicateStatuses: false,
+        allowedEventTypes: ['DL', 'DE', 'DU', 'RF', 'TA', 'TD', 'HL', 'OC', 'IT', 'AR', 'AF', 'CP', 'CC', 'PU'],
+        noIncomeExceptionCodes: ['08'],
+        notFoundExceptionCodes: ['08'],
+        minEvents08: 0,
+        allowException03: false,
+        allowException16: false,
+        allowExceptionOD: false,
+      }
+    };
+  }
+
+  private async applyIncomeValidationRulesBySubsidiary(
+    shipment: Shipment,
+    mappedStatus: ShipmentStatusType,
+    exceptionCodes: string[],
+    histories: ShipmentStatus[],
+    trackingNumber: string,
+    eventDate: Date,
+    rules: SubsidiaryRules
+  ): Promise<{ isValid: boolean; timestamp: Date; reason?: string; isOD?: boolean }> {
+    this.logger.debug(`📋 Aplicando reglas de validación de income para ${trackingNumber} (sucursal: ${shipment.subsidiary?.id || 'default'})`);
+
+    // Check notFoundExceptionCodes
+    if (exceptionCodes.some((code) => rules.notFoundExceptionCodes?.includes(code))) {
+      const code = exceptionCodes.find((c) => rules.notFoundExceptionCodes?.includes(c));
+      const reason = `❌ Excluido de income: código ${code} marcado como no encontrado para sucursal ${shipment.subsidiary?.id || 'default'} (${trackingNumber})`;
+      this.logger.warn(reason);
+      this.logBuffer.push(reason);
+      return { isValid: false, timestamp: eventDate, reason };
+    }
+
+    // Check noIncomeExceptionCodes
+    if (exceptionCodes.some((code) => rules.noIncomeExceptionCodes?.includes(code))) {
+      const code = exceptionCodes.find((c) => rules.noIncomeExceptionCodes?.includes(c));
+      const reason = `❌ Excluido de income: código ${code} no permite income para sucursal ${shipment.subsidiary?.id || 'default'} (${trackingNumber})`;
+      this.logger.warn(reason);
+      this.logBuffer.push(reason);
+      return { isValid: false, timestamp: eventDate, reason };
+    }
+
+    // Rule for exceptionCode 03
+    if (mappedStatus === ShipmentStatusType.NO_ENTREGADO && exceptionCodes.includes('03') && !rules.allowException03) {
+      const reason = `❌ Excluido de income: NO_ENTREGADO con excepción 03 no permitido para sucursal ${shipment.subsidiary?.id || 'default'} (${trackingNumber})`;
+      this.logger.warn(reason);
+      this.logBuffer.push(reason);
+      return { isValid: false, timestamp: eventDate, reason };
+    }
+
+    // Rule for exceptionCode 16
+    if (mappedStatus === ShipmentStatusType.ENTREGADO && exceptionCodes.includes('16') && !rules.allowException16) {
+      const entregadoEvents = histories.filter((h) => h.status === ShipmentStatusType.ENTREGADO);
+      const firstEntregado = entregadoEvents.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime())[0];
+      if (firstEntregado) {
+        this.logger.log(`✅ Incluido income para ENTREGADO con excepción 16 usando el primer evento: ${trackingNumber}`);
+        return { isValid: true, timestamp: firstEntregado.timestamp };
+      } else {
+        const reason = `❌ Excluido de income: ENTREGADO con excepción 16 sin eventos ENTREGADO válidos para sucursal ${shipment.subsidiary?.id || 'default'} (${trackingNumber})`;
+        this.logger.warn(reason);
+        this.logBuffer.push(reason);
+        return { isValid: false, timestamp: eventDate, reason };
+      }
+    }
+
+    // Rule for exceptionCode OD
+    if (exceptionCodes.includes('OD') && !rules.allowExceptionOD) {
+      const reason = `📦 Shipment con excepción "OD" excluido del income y marcado para procesamiento especial: ${trackingNumber}`;
+      this.logger.warn(reason);
+      this.logBuffer.push(reason);
+      return { isValid: false, timestamp: eventDate, reason, isOD: true };
+    }
+
+    // Rule for exceptionCode 08
+    if (exceptionCodes.includes('08') && rules.minEvents08) {
+      const eventos08 = histories.filter((h) => h.exceptionCode === '08');
+      if (eventos08.length < rules.minEvents08) {
+        const reason = `❌ Excluido de income: excepción 08 con menos de ${rules.minEvents08} eventos para sucursal ${shipment.subsidiary?.id || 'default'} (${trackingNumber})`;
+        this.logger.warn(reason);
+        this.logBuffer.push(reason);
+        return { isValid: false, timestamp: eventDate, reason };
+      }
+    }
+
+    // If no exclusion rules apply, allow income generation
+    this.logger.log(`✅ Income permitido para ${trackingNumber} con status=${mappedStatus}`);
+    return { isValid: true, timestamp: eventDate };
+  }
+
 
   async checkStatusOnFedex(): Promise<void> {
     const shipmentsWithError: { trackingNumber: string; reason: string }[] = [];
@@ -2198,16 +2621,12 @@ export class ShipmentsService {
       );
 
       console.log('Correo enviado correctamente:', result);
-    }
-
-
-
-      
+    }      
   /****************************************************************************************** */
 
 
   /****** Métodos para el cron que valida los envios y actualiza los status ******************/
-    private async getShipmentsToValidate(): Promise<Shipment[]> {
+    async getShipmentsToValidate(): Promise<Shipment[]> {
       this.logger.log(`🔍 Iniciando getShipmentsToValidate`);
       try {
         // Verificar nuevamente shipmentRepository
@@ -2329,6 +2748,938 @@ export class ShipmentsService {
 
   /****************************************************************************************** */
 
+
+
+  /**** Métodos solo testing y puede convertirse en los nuevos */
+    private chunkArray<T>(array: T[], size: number): T[][] {
+      const result: T[][] = [];
+      for (let i = 0; i < array.length; i += size) {
+        result.push(array.slice(i, i + size));
+      }
+      return result;
+    }
+
+    /**Respaldo por que ya funciona y actualiza correctamente los status */
+    async checkStatusOnFedexBySubsidiaryRulesTestingRespaldo(
+      trackingNumbers: string[],
+      shouldPersist = false
+    ): Promise<{
+      updatedShipments: {
+        trackingNumber: string;
+        fromStatus: string;
+        toStatus: string;
+        eventDate: string;
+      }[];
+      shipmentsWithError: { trackingNumber: string; reason: string }[];
+      unusualCodes: {
+        trackingNumber: string;
+        derivedCode: string;
+        exceptionCode?: string;
+        eventDate: string;
+        statusByLocale?: string;
+      }[];
+      shipmentsWithOD: { trackingNumber: string; eventDate: string }[];
+    }> {
+      const shipmentsWithError: { trackingNumber: string; reason: string }[] = [];
+      const unusualCodes: {
+        trackingNumber: string;
+        derivedCode: string;
+        exceptionCode?: string;
+        eventDate: string;
+        statusByLocale?: string;
+      }[] = [];
+      const shipmentsWithOD: { trackingNumber: string; eventDate: string }[] = [];
+      const updatedShipments: {
+        trackingNumber: string;
+        fromStatus: string;
+        toStatus: string;
+        eventDate: string;
+      }[] = [];
+
+      try {
+        this.logger.log(`🚀 Iniciando checkStatusOnFedexBySubsidiaryRules con ${trackingNumbers.length} trackingNumbers`);
+
+        // Buscar shipments en base de datos
+        const shipments = await this.shipmentRepository.find({
+          where: trackingNumbers.map((trackingNumber) => ({ trackingNumber })),
+          relations: ['subsidiary', 'payment', 'statusHistory'], // ajusta relaciones si es necesario
+        });
+
+        // Validar que todos los trackingNumbers existan en DB
+        const foundTrackingNumbers = shipments.map(s => s.trackingNumber);
+        const notFoundTracking = trackingNumbers.filter(tn => !foundTrackingNumbers.includes(tn));
+        for (const tn of notFoundTracking) {
+          const reason = `No se encontró shipment en BD para trackingNumber: ${tn}`;
+          this.logger.warn(`⚠️ ${reason}`);
+          shipmentsWithError.push({ trackingNumber: tn, reason });
+        }
+
+        // Obtener reglas por sucursal
+        const subsidiaryRules = await this.getSubsidiaryRules();
+        this.logger.log(`📜 Reglas por sucursal cargadas: ${Object.keys(subsidiaryRules).join(', ')}`);
+
+        // Procesar en batches para evitar sobrecarga
+        const batches = this.chunkArray(shipments, this.BATCH_SIZE);
+
+        for (let i = 0; i < batches.length; i++) {
+          const batch = batches[i];
+          this.logger.log(`📦 Procesando lote ${i + 1}/${batches.length} con ${batch.length} envíos`);
+
+          await Promise.all(
+            batch.map(async (shipment, index) => {
+              const trackingNumber = shipment.trackingNumber;
+              const subsidiaryId = shipment.subsidiary?.id || 'default';
+              const rules = subsidiaryRules[subsidiaryId] || {
+                allowedExceptionCodes: ['07', '08', '17', '67', '14', '16', 'OD'],
+                allowedStatuses: Object.values(ShipmentStatusType),
+                maxEventAgeDays: 30,
+                allowDuplicateStatuses: false,
+                allowedEventTypes: ['DL', 'DE', 'DU', 'RF', 'TA', 'TD', 'HL', 'OC', 'IT', 'AR', 'AF', 'CP', 'CC', 'PU'],
+                noIncomeExceptionCodes: [],
+                notFoundExceptionCodes: [],
+                minEvents08: 3,
+                allowException03: false,
+                allowException16: false,
+                allowExceptionOD: false,
+              };
+
+              this.logger.log(`🚚 Procesando envío ${index + 1}/${batch.length} del lote ${i + 1}: ${trackingNumber} (sucursal: ${subsidiaryId})`);
+
+              try {
+                const shipmentInfo: FedExTrackingResponseDto = await this.trackPackageWithRetry(trackingNumber);
+                if (!shipmentInfo?.output?.completeTrackResults?.length || !shipmentInfo.output.completeTrackResults[0]?.trackResults?.length) {
+                  const reason = `No se encontró información válida del envío ${trackingNumber}: completeTrackResults vacíos o inválidos`;
+                  this.logger.error(`❌ ${reason}`);
+                  shipmentsWithError.push({ trackingNumber, reason });
+                  return;
+                }
+
+                const trackResults = shipmentInfo.output.completeTrackResults[0].trackResults;
+                const latestTrackResult = trackResults.find((r) => r.latestStatusDetail?.derivedCode === 'DL') || trackResults.sort((a, b) => {
+                  const dateA = a.scanEvents[0]?.date ? new Date(a.scanEvents[0].date).getTime() : 0;
+                  const dateB = b.scanEvents[0]?.date ? new Date(b.scanEvents[0].date).getTime() : 0;
+                  return dateB - dateA;
+                })[0];
+
+                const latestStatusDetail = latestTrackResult.latestStatusDetail;
+                this.logger.log(`📣 Último estatus de FedEx para ${trackingNumber}: ${latestStatusDetail?.derivedCode} - ${latestStatusDetail?.statusByLocale}`);
+
+                const mappedStatus = mapFedexStatusToLocalStatus(latestStatusDetail?.derivedCode, latestStatusDetail?.ancillaryDetails?.[0]?.reason);
+                const exceptionCode = latestStatusDetail?.ancillaryDetails?.[0]?.reason || latestTrackResult.scanEvents[0]?.exceptionCode;
+
+                // Validar exceptionCode
+                if (exceptionCode && !rules.allowedExceptionCodes.includes(exceptionCode)) {
+                  unusualCodes.push({
+                    trackingNumber,
+                    derivedCode: latestStatusDetail?.derivedCode || 'N/A',
+                    exceptionCode,
+                    eventDate: latestTrackResult.scanEvents[0]?.date || 'N/A',
+                    statusByLocale: latestStatusDetail?.statusByLocale || 'N/A',
+                  });
+                  this.logger.warn(`⚠️ exceptionCode=${exceptionCode} no permitido para sucursal ${subsidiaryId} en ${trackingNumber}`);
+                  return;
+                }
+
+                // Validar estatus permitido
+                if (!rules.allowedStatuses.includes(mappedStatus)) {
+                  unusualCodes.push({
+                    trackingNumber,
+                    derivedCode: latestStatusDetail?.derivedCode || 'N/A',
+                    exceptionCode,
+                    eventDate: latestTrackResult.scanEvents[0]?.date || 'N/A',
+                    statusByLocale: latestStatusDetail?.statusByLocale || 'N/A',
+                  });
+                  this.logger.warn(`⚠️ Estatus ${mappedStatus} no permitido para sucursal ${subsidiaryId} en ${trackingNumber}`);
+                  return;
+                }
+
+                // Agregar scanEvents filtrados
+                const allScanEvents = trackResults.flatMap((result) => result.scanEvents || []).filter(
+                  (e) => !rules.allowedEventTypes || rules.allowedEventTypes.includes(e.eventType)
+                );
+
+                const event = allScanEvents.find(
+                  (e) =>
+                    e.eventType === 'DL' ||
+                    e.derivedStatusCode === 'DL' ||
+                    e.derivedStatusCode === latestStatusDetail?.derivedCode ||
+                    e.eventType === latestStatusDetail?.derivedCode ||
+                    (mappedStatus === ShipmentStatusType.NO_ENTREGADO && ['DE', 'DU', 'RF'].includes(e.eventType)) ||
+                    (mappedStatus === ShipmentStatusType.PENDIENTE && ['TA', 'TD', 'HL'].includes(e.eventType)) ||
+                    (mappedStatus === ShipmentStatusType.EN_RUTA && ['OC', 'IT', 'AR', 'AF', 'CP', 'CC'].includes(e.eventType)) ||
+                    (mappedStatus === ShipmentStatusType.RECOLECCION && ['PU'].includes(e.eventType))
+                ) || allScanEvents.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())[0];
+
+                if (!event) {
+                  const reason = `No se encontró evento válido para el estatus ${latestStatusDetail?.derivedCode} en ${trackingNumber} (sucursal: ${subsidiaryId})`;
+                  this.logger.warn(`⚠️ ${reason}`);
+                  shipmentsWithError.push({ trackingNumber, reason });
+                  return;
+                }
+
+                // Validar y parsear event.date // esto deberia eliminarse.....
+                let eventDate: Date;
+                try {
+                  eventDate = parseISO(event.date);
+                  if (isNaN(eventDate.getTime())) throw new Error(`Fecha inválida: ${event.date}`);
+
+                  const maxAgeDays = rules.maxEventAgeDays || 30;
+                  const maxAgeDate = new Date();
+                  maxAgeDate.setDate(maxAgeDate.getDate() - maxAgeDays);
+                  if (eventDate < maxAgeDate) {
+                    const reason = `Evento para ${trackingNumber} demasiado antiguo: ${eventDate.toISOString()} (límite: ${maxAgeDate.toISOString()})`;
+                    this.logger.warn(`⚠️ ${reason}`);
+                    shipmentsWithError.push({ trackingNumber, reason });
+                    return;
+                  }
+                  this.logger.log(`📅 Fecha del evento para ${trackingNumber}: ${event.date} -> ${eventDate.toISOString()}`);
+                } catch (err) {
+                  const reason = `Error al parsear event.date para ${trackingNumber}: ${err.message}`;
+                  this.logger.error(`❌ ${reason}`);
+                  shipmentsWithError.push({ trackingNumber, reason });
+                  return;
+                }
+
+                // Validar si evento es más reciente que commitDateTime
+                if (shipment.commitDateTime && eventDate < shipment.commitDateTime && mappedStatus !== ShipmentStatusType.ENTREGADO) {
+                  this.logger.warn(`⚠️ Evento (${mappedStatus}, ${eventDate.toISOString()}) es anterior a commitDateTime (${shipment.commitDateTime.toISOString()}) para ${trackingNumber}`);
+                }
+
+                const fromStatus = shipment.status;
+                const toStatus = mappedStatus;
+
+                if (fromStatus === toStatus) {
+                  this.logger.log(`📌 Estado para ${trackingNumber} no cambió: sigue siendo ${fromStatus}`);
+                  return;
+                }
+
+                updatedShipments.push({
+                  trackingNumber,
+                  fromStatus,
+                  toStatus,
+                  eventDate: eventDate.toISOString(),
+                });
+
+                if (shouldPersist) {
+                  // Crear nuevo status
+                  const newShipmentStatus = new ShipmentStatus();
+                  newShipmentStatus.status = toStatus;
+                  newShipmentStatus.timestamp = eventDate;
+                  newShipmentStatus.notes = latestStatusDetail?.ancillaryDetails?.[0]
+                    ? `${latestStatusDetail.ancillaryDetails[0].reason} - ${latestStatusDetail.ancillaryDetails[0].actionDescription}`
+                    : `${event.eventType} - ${event.eventDescription}`;
+                  newShipmentStatus.exceptionCode = exceptionCode;
+                  newShipmentStatus.shipment = shipment;
+
+                  shipment.status = toStatus;
+                  shipment.statusHistory = shipment.statusHistory || [];
+                  shipment.statusHistory.push(newShipmentStatus);
+                  shipment.receivedByName = latestTrackResult.deliveryDetails?.receivedByName || shipment.receivedByName;
+
+                  if (shipment.payment) {
+                    shipment.payment.status = toStatus === ShipmentStatusType.ENTREGADO ? PaymentStatus.PAID : PaymentStatus.PENDING;
+                    this.logger.log(`💰 Actualizado payment.status=${shipment.payment.status} para ${trackingNumber}`);
+                  }
+
+                  try {
+                    await this.shipmentRepository.manager.transaction(async (em) => {
+                      await em.save(ShipmentStatus, newShipmentStatus);
+                      this.logger.log(`💾 ShipmentStatus guardado para ${trackingNumber} con status=${toStatus}`);
+
+                      await em
+                        .createQueryBuilder()
+                        .update(Shipment)
+                        .set({
+                          status: shipment.status,
+                          receivedByName: shipment.receivedByName,
+                          payment: shipment.payment,
+                        })
+                        .where('id = :id', { id: shipment.id })
+                        .execute();
+
+                      this.logger.log(`💾 Shipment actualizado para ${trackingNumber} con status=${toStatus}`);
+                    });
+                  } catch (err) {
+                    const reason = `Error al guardar shipment ${trackingNumber}: ${err.message}`;
+                    this.logger.error(`❌ ${reason}`);
+                    shipmentsWithError.push({ trackingNumber, reason });
+                  }
+                }
+              } catch (err) {
+                const reason = `Error procesando envío ${trackingNumber}: ${err.message}`;
+                this.logger.error(`❌ ${reason}`);
+                shipmentsWithError.push({ trackingNumber, reason });
+              }
+            }),
+          );
+        }
+
+        this.logger.log(`✅ Proceso finalizado: ${updatedShipments.length} envíos actualizados, ${shipmentsWithError.length} errores, ${unusualCodes.length} códigos inusuales`);
+
+        return {
+          updatedShipments,
+          shipmentsWithError,
+          unusualCodes,
+          shipmentsWithOD,
+        };
+      } catch (err) {
+        const reason = `Error general en checkStatusOnFedex: ${err.message}`;
+        this.logger.error(`❌ ${reason}`);
+        throw new BadRequestException(reason);
+      }
+    }
+
+    private isSameDay(date1: Date, date2: Date): boolean {
+      return date1.getFullYear() === date2.getFullYear() &&
+            date1.getMonth() === date2.getMonth() &&
+            date1.getDate() === date2.getDate();
+    }
+
+    /*** Ya funciona para actualizar los 08 que eran pendiente y funciona con reglas de la sucursal */
+    async checkStatusOnFedexBySubsidiaryRulesTestingValidadoSinIncomes(
+      trackingNumbers: string[],
+      shouldPersist = false
+    ): Promise<{
+      updatedShipments: {
+        trackingNumber: string;
+        fromStatus: string;
+        toStatus: string;
+        eventDate: string;
+      }[];
+      shipmentsWithError: { trackingNumber: string; reason: string }[];
+      unusualCodes: {
+        trackingNumber: string;
+        derivedCode: string;
+        exceptionCode?: string;
+        eventDate: string;
+        statusByLocale?: string;
+      }[];
+      shipmentsWithOD: { trackingNumber: string; eventDate: string }[];
+    }> {
+      const shipmentsWithError: { trackingNumber: string; reason: string }[] = [];
+      const unusualCodes: {
+        trackingNumber: string;
+        derivedCode: string;
+        exceptionCode?: string;
+        eventDate: string;
+        statusByLocale?: string;
+      }[] = [];
+      const shipmentsWithOD: { trackingNumber: string; eventDate: string }[] = [];
+      const updatedShipments: {
+        trackingNumber: string;
+        fromStatus: string;
+        toStatus: string;
+        eventDate: string;
+      }[] = [];
+
+      try {
+        this.logger.log(`🚀 Iniciando checkStatusOnFedexBySubsidiaryRules con ${trackingNumbers.length} trackingNumbers`);
+
+        // Buscar shipments en base de datos
+        const shipments = await this.shipmentRepository.find({
+          where: trackingNumbers.map((trackingNumber) => ({ trackingNumber })),
+          relations: ['subsidiary', 'payment', 'statusHistory'],
+        });
+
+        // Validar que todos los trackingNumbers existan en DB
+        const foundTrackingNumbers = shipments.map(s => s.trackingNumber);
+        const notFoundTracking = trackingNumbers.filter(tn => !foundTrackingNumbers.includes(tn));
+        for (const tn of notFoundTracking) {
+          const reason = `No se encontró shipment en BD para trackingNumber: ${tn}`;
+          this.logger.warn(`⚠️ ${reason}`);
+          shipmentsWithError.push({ trackingNumber: tn, reason });
+        }
+
+        // Obtener reglas por sucursal
+        const subsidiaryRules = await this.getSubsidiaryRules();
+        this.logger.log(`📜 Reglas por sucursal cargadas: ${Object.keys(subsidiaryRules).join(', ')}`);
+
+        // Procesar en batches para evitar sobrecarga
+        const batches = this.chunkArray(shipments, this.BATCH_SIZE);
+
+        for (let i = 0; i < batches.length; i++) {
+          const batch = batches[i];
+          this.logger.log(`📦 Procesando lote ${i + 1}/${batches.length} con ${batch.length} envíos`);
+
+          await Promise.all(
+            batch.map(async (shipment, index) => {
+              const trackingNumber = shipment.trackingNumber;
+              const subsidiaryId = shipment.subsidiary?.id || 'default';
+              const rules = subsidiaryRules[subsidiaryId] || {
+                allowedExceptionCodes: ['07', '08', '17', '67', '14', '16', 'OD'],
+                allowedStatuses: Object.values(ShipmentStatusType),
+                maxEventAgeDays: 30,
+                allowDuplicateStatuses: false,
+                allowedEventTypes: ['DL', 'DE', 'DU', 'RF', 'TA', 'TD', 'HL', 'OC', 'IT', 'AR', 'AF', 'CP', 'CC', 'PU'],
+                noIncomeExceptionCodes: [],
+                notFoundExceptionCodes: [],
+                minEvents08: 3,
+                allowException03: false,
+                allowException16: false,
+                allowExceptionOD: false,
+              };
+
+              this.logger.log(`🚚 Procesando envío ${index + 1}/${batch.length} del lote ${i + 1}: ${trackingNumber} (sucursal: ${subsidiaryId})`);
+
+              try {
+                const shipmentInfo: FedExTrackingResponseDto = await this.trackPackageWithRetry(trackingNumber);
+                if (!shipmentInfo?.output?.completeTrackResults?.length || !shipmentInfo.output.completeTrackResults[0]?.trackResults?.length) {
+                  const reason = `No se encontró información válida del envío ${trackingNumber}: completeTrackResults vacíos o inválidos`;
+                  this.logger.error(`❌ ${reason}`);
+                  shipmentsWithError.push({ trackingNumber, reason });
+                  return;
+                }
+
+                const trackResults = shipmentInfo.output.completeTrackResults[0].trackResults;
+                const latestTrackResult = trackResults.find((r) => r.latestStatusDetail?.derivedCode === 'DL') || trackResults.sort((a, b) => {
+                  const dateA = a.scanEvents[0]?.date ? new Date(a.scanEvents[0].date).getTime() : 0;
+                  const dateB = b.scanEvents[0]?.date ? new Date(b.scanEvents[0].date).getTime() : 0;
+                  return dateB - dateA;
+                })[0];
+
+                const latestStatusDetail = latestTrackResult.latestStatusDetail;
+                this.logger.log(`📣 Último estatus de FedEx para ${trackingNumber}: ${latestStatusDetail?.derivedCode} - ${latestStatusDetail?.statusByLocale}`);
+
+                const mappedStatus = mapFedexStatusToLocalStatus(latestStatusDetail?.derivedCode, latestStatusDetail?.ancillaryDetails?.[0]?.reason);
+                const exceptionCode = latestStatusDetail?.ancillaryDetails?.[0]?.reason || latestTrackResult.scanEvents[0]?.exceptionCode;
+
+                // Validar exceptionCode
+                if (exceptionCode && !rules.allowedExceptionCodes.includes(exceptionCode)) {
+                  unusualCodes.push({
+                    trackingNumber,
+                    derivedCode: latestStatusDetail?.derivedCode || 'N/A',
+                    exceptionCode,
+                    eventDate: latestTrackResult.scanEvents[0]?.date || 'N/A',
+                    statusByLocale: latestStatusDetail?.statusByLocale || 'N/A',
+                  });
+                  this.logger.warn(`⚠️ exceptionCode=${exceptionCode} no permitido para sucursal ${subsidiaryId} en ${trackingNumber}`);
+                  return;
+                }
+
+                // Validar estatus permitido
+                if (!rules.allowedStatuses.includes(mappedStatus)) {
+                  unusualCodes.push({
+                    trackingNumber,
+                    derivedCode: latestStatusDetail?.derivedCode || 'N/A',
+                    exceptionCode,
+                    eventDate: latestTrackResult.scanEvents[0]?.date || 'N/A',
+                    statusByLocale: latestStatusDetail?.statusByLocale || 'N/A',
+                  });
+                  this.logger.warn(`⚠️ Estatus ${mappedStatus} no permitido para sucursal ${subsidiaryId} en ${trackingNumber}`);
+                  return;
+                }
+
+                // Agregar scanEvents filtrados
+                const allScanEvents = trackResults.flatMap((result) => result.scanEvents || []).filter(
+                  (e) => !rules.allowedEventTypes || rules.allowedEventTypes.includes(e.eventType)
+                );
+
+                const event = allScanEvents.find(
+                  (e) =>
+                    e.eventType === 'DL' ||
+                    e.derivedStatusCode === 'DL' ||
+                    e.derivedStatusCode === latestStatusDetail?.derivedCode ||
+                    e.eventType === latestStatusDetail?.derivedCode ||
+                    (mappedStatus === ShipmentStatusType.NO_ENTREGADO && ['DE', 'DU', 'RF', 'TD'].includes(e.eventType)) ||
+                    (mappedStatus === ShipmentStatusType.PENDIENTE && ['TA', 'HL'].includes(e.eventType)) ||
+                    (mappedStatus === ShipmentStatusType.EN_RUTA && ['OC', 'IT', 'AR', 'AF', 'CP', 'CC'].includes(e.eventType)) ||
+                    (mappedStatus === ShipmentStatusType.RECOLECCION && ['PU'].includes(e.eventType))
+                ) || allScanEvents.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())[0];
+
+                if (!event) {
+                  const reason = `No se encontró evento válido para el estatus ${latestStatusDetail?.derivedCode} en ${trackingNumber} (sucursal: ${subsidiaryId})`;
+                  this.logger.warn(`⚠️ ${reason}`);
+                  shipmentsWithError.push({ trackingNumber, reason });
+                  return;
+                }
+
+                // Validar y parsear event.date
+                let eventDate: Date;
+                try {
+                  eventDate = parseISO(event.date);
+                  if (isNaN(eventDate.getTime())) throw new Error(`Fecha inválida: ${event.date}`);
+                  this.logger.log(`📅 Fecha del evento para ${trackingNumber}: ${event.date} -> ${eventDate.toISOString()}`);
+                } catch (err) {
+                  const reason = `Error al parsear event.date para ${trackingNumber}: ${err.message}`;
+                  this.logger.error(`❌ ${reason}`);
+                  shipmentsWithError.push({ trackingNumber, reason });
+                  return;
+                }
+
+                // Validar si evento es más reciente que commitDateTime
+                if (shipment.commitDateTime && eventDate < shipment.commitDateTime && mappedStatus !== ShipmentStatusType.ENTREGADO) {
+                  this.logger.warn(`⚠️ Evento (${mappedStatus}, ${eventDate.toISOString()}) es anterior a commitDateTime (${shipment.commitDateTime.toISOString()}) para ${trackingNumber}`);
+                }
+
+                const fromStatus = shipment.status;
+                const toStatus = mappedStatus;
+
+                if (fromStatus === toStatus) {
+                  this.logger.log(`📌 Estado para ${trackingNumber} no cambió: sigue siendo ${fromStatus}`);
+                  return;
+                }
+
+                // Check for duplicate status in statusHistory
+                const isException08 = mappedStatus === ShipmentStatusType.NO_ENTREGADO && exceptionCode === '08';
+                const isDuplicateStatus = !rules.allowDuplicateStatuses && shipment.statusHistory?.some((s) =>
+                  isException08
+                    ? s.status === mappedStatus && s.exceptionCode === exceptionCode && this.isSameDay(s.timestamp, eventDate)
+                    : s.status === mappedStatus && this.isSameDay(s.timestamp, eventDate)
+                );
+
+                if (isDuplicateStatus) {
+                  this.logger.log(`📌 Estado ${toStatus}${isException08 ? ` (exceptionCode=${exceptionCode})` : ''} ya existe en statusHistory para ${trackingNumber} en ${eventDate.toISOString()}`);
+                  // Update shipment status without adding new statusHistory
+                  updatedShipments.push({
+                    trackingNumber,
+                    fromStatus,
+                    toStatus,
+                    eventDate: eventDate.toISOString(),
+                  });
+
+                  if (shouldPersist) {
+                    try {
+                      await this.shipmentRepository.manager.transaction(async (em) => {
+                        await em
+                          .createQueryBuilder()
+                          .update(Shipment)
+                          .set({
+                            status: toStatus,
+                            receivedByName: latestTrackResult.deliveryDetails?.receivedByName || shipment.receivedByName,
+                            payment: shipment.payment ? {
+                              ...shipment.payment,
+                              status: toStatus === ShipmentStatusType.ENTREGADO ? PaymentStatus.PAID : PaymentStatus.PENDING,
+                            } : undefined,
+                          })
+                          .where('id = :id', { id: shipment.id })
+                          .execute();
+
+                        this.logger.log(`💾 Shipment actualizado para ${trackingNumber} con status=${toStatus} (sin nuevo statusHistory)`);
+                      });
+                    } catch (err) {
+                      const reason = `Error al actualizar shipment ${trackingNumber} sin nuevo statusHistory: ${err.message}`;
+                      this.logger.error(`❌ ${reason}`);
+                      shipmentsWithError.push({ trackingNumber, reason });
+                    }
+                  }
+                  return;
+                }
+
+                updatedShipments.push({
+                  trackingNumber,
+                  fromStatus,
+                  toStatus,
+                  eventDate: eventDate.toISOString(),
+                });
+
+                if (shouldPersist) {
+                  // Crear nuevo status
+                  const newShipmentStatus = new ShipmentStatus();
+                  newShipmentStatus.status = toStatus;
+                  newShipmentStatus.timestamp = eventDate;
+                  newShipmentStatus.notes = latestStatusDetail?.ancillaryDetails?.[0]
+                    ? `${latestStatusDetail.ancillaryDetails[0].reason} - ${latestStatusDetail.ancillaryDetails[0].actionDescription}`
+                    : `${event.eventType} - ${event.eventDescription}`;
+                  newShipmentStatus.exceptionCode = exceptionCode;
+                  newShipmentStatus.shipment = shipment;
+
+                  shipment.status = toStatus;
+                  shipment.statusHistory = shipment.statusHistory || [];
+                  shipment.statusHistory.push(newShipmentStatus);
+                  shipment.receivedByName = latestTrackResult.deliveryDetails?.receivedByName || shipment.receivedByName;
+
+                  if (shipment.payment) {
+                    shipment.payment.status = toStatus === ShipmentStatusType.ENTREGADO ? PaymentStatus.PAID : PaymentStatus.PENDING;
+                    this.logger.log(`💰 Actualizado payment.status=${shipment.payment.status} para ${trackingNumber}`);
+                  }
+
+                  try {
+                    await this.shipmentRepository.manager.transaction(async (em) => {
+                      await em.save(ShipmentStatus, newShipmentStatus);
+                      this.logger.log(`💾 ShipmentStatus guardado para ${trackingNumber} con status=${toStatus}`);
+
+                      await em
+                        .createQueryBuilder()
+                        .update(Shipment)
+                        .set({
+                          status: shipment.status,
+                          receivedByName: shipment.receivedByName,
+                          payment: shipment.payment,
+                        })
+                        .where('id = :id', { id: shipment.id })
+                        .execute();
+
+                      this.logger.log(`💾 Shipment actualizado para ${trackingNumber} con status=${toStatus}`);
+                    });
+                  } catch (err) {
+                    const reason = `Error al guardar shipment ${trackingNumber}: ${err.message}`;
+                    this.logger.error(`❌ ${reason}`);
+                    shipmentsWithError.push({ trackingNumber, reason });
+                  }
+                }
+              } catch (err) {
+                const reason = `Error procesando envío ${trackingNumber}: ${err.message}`;
+                this.logger.error(`❌ ${reason}`);
+                shipmentsWithError.push({ trackingNumber, reason });
+              }
+            }),
+          );
+        }
+
+        this.logger.log(`✅ Proceso finalizado: ${updatedShipments.length} envíos actualizados, ${shipmentsWithError.length} errores, ${unusualCodes.length} códigos inusuales`);
+
+        return {
+          updatedShipments,
+          shipmentsWithError,
+          unusualCodes,
+          shipmentsWithOD,
+        };
+      } catch (err) {
+        const reason = `Error general en checkStatusOnFedex: ${err.message}`;
+        this.logger.error(`❌ ${reason}`);
+        throw new BadRequestException(reason);
+      }
+    }
+
+    async checkStatusOnFedexBySubsidiaryRulesTesting(
+      trackingNumbers: string[],
+      shouldPersist = false
+    ): Promise<{
+      updatedShipments: {
+        trackingNumber: string;
+        fromStatus: string;
+        toStatus: string;
+        eventDate: string;
+      }[];
+      shipmentsWithError: { trackingNumber: string; reason: string }[];
+      unusualCodes: {
+        trackingNumber: string;
+        derivedCode: string;
+        exceptionCode?: string;
+        eventDate: string;
+        statusByLocale?: string;
+      }[];
+      shipmentsWithOD: { trackingNumber: string; eventDate: string }[];
+    }> {
+      const shipmentsWithError: { trackingNumber: string; reason: string }[] = [];
+      const unusualCodes: {
+        trackingNumber: string;
+        derivedCode: string;
+        exceptionCode?: string;
+        eventDate: string;
+        statusByLocale?: string;
+      }[] = [];
+      const shipmentsWithOD: { trackingNumber: string; eventDate: string }[] = [];
+      const updatedShipments: {
+        trackingNumber: string;
+        fromStatus: string;
+        toStatus: string;
+        eventDate: string;
+      }[] = [];
+
+      try {
+        this.logger.log(`🚀 Iniciando checkStatusOnFedexBySubsidiaryRules con ${trackingNumbers.length} trackingNumbers`);
+
+        // Buscar shipments en base de datos
+        const shipments = await this.shipmentRepository.find({
+          where: trackingNumbers.map((trackingNumber) => ({ trackingNumber })),
+          relations: ['subsidiary', 'payment', 'statusHistory'],
+        });
+
+        // Validar que todos los trackingNumbers existan en DB
+        const foundTrackingNumbers = shipments.map(s => s.trackingNumber);
+        const notFoundTracking = trackingNumbers.filter(tn => !foundTrackingNumbers.includes(tn));
+        for (const tn of notFoundTracking) {
+          const reason = `No se encontró shipment en BD para trackingNumber: ${tn}`;
+          this.logger.warn(`⚠️ ${reason}`);
+          shipmentsWithError.push({ trackingNumber: tn, reason });
+        }
+
+        // Obtener reglas por sucursal con valores por defecto
+        const subsidiaryRules = await this.getSubsidiaryRules();
+        const defaultRules = {
+          allowedExceptionCodes: ['07', '08', '17', '67', '14', '16', 'OD'],
+          allowedStatuses: Object.values(ShipmentStatusType),
+          maxEventAgeDays: 30,
+          allowDuplicateStatuses: false,
+          allowedEventTypes: ['DL', 'DE', 'DU', 'RF', 'TA', 'TD', 'HL', 'OC', 'IT', 'AR', 'AF', 'CP', 'CC', 'PU'],
+          noIncomeExceptionCodes: [],
+          notFoundExceptionCodes: [],
+          minEvents08: 3,
+          allowException03: false,
+          allowException16: false,
+          allowExceptionOD: false,
+        };
+        this.logger.log(`📜 Reglas por sucursal cargadas: ${Object.keys(subsidiaryRules).join(', ')}`);
+
+        // Procesar en batches para evitar sobrecarga
+        const batches = this.chunkArray(shipments, this.BATCH_SIZE);
+
+        for (let i = 0; i < batches.length; i++) {
+          const batch = batches[i];
+          this.logger.log(`📦 Procesando lote ${i + 1}/${batches.length} con ${batch.length} envíos`);
+
+          await Promise.all(
+            batch.map(async (shipment, index) => {
+              const trackingNumber = shipment.trackingNumber;
+              const subsidiaryId = shipment.subsidiary?.id || 'default';
+              const rules = subsidiaryRules[subsidiaryId] || defaultRules;
+
+              this.logger.log(`🚚 Procesando envío ${index + 1}/${batch.length} del lote ${i + 1}: ${trackingNumber} (sucursal: ${subsidiaryId})`);
+
+              try {
+                const shipmentInfo: FedExTrackingResponseDto = await this.trackPackageWithRetry(trackingNumber);
+                if (!shipmentInfo?.output?.completeTrackResults?.length || !shipmentInfo.output.completeTrackResults[0]?.trackResults?.length) {
+                  const reason = `No se encontró información válida del envío ${trackingNumber}: completeTrackResults vacíos o inválidos`;
+                  this.logger.error(`❌ ${reason}`);
+                  shipmentsWithError.push({ trackingNumber, reason });
+                  return;
+                }
+
+                const trackResults = shipmentInfo.output.completeTrackResults[0].trackResults;
+                const latestTrackResult = trackResults.find((r) => r.latestStatusDetail?.derivedCode === 'DL') || trackResults.sort((a, b) => {
+                  const dateA = a.scanEvents[0]?.date ? new Date(a.scanEvents[0].date).getTime() : 0;
+                  const dateB = b.scanEvents[0]?.date ? new Date(b.scanEvents[0].date).getTime() : 0;
+                  return dateB - dateA;
+                })[0];
+
+                const latestStatusDetail = latestTrackResult.latestStatusDetail;
+                this.logger.log(`📣 Último estatus de FedEx para ${trackingNumber}: ${latestStatusDetail?.derivedCode} - ${latestStatusDetail?.statusByLocale}`);
+
+                const mappedStatus = mapFedexStatusToLocalStatus(latestStatusDetail?.derivedCode, latestStatusDetail?.ancillaryDetails?.[0]?.reason);
+                const exceptionCode = latestStatusDetail?.ancillaryDetails?.[0]?.reason || latestTrackResult.scanEvents[0]?.exceptionCode;
+
+                // Validar exceptionCode
+                if (exceptionCode && !rules.allowedExceptionCodes.includes(exceptionCode)) {
+                  unusualCodes.push({
+                    trackingNumber,
+                    derivedCode: latestStatusDetail?.derivedCode || 'N/A',
+                    exceptionCode,
+                    eventDate: latestTrackResult.scanEvents[0]?.date || 'N/A',
+                    statusByLocale: latestStatusDetail?.statusByLocale || 'N/A',
+                  });
+                  this.logger.warn(`⚠️ exceptionCode=${exceptionCode} no permitido para sucursal ${subsidiaryId} en ${trackingNumber}`);
+                  return;
+                }
+
+                // Validar estatus permitido
+                if (!rules.allowedStatuses.includes(mappedStatus)) {
+                  unusualCodes.push({
+                    trackingNumber,
+                    derivedCode: latestStatusDetail?.derivedCode || 'N/A',
+                    exceptionCode,
+                    eventDate: latestTrackResult.scanEvents[0]?.date || 'N/A',
+                    statusByLocale: latestStatusDetail?.statusByLocale || 'N/A',
+                  });
+                  this.logger.warn(`⚠️ Estatus ${mappedStatus} no permitido para sucursal ${subsidiaryId} en ${trackingNumber}`);
+                  return;
+                }
+
+                // Agregar scanEvents filtrados
+                const allScanEvents = trackResults.flatMap((result) => result.scanEvents || []).filter(
+                  (e) => !rules.allowedEventTypes || rules.allowedEventTypes.includes(e.eventType)
+                );
+
+                const event = allScanEvents.find(
+                  (e) =>
+                    e.eventType === 'DL' ||
+                    e.derivedStatusCode === 'DL' ||
+                    e.derivedStatusCode === latestStatusDetail?.derivedCode ||
+                    e.eventType === latestStatusDetail?.derivedCode ||
+                    (mappedStatus === ShipmentStatusType.NO_ENTREGADO && ['DE', 'DU', 'RF', 'TD'].includes(e.eventType)) ||
+                    (mappedStatus === ShipmentStatusType.PENDIENTE && ['TA', 'HL'].includes(e.eventType)) ||
+                    (mappedStatus === ShipmentStatusType.EN_RUTA && ['OC', 'IT', 'AR', 'AF', 'CP', 'CC'].includes(e.eventType)) ||
+                    (mappedStatus === ShipmentStatusType.RECOLECCION && ['PU'].includes(e.eventType))
+                ) || allScanEvents.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())[0];
+
+                if (!event) {
+                  const reason = `No se encontró evento válido para el estatus ${latestStatusDetail?.derivedCode} en ${trackingNumber} (sucursal: ${subsidiaryId})`;
+                  this.logger.warn(`⚠️ ${reason}`);
+                  shipmentsWithError.push({ trackingNumber, reason });
+                  return;
+                }
+
+                // Validar y parsear event.date
+                let eventDate: Date;
+                try {
+                  eventDate = parseISO(event.date);
+                  if (isNaN(eventDate.getTime())) throw new Error(`Fecha inválida: ${event.date}`);
+                  this.logger.log(`📅 Fecha del evento para ${trackingNumber}: ${event.date} -> ${eventDate.toISOString()}`);
+                } catch (err) {
+                  const reason = `Error al parsear event.date para ${trackingNumber}: ${err.message}`;
+                  this.logger.error(`❌ ${reason}`);
+                  shipmentsWithError.push({ trackingNumber, reason });
+                  return;
+                }
+
+                const fromStatus = shipment.status;
+                const toStatus = mappedStatus;
+
+                if (fromStatus === toStatus) {
+                  this.logger.log(`📌 Estado para ${trackingNumber} no cambió: sigue siendo ${fromStatus}`);
+                  return;
+                }
+
+                // Validar excepción OD
+                const exceptionCodes = shipment.statusHistory?.map((h) => h.exceptionCode).filter(Boolean).concat(exceptionCode ? [exceptionCode] : []);
+                if (exceptionCode === 'OD' && [ShipmentStatusType.ENTREGADO, ShipmentStatusType.NO_ENTREGADO].includes(mappedStatus) && !rules.allowExceptionOD) {
+                  shipmentsWithOD.push({ trackingNumber, eventDate: eventDate.toISOString() });
+                  this.logger.warn(`⚠️ Excepción OD detectada para ${trackingNumber}, no permitida por reglas de sucursal ${subsidiaryId}`);
+                  return;
+                }
+
+                // Aplicar reglas de validación para generación de ingresos
+                let incomeValidationResult = { isValid: true, timestamp: eventDate };
+                if ([ShipmentStatusType.ENTREGADO, ShipmentStatusType.NO_ENTREGADO].includes(mappedStatus)) {
+                  incomeValidationResult = await this.applyIncomeValidationRules(
+                    shipment,
+                    mappedStatus,
+                    exceptionCodes,
+                    shipment.statusHistory || [],
+                    trackingNumber,
+                    eventDate
+                  );
+                  if (!incomeValidationResult.isValid) {
+                    shipmentsWithOD.push({ trackingNumber, eventDate: eventDate.toISOString() });
+                    this.logger.warn(`⚠️ Validación de ingresos fallida para ${trackingNumber}, estatus: ${mappedStatus}`);
+                    return;
+                  }
+                }
+
+                // Check for duplicate status in statusHistory
+                const isException08 = mappedStatus === ShipmentStatusType.NO_ENTREGADO && exceptionCode === '08';
+                const isDuplicateStatus = !rules.allowDuplicateStatuses && shipment.statusHistory?.some((s) =>
+                  isException08
+                    ? s.status === mappedStatus && s.exceptionCode === exceptionCode && this.isSameDay(s.timestamp, eventDate)
+                    : s.status === mappedStatus && this.isSameDay(s.timestamp, eventDate)
+                );
+
+                if (isDuplicateStatus) {
+                  this.logger.log(`📌 Estado ${toStatus}${isException08 ? ` (exceptionCode=${exceptionCode})` : ''} ya existe en statusHistory para ${trackingNumber} en ${eventDate.toISOString()}`);
+                  updatedShipments.push({
+                    trackingNumber,
+                    fromStatus,
+                    toStatus,
+                    eventDate: eventDate.toISOString(),
+                  });
+
+                  if (shouldPersist) {
+                    try {
+                      await this.shipmentRepository.manager.transaction(async (em) => {
+                        await em
+                          .createQueryBuilder()
+                          .update(Shipment)
+                          .set({
+                            status: toStatus,
+                            receivedByName: latestTrackResult.deliveryDetails?.receivedByName || shipment.receivedByName,
+                            payment: shipment.payment ? {
+                              ...shipment.payment,
+                              status: toStatus === ShipmentStatusType.ENTREGADO ? PaymentStatus.PAID : PaymentStatus.PENDING,
+                            } : undefined,
+                          })
+                          .where('id = :id', { id: shipment.id })
+                          .execute();
+
+                        this.logger.log(`💾 Shipment actualizado para ${trackingNumber} con status=${toStatus} (sin nuevo statusHistory)`);
+                      });
+                    } catch (err) {
+                      const reason = `Error al actualizar shipment ${trackingNumber} sin nuevo statusHistory: ${err.message}`;
+                      this.logger.error(`❌ ${reason}`);
+                      shipmentsWithError.push({ trackingNumber, reason });
+                    }
+                  }
+                  return;
+                }
+
+                updatedShipments.push({
+                  trackingNumber,
+                  fromStatus,
+                  toStatus,
+                  eventDate: eventDate.toISOString(),
+                });
+
+                if (shouldPersist) {
+                  // Crear nuevo status
+                  const newShipmentStatus = new ShipmentStatus();
+                  newShipmentStatus.status = toStatus;
+                  newShipmentStatus.timestamp = incomeValidationResult.timestamp;
+                  newShipmentStatus.notes = latestStatusDetail?.ancillaryDetails?.[0]
+                    ? `${latestStatusDetail.ancillaryDetails[0].reason} - ${latestStatusDetail.ancillaryDetails[0].actionDescription}`
+                    : `${event.eventType} - ${event.eventDescription}`;
+                  newShipmentStatus.exceptionCode = exceptionCode;
+                  newShipmentStatus.shipment = shipment;
+
+                  shipment.status = toStatus;
+                  shipment.statusHistory = shipment.statusHistory || [];
+                  shipment.statusHistory.push(newShipmentStatus);
+                  shipment.receivedByName = latestTrackResult.deliveryDetails?.receivedByName || shipment.receivedByName;
+
+                  if (shipment.payment) {
+                    shipment.payment.status = toStatus === ShipmentStatusType.ENTREGADO ? PaymentStatus.PAID : PaymentStatus.PENDING;
+                    this.logger.log(`💰 Actualizado payment.status=${shipment.payment.status} para ${trackingNumber}`);
+                  }
+
+                  try {
+                    await this.shipmentRepository.manager.transaction(async (em) => {
+                      await em.save(ShipmentStatus, newShipmentStatus);
+                      this.logger.log(`💾 ShipmentStatus guardado para ${trackingNumber} con status=${toStatus}`);
+
+                      await em
+                        .createQueryBuilder()
+                        .update(Shipment)
+                        .set({
+                          status: shipment.status,
+                          receivedByName: shipment.receivedByName,
+                          payment: shipment.payment,
+                        })
+                        .where('id = :id', { id: shipment.id })
+                        .execute();
+
+                      this.logger.log(`💾 Shipment actualizado para ${trackingNumber} con status=${toStatus}`);
+
+                      // Generar ingresos para ENTREGADO o NO_ENTREGADO
+                      if ([ShipmentStatusType.ENTREGADO, ShipmentStatusType.NO_ENTREGADO].includes(mappedStatus) && incomeValidationResult.isValid) {
+                        try {
+                          await this.generateIncomes(shipment, incomeValidationResult.timestamp, newShipmentStatus.exceptionCode, em);
+                          this.logger.log(`✅ Income generado para ${trackingNumber} con status=${toStatus}`);
+                        } catch (err) {
+                          const reason = `Error al generar income para ${trackingNumber}: ${err.message}`;
+                          this.logger.error(`❌ ${reason}`);
+                          shipmentsWithError.push({ trackingNumber, reason });
+                        }
+                      }
+                    });
+                  } catch (err) {
+                    const reason = `Error al guardar shipment ${trackingNumber}: ${err.message}`;
+                    this.logger.error(`❌ ${reason}`);
+                    shipmentsWithError.push({ trackingNumber, reason });
+                  }
+                }
+              } catch (err) {
+                const reason = `Error procesando envío ${trackingNumber}: ${err.message}`;
+                this.logger.error(`❌ ${reason}`);
+                shipmentsWithError.push({ trackingNumber, reason });
+              }
+            }),
+          );
+        }
+
+        this.logger.log(`✅ Proceso finalizado: ${updatedShipments.length} envíos actualizados, ${shipmentsWithError.length} errores, ${unusualCodes.length} códigos inusuales, ${shipmentsWithOD.length} excepciones OD`);
+
+        return {
+          updatedShipments,
+          shipmentsWithError,
+          unusualCodes,
+          shipmentsWithOD,
+        };
+      } catch (err) {
+        const reason = `Error general en checkStatusOnFedex: ${err.message}`;
+        this.logger.error(`❌ ${reason}`);
+        throw new BadRequestException(reason);
+      }
+    }
+
+  /****************************************************************************************** */
 
 }
 

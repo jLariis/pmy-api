@@ -6,6 +6,7 @@ import { FileFieldsInterceptor, FileInterceptor } from '@nestjs/platform-express
 import { FedexService } from './fedex.service';
 import { FedExTrackingResponseDto } from './dto/fedex/fedex-tracking-response.dto';
 import { GetShipmentKpisDto } from './dto/get-shipment-kpis.dto';
+import { CheckFedexStatusDto } from './dto/check-status-fedex-test';
 
 @ApiTags('shipments')
 @ApiBearerAuth()
@@ -231,6 +232,14 @@ export class ShipmentsController {
     return this.shipmentsService.sendEmailWithHighPriorities();
   }
 
+  @Get('test-tracking/:trackingNumber')
+    @ApiResponse({ type: FedExTrackingResponseDto })
+    testTracking(@Param('trackingNumber') trackingNumber: string){
+      console.log("🚀 ~ ShipmentsController ~ testTracking ~ trackingNumber:", trackingNumber)
+      //return this.shipmentsService.checkStatusOnFedex();
+      return this.fedexService.trackPackage(trackingNumber);
+    }
+
   @Get(':trackingNumber')
   async getShipmentById(@Param('trackingNumber') trackingNumber: string) {
     return this.shipmentsService.findByTrackingNumber(trackingNumber);
@@ -243,14 +252,6 @@ export class ShipmentsController {
 
   /****************************************** SOLO PRUEBAS *********************************************************/
   
-    @Get('test-tracking/:trackingNumber')
-    @ApiResponse({ type: FedExTrackingResponseDto })
-    testTracking(@Param('trackingNumber') trackingNumber: string){
-      console.log("🚀 ~ ShipmentsController ~ testTracking ~ trackingNumber:", trackingNumber)
-      //return this.shipmentsService.checkStatusOnFedex();
-      return this.fedexService.trackPackage(trackingNumber);
-    }
-
     @Post('validate-tracking')
     @UseInterceptors(FileInterceptor('file'))
     @ApiOperation({ summary: 'Subir archivo Excel para procesar' })
@@ -283,6 +284,15 @@ export class ShipmentsController {
       return this.shipmentsService.checkStatusOnFedex();
     }
 
+    @Post('test-check-status')
+    async checkFedexStatus(@Body() body: CheckFedexStatusDto) {
+      const { trackingNumbers, shouldPersist = false } = body;
+
+      return await this.shipmentsService.checkStatusOnFedexBySubsidiaryRulesTesting(
+        trackingNumbers,
+        shouldPersist,
+      );
+    }
 
 
   /**************************************************************************************************************** */

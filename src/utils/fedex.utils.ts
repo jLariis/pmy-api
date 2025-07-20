@@ -22,7 +22,7 @@ export function mapFedexStatusToLocalStatus(derivedStatusCode: string, exception
     'DU': ShipmentStatusType.NO_ENTREGADO,
     'RF': ShipmentStatusType.NO_ENTREGADO,
     'TA': ShipmentStatusType.PENDIENTE,
-    'TD': ShipmentStatusType.PENDIENTE,
+    'TD': ShipmentStatusType.NO_ENTREGADO,
     'HL': ShipmentStatusType.PENDIENTE,
     'OC': ShipmentStatusType.EN_RUTA,
   };
