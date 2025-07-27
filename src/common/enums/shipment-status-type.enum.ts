@@ -4,7 +4,10 @@ export enum ShipmentStatusType {
   EN_RUTA = 'en_ruta',
   ENTREGADO = 'entregado',
   NO_ENTREGADO = 'no_entregado',
-  DESCONOCIDO = 'desconocido'
+  DESCONOCIDO = 'desconocido',
+  RECHAZADO = 'rechazado', // DEX07
+  DEVUELTO_A_FEDEX = 'devuelto_a_fedex',
+  ES_OCURRE = 'es_ocurre'
 }
 
 export enum ShipmentFedexStatusType {
@@ -20,5 +23,7 @@ export enum ShipmentFedexStatusType {
 }
 
 export enum ShipmentCanceledStatus {
-  
+  DEX08 = 'dex08',
+  DEX07 = 'dex07',
+  DEX03 = 'dex03'
 }

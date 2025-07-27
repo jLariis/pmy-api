@@ -12,7 +12,7 @@ import { DailyExpenses } from './dto/daily-expenses.dto';
 import { format, fromZonedTime, toZonedTime } from 'date-fns-tz';
 import { BadRequestException } from '@nestjs/common';
 import { groupBy } from 'lodash';
-import { endOfDay, parseISO, startOfDay } from 'date-fns';
+import { addDays, endOfDay, parseISO, startOfDay } from 'date-fns';
 
 @Injectable()
 export class IncomeService {
@@ -180,7 +180,7 @@ export class IncomeService {
       return this.formatIncomesNew(incomes, startOfRange, endOfRange);
     }
 
-    async formatIncomesNew(
+    async formatIncomesNewUTC(
         incomes: Income[],
         utcFromDate: Date,
         utcToDate: Date
@@ -199,7 +199,7 @@ export class IncomeService {
         // Agrupar por fecha UTC
         const grouped = filteredIncomes.reduce((acc, income) => {
             const date = typeof income.date === 'string' ? parseISO(income.date) : new Date(income.date);
-            const dateKey = format(date, 'yyyy-MM-dd', { timeZone: 'UTC' });
+            const dateKey = format(date, 'yyyy-MM-dd', { timeZone: 'UTC-7' });
             acc[dateKey] = acc[dateKey] || [];
             acc[dateKey].push(income);
             return acc;
@@ -298,6 +298,157 @@ export class IncomeService {
         return report;
     }
 
+    async formatIncomesNew(
+        incomes: Income[],
+        utcFromDate: Date,
+        utcToDate: Date
+    ): Promise<FormatIncomesDto[]> {
+        const report: FormatIncomesDto[] = [];
+        const oneDayMs = 24 * 60 * 60 * 1000;
+
+        // 1. Filtrar ingresos para excluir nonDeliveryStatus = '03'
+        const filteredIncomes = incomes.filter(i => {
+            return !(i.sourceType === 'shipment' && 
+                    i.shipmentType === 'fedex' && 
+                    i.incomeType === 'no_entregado' && 
+                    i.nonDeliveryStatus === '03');
+        });
+
+        // 2. Función para convertir UTC a fecha local de Hermosillo
+        const toHermosilloDate = (date: Date | string) => {
+            const utcDate = typeof date === 'string' ? parseISO(date) : new Date(date);
+            // Ajuste manual para UTC-7 (America/Hermosillo sin horario de verano)
+            return new Date(utcDate.getTime() - (7 * 60 * 60 * 1000));
+        };
+
+        // 3. Agrupar por fecha local (Hermosillo)
+        const grouped = filteredIncomes.reduce((acc, income) => {
+            const hermDate = toHermosilloDate(income.date);
+            const dateKey = format(hermDate, 'yyyy-MM-dd');
+            if (!acc[dateKey]) {
+                acc[dateKey] = [];
+            }
+            acc[dateKey].push(income);
+            return acc;
+        }, {} as Record<string, Income[]>);
+
+        // 4. Procesar exactamente el rango solicitado (21-27 de julio)
+        // Convertir fechas de entrada a Hermosillo primero
+        const hermFromDate = utcFromDate;
+        const hermToDate = utcToDate;
+        
+        // Ajustar a inicio y fin de día local
+        const startDate = startOfDay(hermFromDate);
+        const endDate = endOfDay(hermToDate);
+
+        let currentDate = new Date(startDate);
+
+        while (currentDate <= endDate) {
+            const dateKey = format(currentDate, 'yyyy-MM-dd');
+            const dayIncomes = grouped[dateKey] || [];
+
+            // Procesamiento por tipo de ingreso
+            const dayShipments = dayIncomes.filter(i => i.sourceType === 'shipment');
+            const dayCollections = dayIncomes.filter(i => i.sourceType === 'collection');
+            const dayCharges = dayIncomes.filter(i => i.sourceType === 'charge');
+
+            // Cálculos FedEx
+            const fedexIncomes = dayShipments.filter(i => i.shipmentType === 'fedex');
+            const fedexDelivered = fedexIncomes.filter(i => i.incomeType === 'entregado').length;
+            const fedexDex07 = fedexIncomes.filter(i => 
+                i.incomeType === 'no_entregado' && i.nonDeliveryStatus === '07'
+            ).length;
+            const fedexDex08 = fedexIncomes.filter(i => 
+                i.incomeType === 'no_entregado' && i.nonDeliveryStatus === '08'
+            ).length;
+            const fedexTotalIncome = fedexIncomes.reduce((sum, i) => sum + (Number(i.cost) || 0), 0);
+
+            // Cálculos DHL
+            const dhlIncomes = dayShipments.filter(i => i.shipmentType === 'dhl');
+            const dhlDelivered = dhlIncomes.filter(i => i.incomeType === 'entregado').length;
+            const dhlNotDelivered = dhlIncomes.filter(i => i.incomeType === 'no_entregado').length;
+            const dhlTotalIncome = dhlIncomes.reduce((sum, i) => sum + (Number(i.cost) || 0), 0);
+
+            // Cálculos Collections y Charges (con tratamiento especial para charges)
+            const collectionTotalIncome = dayCollections.reduce((sum, i) => sum + (Number(i.cost) || 0), 0);
+            
+            // Para charges, usamos la fecha UTC original sin conversión
+            const chargesForDay = filteredIncomes.filter(i => 
+                i.sourceType === 'charge' && 
+                format(new Date(i.date), 'yyyy-MM-dd') === format(currentDate, 'yyyy-MM-dd')
+            );
+            const chargeTotalIncome = chargesForDay.reduce((sum, i) => sum + (Number(i.cost) || 0), 0);
+
+            // Items detallados
+            const items = [
+                ...dayShipments.map(i => {
+                    const hermDate = toHermosilloDate(i.date);
+                    return {
+                        type: 'shipment' as const,
+                        trackingNumber: i.trackingNumber,
+                        shipmentType: i.shipmentType,
+                        status: i.shipmentType === 'fedex' && i.incomeType === 'no_entregado' && ['07', '08'].includes(i.nonDeliveryStatus ?? '')
+                            ? `DEX${i.nonDeliveryStatus}`
+                            : i.incomeType,
+                        date: format(hermDate, 'yyyy-MM-dd HH:mm:ss'),
+                        cost: Number(i.cost) || 0,
+                        statusHistory: i.shipment?.statusHistory || [],
+                        commitDateTime: i.shipment?.commitDateTime
+                    };
+                }),
+                ...dayCollections.map(i => {
+                    const hermDate = toHermosilloDate(i.date);
+                    return {
+                        type: 'collection' as const,
+                        trackingNumber: i.trackingNumber,
+                        date: format(hermDate, 'yyyy-MM-dd HH:mm:ss'),
+                        cost: Number(i.cost) || 0,
+                    };
+                }),
+                ...chargesForDay.map(i => ({
+                    type: 'carga' as const,
+                    trackingNumber: i.trackingNumber,
+                    shipmentType: i.shipmentType,
+                    date: format(new Date(i.date), 'yyyy-MM-dd HH:mm:ss'), // Mantener fecha UTC para cargas
+                    cost: Number(i.cost) || 0,
+                }))
+            ];
+
+            // Agregar al reporte
+            report.push({
+                date: dateKey,
+                fedex: {
+                    pod: fedexDelivered,
+                    dex07: fedexDex07,
+                    dex08: fedexDex08,
+                    total: fedexDelivered + fedexDex07 + fedexDex08,
+                    totalIncome: formatCurrency(fedexTotalIncome),
+                },
+                dhl: {
+                    ba: dhlDelivered,
+                    ne: dhlNotDelivered,
+                    total: dhlDelivered + dhlNotDelivered,
+                    totalIncome: formatCurrency(dhlTotalIncome),
+                },
+                collections: dayCollections.length,
+                cargas: chargesForDay.length, // Usar el conteo especial para cargas
+                total: fedexDelivered + fedexDex07 + fedexDex08 + dhlDelivered + dhlNotDelivered + dayCollections.length + chargesForDay.length,
+                totalIncome: formatCurrency(fedexTotalIncome + dhlTotalIncome + chargeTotalIncome + collectionTotalIncome),
+                items,
+            });
+
+            currentDate = new Date(currentDate.getTime() + oneDayMs);
+        }
+
+        // Filtrar solo días dentro del rango solicitado (21-27)
+        const filteredReport = report.filter(entry => {
+            const entryDate = new Date(entry.date);
+            return entryDate >= startDate && entryDate <= endDate;
+        });
+
+        return filteredReport;
+    }
+    
     /******* HASTA AQUI */
 
     /******* De aquí para abajo se necesita refactorizar */

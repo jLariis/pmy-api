@@ -28,7 +28,7 @@ export class CollectionsController {
     type: Collection, // Tipo de retorno para documentación
     isArray: true, // Indica que puede ser un array
   })
-  async save(@Body() collectionDto: CollectionDto[]): Promise<Collection[]> {
+  async save(@Body() collectionDto: CollectionDto[]) {
     return this.collectionsService.save(collectionDto);
   }
 

@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Param,UseGuards, UseInterceptors, UploadedFile, BadRequestException, InternalServerErrorException, Request, UploadedFiles, Query, Body } from '@nestjs/common';
+import { Controller, Get, Post, Param,UseGuards, UseInterceptors, UploadedFile, BadRequestException, InternalServerErrorException, Request, UploadedFiles, Query, Body, Logger } from '@nestjs/common';
 import { ShipmentsService } from './shipments.service';
 import { ApiBearerAuth, ApiBody, ApiConsumes, ApiOperation, ApiProperty, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from 'src/auth/guards/jwt-auth.guard';
@@ -7,11 +7,14 @@ import { FedexService } from './fedex.service';
 import { FedExTrackingResponseDto } from './dto/fedex/fedex-tracking-response.dto';
 import { GetShipmentKpisDto } from './dto/get-shipment-kpis.dto';
 import { CheckFedexStatusDto } from './dto/check-status-fedex-test';
+import { ForPickUpDto } from './dto/for-pick-up.dto';
 
 @ApiTags('shipments')
 @ApiBearerAuth()
 @Controller('shipments')
 export class ShipmentsController {
+  private readonly logger = new Logger(ShipmentsController.name);
+
   constructor(
     private readonly shipmentsService: ShipmentsService,
     private readonly fedexService: FedexService
@@ -240,6 +243,28 @@ export class ShipmentsController {
       return this.fedexService.trackPackage(trackingNumber);
     }
 
+  @Get('test-cron')
+  async testCronJob() {
+    const chargeShipments = await this.shipmentsService.getSimpleChargeShipments();
+
+    const trackingNumbers = chargeShipments.map(shipment => shipment.trackingNumber);
+
+    if (!trackingNumbers.length) {
+      this.logger.log('📪 No hay envíos para procesar');
+      return;
+    }
+
+    this.logger.log(`📦 Procesando ${trackingNumbers.length} trackingNumbers: ${JSON.stringify(trackingNumbers)}`);
+
+    try {
+      const result = await this.shipmentsService.checkStatusOnFedexChargeShipment(trackingNumbers);
+      return result;
+    } catch (err) {
+      this.logger.error(`❌ Error en handleCron: ${err.message}`);
+    }
+  }
+
+
   @Get(':trackingNumber')
   async getShipmentById(@Param('trackingNumber') trackingNumber: string) {
     return this.shipmentsService.findByTrackingNumber(trackingNumber);
@@ -248,6 +273,11 @@ export class ShipmentsController {
   @Get(':trackingNumber/history')
   async getShipmentStatusHistory(@Param('trackingNumber') trackingNumber: string) {
     return this.shipmentsService.findStatusHistoryByTrackingNumber(trackingNumber);
+  }
+
+  @Post('remove-for-pick-up')
+  async getAndRemoveForPickUp(@Body() forPickUp: ForPickUpDto[]) {
+    return this.shipmentsService.getAndMoveForPickUp(forPickUp);
   }
 
   /****************************************** SOLO PRUEBAS *********************************************************/
@@ -279,10 +309,6 @@ export class ShipmentsController {
       return this.shipmentsService.normalizeCities();
     }
 
-    @Get('test-cron')
-    testCronJob() {
-      return this.shipmentsService.checkStatusOnFedex();
-    }
 
     @Post('test-check-status')
     async checkFedexStatus(@Body() body: CheckFedexStatusDto) {

@@ -6,7 +6,9 @@ import { ShipmentsService } from 'src/shipments/shipments.service';
 export class TrackingCronService {
   private readonly logger = new Logger(TrackingCronService.name);
 
-  constructor(private readonly shipmentService: ShipmentsService) {}
+  constructor(
+    private readonly shipmentService: ShipmentsService
+  ) {}
 
   /*@Cron(CronExpression.EVERY_HOUR)
   async handleCron() {

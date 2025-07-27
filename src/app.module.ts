@@ -17,6 +17,7 @@ import { ExpensesModule } from './expenses/expenses.module';
 import { ConsolidatedModule } from './consolidated/consolidated.module';
 import { DashboardModule } from './dashboard/dashboard.module';
 import { MailerModule } from '@nestjs-modules/mailer';
+import { DevolutionsModule } from './devolutions/devolutions.module';
 
 @Module({
   imports: [
@@ -55,7 +56,8 @@ import { MailerModule } from '@nestjs-modules/mailer';
     CollectionModule,
     ExpensesModule,
     ConsolidatedModule,
-    DashboardModule
+    DashboardModule,
+    DevolutionsModule
   ],
   controllers: [AppController],
   providers: [

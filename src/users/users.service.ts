@@ -104,7 +104,10 @@ export class UsersService {
   }
 
   async findByEmail(email: string){
-    return await this.userRepository.findOne({ where: { email } , relations: ['subsidiary']})
+    const foundUser = await this.userRepository.findOne({ where: { email } , relations: ['subsidiary']})
+    
+    console.log("🚀 ~ UsersService ~ findByEmail ~ foundUser:", foundUser)
+    return foundUser;
   }
 
   async update(id: string, updateUserDto: UpdateUserDto) {

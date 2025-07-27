@@ -8,4 +8,7 @@ export class ChargeShipment extends Shipment {
     @ManyToOne(() => Charge, { nullable: true })
     @JoinColumn({ name: 'chargeId' })
     charge: Charge;
+
+    @Column({default: ''})
+    exceptionCode: string;
 }
