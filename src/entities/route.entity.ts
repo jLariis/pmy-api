@@ -4,9 +4,10 @@ import {
   ManyToOne,
   PrimaryGeneratedColumn,
   BeforeInsert,
-  BeforeUpdate,
+  JoinColumn,
 } from 'typeorm';
-import { Driver } from './driver.entity';
+import { Subsidiary } from './subsidiary.entity';
+import { StatusEnum } from 'src/common/enums/status.enum';
 
 @Entity('route')
 export class Route {
@@ -16,44 +17,24 @@ export class Route {
   @Column()
   name: string;
 
-  @ManyToOne(() => Driver)
-  driver: Driver;
-
-  @Column()
-  vehicle: string;
-
   @Column({
     type: 'enum',
-    enum: ['En progreso', 'Completada', 'Pendiente', 'Cancelada'],
-    default: 'Pendiente',
+    enum: StatusEnum,
+    default: StatusEnum.ACTIVE,
   })
-  status: 'En progreso' | 'Completada' | 'Pendiente' | 'Cancelada';
+  status: StatusEnum;
 
-  @Column({ type: 'datetime' })
-  startTime: Date;
 
-  @Column({ type: 'datetime' })
-  estimatedArrival: Date;
+  @ManyToOne(() => Subsidiary, { nullable: true })
+  @JoinColumn({ name: 'subsidiaryId' })
+  subsidiary: Subsidiary;
 
   @Column({ type: 'datetime', default: () => 'CURRENT_TIMESTAMP' })
   createdAt: Date;
 
-  @Column({ type: 'datetime', nullable: true })
-  updatedAt: Date;
-
   @BeforeInsert()
   setDefaults() {
-    this.createdAt = new Date(); // Fecha en UTC
-    if (!this.startTime) {
-      this.startTime = new Date(); // Asignar fecha actual en UTC si no se proporciona
-    }
-    if (!this.estimatedArrival) {
-      this.estimatedArrival = new Date(); // Asignar fecha actual en UTC si no se proporciona
-    }
+    this.createdAt = new Date();
   }
 
-  @BeforeUpdate()
-  setUpdatedAt() {
-    this.updatedAt = new Date(); // Fecha en UTC
-  }
 }

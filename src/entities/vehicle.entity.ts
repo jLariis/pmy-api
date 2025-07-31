@@ -5,10 +5,11 @@ import {
   OneToMany,
   BeforeInsert,
   BeforeUpdate,
+  JoinColumn,
+  ManyToOne,
 } from 'typeorm';
-import { Exclude } from 'class-transformer';
-import { Route } from './route.entity';
-import { VehicleStatus } from '../common/enums/vehicle-status.enum';
+import { VehicleStatus } from '../common/enums/vehicle-status-enum';
+import { Subsidiary } from './subsidiary.entity';
 
 @Entity('vehicle')
 export class Vehicle {
@@ -31,9 +32,21 @@ export class Vehicle {
   })
   status: VehicleStatus;
 
-  @OneToMany(() => Route, (route) => route.vehicle)
-  @Exclude() // Evitar serializar routes
-  routes: Route[];
+  @Column({ nullable: true})
+  kms: number;
+
+  @Column({nullable: true})
+  code: string;
+
+  @Column({ nullable: true})
+  lastMaintenanceDate: Date;
+
+  @Column({ nullable: true})
+  nextMaintenanceDate: Date;
+
+  @ManyToOne(() => Subsidiary, { nullable: true })
+  @JoinColumn({ name: 'subsidiaryId' })
+  subsidiary: Subsidiary;
 
   @Column({ type: 'datetime', default: () => 'CURRENT_TIMESTAMP' })
   createdAt: Date;

@@ -5,6 +5,8 @@ import { Priority } from '../common/enums/priority.enum';
 import { ShipmentStatusType } from '../common/enums/shipment-status-type.enum';
 import { ShipmentType } from '../common/enums/shipment-type.enum';
 import { Subsidiary } from './subsidiary.entity';
+import { Route } from './route.entity';
+import { PackageDispatch } from './package-dispatch.entity';
 
 @Entity('shipment')
 export class Shipment {
@@ -83,6 +85,13 @@ export class Shipment {
 
   @Column({ nullable: true, default: false})
   isHighValue: boolean;
+
+  @ManyToOne(() => PackageDispatch, packageDispatch => packageDispatch.shipments, {
+    nullable: true,
+    onDelete: 'SET NULL',
+  })
+  @JoinColumn({ name: 'routeId' })
+  packageDispatch?: PackageDispatch;
 
   @BeforeInsert()
   setDefaults() {

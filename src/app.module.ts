@@ -18,6 +18,9 @@ import { ConsolidatedModule } from './consolidated/consolidated.module';
 import { DashboardModule } from './dashboard/dashboard.module';
 import { MailerModule } from '@nestjs-modules/mailer';
 import { DevolutionsModule } from './devolutions/devolutions.module';
+import { DriversModule } from './drivers/drivers.module';
+import { RoutesModule } from './routes/routes.module';
+import { VehiclesModule } from './vehicles/vehicles.module';
 
 @Module({
   imports: [
@@ -57,7 +60,10 @@ import { DevolutionsModule } from './devolutions/devolutions.module';
     ExpensesModule,
     ConsolidatedModule,
     DashboardModule,
-    DevolutionsModule
+    DevolutionsModule,
+    DriversModule,
+    RoutesModule,
+    VehiclesModule
   ],
   controllers: [AppController],
   providers: [
