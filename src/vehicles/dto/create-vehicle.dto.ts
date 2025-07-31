@@ -1,5 +1,6 @@
-import { IsString, IsEnum, IsUUID, IsOptional } from 'class-validator';
+import { IsString, IsEnum, IsUUID, IsOptional, IsNumber } from 'class-validator';
 import { VehicleStatus } from 'src/common/enums/vehicle-status-enum';
+import { VehicleTypeEnum } from 'src/common/enums/vehicle-type.enum';
 import { Subsidiary } from 'src/entities';
 
 
@@ -13,8 +14,19 @@ export class CreateVehicleDto {
     @IsString()
     brand: string;
 
-    @IsString()
+    @IsNumber()
     kms: number;
+
+    @IsString()
+    code: string;
+
+    @IsString()
+    name: string;
+
+    @IsNumber()
+    capacity: number;
+
+    type: VehicleTypeEnum;
 
     lastMaintenance?: Date;
 

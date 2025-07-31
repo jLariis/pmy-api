@@ -10,6 +10,7 @@ import {
 } from 'typeorm';
 import { VehicleStatus } from '../common/enums/vehicle-status-enum';
 import { Subsidiary } from './subsidiary.entity';
+import { VehicleTypeEnum } from 'src/common/enums/vehicle-type.enum';
 
 @Entity('vehicle')
 export class Vehicle {
@@ -37,6 +38,19 @@ export class Vehicle {
 
   @Column({nullable: true})
   code: string;
+
+  @Column({ nullable: true })
+  name: string;
+
+  @Column({ default: 100})
+  capacity: number;
+
+  @Column({
+    type: 'enum',
+    enum: VehicleTypeEnum,
+    default: VehicleTypeEnum.VAN,
+  })
+  type: VehicleTypeEnum;
 
   @Column({ nullable: true})
   lastMaintenanceDate: Date;

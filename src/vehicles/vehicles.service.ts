@@ -34,11 +34,17 @@ export class VehiclesService {
   async findAll() {
     return await this.vehicleRepository.find();
   }
-
+  
   async findOne(id: string) {
     return await this.vehicleRepository.findOne({ where: { id } });
   }
 
+  async findBySubsidiary(subsidiaryId: string) {
+    return await this.vehicleRepository.find({ 
+      where: { subsidiary: { id: subsidiaryId } }
+    });
+  }
+  
   async update(id: string, updateVehicleDto: UpdateVehicleDto) {
     return await this.vehicleRepository.update(id, updateVehicleDto);
   }

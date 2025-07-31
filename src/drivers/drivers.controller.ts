@@ -20,6 +20,11 @@ export class DriversController {
     return this.driversService.findAll();
   }
 
+  @Get('subsidiary/:subsidiaryId')
+  findBySubsidiary(@Param('subsidiaryId') subsidiaryId: string) {
+    return this.driversService.findBySubsidiary(subsidiaryId);
+  }
+
   @Get(':id')
   findOne(@Param('id') id: string) {
     return this.driversService.findOne(id);

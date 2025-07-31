@@ -20,6 +20,11 @@ export class RoutesController {
     return this.routesService.findAll();
   }
 
+  @Get('subsidiary/:subsidiaryId')
+  findBySubsidiary(@Param('subsidiaryId') subsidiaryId: string) {
+    return this.routesService.findBySubsidiary(subsidiaryId);
+  }
+
   @Get(':id')
   findOne(@Param('id') id: string) {
     return this.routesService.findOne(id);

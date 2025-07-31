@@ -159,14 +159,17 @@ export class DevolutionsService {
           exceptionCode: true,
           notes: true,
           createdAt: true,
+          timestamp: true
         },
       },
       order: {
         statusHistory: {
-          createdAt: 'DESC',
+          timestamp: 'DESC',
         },
       },
     });
+
+    console.log("🚀 ~ DevolutionsService ~ validateOnShipment ~ regularShipment:", regularShipment)
 
     if (regularShipment) {
       const incomeExists = await this.incomeRepository.exists({

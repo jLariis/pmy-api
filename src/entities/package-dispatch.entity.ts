@@ -1,77 +1,69 @@
-import {
-  Column,
-  Entity,
-  ManyToOne,
-  PrimaryGeneratedColumn,
-  BeforeInsert,
-  BeforeUpdate,
-  OneToMany,
-  JoinColumn,
-} from 'typeorm';
-import { Driver } from './driver.entity';
-import { Shipment } from './shipment.entity';
-import { Subsidiary } from './subsidiary.entity';
-import { Vehicle } from './vehicle.entity';
+import { DispatchStatus } from "src/common/enums/dispatch-enum";
+import { Entity, PrimaryGeneratedColumn, OneToMany, Column, ManyToMany, JoinTable, ManyToOne, JoinColumn, BeforeInsert, BeforeUpdate } from "typeorm";
+import { Driver } from "./driver.entity";
+import { Route } from "./route.entity";
+import { Shipment } from "./shipment.entity";
+import { Subsidiary } from "./subsidiary.entity";
+import { Vehicle } from "./vehicle.entity";
 
-@Entity('package-dispatch')
+@Entity('package_dispatch') // Changed to snake_case for database consistency
 export class PackageDispatch {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
-  @Column()
-  name: string;
+  @OneToMany(() => Shipment, (shipment) => shipment.packageDispatch)
+  shipments: Promise<Shipment[]>;
 
   @Column({ unique: true })
   trackingNumber: string;
 
-  @OneToMany(() => Shipment, shipment => shipment.packageDispatch)
-  shipments: Shipment[];
+  @ManyToMany(() => Route, { nullable: true })
+  @JoinTable({
+    name: 'package_dispatch_routes',
+    joinColumn: { name: 'dispatchId', referencedColumnName: 'id' },
+    inverseJoinColumn: { name: 'routeId', referencedColumnName: 'id' },
+  })
+  routes: Route[] | null;
 
-  @ManyToOne(() => Driver, { nullable: true })
-  @JoinColumn({ name: 'driverId' })
-  driver: Driver;
+  @ManyToMany(() => Driver, { nullable: true })
+  @JoinTable({
+    name: 'package_dispatch_drivers',
+    joinColumn: { name: 'dispatchId', referencedColumnName: 'id' },
+    inverseJoinColumn: { name: 'driverId', referencedColumnName: 'id' },
+  })
+  drivers: Driver[] | null;
 
   @ManyToOne(() => Vehicle, { nullable: true })
   @JoinColumn({ name: 'vehicleId' })
-  vehicle: string;
+  vehicle: Vehicle | null; // Fixed type
 
   @Column({
     type: 'enum',
-    enum: ['En progreso', 'Completada', 'Pendiente', 'Cancelada'],
-    default: 'Pendiente',
+    enum: DispatchStatus,
+    default: DispatchStatus.EN_PROGRESO,
   })
-  status: 'En progreso' | 'Completada' | 'Pendiente' | 'Cancelada';
+  status: DispatchStatus;
 
-  @Column({ type: 'datetime' })
-  startTime: Date;
+  @Column({ type: 'timestamp', nullable: true })
+  startTime: Date | null; // Allow nullable
 
-  @Column({ type: 'datetime' })
-  estimatedArrival: Date;
+  @Column({ type: 'timestamp', nullable: true })
+  estimatedArrival: Date | null; // Allow nullable
 
   @ManyToOne(() => Subsidiary, { nullable: true })
   @JoinColumn({ name: 'subsidiaryId' })
-  subsidiary: Subsidiary;
+  subsidiary: Subsidiary | null;
 
-  @Column({ type: 'datetime', default: () => 'CURRENT_TIMESTAMP' })
+  @Column({ type: 'timestamp', default: () => 'CURRENT_TIMESTAMP' })
   createdAt: Date;
 
-  @Column({ type: 'datetime', nullable: true })
-  updatedAt: Date;
+  @Column({ type: 'timestamp', nullable: true })
+  updatedAt: Date | null;
 
   @BeforeInsert()
   setDefaults() {
     this.createdAt = new Date();
-
-    // Genera un número aleatorio de 10 dígitos como string
-    this.trackingNumber = this.generateTrackingNumber();
-
-    if (!this.startTime) {
-      this.startTime = new Date();
-    }
-
-    if (!this.estimatedArrival) {
-      this.estimatedArrival = new Date();
-    }
+    this.trackingNumber = this.generateDispatchNumber();
   }
 
   @BeforeUpdate()
@@ -79,7 +71,10 @@ export class PackageDispatch {
     this.updatedAt = new Date();
   }
 
-  private generateTrackingNumber(): string {
-    return Math.floor(1000000000 + Math.random() * 9000000000).toString(); // 10 dígitos
+  private generateDispatchNumber(): string {
+    // Combina timestamp y random para asegurar unicidad y longitud de 12 dígitos
+    const timestampPart = Date.now().toString().slice(-8); // últimos 8 dígitos del timestamp
+    const randomPart = Math.floor(1000 + Math.random() * 9000).toString(); // 4 dígitos aleatorios
+    return `${timestampPart}${randomPart}`; // Total: 12 dígitos
   }
 }

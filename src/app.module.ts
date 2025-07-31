@@ -21,6 +21,7 @@ import { DevolutionsModule } from './devolutions/devolutions.module';
 import { DriversModule } from './drivers/drivers.module';
 import { RoutesModule } from './routes/routes.module';
 import { VehiclesModule } from './vehicles/vehicles.module';
+import { PackageDispatchModule } from './package-dispatch/package-dispatch.module';
 
 @Module({
   imports: [
@@ -63,7 +64,8 @@ import { VehiclesModule } from './vehicles/vehicles.module';
     DevolutionsModule,
     DriversModule,
     RoutesModule,
-    VehiclesModule
+    VehiclesModule,
+    PackageDispatchModule
   ],
   controllers: [AppController],
   providers: [

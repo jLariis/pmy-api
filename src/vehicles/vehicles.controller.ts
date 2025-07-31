@@ -21,6 +21,11 @@ export class VehiclesController {
     return this.vehiclesService.findAll();
   }
 
+  @Get('subsidiary/:subsidiaryId')
+  findBySubsidiary(@Param('subsidiaryId') subsidiaryId: string) {
+    return this.vehiclesService.findBySubsidiary(subsidiaryId);
+  }
+
   @Get(':id')
   findOne(@Param('id') id: string) {
     return this.vehiclesService.findOne(id);

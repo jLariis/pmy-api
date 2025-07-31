@@ -45,7 +45,10 @@ async function bootstrap() {
   });
 
   const port = process.env.PORT || 8080;
-  app.setGlobalPrefix('api');
+  
+  app.setGlobalPrefix('api', {
+    exclude: ['/']
+  });
 
   const swagger = new DocumentBuilder()
     .setTitle('PMY API')

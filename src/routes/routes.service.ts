@@ -37,6 +37,12 @@ export class RoutesService {
     return await this.routeRepository.findOne({ where: { id } });
   }
 
+  async findBySubsidiary(subsidiaryId: string) {
+    return await this.routeRepository.find({ 
+      where: { subsidiary: { id: subsidiaryId } }
+    });
+  }
+
   async update(id: string, updateRouteDto: UpdateRouteDto) {
     return await this.routeRepository.update(id, updateRouteDto);
   }

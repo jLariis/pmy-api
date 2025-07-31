@@ -38,6 +38,12 @@ export class DriversService {
     });
   }
 
+  async findBySubsidiary(subsidiaryId: string) {
+    return await this.driverRepository.find({ 
+      where: { subsidiary: { id: subsidiaryId } }
+    });
+  }
+
   async findOne(id: string) {
     return await this.driverRepository.findOne({ where: { id } });
   }
