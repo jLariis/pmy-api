@@ -298,9 +298,9 @@ export class ShipmentsController {
         },
       },
     })
-    @UseGuards(JwtAuthGuard)
-    validateTracking(@UploadedFile() file: Express.Multer.File, @Request() req) {
-      console.log("🚀 ~ ShipmentsController ~ validateTracking ~ req:", req)
+    //@UseGuards(JwtAuthGuard)
+    validateTracking(@UploadedFile() file: Express.Multer.File/*, @Request() req*/) {
+      //console.log("🚀 ~ ShipmentsController ~ validateTracking ~ req:", req)
       return this.shipmentsService.validateDataforTracking(file);
     }
 

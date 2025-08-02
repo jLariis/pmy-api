@@ -5,10 +5,11 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { PackageDispatch } from 'src/entities/package-dispatch.entity';
 import { ChargeShipment, Consolidated, Shipment, Subsidiary } from 'src/entities';
 import { Devolution } from 'src/entities/devolution.entity';
+import { MailService } from 'src/mail/mail.service';
 
 @Module({
   imports: [TypeOrmModule.forFeature([PackageDispatch, Shipment, ChargeShipment, Subsidiary, Consolidated, Devolution])], // Add your entities here
   controllers: [PackageDispatchController],
-  providers: [PackageDispatchService],
+  providers: [PackageDispatchService, MailService],
 })
 export class PackageDispatchModule {}

@@ -18,4 +18,7 @@ export class CreatePackageDispatchDto {
 
     @IsOptional()
     subsidiary?: Subsidiary;
+
+    @IsString()
+    kms?: string;
 }

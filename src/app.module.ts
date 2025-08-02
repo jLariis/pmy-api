@@ -40,7 +40,7 @@ import { PackageDispatchModule } from './package-dispatch/package-dispatch.modul
       useFactory: async (configService: ConfigService) => ({
         transport: {
           host: configService.get<string>('EMAIL_SERVICE_HOST'),
-          port: parseInt(configService.get<string>('EMAIL_SERVICE_PORT') ?? '587'),
+          port: parseInt(configService.get<string>('EMAIL_SERVICE_PORT') ?? '465'),
           secure: configService.get<string>('EMAIL_SERVICE_SECURE') === 'true',
           auth: {
             user: configService.get<string>('EMAIL_SERVICE_EMAIL'),

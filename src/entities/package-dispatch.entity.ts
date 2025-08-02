@@ -5,6 +5,7 @@ import { Route } from "./route.entity";
 import { Shipment } from "./shipment.entity";
 import { Subsidiary } from "./subsidiary.entity";
 import { Vehicle } from "./vehicle.entity";
+import { ChargeShipment } from "./charge-shipment.entity";
 
 @Entity('package_dispatch') // Changed to snake_case for database consistency
 export class PackageDispatch {
@@ -12,7 +13,10 @@ export class PackageDispatch {
   id: string;
 
   @OneToMany(() => Shipment, (shipment) => shipment.packageDispatch)
-  shipments: Promise<Shipment[]>;
+  shipments: Shipment[];
+
+  @OneToMany(() => ChargeShipment, (chargeShipment) => chargeShipment.packageDispatch)
+  chargeShipments: ChargeShipment[];
 
   @Column({ unique: true })
   trackingNumber: string;
@@ -53,6 +57,9 @@ export class PackageDispatch {
   @ManyToOne(() => Subsidiary, { nullable: true })
   @JoinColumn({ name: 'subsidiaryId' })
   subsidiary: Subsidiary | null;
+
+  @Column({nullable: true, default: ''})
+  kms: string;
 
   @Column({ type: 'timestamp', default: () => 'CURRENT_TIMESTAMP' })
   createdAt: Date;

@@ -10,6 +10,8 @@ import { remove } from 'winston';
 import { ValidatedPackageDispatchDto } from './dto/validated-package-dispatch.dto';
 import { ShipmentStatusType } from 'src/common/enums/shipment-status-type.enum';
 import { Devolution } from 'src/entities/devolution.entity';
+import { PackageDispatchDto } from './dto/package-dispatch.dto';
+import { MailService } from 'src/mail/mail.service';
 
 @Injectable()
 export class PackageDispatchService {
@@ -25,36 +27,60 @@ export class PackageDispatchService {
     private readonly consolidatedRepository: Repository<Consolidated>,
     @InjectRepository(Devolution)
     private readonly devolutionRepository: Repository<Devolution>,
+    private readonly mailService: MailService
   ){
 
   }
 
   async create(dto: CreatePackageDispatchDto): Promise<PackageDispatch> {
-    // Resolve shipment IDs to Shipment entities
+    const allShipmentIds = dto.shipments;
+
+    // Buscar en shipmentRepository
     const shipments = await this.shipmentRepository.find({
-      where: { id: In(dto.shipments) },
+      where: { id: In(allShipmentIds) },
     });
 
-    if (shipments.length !== dto.shipments.length) {
-      throw new Error('Some shipment IDs were not found');
+    const foundShipmentIds = shipments.map(s => s.id);
+    const missingIds = allShipmentIds.filter(id => !foundShipmentIds.includes(id));
+
+    // Buscar los faltantes en chargeShipmentRepository
+    const chargeShipments = await this.chargeShipmentRepository.find({
+      where: { id: In(missingIds) },
+    });
+
+    const foundChargeShipmentIds = chargeShipments.map(s => s.id);
+    const stillMissing = missingIds.filter(id => !foundChargeShipmentIds.includes(id));
+
+    if (stillMissing.length > 0) {
+      throw new Error(`Some shipment IDs were not found: ${stillMissing.join(', ')}`);
     }
 
-    // Create and save the PackageDispatch entity without trackingNumber
     const newPackageDispatch = this.packageDispatchRepository.create({
       routes: dto.routes || [],
       drivers: dto.drivers || [],
       vehicle: dto.vehicle,
       subsidiary: dto.subsidiary,
+      kms: dto.kms
     });
 
     const savedDispatch = await this.packageDispatchRepository.save(newPackageDispatch);
 
-    // Update shipments relationship
-    await this.shipmentRepository
-      .createQueryBuilder()
-      .relation(PackageDispatch, 'shipments')
-      .of(savedDispatch)
-      .add(shipments);
+    // Relacionar los encontrados de shipment y chargeShipment
+    if (shipments.length > 0) {
+      await this.shipmentRepository
+        .createQueryBuilder()
+        .relation(PackageDispatch, 'shipments')
+        .of(savedDispatch)
+        .add(shipments);
+    }
+
+    if (chargeShipments.length > 0) {
+      await this.chargeShipmentRepository
+        .createQueryBuilder()
+        .relation(PackageDispatch, 'chargeShipments')
+        .of(savedDispatch)
+        .add(chargeShipments);
+    }
 
     return savedDispatch;
   }
@@ -121,7 +147,9 @@ export class PackageDispatchService {
     const shipment = await this.shipmentRepository.findOne({
       where: { trackingNumber },
       relations: ['subsidiary', 'statusHistory', 'payment'],
+      order: { createdAt: 'DESC' }
     });
+
 
     if (!shipment) {
       const chargeShipment = await this.chargeShipmentRepository.findOne({
@@ -168,12 +196,14 @@ export class PackageDispatchService {
   findAll() {
     return `This action returns all packageDispatch`;
   }
-
   async findAllBySubsidiary(subsidiaryId: string) {
-    return await this.packageDispatchRepository.find({
+    const response = await this.packageDispatchRepository.find({
       where: { subsidiary: { id: subsidiaryId } },
       relations: ['shipments', 'routes', 'drivers', 'vehicle'],
     });
+
+    console.log("🚀 ~ PackageDispatchService ~ findAllBySubsidiary ~ response:", response)
+    return response
   }
 
   findOne(id: string) {
@@ -186,5 +216,17 @@ export class PackageDispatchService {
 
   remove(id: string) {
     return `This action removes a #${id} packageDispatch`;
+  }
+
+  async sendByEmail(file: Express.Multer.File, subsidiaryName: string, packageDispatchId: string) {
+    const packageDispatch = await this.packageDispatchRepository.findOne(
+      { 
+        where: {id: packageDispatchId},
+        relations: ['drivers', 'routes', 'vehicle']
+    
+      });
+    console.log("🚀 ~ PackageDispatchService ~ sendByEmail ~ packageDispatch:", packageDispatch)
+
+    return await this.mailService.sendHighPriorityPackageDispatchEmail(file, subsidiaryName, packageDispatch)
   }
 }

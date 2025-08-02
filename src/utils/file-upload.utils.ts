@@ -28,14 +28,24 @@ function formatExcelDateToMySQL(dateStr?: string): string | null {
 }
 
 function formatExcelTimeToMySQL(timeStr?: string): string {
-    if (!timeStr || typeof timeStr !== 'string') {
-        return new Date().toTimeString().slice(0, 8);
-    }
-    const timeRegex = /^\d{2}:\d{2}(:\d{2})?$/;
-    if (timeRegex.test(timeStr.trim())) {
-        return timeStr.trim().length === 5 ? `${timeStr.trim()}:00` : timeStr.trim();
-    }
-    return new Date().toTimeString().slice(0, 8);
+  if (!timeStr) {
+    return '18:00:00'; // valor por defecto si no viene nada
+  }
+
+  const timeNumber = typeof timeStr === 'string' ? parseFloat(timeStr) : timeStr;
+
+  // Si no es un número válido, regresa 18:00:00
+  if (isNaN(timeNumber)) {
+    return '18:00:00';
+  }
+
+  // Convierte el número de Excel a milisegundos desde el inicio del día
+  const totalSeconds = Math.round(timeNumber * 86400);
+  const hours = Math.floor(totalSeconds / 3600).toString().padStart(2, '0');
+  const minutes = Math.floor((totalSeconds % 3600) / 60).toString().padStart(2, '0');
+  const seconds = (totalSeconds % 60).toString().padStart(2, '0');
+
+  return `${hours}:${minutes}:${seconds}`;
 }
 
 export function parseDynamicSheet(sheet: XLSX.Sheet, options: ParseOptions): ParsedShipmentDto[] {

@@ -258,134 +258,33 @@ export class ShipmentsService {
 
   /***** Just for testing ONE tracking ---- Este si se utiliza creo*/ 
     async validateDataforTracking(file: Express.Multer.File) {
-      if (!file) throw new BadRequestException('No file uploaded');
+       const startTime = Date.now();
+      this.logger.log(`📂 Iniciando procesamiento de archivo: ${file?.originalname}`);
 
-      const { buffer, originalname } = file;
-      const duplicatedTrackings: any[] = [];
-      const newShipments: Shipment[] = [];
-
-      if (!originalname.match(/\.(csv|xlsx?)$/i)) {
-        throw new BadRequestException('Unsupported file type');
+      if (!file) {
+        const reason = 'No se subió ningún archivo';
+        this.logger.error(`❌ ${reason}`);
+        this.logBuffer.push(reason);
+        throw new BadRequestException(reason);
       }
 
-      const workbook = XLSX.read(buffer, { type: 'buffer' });
-      const sheet = workbook.Sheets[workbook.SheetNames[0]];
-      
-      const shipmentsToSave: ParsedShipmentDto[] = parseDynamicSheet(sheet, {fileName: originalname});
+      if (!file.originalname.toLowerCase().match(/\.(csv|xlsx?)$/)) {
+        const reason = 'Tipo de archivo no soportado';
+        this.logger.error(`❌ ${reason}`);
+        this.logBuffer.push(reason);
+        throw new BadRequestException(reason);
+      }
+
+
+      this.logger.log(`📄 Leyendo archivo Excel: ${file.originalname}`);
+      const workbook = XLSX.read(file.buffer, { type: 'buffer' });
+      const shipmentsToSave = workbook.SheetNames.flatMap((sheetName) =>
+        parseDynamicSheet(workbook.Sheets[sheetName], { fileName: file.originalname, sheetName })
+      );
+
       //console.log("🚀 ~ ShipmentsService ~ validateDataforTracking ~ shipmentsToSave:", shipmentsToSave)
-
-      for (const shipment of shipmentsToSave) { 
-        const shipmentInfo: FedExTrackingResponseDto = await this.fedexService.trackPackage(shipment.trackingNumber)
-        const scanEvents = scanEventsFilter(shipmentInfo.output.completeTrackResults[0].trackResults[0].scanEvents, "A trusted third-party vendor is on the way with your package");
-        let shipmentStatus: ShipmentStatus[] = [];
-        
-        const payment: Payment = null;
-        const newShipment = this.shipmentRepository.create({...shipment, payment});
       
-        //console.log("🚀 ~ ShipmentsService ~ validateDataforTracking ~ newShipment:", newShipment)
-        const filteredScanEvents: FedExScanEventDto[] = [];
-
-        if(scanEvents.length === 0) {
-          filteredScanEvents.push(...scanEventsFilter(shipmentInfo.output.completeTrackResults[0].trackResults[0].scanEvents, "At local FedEx facility"));
-        } else {
-          filteredScanEvents.push(...scanEvents);
-        }
-
-        if(filteredScanEvents.length === 0) {
-          filteredScanEvents.push(...scanEventsFilter(shipmentInfo.output.completeTrackResults[0].trackResults[0].scanEvents, "On FedEx vehicle for delivery"))
-        }
-
-        for (const scanEvent of filteredScanEvents) {
-            const isInicialState = scanEvent.date === filteredScanEvents[filteredScanEvents.length - 1].date;
-        
-            const newShipmentStatus = new ShipmentStatus();
-            const rawDate = scanEvent.date; // '2025-06-05T10:57:00-07:00'
-            const eventDate = new Date(rawDate);
-            
-            console.log(`Fecha original (${scanEvent.date}):`, rawDate); 
-            console.log('Fecha convertida (UTC):', eventDate.toISOString());
-
-            newShipmentStatus.status = isInicialState
-              ? ShipmentStatusType.RECOLECCION
-              : mapFedexStatusToLocalStatus(scanEvent.eventDescription);        
-            newShipmentStatus.timestamp = eventDate;
-            newShipmentStatus.notes = this.generateNote(scanEvent, isInicialState);
-
-            // ✅ Aquí asignas el shipment relacionado
-            newShipmentStatus.shipment = newShipment;
-            shipmentStatus.push(newShipmentStatus);
-        }
-
-        if (!shipment.commitDate) {
-          const rawDate = shipmentInfo.output.completeTrackResults[0].trackResults[0].standardTransitTimeWindow.window.ends; // Ej: '2025-06-05T10:57:00-07:00'
-          
-          if(!rawDate){
-            console.log("🚀 ~ ShipmentsService ~ validateDataforTracking ~ rawDate ~ sin rawDate")
-            //const defaultDay = format(new Date(), 'yyyy-MM-dd HH:mm:ss');
-            //console.log("🚀 ~ ShipmentsService ~ validateDataforTracking ~ defaultDay:", defaultDay)
-            newShipment.commitDateTime = new Date();
-            //const [fecha] = defaultDay.split(' ');
-            //newShipment.commitDate = fecha;
-            //console.log("🚀 ~ ShipmentsService ~ validateDataforTracking ~  newShipment.commitDate:",  newShipment.commitDate)
-            //newShipment.commitTime = '18:00:00'
-          } else {
-            /*const formattedDateTime = format(
-              new Date(rawDate.replace(/([-+]\d{2}:\d{2})$/, '')), 
-              'yyyy-MM-dd HH:mm:ss'
-            );*/
-            
-            //const [fecha, hora] = formattedDateTime.split(' ');
-            //newShipment.commitDate = fecha
-            //newShipment.commitTime = hora*/
-            newShipment.commitDateTime = new Date(rawDate.replace(/([-+]\d{2}:\d{2})$/, '')) // validat que este bien
-          }
-        }
-
-        newShipment.priority = getPriority(new Date(newShipment.commitDateTime))
-        newShipment.subsidiary = await this.cityClasification(shipment.recipientCity)
-        newShipment.statusHistory = shipmentStatus;
-        newShipment.status = shipmentStatus[0].status;
-        newShipment.receivedByName = shipmentInfo.output.completeTrackResults[0].trackResults[0].deliveryDetails.receivedByName;
-        newShipment.shipmentType = ShipmentType.FEDEX;    
-
-        if(shipment.payment){
-          const newPayment: Payment = new Payment();
-          const match = shipment.payment.match(/([0-9]+(?:\.[0-9]+)?)/);
-          const isPaymentClomplete = shipmentStatus.findIndex(history => history.status === ShipmentStatusType.ENTREGADO);
-
-          if(match) {
-            const amount = parseFloat(match[1]);
-            if(!isNaN(amount)) {
-              newPayment.amount = amount;
-              newPayment.status =  isPaymentClomplete ? PaymentStatus.PAID : PaymentStatus.PENDING
-            }
-          }
-
-          newShipment.payment = newPayment;
-        }
-        
-        newShipments.push(newShipment);
-      }
-
-
-      const outputShipments = newShipments.map(shipment => ({
-        ...shipment,
-        statusHistory: shipment.statusHistory.map(status => ({
-          status: status.status,
-          timestamp: status.timestamp,
-          notes: status.notes,
-        }))
-      }));
-
-
-      const datoToResponse = {
-        saved: outputShipments,
-      
-      }
-
-      //this.logger.log(`🚀 ~ ShipmentsService ~ processExcelFile ~ datoToResponse: ${JSON.stringify(datoToResponse)}`)
-
-      return datoToResponse;
+      return shipmentsToSave;
     }
 
   async normalizeCities() {
@@ -877,6 +776,7 @@ export class ShipmentsService {
     return highValueShipments;
 
   }
+
   private async applyIncomeValidationRules(
     shipment: Shipment,
     mappedStatus: ShipmentStatusType,
@@ -918,6 +818,14 @@ export class ShipmentsService {
     // 3. NO_ENTREGADO with exception 03
     if (mappedStatus === ShipmentStatusType.NO_ENTREGADO && exceptionCodes.includes('03')) {
       const reason = `❌ Excluido de income: NO_ENTREGADO con excepción 03 (${trackingNumber})`;
+      this.logger.warn(reason);
+      this.logBuffer.push(reason);
+      return { isValid: false, timestamp: eventDate, reason };
+    }
+
+    // 17. NO_ENTREGADO with exception 17
+    if (mappedStatus === ShipmentStatusType.NO_ENTREGADO && exceptionCodes.includes('17')) {
+      const reason = `❌ Excluido de income: NO_ENTREGADO con excepción 17 (${trackingNumber})`;
       this.logger.warn(reason);
       this.logBuffer.push(reason);
       return { isValid: false, timestamp: eventDate, reason };
@@ -1266,7 +1174,13 @@ export class ShipmentsService {
     return {
       'default': {
         allowedExceptionCodes: ['07', '03', '08', '17', '67', '14', '16', 'OD'],
-        allowedStatuses: [ShipmentStatusType.ENTREGADO, ShipmentStatusType.NO_ENTREGADO, ShipmentStatusType.PENDIENTE, ShipmentStatusType.EN_RUTA, ShipmentStatusType.RECOLECCION],
+        allowedStatuses: [
+          ShipmentStatusType.ENTREGADO, 
+          ShipmentStatusType.NO_ENTREGADO, 
+          ShipmentStatusType.PENDIENTE, 
+          ShipmentStatusType.EN_RUTA, 
+          ShipmentStatusType.RECOLECCION
+        ],
         maxEventAgeDays: 30,
         allowDuplicateStatuses: false,
         allowedEventTypes: ['DL', 'DE', 'DU', 'RF', 'TA', 'TD', 'HL', 'OC', 'IT', 'AR', 'AF', 'CP', 'CC', 'PU'],
