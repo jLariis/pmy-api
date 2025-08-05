@@ -20,6 +20,15 @@ export class Vehicle {
   @Column()
   plateNumber: string;
 
+  @Column({default: '', nullable: true})
+  plateNumber2: string;
+
+  @Column({default: '', nullable: true})
+  policyNumber: string;
+
+  @Column({ type: 'datetime', nullable: true })
+  policyExpirationDate: Date;
+
   @Column()
   model: string;
 
