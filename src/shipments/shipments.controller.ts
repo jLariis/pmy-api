@@ -321,6 +321,11 @@ export class ShipmentsController {
     }
 
 
+    @Get('validate-shipment-ontheway/:subsidiaryId')
+    async checkShipmentOnTheWayBySubsidiary(@Param('subsidiaryId') subsidiaryId: string) {
+      return await this.shipmentsService.checkStatus67OnShipments(subsidiaryId);
+    }
+
   /**************************************************************************************************************** */
 
 }

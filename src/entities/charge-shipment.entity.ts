@@ -8,6 +8,7 @@ import { ShipmentType } from "src/common/enums/shipment-type.enum";
 import { Payment } from "./payment.entity";
 import { ShipmentStatus } from "./shipment-status.entity";
 import { Subsidiary } from "./subsidiary.entity";
+import { Unloading } from "./unloading.entity";
 
 @Entity('charge_shipment')
 export class ChargeShipment {
@@ -97,7 +98,14 @@ export class ChargeShipment {
       })
       @JoinColumn({ name: 'routeId' })
       packageDispatch?: PackageDispatch;
-    
+
+      @ManyToOne(() => Unloading, unloading => unloading.shipments, {
+        nullable: true,
+        onDelete: 'SET NULL',
+      })
+      @JoinColumn({ name: 'unloadingId' })
+      unloading?: Unloading;
+
       @Column({default: ''})
       exceptionCode: string;
 

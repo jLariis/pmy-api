@@ -4,6 +4,7 @@ import { ParsedShipmentDto } from 'src/shipments/dto/parsed-shipment.dto';
 import { Priority } from 'src/common/enums/priority.enum';
 import { Payment } from 'src/entities/payment.entity';
 import { PaymentStatus } from 'src/common/enums/payment-status.enum';
+import { PaymentTypeEnum } from 'src/common/enums/payment-type.enum';
 
 interface ParseOptions {
     fileName: string;
@@ -125,13 +126,17 @@ export function parseDynamicSheetCharge(sheet: XLSX.Sheet) {
             console.log("Incluye cobro");
 
             const newPayment: Payment = new Payment();
-            const match = includesCharge.match(/([0-9]+(?:\.[0-9]+)?)/);
+            
+            const typeMatch = includesCharge.match(/^(COD|FTC|ROD)/);
+            const amountMatch = includesCharge.match(/([0-9]+(?:\.[0-9]+)?)/);
 
-            if(match) {
-                const amount = parseFloat(match[1]);
+            if(amountMatch) {
+                const paymentType = typeMatch ? typeMatch[1] as PaymentTypeEnum : null;
+                const paymentAmount = amountMatch ? parseFloat(amountMatch[1]) : null;
                 
-                if(!isNaN(amount)) {
-                    newPayment.amount = amount;
+                if(!isNaN(paymentAmount)) {
+                    newPayment.amount = paymentAmount;
+                    newPayment.type = paymentType;
                     newPayment.status = PaymentStatus.PENDING
                 }
             }

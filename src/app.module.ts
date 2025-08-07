@@ -22,6 +22,7 @@ import { DriversModule } from './drivers/drivers.module';
 import { RoutesModule } from './routes/routes.module';
 import { VehiclesModule } from './vehicles/vehicles.module';
 import { PackageDispatchModule } from './package-dispatch/package-dispatch.module';
+import { UnloadingModule } from './unloading/unloading.module';
 
 @Module({
   imports: [
@@ -65,7 +66,8 @@ import { PackageDispatchModule } from './package-dispatch/package-dispatch.modul
     DriversModule,
     RoutesModule,
     VehiclesModule,
-    PackageDispatchModule
+    PackageDispatchModule,
+    UnloadingModule
   ],
   controllers: [AppController],
   providers: [

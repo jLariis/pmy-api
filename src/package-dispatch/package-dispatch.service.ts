@@ -158,8 +158,15 @@ export class PackageDispatchService {
       });
 
       if (!chargeShipment) {
-        throw new Error('Shipment not found with the provided tracking number');
-      }
+      // Retornar DTO mínimo con un mensaje indicando el motivo
+      return {
+        trackingNumber,
+        isValid: false,
+        reason: 'No se encontraron datos para el tracking number en la base de datos',
+        subsidiary: null,
+        status: null,
+      };
+    }
 
       const validatedCharge = await this.validatePackage(
         {
@@ -196,13 +203,13 @@ export class PackageDispatchService {
   findAll() {
     return `This action returns all packageDispatch`;
   }
+
   async findAllBySubsidiary(subsidiaryId: string) {
     const response = await this.packageDispatchRepository.find({
       where: { subsidiary: { id: subsidiaryId } },
       relations: ['shipments', 'routes', 'drivers', 'vehicle'],
     });
 
-    console.log("🚀 ~ PackageDispatchService ~ findAllBySubsidiary ~ response:", response)
     return response
   }
 

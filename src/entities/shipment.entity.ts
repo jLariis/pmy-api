@@ -7,6 +7,7 @@ import { ShipmentType } from '../common/enums/shipment-type.enum';
 import { Subsidiary } from './subsidiary.entity';
 import { Route } from './route.entity';
 import { PackageDispatch } from './package-dispatch.entity';
+import { Unloading } from './unloading.entity';
 
 @Entity('shipment')
 export class Shipment {
@@ -92,6 +93,13 @@ export class Shipment {
   })
   @JoinColumn({ name: 'routeId' })
   packageDispatch?: PackageDispatch;
+
+  @ManyToOne(() => Unloading, unloading => unloading.shipments, {
+    nullable: true,
+    onDelete: 'SET NULL',
+  })
+  @JoinColumn({ name: 'unloadingId' })
+  unloading?: Unloading;
 
   @BeforeInsert()
   setDefaults() {

@@ -10,7 +10,7 @@ import { getPriority, parseDynamicFileF2, parseDynamicHighValue, parseDynamicShe
 import { scanEventsFilter } from 'src/utils/scan-events-filter';
 import { ParsedShipmentDto } from './dto/parsed-shipment.dto';
 import { mapFedexStatusToLocalStatus } from 'src/utils/fedex.utils';
-import { endOfToday, format, isSameDay, parse, parseISO, startOfToday } from 'date-fns';
+import { addDays, differenceInDays, endOfToday, format, isSameDay, parse, parseISO, startOfToday } from 'date-fns';
 import { ShipmentType } from 'src/common/enums/shipment-type.enum';
 import { Consolidated, Income, Payment, Subsidiary } from 'src/entities';
 import { PaymentStatus } from 'src/common/enums/payment-status.enum';
@@ -862,7 +862,7 @@ export class ShipmentsService {
   // 6. Default case
   this.logger.log(`✅ Income permitido para ${trackingNumber} con status=${mappedStatus}`);
   return { isValid: true, timestamp: eventDate };
-}
+  }
 
   async checkStatusOnFedexBySubsidiaryRules(): Promise<void> {
     const shipmentsWithError: { trackingNumber: string; reason: string }[] = [];
@@ -3755,7 +3755,7 @@ export class ShipmentsService {
     }
   }
 
-      async checkStatusOnFedexChargeShipment(trackingNumbers: string[]) {
+    async checkStatusOnFedexChargeShipment(trackingNumbers: string[]) {
         const chargeShipmentsWithError = [];
         const updatedChargeShipments = [];
 
@@ -3904,6 +3904,70 @@ export class ShipmentsService {
       }
 
       return savedForPickup;
+    }
+
+
+    async checkStatus67OnShipments(subsidiaryId: string) {
+      const today = new Date();
+
+      const shipments = await this.shipmentRepository.find({
+        where: {
+          subsidiary: { id: subsidiaryId },
+          status: ShipmentStatusType.EN_RUTA,
+        },
+        relations: ['statusHistory', 'payment'],
+      });
+
+      const results = [];
+
+      for (const shipment of shipments) {
+        const history = shipment.statusHistory.sort(
+          (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+        );
+
+        const lastStatus = history[history.length - 1];
+        const firstOnTheWay = history.find(h => h.status === ShipmentStatusType.EN_RUTA);
+
+        if (!firstOnTheWay) {
+          // Si nunca tuvo estado EN_RUTA, lo saltamos o agregamos con null
+          results.push({
+            trackingNumber: shipment.trackingNumber,
+            lastStatus: lastStatus.status,
+            daysWithoutEnRuta: null,
+            comment: 'Nunca tuvo EN_RUTA',
+          });
+          continue;
+        }
+
+        const fromDate = new Date(firstOnTheWay.timestamp);
+        const totalDays = differenceInDays(today, fromDate);
+
+        let daysWithoutEnRuta = 0;
+
+        for (let i = 0; i <= totalDays; i++) {
+          const currentDay = addDays(fromDate, i);
+
+          const hasEnRutaThatDay = history.some(
+            (h) =>
+              h.status === ShipmentStatusType.EN_RUTA &&
+              isSameDay(new Date(h.timestamp), currentDay)
+          );
+
+          if (!hasEnRutaThatDay) {
+            daysWithoutEnRuta++;
+          }
+        }
+
+        results.push({
+          trackingNumber: shipment.trackingNumber,
+          lastStatus: lastStatus.status,
+          daysWithoutEnRuta,
+          firstEnRutaDate: fromDate,
+          totalStatusUpdates: history.length,
+        });
+      }
+
+      return results;
     }
 
 
