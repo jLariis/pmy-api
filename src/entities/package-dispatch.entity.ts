@@ -37,7 +37,7 @@ export class PackageDispatch {
   })
   drivers: Driver[] | null;
 
-  @ManyToOne(() => Vehicle, { nullable: true })
+  @ManyToOne(() => Vehicle, { onDelete: 'SET NULL', nullable: true })
   @JoinColumn({ name: 'vehicleId' })
   vehicle: Vehicle | null; // Fixed type
 

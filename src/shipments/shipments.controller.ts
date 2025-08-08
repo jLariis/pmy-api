@@ -89,12 +89,17 @@ export class ShipmentsController {
     @UploadedFile() file: Express.Multer.File, 
     @Body('subsidiaryId') subsidiaryId: string,
     @Body('consNumber') consNumber: string,
-    @Body('consDate') consDate?: string
+    @Body('consDate') consDate?: string,
+    @Body('notRemoveCharge') notRemoveCharge: boolean = false,
   ) {
     let dateForCons = null;
 
     if(consDate) {
       dateForCons = new Date(consDate);
+    }
+
+    if(notRemoveCharge) {
+      return this.shipmentsService.addChargeShipments(file, subsidiaryId, consNumber, dateForCons);
     }
 
     return this.shipmentsService.processFileF2(file, subsidiaryId, consNumber, dateForCons);

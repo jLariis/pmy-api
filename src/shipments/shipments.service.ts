@@ -608,7 +608,7 @@ export class ShipmentsService {
     return { exist: count > 0, shipment: _[0] };
   }
 
-  /*** Procesar cargas cuando vienen los archivos separados */
+  /*** Procesar cargas cuando vienen los archivos separados SII SE USA*/
   async processFileF2(file: Express.Multer.File, subsidiaryId: string, consNumber: string, consDate?: Date) {
     if (!file) throw new BadRequestException('No file uploaded');
     this.logger.log(`📂 Start processing file: ${file.originalname}`);
@@ -710,6 +710,76 @@ export class ShipmentsService {
       errors,
     };
   }
+
+  /*** NUEVO SI SE USA */
+  async addChargeShipments(file: Express.Multer.File, subsidiaryId: string, consNumber: string, consDate?: Date) {
+    if (!file) throw new BadRequestException('No file uploaded');
+    this.logger.log(`📂 Start processing file: ${file.originalname}`);
+
+    const { buffer, originalname } = file;
+    const notFoundTrackings: any[] = [];
+    const savedChargeShipmentsObj: any[] = [];
+    const errors: any[] = [];
+
+    if (!originalname.match(/\.(csv|xlsx?)$/i)) {
+      throw new BadRequestException('Unsupported file type');
+    }
+
+    const workbook = XLSX.read(buffer, { type: 'buffer' });
+    const sheet = workbook.Sheets[workbook.SheetNames[0]];
+    const chargeShipmentsToSave = parseDynamicFileF2(sheet);
+
+    if (chargeShipmentsToSave.length === 0) {
+      return { message: 'No shipments found in the file.' };
+    }
+
+    const newCharge = this.chargeRepository.create({
+      subsidiary: { id: subsidiaryId},
+      chargeDate: consDate ? format(consDate, 'yyyy-MM-dd HH:mm:ss') : format(new Date(), 'yyyy-MM-dd HH:mm:ss'),
+      numberOfPackages: chargeShipmentsToSave.length,
+      consNumber
+    });
+
+    const savedCharge = await this.chargeRepository.save(newCharge);
+
+    const chargeSubsidiary = await this.subsidiaryRepository.findOne({ where: { id: subsidiaryId } });
+
+    const processPromises = chargeShipmentsToSave.map(async (shipment) => { 
+      const chargeShipment = this.chargeShipmentRepository.create({
+          ...shipment,
+          id: undefined,
+          charge: savedCharge,
+        });
+
+      const savedChargeShipment = await this.chargeShipmentRepository.save(chargeShipment);
+
+      this.logger.log(`✅ Saved charge shipment: ${shipment.trackingNumber}`);
+      savedChargeShipmentsObj.push(savedChargeShipment);
+    });
+
+    await Promise.allSettled(processPromises);
+
+    if (chargeSubsidiary) {
+      const newIncome = this.incomeRepository.create({
+        subsidiary: chargeSubsidiary,
+        shipmentType: ShipmentType.FEDEX,
+        incomeType: IncomeStatus.ENTREGADO,
+        cost: chargeSubsidiary.chargeCost,
+        isGrouped: true,
+        sourceType: IncomeSourceType.CHARGE,
+        charge: { id: savedCharge.id },
+        date: consDate ? consDate : new Date(),
+      });
+
+      await this.incomeRepository.save(newIncome);
+    }
+
+    return {
+      savedChargeShipmentsObj
+    }
+
+  }
+
 
   /*** Procesar archivos que incluyen los cobros o pagos */
   async processFileCharges(file: Express.Multer.File){

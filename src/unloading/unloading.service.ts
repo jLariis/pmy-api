@@ -69,82 +69,88 @@ export class UnloadingService {
   }
 
   async validatePackage(
-      packageToValidate: ValidatedPackageDispatchDto,
-      subsidiaryId: string
-    ): Promise<ValidatedPackageDispatchDto> {
-      let isValid = true;
-      let reason = '';
+    packageToValidate: ValidatedPackageDispatchDto,
+    subsidiaryId: string
+  ): Promise<ValidatedPackageDispatchDto> {
+    let isValid = true;
+    let reason = '';
+
   
-    
-      if (packageToValidate.subsidiary.id !== subsidiaryId) {
-        isValid = false;
-        reason = 'El paquete no pertenece a la sucursal actual';
-      }
-  
-      if (packageToValidate.status === ShipmentStatusType.ENTREGADO) {
-        isValid = false;
-        reason = 'El paquete ya ha sido entregado';
-      }
-  
-      return {
-        ...packageToValidate,
-        isValid,
-        reason
-      };
+    if (packageToValidate.subsidiary.id !== subsidiaryId) {
+      isValid = false;
+      reason = 'El paquete no pertenece a la sucursal actual';
     }
-  
-    async validateTrackingNumber(
-      trackingNumber: string,
-      subsidiaryId?: string
-    ): Promise<ValidatedPackageDispatchDto & { isCharge?: boolean; /*consolidated?: Consolidated*/ }> {
-      const shipment = await this.shipmentRepository.findOne({
+
+    if (packageToValidate.status === ShipmentStatusType.ENTREGADO) {
+      isValid = false;
+      reason = 'El paquete ya ha sido entregado';
+    }
+
+    return {
+      ...packageToValidate,
+      isValid,
+      reason
+    };
+  }
+
+  async validateTrackingNumber(
+    trackingNumber: string,
+    subsidiaryId?: string
+  ): Promise<ValidatedPackageDispatchDto & { isCharge?: boolean; /*consolidated?: Consolidated*/ }> {
+    const shipment = await this.shipmentRepository.findOne({
+      where: { trackingNumber },
+      relations: ['subsidiary', 'statusHistory', 'payment', 'packageDispatch'],
+      order: { createdAt: 'DESC' }
+    });
+
+
+    if (!shipment) {
+      const chargeShipment = await this.chargeShipmentRepository.findOne({
         where: { trackingNumber },
-        relations: ['subsidiary', 'statusHistory', 'payment', 'packageDispatch'],
-        order: { createdAt: 'DESC' }
+        relations: ['subsidiary', 'charge', 'packageDispatch'],
       });
-  
-  
-      if (!shipment) {
-        const chargeShipment = await this.chargeShipmentRepository.findOne({
-          where: { trackingNumber },
-          relations: ['subsidiary', 'charge', 'packageDispatch'],
-        });
-  
-        if (!chargeShipment) {
-          throw new Error('Shipment not found with the provided tracking number');
-        }
-  
-        const validatedCharge = await this.validatePackage(
-          {
-            ...chargeShipment,
-            isValid: false,
-          },
-          subsidiaryId
-        );
-  
+
+      if (!chargeShipment) {
         return {
-          ...validatedCharge,
-          isCharge: true,
+          trackingNumber,
+          isValid: false,
+          reason: 'No se encontraron datos para el tracking number en la base de datos',
+          subsidiary: null,
+          status: null,
         };
       }
-  
-      /*const consolidated = await this.consolidatedRepository.findOne({
-        where: { id: shipment.consolidatedId },
-      });*/
-  
-      const validatedShipment = await this.validatePackage(
+
+      const validatedCharge = await this.validatePackage(
         {
-          ...shipment,
+          ...chargeShipment,
           isValid: false,
         },
         subsidiaryId
       );
-  
+
       return {
-        ...validatedShipment,
-        /*consolidated,*/
+        ...validatedCharge,
+        isCharge: true,
       };
     }
+
+    /*const consolidated = await this.consolidatedRepository.findOne({
+      where: { id: shipment.consolidatedId },
+    });*/
+
+    const validatedShipment = await this.validatePackage(
+      {
+        ...shipment,
+        isValid: false,
+      },
+      subsidiaryId
+    );
+
+    return {
+      ...validatedShipment,
+      /*consolidated,*/
+    };
+  }
 
 
   async findAll() {
