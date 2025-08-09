@@ -17,13 +17,15 @@ export class Route {
   @Column()
   name: string;
 
+  @Column({nullable: true, default: ''})
+  code: string;
+
   @Column({
     type: 'enum',
     enum: StatusEnum,
     default: StatusEnum.ACTIVE,
   })
   status: StatusEnum;
-
 
   @ManyToOne(() => Subsidiary, { nullable: true })
   @JoinColumn({ name: 'subsidiaryId' })

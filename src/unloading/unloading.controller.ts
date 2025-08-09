@@ -1,8 +1,12 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete } from '@nestjs/common';
+import { Controller, Get, Post, Body, Patch, Param, Delete, UploadedFile, UseInterceptors } from '@nestjs/common';
 import { UnloadingService } from './unloading.service';
 import { CreateUnloadingDto } from './dto/create-unloading.dto';
 import { UpdateUnloadingDto } from './dto/update-unloading.dto';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { ApiTags, ApiBearerAuth, ApiOperation, ApiConsumes, ApiBody } from '@nestjs/swagger';
 
+@ApiTags('unloadings')
+@ApiBearerAuth()
 @Controller('unloadings')
 export class UnloadingController {
   constructor(private readonly unloadingService: UnloadingService) {}
@@ -36,4 +40,39 @@ export class UnloadingController {
   remove(@Param('id') id: string) {
     return this.unloadingService.remove(+id);
   }
+
+  @Post('upload')
+    @UseInterceptors(FileInterceptor('file'))
+    @ApiOperation({ summary: 'Subir archivo Pdf y enviar por correo' })
+    @ApiConsumes('multipart/form-data')
+    @ApiBody({
+        description: 'Archivo Pdf a enviar por correo',
+        schema: {
+          type: 'object',
+          properties: {
+            file: {
+              type: 'string',
+              format: 'binary',
+            },
+            subsidiaryName: {
+              type: 'string',
+              example: 'Cd. Obregon'
+            },
+            unloadingId: {
+              type: 'string',
+              example: '6076326c-f6f6-4004-825d-5419a4e6412f'
+            }
+          },
+        },
+      })
+    sendEmail(
+      @UploadedFile() file: Express.Multer.File,
+      @Body('subsidiaryName') subsidiaryName: string,
+      @Body('packageDispatchId') unloadingId: string
+    ) {
+      console.log("🚀 ~ PackageDispatchController ~ sendEmail ~ file:", file)
+      console.log("🚀 ~ PackageDispatchController ~ sendEmail ~ subsidiaryName:", subsidiaryName)
+      console.log("🚀 ~ PackageDispatchController ~ sendEmail ~ unloadingId:", unloadingId)
+      return this.unloadingService.sendByEmail(file, subsidiaryName, unloadingId)
+    }
 }

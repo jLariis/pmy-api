@@ -9,6 +9,9 @@ export class Unloading {
     @PrimaryGeneratedColumn('uuid')
     id: string;
 
+    @Column({ unique: true })
+    trackingNumber: string;
+
     @OneToMany(() => Shipment, (shipment) => shipment.packageDispatch)
     shipments: Shipment[];
 

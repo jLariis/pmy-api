@@ -7,6 +7,8 @@ import { In, Repository } from 'typeorm';
 import { ChargeShipment, Shipment } from 'src/entities';
 import { ValidatedPackageDispatchDto } from 'src/package-dispatch/dto/validated-package-dispatch.dto';
 import { ShipmentStatusType } from 'src/common/enums/shipment-status-type.enum';
+import { ValidatedUnloadingDto } from './dto/validate-package-unloading.dto';
+import { MailService } from 'src/mail/mail.service';
 
 @Injectable()
 export class UnloadingService {
@@ -18,6 +20,7 @@ export class UnloadingService {
     private readonly shipmentRepository: Repository<Shipment>,
     @InjectRepository(ChargeShipment)
     private readonly chargeShipmentRepository: Repository<ChargeShipment>,
+    private readonly mailService: MailService
   ) {}
 
   async create(createUnloadingDto: CreateUnloadingDto) {
@@ -81,10 +84,11 @@ export class UnloadingService {
       reason = 'El paquete no pertenece a la sucursal actual';
     }
 
-    if (packageToValidate.status === ShipmentStatusType.ENTREGADO) {
+    /*Remover por ahora*/
+    /*if (packageToValidate.status === ShipmentStatusType.ENTREGADO) {
       isValid = false;
       reason = 'El paquete ya ha sido entregado';
-    }
+    }*/
 
     return {
       ...packageToValidate,
@@ -96,7 +100,7 @@ export class UnloadingService {
   async validateTrackingNumber(
     trackingNumber: string,
     subsidiaryId?: string
-  ): Promise<ValidatedPackageDispatchDto & { isCharge?: boolean; /*consolidated?: Consolidated*/ }> {
+  ): Promise<ValidatedUnloadingDto & { isCharge?: boolean;}> {
     const shipment = await this.shipmentRepository.findOne({
       where: { trackingNumber },
       relations: ['subsidiary', 'statusHistory', 'payment', 'packageDispatch'],
@@ -177,4 +181,16 @@ export class UnloadingService {
   remove(id: number) {
     return `This action removes a #${id} unloading`;
   }
+
+  async sendByEmail(file: Express.Multer.File, subsidiaryName: string, unloadingId: string) {
+    const unloading = await this.unloadingRepository.findOne(
+      { 
+        where: {id: unloadingId},
+        relations: ['vehicle']
+      });
+    console.log("🚀 ~ PackageDispatchService ~ sendByEmail ~ packageDispatch:", unloading)
+
+    return await this.mailService.sendHighPriorityUnloadingEmail(file, subsidiaryName, unloading)
+  }
+
 }

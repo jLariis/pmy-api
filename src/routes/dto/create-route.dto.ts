@@ -6,6 +6,10 @@ export class CreateRouteDto {
     @IsString()
     name: string;
 
+    @IsString()
+    @IsOptional()
+    code: string;
+
     @IsEnum(['activo', 'inactivo'])
     @IsOptional()
     status?: StatusEnum;
