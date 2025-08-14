@@ -4,6 +4,7 @@ import { format } from 'date-fns';
 import { toZonedTime } from 'date-fns-tz';
 import { PackageDispatch } from 'src/entities/package-dispatch.entity';
 import { Unloading } from 'src/entities/unloading.entity';
+import { ShipmentStatusForReportDto } from './dtos/shipment.dto';
 
 @Injectable()
 export class MailService {
@@ -30,6 +31,7 @@ export class MailService {
     }
   }
 
+  /*** Enviar correo Salida a Ruta */
   async sendHighPriorityPackageDispatchEmail(
     file: Express.Multer.File, 
     subsidiaryName: string,
@@ -87,7 +89,7 @@ export class MailService {
     try {
       await this.mailerService.sendMail({
         to: 'javier.rappaz@gmail.com',
-        //cc: '',
+        //cc: 'paqueteriaymensajeriadelyaqui@hotmail.com',
         subject: `🚚 Salida a Ruta ${formattedDate} de ${subsidiaryName}`,
         html: htmlContent,
         headers: {
@@ -104,7 +106,7 @@ export class MailService {
     }
   }
 
-
+  /*** Enviar correo Desembarque */
   async sendHighPriorityUnloadingEmail(
     file: Express.Multer.File, 
     subsidiaryName: string,
@@ -152,12 +154,10 @@ export class MailService {
       </div>
     `;
 
-
-
     try {
       await this.mailerService.sendMail({
         to: 'javier.rappaz@gmail.com',
-        //cc: '',
+        //cc: 'paqueteriaymensajeriadelyaqui@hotmail.com',
         subject: `🚚 Desembarque ${formattedDate} de ${subsidiaryName}`,
         html: htmlContent,
         headers: {
@@ -166,6 +166,116 @@ export class MailService {
           Importance: 'High',
         },
         attachments: [attachment]
+      })
+
+    } catch (error) {
+      console.log(error);
+      throw error;
+    }
+  }
+
+
+  formatMexicanPhoneNumber = (phone: string): string => {
+    // Quita todo lo que no sea dígito
+    let cleaned = phone.replace(/\D/g, "");
+
+    // Si ya empieza con 52 o 521, quitamos el 52 y dejamos solo los 10 dígitos
+    if (cleaned.startsWith("521")) {
+      cleaned = cleaned.slice(3);
+    } else if (cleaned.startsWith("52")) {
+      cleaned = cleaned.slice(2);
+    }
+
+    // Ahora cleaned debería tener solo 10 dígitos
+    if (cleaned.length === 10) {
+      return `+52 (${cleaned.slice(0, 3)}) ${cleaned.slice(3, 6)}-${cleaned.slice(6)}`;
+    }
+
+    // Si no cumple, regresamos el original sin cambios
+    return phone;
+  };
+
+  async sendHighPriorityShipmentWithStatus03(
+    subsidiaryName: string,
+    shipments: ShipmentStatusForReportDto[]
+  ) {
+    const today = new Date()
+
+    const htmlRows = shipments
+        .map(
+          (s) => `
+          <tr style="border-bottom: 1px solid #ddd;">
+            <td style="padding: 8px; text-align: center;">${s.trackingNumber}</td>
+            <td style="padding: 8px;">${s.recipientName}</td>
+            <td style="padding: 8px; text-align: center;">${s.recipientAddress}</td>
+            <td style="padding: 8px; text-align: center;">${s.recipientZip}</td>
+            <td style="padding: 8px; text-align: center;">${this.formatMexicanPhoneNumber(s.recipientPhone)}</td>
+          </tr>
+        `
+        )
+        .join('');
+
+    const htmlContent = `
+        <div style="font-family: Arial, sans-serif; color: #2c3e50; max-width: 800px; margin: auto;">
+          <h2 style="border-bottom: 3px solid #e74c3c; padding-bottom: 8px;">
+            Reporte de Packaquetes con DEX03
+          </h2>
+          <p>
+            Se han detectado los siguientes envíos con el status DEX03
+          </p>
+          <p><em>Por favor considere la fecha de recepción de este correo (<strong>${today.toLocaleDateString()}</strong>) para el seguimiento y gestión de estos envíos.</em></p>
+
+          <table 
+            border="0" 
+            cellpadding="0" 
+            cellspacing="0" 
+            style="border-collapse: collapse; width: 100%; box-shadow: 0 0 10px rgba(0,0,0,0.05);"
+          >
+            <thead style="background-color: #f7f7f7; text-align: center;">
+              <tr>
+                <th style="padding: 10px;">Tracking Number</th>
+                <th style="padding: 10px;">Nombre</th>
+                <th style="padding: 10px;">Dirección</th>
+                <th style="padding: 10px;">Código Postal</th>
+                <th style="padding: 10px;">Número de Teléfono</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${htmlRows}
+            </tbody>
+          </table>
+
+          <p style="margin-top: 20px; font-weight: bold; color: #c0392b;">
+            Este correo ha sido enviado con <strong>alta prioridad</strong> debido a la criticidad de los envíos.
+          </p>
+
+          <p style="margin-top: 20px;">
+            Para hacer un monitoreo detallado de los envíos, por favor visite: 
+            <a href="https://app-pmy.vercel.app/" target="_blank" style="color: #2980b9; text-decoration: none;">
+              https://app-pmy.vercel.app/
+            </a>
+          </p>
+
+          <hr style="margin: 30px 0; border: none; border-top: 1px solid #eee;" />
+
+          <p style="font-size: 0.9em; color: #7f8c8d;">
+            Este correo fue enviado automáticamente por el sistema.<br />
+            Por favor, no responda a este mensaje.
+          </p>
+        </div>
+      `;
+
+    try {
+      return await this.mailerService.sendMail({
+        to: 'javier.rappaz@gmail.com',
+        cc: 'josejuanurena@paqueteriaymensajeriadelyaqui.com',
+        subject: `🚨🚥 Paquetes con status DEX03 de ${subsidiaryName}`,
+        html: htmlContent,
+        headers: {
+          'X-Priority': '1',
+          'X-MSMail-Priority': 'High',
+          Importance: 'High',
+        },
       })
 
     } catch (error) {

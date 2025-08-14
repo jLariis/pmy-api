@@ -156,7 +156,6 @@ export class UnloadingService {
     };
   }
 
-
   async findAll() {
     return `This action returns all unloading`;
   }
@@ -164,7 +163,7 @@ export class UnloadingService {
   async findAllBySubsidiary(subsidiaryId: string) {
     const response = await this.unloadingRepository.find({
       where: { subsidiary: { id: subsidiaryId } },
-      relations: ['shipments', 'vehicle'],
+      relations: ['shipments', 'chargeShipments','vehicle', 'subsidiary'],
     });
 
     return response

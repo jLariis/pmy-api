@@ -5,4 +5,5 @@ export class CollectionDto {
     subsidiary: Subsidiary;
     status?: string;
     isPickUp: boolean;
+    date?: string;
 }

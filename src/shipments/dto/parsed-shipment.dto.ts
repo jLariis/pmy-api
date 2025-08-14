@@ -1,6 +1,6 @@
 import { Priority } from "src/common/enums/priority.enum";
 import { ShipmentStatusType } from "src/common/enums/shipment-status-type.enum";
-import { Subsidiary } from "src/entities";
+import { Payment, Subsidiary } from "src/entities";
 
 export class ParsedShipmentDto {
     trackingNumber: string;

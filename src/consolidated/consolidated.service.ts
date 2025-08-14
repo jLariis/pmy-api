@@ -158,4 +158,28 @@ export class ConsolidatedService {
   async remove(id: string) {
     return await this.consolidatedRepository.delete(id);
   }
+
+  async lastConsolidatedBySucursal(subsidiaryId: string) {
+    console.log("🚀 ~ ConsolidatedService ~ lastConsolidatedBySucursal ~ subsidiaryId:", subsidiaryId)
+    const todayUTC = new Date('2025-08-11');
+    todayUTC.setUTCHours(0, 0, 0, 0);
+    console.log("🚀 ~ ConsolidatedService ~ lastConsolidatedBySucursal ~ todayUTC:", todayUTC)
+
+    const tomorrowUTC = new Date(todayUTC);
+    tomorrowUTC.setUTCDate(tomorrowUTC.getUTCDate() + 1);
+    console.log("🚀 ~ ConsolidatedService ~ lastConsolidatedBySucursal ~ tomorrowUTC:", tomorrowUTC)
+
+    const consolidated = await this.consolidatedRepository
+      .createQueryBuilder('consolidated')
+      .leftJoinAndSelect('consolidated.subsidiary', 'subsidiary')
+      .where('subsidiary.id = :subsidiaryId', { subsidiaryId })
+      //.andWhere('consolidated.date >= :start', { start: todayUTC })
+      //.andWhere('consolidated.date < :end', { end: tomorrowUTC })
+      .getMany();
+
+    console.log("🚀 ~ ConsolidatedService ~ lastConsolidatedBySucursal ~ consolidated:", consolidated);
+
+    return consolidated;
+  }
+
 }

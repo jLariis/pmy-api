@@ -3,7 +3,9 @@ import { ConsolidatedService } from './consolidated.service';
 import { CreateConsolidatedDto } from './dto/create-consolidated.dto';
 import { UpdateConsolidatedDto } from './dto/update-consolidated.dto';
 import { ShipmentsService } from 'src/shipments/shipments.service';
+import { ApiTags } from '@nestjs/swagger';
 
+@ApiTags('consolidated')
 @Controller('consolidated')
 export class ConsolidatedController {
   constructor(
@@ -47,6 +49,12 @@ export class ConsolidatedController {
   @Delete(':id')
   remove(@Param('id') id: string) {
     return this.consolidatedService.remove(id);
+  }
+
+  @Get('lastConsolidated/:subdiaryId')
+  getLastConsolidated(@Param('subsidiaryId') subsidiaryId: string) {
+    console.log("🚀 ~ ConsolidatedController ~ getLastConsolidated ~ subsidiaryId:", subsidiaryId)
+    return this.consolidatedService.lastConsolidatedBySucursal(subsidiaryId);
   }
 
 }

@@ -230,7 +230,6 @@ export class PackageDispatchService {
       { 
         where: {id: packageDispatchId},
         relations: ['drivers', 'routes', 'vehicle']
-    
       });
     console.log("🚀 ~ PackageDispatchService ~ sendByEmail ~ packageDispatch:", packageDispatch)
 

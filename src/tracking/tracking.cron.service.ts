@@ -72,6 +72,11 @@ export class TrackingCronService {
     this.logger.log('🕐 Ejecutando el envio de correo con envíos que deben ser proritarios...');
     await this.shipmentService.sendEmailWithHighPriorities();
   }
+
+  @Cron(CronExpression.EVERY_DAY_AT_9PM, { timeZone: 'America/Hermosillo' })
+  async handleSendShipmentWithStatus03(){
+    await this.shipmentService.getShipmentsWithStatus03('abf2fc38-cb42-41b6-9554-4b71c11b8916')
+  }
 }
 
 

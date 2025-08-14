@@ -40,6 +40,7 @@ import { ForPickUp } from 'src/entities/for-pick-up.entity';
 import { ForPickUpDto } from './dto/for-pick-up.dto';
 import { IncomeValidationResult } from './dto/income-validation.dto';
 import { FedexTrackingResponseDto } from './dto/check-status-result.dto';
+import { PaymentTypeEnum } from 'src/common/enums/payment-type.enum';
 
 @Injectable()
 export class ShipmentsService {
@@ -2145,18 +2146,23 @@ export class ShipmentsService {
       });
 
       if (shipment.payment) {
-        const match = shipment.payment.match(/([0-9]+(?:\.[0-9]+)?)/);
-        if (match) {
-          const amount = parseFloat(match[1]);
-          if (!isNaN(amount) && amount > 0) {
+        const typeMatch =  shipment.payment.match(/^(COD|FTC|ROD)/);
+        const amountMatch =  shipment.payment.match(/([0-9]+(?:\.[0-9]+)?)/);
+
+        if (amountMatch) {
+          const paymentType = typeMatch ? typeMatch[1] as PaymentTypeEnum : null;
+          const paymentAmount = amountMatch ? parseFloat(amountMatch[1]) : null;
+                         
+          if (!isNaN(paymentAmount) && paymentAmount > 0) {
             newShipment.payment = Object.assign(new Payment(), {
-              amount,
+              amount: paymentAmount,
+              type: paymentType,
               status: histories.some((h) => h.status === ShipmentStatusType.ENTREGADO)
                 ? PaymentStatus.PAID
                 : PaymentStatus.PENDING,
             });
             this.logger.log(
-              `💰 Monto de pago: $${amount} - Estatus: ${newShipment.payment.status}`
+              `💰 Monto de pago: $${paymentAmount} - Estatus: ${newShipment.payment.status}`
             );
           }
         }
@@ -3976,7 +3982,6 @@ export class ShipmentsService {
       return savedForPickup;
     }
 
-
     async checkStatus67OnShipments(subsidiaryId: string) {
       const today = new Date();
 
@@ -4040,7 +4045,39 @@ export class ShipmentsService {
       return results;
     }
 
+    async getShipmentsWithStatus03(subdiaryId: string) {
+      const todayUTC = new Date('2025-08-11');
+      todayUTC.setUTCHours(0, 0, 0, 0);
+      console.log("🚀 ~ ConsolidatedService ~ lastConsolidatedBySucursal ~ todayUTC:", todayUTC)
 
+      const tomorrowUTC = new Date(todayUTC);
+      tomorrowUTC.setUTCDate(tomorrowUTC.getUTCDate() + 1);
+      console.log("🚀 ~ ConsolidatedService ~ lastConsolidatedBySucursal ~ tomorrowUTC:", tomorrowUTC)
+
+      const subsidiary = await this.subsidiaryRepository.findOneBy({id: subdiaryId});
+
+      
+      const shipments = await this.shipmentRepository.find({
+        select: ['trackingNumber', 'recipientName', 'recipientAddress', 'recipientZip', 'recipientPhone'],
+        where: {
+          subsidiary: { id: subdiaryId},
+          status: ShipmentStatusType.NO_ENTREGADO,
+          statusHistory: {
+            exceptionCode: '03',
+            timestamp: Between(todayUTC, tomorrowUTC)
+          }
+        },
+        relations: [
+          'statusHistory'
+        ]
+      })
+
+      const sendEmail = await this.mailService.sendHighPriorityShipmentWithStatus03(subsidiary.name, shipments);
+      
+      console.log("🚀 ~ ShipmentsService ~ getShipmentsWithStatus03 ~ sendEmail:", sendEmail)
+
+      return shipments;
+    }
 
 
     /************************************************* */

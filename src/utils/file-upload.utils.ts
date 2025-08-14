@@ -67,7 +67,7 @@ export function parseDynamicSheet(sheet: XLSX.Sheet, options: ParseOptions): Par
         const rawDate = row[headerMap['commitDate']];
         const commitDate = formatExcelDateToMySQL(rawDate) ?? null;
         const recipientCity = row[headerMap['recipientCity']] ?? null;
-        const payment = row[headerMap['payment']] ?? null;
+        const payment = row[headerMap['cod']]
 
         return {
             trackingNumber: row[headerMap['trackingNumber']],

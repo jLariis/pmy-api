@@ -331,6 +331,11 @@ export class ShipmentsController {
       return await this.shipmentsService.checkStatus67OnShipments(subsidiaryId);
     }
 
+    @Get('test-get-status03/:subsidiaryId')
+    async testGet03(@Param('subsidiaryId') subsidiaryId: string){
+      return await this.shipmentsService.getShipmentsWithStatus03(subsidiaryId);
+    }
+
   /**************************************************************************************************************** */
 
 }
