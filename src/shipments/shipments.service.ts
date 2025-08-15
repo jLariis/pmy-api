@@ -4046,7 +4046,7 @@ export class ShipmentsService {
     }
 
     async getShipmentsWithStatus03(subdiaryId: string) {
-      const todayUTC = new Date('2025-08-11');
+      const todayUTC = new Date();
       todayUTC.setUTCHours(0, 0, 0, 0);
       console.log("🚀 ~ ConsolidatedService ~ lastConsolidatedBySucursal ~ todayUTC:", todayUTC)
 

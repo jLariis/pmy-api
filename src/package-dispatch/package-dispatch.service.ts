@@ -113,7 +113,7 @@ export class PackageDispatchService {
       where: { trackingNumber: packageToValidate.trackingNumber },
     })
 
-    if (existePackageOnPackageDispatch) {
+    /*if (existePackageOnPackageDispatch) {
       isValid = false;
       reason = 'El paquete ya existe en otra salida a ruta';
     }
@@ -121,7 +121,7 @@ export class PackageDispatchService {
     if(existPackageOnReturn) {
       isValid = false;
       reason = 'El paquete existe en una devolución';
-    }
+    }*/
 
     if (packageToValidate.subsidiary.id !== subsidiaryId) {
       isValid = false;

@@ -268,7 +268,7 @@ export class MailService {
     try {
       return await this.mailerService.sendMail({
         to: 'javier.rappaz@gmail.com',
-        cc: 'josejuanurena@paqueteriaymensajeriadelyaqui.com',
+        //cc: 'josejuanurena@paqueteriaymensajeriadelyaqui.com',
         subject: `🚨🚥 Paquetes con status DEX03 de ${subsidiaryName}`,
         html: htmlContent,
         headers: {

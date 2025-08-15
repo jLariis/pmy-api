@@ -184,10 +184,9 @@ export class KpiService {
         (sum, cons) => sum + (cons.efficiency || 0),
         0,
       );
-      const averageEfficiency =
-        subsidiaryConsolidations.length > 0
-          ? totalEfficiency / subsidiaryConsolidations.length
-          : 0;
+
+      const averageEfficiency = subsidiaryConsolidations.length > 0 ? (deliveredPackages * 100) / totalPackages : 0;
+      console.log("🚀 ~ KpiService ~ getSubsidiaryKpis ~ productivity:", averageEfficiency)
 
       // Total profit
       const totalProfit = totalRevenue - totalExpenses;
@@ -222,6 +221,6 @@ export class KpiService {
       };
     });
 
-    return result;
+    return result.sort((a, b) => (b.averageEfficiency || 0) - (a.averageEfficiency || 0));;
   }
 }
