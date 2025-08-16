@@ -226,6 +226,8 @@ export class PackageDispatchService {
   }
 
   async sendByEmail(file: Express.Multer.File, subsidiaryName: string, packageDispatchId: string) {
+    console.log("🚀 ~ PackageDispatchService ~ sendByEmail ~ packageDispatchId:", packageDispatchId)
+
     const packageDispatch = await this.packageDispatchRepository.findOne(
       { 
         where: {id: packageDispatchId},
