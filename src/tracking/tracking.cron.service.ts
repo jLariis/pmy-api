@@ -73,9 +73,11 @@ export class TrackingCronService {
     await this.shipmentService.sendEmailWithHighPriorities();
   }
 
-  @Cron(CronExpression.EVERY_DAY_AT_9PM, { timeZone: 'America/Hermosillo' })
+  @Cron(CronExpression.EVERY_2_HOURS, { timeZone: 'America/Hermosillo' })
   async handleSendShipmentWithStatus03(){
-    await this.shipmentService.getShipmentsWithStatus03('abf2fc38-cb42-41b6-9554-4b71c11b8916')
+    /** Por ahora solo cabos */
+    const subdiaryId = 'abf2fc38-cb42-41b6-9554-4b71c11b8916'
+    await this.shipmentService.getShipmentsWithStatus03(subdiaryId);
   }
 }
 
