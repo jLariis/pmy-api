@@ -84,12 +84,10 @@ export class MailService {
       </div>
     `;
 
-
-
     try {
       await this.mailerService.sendMail({
-        to: 'javier.rappaz@gmail.com',
-        //cc: 'paqueteriaymensajeriadelyaqui@hotmail.com',
+        to: 'paqueteriaymensajeriadelyaqui@hotmail.com',
+        cc: 'sistemas@paqueteriaymensajeriadelyaqui.com',
         subject: `🚚 Salida a Ruta ${formattedDate} de ${subsidiaryName}`,
         html: htmlContent,
         headers: {
@@ -127,6 +125,7 @@ export class MailService {
       <div style="font-family: Arial, sans-serif; color: #2c3e50; max-width: 800px; margin: auto;">
         <h2 style="border-bottom: 3px solid #3498db; padding-bottom: 8px;">
           🚚 Reporte de Desembarque
+          
         </h2>
 
         <p>
@@ -156,8 +155,8 @@ export class MailService {
 
     try {
       await this.mailerService.sendMail({
-        to: 'javier.rappaz@gmail.com',
-        //cc: 'paqueteriaymensajeriadelyaqui@hotmail.com',
+        to: 'paqueteriaymensajeriadelyaqui@hotmail.com',
+        cc: 'sistemas@paqueteriaymensajeriadelyaqui.com',
         subject: `🚚 Desembarque ${formattedDate} de ${subsidiaryName}`,
         html: htmlContent,
         headers: {
@@ -195,6 +194,8 @@ export class MailService {
     return phone;
   };
 
+
+  /*** Correos de DEX03 - Reporte */
   async sendHighPriorityShipmentWithStatus03(
     subsidiaryName: string,
     shipments: ShipmentStatusForReportDto[]

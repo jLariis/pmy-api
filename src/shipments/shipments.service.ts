@@ -4072,9 +4072,9 @@ export class ShipmentsService {
         ]
       })
 
-      const sendEmail = await this.mailService.sendHighPriorityShipmentWithStatus03(subsidiary.name, shipments);
+      //const sendEmail = await this.mailService.sendHighPriorityShipmentWithStatus03(subsidiary.name, shipments);
       
-      console.log("🚀 ~ ShipmentsService ~ getShipmentsWithStatus03 ~ sendEmail:", sendEmail)
+      //console.log("🚀 ~ ShipmentsService ~ getShipmentsWithStatus03 ~ sendEmail:", sendEmail)
 
       return shipments;
     }
