@@ -1,5 +1,5 @@
 import { IsArray, IsString } from "class-validator";
-import { Subsidiary, Shipment, Vehicle } from "src/entities";
+import { Subsidiary, Vehicle } from "src/entities";
 
 export class CreateUnloadingDto {
     vehicle?: Vehicle;

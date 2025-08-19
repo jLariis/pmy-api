@@ -1,8 +1,8 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete, UploadedFile, UseInterceptors } from '@nestjs/common';
+import { Controller, Get, Post, Body, Patch, Param, Delete, UploadedFile, UseInterceptors, BadRequestException, UploadedFiles } from '@nestjs/common';
 import { UnloadingService } from './unloading.service';
 import { CreateUnloadingDto } from './dto/create-unloading.dto';
 import { UpdateUnloadingDto } from './dto/update-unloading.dto';
-import { FileInterceptor } from '@nestjs/platform-express';
+import { FileInterceptor, FilesInterceptor } from '@nestjs/platform-express';
 import { ApiTags, ApiBearerAuth, ApiOperation, ApiConsumes, ApiBody } from '@nestjs/swagger';
 
 @ApiTags('unloadings')
@@ -42,37 +42,58 @@ export class UnloadingController {
   }
 
   @Post('upload')
-    @UseInterceptors(FileInterceptor('file'))
-    @ApiOperation({ summary: 'Subir archivo Pdf y enviar por correo' })
-    @ApiConsumes('multipart/form-data')
-    @ApiBody({
-        description: 'Archivo Pdf a enviar por correo',
-        schema: {
-          type: 'object',
-          properties: {
-            file: {
-              type: 'string',
-              format: 'binary',
-            },
-            subsidiaryName: {
-              type: 'string',
-              example: 'Cd. Obregon'
-            },
-            unloadingId: {
-              type: 'string',
-              example: '6076326c-f6f6-4004-825d-5419a4e6412f'
-            }
+  @UseInterceptors(FilesInterceptor('files')) // Use FilesInterceptor to handle multiple files
+  @ApiOperation({ summary: 'Subir archivo PDF y Excel y enviar por correo' })
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    description: 'Archivos PDF y Excel a enviar por correo',
+    schema: {
+      type: 'object',
+      properties: {
+        files: {
+          type: 'array',
+          items: {
+            type: 'string',
+            format: 'binary',
           },
         },
-      })
-    sendEmail(
-      @UploadedFile() file: Express.Multer.File,
-      @Body('subsidiaryName') subsidiaryName: string,
-      @Body('packageDispatchId') unloadingId: string
-    ) {
-      console.log("🚀 ~ PackageDispatchController ~ sendEmail ~ file:", file)
-      console.log("🚀 ~ PackageDispatchController ~ sendEmail ~ subsidiaryName:", subsidiaryName)
-      console.log("🚀 ~ PackageDispatchController ~ sendEmail ~ unloadingId:", unloadingId)
-      return this.unloadingService.sendByEmail(file, subsidiaryName, unloadingId)
+        subsidiaryName: {
+          type: 'string',
+          example: 'Cd. Obregon',
+        },
+        unloadingId: {
+          type: 'string',
+          example: '6076326c-f6f6-4004-825d-5419a4e6412f',
+        },
+      },
+    },
+  })
+  async sendEmail(
+    @UploadedFiles() files: Express.Multer.File[], // Receive multiple files
+    @Body('subsidiaryName') subsidiaryName: string,
+    @Body('unloadingId') unloadingId: string,
+  ) {
+    console.log('🚀 ~ PackageDispatchController ~ sendEmail ~ files:', files);
+    console.log('🚀 ~ PackageDispatchController ~ sendEmail ~ subsidiaryName:', subsidiaryName);
+    console.log('🚀 ~ PackageDispatchController ~ sendEmail ~ unloadingId:', unloadingId);
+
+    // Validate that both files are present
+    if (!files || files.length !== 2) {
+      throw new BadRequestException('Se esperan exactamente dos archivos: un PDF y un Excel.');
     }
+
+    // Identify PDF and Excel files based on mimetype or filename
+    const pdfFile = files.find((file) => file.mimetype === 'application/pdf');
+    const excelFile = files.find((file) =>
+      file.mimetype === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    );
+
+    if (!pdfFile || !excelFile) {
+      throw new BadRequestException('Se requiere un archivo PDF y un archivo Excel.');
+    }
+
+    // Call the service with the identified files
+    return this.unloadingService.sendByEmail(pdfFile, excelFile, subsidiaryName, unloadingId);
+  }
+  
 }

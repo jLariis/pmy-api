@@ -1,9 +1,9 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete, UseInterceptors, UploadedFile } from '@nestjs/common';
+import { Controller, Get, Post, Body, Patch, Param, Delete, UseInterceptors, UploadedFile, BadRequestException, UploadedFiles } from '@nestjs/common';
 import { PackageDispatchService } from './package-dispatch.service';
 import { CreatePackageDispatchDto } from './dto/create-package-dispatch.dto';
 import { UpdatePackageDispatchDto } from './dto/update-package-dispatch.dto';
 import { ApiTags, ApiBearerAuth, ApiConsumes, ApiOperation, ApiBody } from '@nestjs/swagger';
-import { FileInterceptor } from '@nestjs/platform-express';
+import { FileInterceptor, FilesInterceptor } from '@nestjs/platform-express';
 
 @ApiTags('package-dispatchs')
 @ApiBearerAuth()
@@ -48,7 +48,7 @@ export class PackageDispatchController {
   }
 
   @Post('upload')
-  @UseInterceptors(FileInterceptor('file'))
+  @UseInterceptors(FilesInterceptor('files'))
   @ApiOperation({ summary: 'Subir archivo Pdf y enviar por correo' })
   @ApiConsumes('multipart/form-data')
   @ApiBody({
@@ -72,13 +72,28 @@ export class PackageDispatchController {
       },
     })
   sendEmail(
-    @UploadedFile() file: Express.Multer.File,
+    @UploadedFiles() files: Express.Multer.File[],
     @Body('subsidiaryName') subsidiaryName: string,
     @Body('packageDispatchId') packageDispatchId: string
   ) {
-    console.log("🚀 ~ PackageDispatchController ~ sendEmail ~ file:", file)
-    console.log("🚀 ~ PackageDispatchController ~ sendEmail ~ subsidiaryName:", subsidiaryName)
-    console.log("🚀 ~ PackageDispatchController ~ sendEmail ~ packageDispatchId:", packageDispatchId)
-    return this.packageDispatchService.sendByEmail(file, subsidiaryName, packageDispatchId)
+    console.log('🚀 ~ PackageDispatchController ~ sendEmail ~ files:', files);
+        console.log('🚀 ~ PackageDispatchController ~ sendEmail ~ subsidiaryName:', subsidiaryName);
+        console.log('🚀 ~ PackageDispatchController ~ sendEmail ~ packageDispatchId:', packageDispatchId);
+    
+        // Validate that both files are present
+        if (!files || files.length !== 2) {
+          throw new BadRequestException('Se esperan exactamente dos archivos: un PDF y un Excel.');
+        }
+    
+        // Identify PDF and Excel files based on mimetype or filename
+        const pdfFile = files.find((file) => file.mimetype === 'application/pdf');
+        const excelFile = files.find((file) =>
+          file.mimetype === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        );
+    
+        if (!pdfFile || !excelFile) {
+          throw new BadRequestException('Se requiere un archivo PDF y un archivo Excel.');
+        }
+    return this.packageDispatchService.sendByEmail(pdfFile, excelFile, subsidiaryName, packageDispatchId)
   }
 }

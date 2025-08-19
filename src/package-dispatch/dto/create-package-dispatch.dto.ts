@@ -16,7 +16,6 @@ export class CreatePackageDispatchDto {
     @IsOptional()
     vehicle?: Vehicle;
 
-    @IsOptional()
     subsidiary?: Subsidiary;
 
     @IsString()

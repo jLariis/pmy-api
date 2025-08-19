@@ -128,10 +128,11 @@ export class PackageDispatchService {
       reason = 'El paquete no pertenece a la sucursal actual';
     }
 
-    if (packageToValidate.status === ShipmentStatusType.ENTREGADO) {
+    // Permitir por ahora...
+    /*if (packageToValidate.status === ShipmentStatusType.ENTREGADO) {
       isValid = false;
       reason = 'El paquete ya ha sido entregado';
-    }
+    }*/
 
     return {
       ...packageToValidate,
@@ -207,7 +208,7 @@ export class PackageDispatchService {
   async findAllBySubsidiary(subsidiaryId: string) {
     const response = await this.packageDispatchRepository.find({
       where: { subsidiary: { id: subsidiaryId } },
-      relations: ['shipments', 'routes', 'drivers', 'vehicle'],
+      relations: ['shipments', 'routes', 'drivers', 'vehicle', 'subsidiary'],
     });
 
     return response
@@ -225,7 +226,7 @@ export class PackageDispatchService {
     return `This action removes a #${id} packageDispatch`;
   }
 
-  async sendByEmail(file: Express.Multer.File, subsidiaryName: string, packageDispatchId: string) {
+  async sendByEmail(pdfFile: Express.Multer.File, excelfile: Express.Multer.File, subsidiaryName: string, packageDispatchId: string) {
     console.log("🚀 ~ PackageDispatchService ~ sendByEmail ~ packageDispatchId:", packageDispatchId)
 
     const packageDispatch = await this.packageDispatchRepository.findOne(
@@ -235,6 +236,6 @@ export class PackageDispatchService {
       });
     console.log("🚀 ~ PackageDispatchService ~ sendByEmail ~ packageDispatch:", packageDispatch)
 
-    return await this.mailService.sendHighPriorityPackageDispatchEmail(file, subsidiaryName, packageDispatch)
+    return await this.mailService.sendHighPriorityPackageDispatchEmail(pdfFile, excelfile, subsidiaryName, packageDispatch)
   }
 }

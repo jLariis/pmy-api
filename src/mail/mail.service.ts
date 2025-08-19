@@ -33,16 +33,23 @@ export class MailService {
 
   /*** Enviar correo Salida a Ruta */
   async sendHighPriorityPackageDispatchEmail(
-    file: Express.Multer.File, 
+    pdfFile: Express.Multer.File, 
+    excelFile: Express.Multer.File, 
     subsidiaryName: string,
     packageDispatch: PackageDispatch
   ) {
     const timeZone = 'America/Hermosillo'; 
 
-    const attachment = {
-      filename: file.originalname,
-      content: file.buffer
-    }
+    const attachments = [
+      {
+        filename: pdfFile.originalname,
+        content: pdfFile.buffer
+      },
+      {
+        filename: excelFile.originalname,
+        content: excelFile.buffer
+      },
+    ]
 
     const now = new Date();
     const zonedDate = toZonedTime(now, timeZone);
@@ -88,6 +95,7 @@ export class MailService {
       await this.mailerService.sendMail({
         to: 'paqueteriaymensajeriadelyaqui@hotmail.com',
         cc: 'sistemas@paqueteriaymensajeriadelyaqui.com',
+        //to: 'javier.rappaz@gmail.com',
         subject: `🚚 Salida a Ruta ${formattedDate} de ${subsidiaryName}`,
         html: htmlContent,
         headers: {
@@ -95,7 +103,7 @@ export class MailService {
           'X-MSMail-Priority': 'High',
           Importance: 'High',
         },
-        attachments: [attachment]
+        attachments: attachments
       })
 
     } catch (error) {
@@ -106,16 +114,23 @@ export class MailService {
 
   /*** Enviar correo Desembarque */
   async sendHighPriorityUnloadingEmail(
-    file: Express.Multer.File, 
+    file: Express.Multer.File,
+    excelFile: Express.Multer.File, 
     subsidiaryName: string,
     unloading: Unloading
   ) {
     const timeZone = 'America/Hermosillo'; 
 
-    const attachment = {
-      filename: file.originalname,
-      content: file.buffer
-    }
+    const attachments = [
+      {
+        filename: file.originalname,
+        content: file.buffer
+      },
+      {
+        filename: excelFile.originalname,
+        content: excelFile.buffer
+      }
+    ]
 
     const now = new Date();
     const zonedDate = toZonedTime(now, timeZone);
@@ -157,6 +172,7 @@ export class MailService {
       await this.mailerService.sendMail({
         to: 'paqueteriaymensajeriadelyaqui@hotmail.com',
         cc: 'sistemas@paqueteriaymensajeriadelyaqui.com',
+        //to: 'javier.rappaz@gmail.com',
         subject: `🚚 Desembarque ${formattedDate} de ${subsidiaryName}`,
         html: htmlContent,
         headers: {
@@ -164,7 +180,7 @@ export class MailService {
           'X-MSMail-Priority': 'High',
           Importance: 'High',
         },
-        attachments: [attachment]
+        attachments: attachments
       })
 
     } catch (error) {

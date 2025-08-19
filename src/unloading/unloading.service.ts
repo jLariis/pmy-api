@@ -6,7 +6,6 @@ import { Unloading } from 'src/entities/unloading.entity';
 import { In, Repository } from 'typeorm';
 import { ChargeShipment, Shipment } from 'src/entities';
 import { ValidatedPackageDispatchDto } from 'src/package-dispatch/dto/validated-package-dispatch.dto';
-import { ShipmentStatusType } from 'src/common/enums/shipment-status-type.enum';
 import { ValidatedUnloadingDto } from './dto/validate-package-unloading.dto';
 import { MailService } from 'src/mail/mail.service';
 
@@ -181,15 +180,15 @@ export class UnloadingService {
     return `This action removes a #${id} unloading`;
   }
 
-  async sendByEmail(file: Express.Multer.File, subsidiaryName: string, unloadingId: string) {
+  async sendByEmail(file: Express.Multer.File, excelFile: Express.Multer.File, subsidiaryName: string, unloadingId: string) {
     const unloading = await this.unloadingRepository.findOne(
       { 
         where: {id: unloadingId},
         relations: ['vehicle']
       });
-    console.log("🚀 ~ PackageDispatchService ~ sendByEmail ~ packageDispatch:", unloading)
+    console.log("🚀 ~ PackageDispatchService ~ sendByEmail ~ unloading:", unloading)
 
-    return await this.mailService.sendHighPriorityUnloadingEmail(file, subsidiaryName, unloading)
+    return await this.mailService.sendHighPriorityUnloadingEmail(file, excelFile, subsidiaryName, unloading)
   }
 
 }
