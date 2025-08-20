@@ -73,7 +73,10 @@ export class TrackingCronService {
     await this.shipmentService.sendEmailWithHighPriorities();
   }
 
-  @Cron(CronExpression.EVERY_2_HOURS, { timeZone: 'America/Hermosillo' })
+  
+  @Cron('0 0 8-22/2 * * *', { 
+    timeZone: 'America/Hermosillo' 
+  })
   async handleSendShipmentWithStatus03(){
     /** Por ahora solo cabos */
     this.logger.log('🕐 Ejecutando el envio de correo con Enviós DEX03...');
