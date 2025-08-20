@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, Injectable, InternalServerErrorException, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Between, Brackets, EntityManager, In, Repository } from 'typeorm';
 import { Shipment } from 'src/entities/shipment.entity';
@@ -562,6 +562,9 @@ export class ShipmentsService {
   async getAllChargesWithStatus(): Promise<ChargeWithStatusDto[]> {
     const charges = await this.chargeRepository.find({
       relations: ['subsidiary'],
+      order: {
+        createdAt: 'DESC'
+      }
     });
 
     const chargeShipments = await this.chargeShipmentRepository.find({
@@ -610,112 +613,183 @@ export class ShipmentsService {
   }
 
   /*** Procesar cargas cuando vienen los archivos separados SII SE USA*/
+
   async processFileF2(file: Express.Multer.File, subsidiaryId: string, consNumber: string, consDate?: Date) {
+    console.log("Star working on new method")
+
     if (!file) throw new BadRequestException('No file uploaded');
-    this.logger.log(`📂 Start processing file: ${file.originalname}`);
+    
+    console.log('🔍 DEBUG: Start processing file:', file.originalname);
+    console.log('🔍 DEBUG: File size:', file.size);
+    console.log('🔍 DEBUG: Buffer length:', file.buffer.length);
+    
+    // USAR SOLO console.log POR AHORA - NO this.logger
+    console.log('🔍 DEBUG: Before validation');
 
     const { buffer, originalname } = file;
     const notFoundTrackings: any[] = [];
     const errors: any[] = [];
     const migrated: ChargeShipment[] = [];
 
-    if (!originalname.match(/\.(csv|xlsx?)$/i)) {
-      throw new BadRequestException('Unsupported file type');
-    }
-
-    const workbook = XLSX.read(buffer, { type: 'buffer' });
-    const sheet = workbook.Sheets[workbook.SheetNames[0]];
-    const shipmentsToUpdate = parseDynamicFileF2(sheet);
-
-    if (shipmentsToUpdate.length === 0) {
-      return { message: 'No shipments found in the file.' };
-    }
-
-    const newCharge = this.chargeRepository.create({
-      subsidiary: { id: subsidiaryId},
-      chargeDate: consDate ? format(consDate, 'yyyy-MM-dd HH:mm:ss') : format(new Date(), 'yyyy-MM-dd HH:mm:ss'),
-      numberOfPackages: shipmentsToUpdate.length,
-      consNumber
-    });
-
-    const savedCharge = await this.chargeRepository.save(newCharge);
-
-    const chargeSubsidiary = await this.subsidiaryRepository.findOne({ where: { id: subsidiaryId } });
-
-    const processPromises = shipmentsToUpdate.map(async (shipment) => {
-      const validation = await this.existShipmentByTrackSpecial(
-        shipment.trackingNumber,
-        shipment.recipientName,
-        shipment.recipientAddress,
-        shipment.recipientZip
-      );
-
-      if (!validation.exist) {
-        notFoundTrackings.push(shipment);
-        return;
+    try {
+      // Validación de tipo de archivo
+      if (!originalname.match(/\.(csv|xlsx?)$/i)) {
+        throw new BadRequestException('Unsupported file type');
       }
 
+      this.logger.log('📊 Reading Excel file...');
+
+      // Leer archivo Excel con mejor manejo de errores
+      let workbook;
       try {
-        ///relations: ['subsidiary', 'statusHistory'], ver si ocupa tener también el historial
-        const original = await this.shipmentRepository.findOne({
-          where: { id: validation.shipment.id },
-          relations: ['subsidiary'],
+        workbook = XLSX.read(buffer, { 
+          type: 'buffer',
+          cellDates: true,
+          cellText: false
         });
-
-        if (!original) {
-          notFoundTrackings.push(shipment);
-          return;
-        }
-
-        await this.incomeRepository.delete({ trackingNumber: original.trackingNumber });
-
-        const chargeShipment = this.chargeShipmentRepository.create({
-          ...original,
-          id: undefined,
-          charge: savedCharge,
-        });
-
-        const savedChargeShipment = await this.chargeShipmentRepository.save(chargeShipment);
-
-        await this.shipmentRepository.delete(original.id);
-
-        this.logger.log(`✅ Migrated and deleted shipment: ${original.trackingNumber}`);
-        migrated.push(savedChargeShipment);
-      } catch (err) {
-        this.logger.error(`❌ Error migrating shipment ${shipment.trackingNumber}: ${err.message}`);
-        errors.push({ shipment: shipment.trackingNumber, reason: err.message });
+      } catch (excelError) {
+        this.logger.error(`❌ Error reading Excel file: ${excelError.message}`);
+        throw new BadRequestException('Invalid Excel file format');
       }
-    });
 
-    await Promise.allSettled(processPromises);
+      if (!workbook.SheetNames || workbook.SheetNames.length === 0) {
+        throw new BadRequestException('Excel file has no sheets');
+      }
 
-    // ✅ Crear el ingreso relacionado al charge solo si hubo migraciones exitosas
-    if (migrated.length > 0 && chargeSubsidiary) {
-      const newIncome = this.incomeRepository.create({
-        subsidiary: chargeSubsidiary,
-        shipmentType: ShipmentType.FEDEX,
-        incomeType: IncomeStatus.ENTREGADO,
-        cost: chargeSubsidiary.chargeCost,
-        isGrouped: true,
-        sourceType: IncomeSourceType.CHARGE,
-        charge: { id: savedCharge.id },
-        date: consDate ? consDate : new Date(),
+      const sheet = workbook.Sheets[workbook.SheetNames[0]];
+      this.logger.log(`📋 Processing sheet: ${workbook.SheetNames[0]}`);
+
+      // Parsear el archivo
+      let shipmentsToUpdate;
+      try {
+        shipmentsToUpdate = parseDynamicFileF2(sheet);
+        this.logger.log(`📦 Found ${shipmentsToUpdate.length} shipments in file`);
+      } catch (parseError) {
+        this.logger.error(`❌ Error parsing Excel data: ${parseError.message}`);
+        throw new BadRequestException('Error parsing Excel data');
+      }
+
+      if (shipmentsToUpdate.length === 0) {
+        this.logger.warn('⚠️ No shipments found in the file');
+        return { message: 'No shipments found in the file.' };
+      }
+
+      this.logger.log('💾 Creating charge record...');
+
+      // Crear charge
+      const newCharge = this.chargeRepository.create({
+        subsidiary: { id: subsidiaryId },
+        chargeDate: consDate ? format(consDate, 'yyyy-MM-dd HH:mm:ss') : format(new Date(), 'yyyy-MM-dd HH:mm:ss'),
+        numberOfPackages: shipmentsToUpdate.length,
+        consNumber
       });
 
-      await this.incomeRepository.save(newIncome);
-    }
+      const savedCharge = await this.chargeRepository.save(newCharge);
+      this.logger.log(`✅ Charge created: ${savedCharge.id}`);
 
-    return {
-      migrated,
-      notFound: notFoundTrackings,
-      errors,
-    };
+      const chargeSubsidiary = await this.subsidiaryRepository.findOne({ 
+        where: { id: subsidiaryId } 
+      });
+
+      if (!chargeSubsidiary) {
+        throw new BadRequestException('Subsidiary not found');
+      }
+
+      this.logger.log('🔄 Processing shipments...');
+
+      // Procesar en lotes para mejor performance
+      const BATCH_SIZE = 50;
+      const batches = [];
+      
+      for (let i = 0; i < shipmentsToUpdate.length; i += BATCH_SIZE) {
+        batches.push(shipmentsToUpdate.slice(i, i + BATCH_SIZE));
+      }
+
+      for (const [batchIndex, batch] of batches.entries()) {
+        this.logger.log(`🔁 Processing batch ${batchIndex + 1}/${batches.length}`);
+        
+        const batchPromises = batch.map(async (shipment, index) => {
+          const shipmentIndex = batchIndex * BATCH_SIZE + index + 1;
+          
+          try {
+            this.logger.debug(`🔍 Validating shipment ${shipmentIndex}/${shipmentsToUpdate.length}: ${shipment.trackingNumber}`);
+
+            const validation = await this.existShipmentByTrackSpecial(
+              shipment.trackingNumber,
+              shipment.recipientName,
+              shipment.recipientAddress,
+              shipment.recipientZip
+            );
+
+            if (!validation.exist) {
+              this.logger.warn(`❓ Shipment not found: ${shipment.trackingNumber}`);
+              notFoundTrackings.push(shipment);
+              return;
+            }
+
+            // Resto del procesamiento...
+            const original = await this.shipmentRepository.findOne({
+              where: { id: validation.shipment.id },
+              relations: ['subsidiary'],
+            });
+
+            if (!original) {
+              notFoundTrackings.push(shipment);
+              return;
+            }
+
+            await this.incomeRepository.delete({ trackingNumber: original.trackingNumber });
+
+            const chargeShipment = this.chargeShipmentRepository.create({
+              ...original,
+              id: undefined,
+              charge: savedCharge,
+            });
+
+            const savedChargeShipment = await this.chargeShipmentRepository.save(chargeShipment);
+            await this.shipmentRepository.delete(original.id);
+
+            this.logger.log(`✅ Migrated shipment: ${original.trackingNumber}`);
+            migrated.push(savedChargeShipment);
+
+          } catch (err) {
+            this.logger.error(`❌ Error with shipment ${shipment.trackingNumber}: ${err.message}`);
+            errors.push({ 
+              tracking: shipment.trackingNumber, 
+              reason: err.message,
+              error: err.stack 
+            });
+          }
+        });
+
+        await Promise.allSettled(batchPromises);
+      }
+
+      this.logger.log(`🎉 Process completed. Migrated: ${migrated.length}, Not found: ${notFoundTrackings.length}, Errors: ${errors.length}`);
+
+      return {
+        migrated: migrated.length,
+        notFound: notFoundTrackings.length,
+        errors: errors.length,
+        details: {
+          migratedTrackings: migrated.map(m => m.trackingNumber),
+          notFoundTrackings: notFoundTrackings.map(n => n.trackingNumber),
+          errorDetails: errors
+        }
+      };
+
+    } catch (error) {
+      this.logger.error(`💥 Critical error in processFileF2: ${error.message}`, error.stack);
+      throw new InternalServerErrorException(`Error processing file: ${error.message}`);
+    }
   }
+
 
   /*** NUEVO SI SE USA */
   async addChargeShipments(file: Express.Multer.File, subsidiaryId: string, consNumber: string, consDate?: Date) {
     if (!file) throw new BadRequestException('No file uploaded');
     this.logger.log(`📂 Start processing file: ${file.originalname}`);
+    console.log("Entro aca!! addChargeShipments")
 
     const { buffer, originalname } = file;
     const notFoundTrackings: any[] = [];
@@ -4056,7 +4130,6 @@ export class ShipmentsService {
 
       const subsidiary = await this.subsidiaryRepository.findOneBy({id: subdiaryId});
 
-      
       const shipments = await this.shipmentRepository.find({
         select: ['trackingNumber', 'recipientName', 'recipientAddress', 'recipientZip', 'recipientPhone'],
         where: {
@@ -4072,9 +4145,9 @@ export class ShipmentsService {
         ]
       })
 
-      //const sendEmail = await this.mailService.sendHighPriorityShipmentWithStatus03(subsidiary.name, shipments);
+      const sendEmail = await this.mailService.sendHighPriorityShipmentWithStatus03(subsidiary.name, shipments);
       
-      //console.log("🚀 ~ ShipmentsService ~ getShipmentsWithStatus03 ~ sendEmail:", sendEmail)
+      console.log("🚀 ~ ShipmentsService ~ getShipmentsWithStatus03 ~ sendEmail:", sendEmail)
 
       return shipments;
     }

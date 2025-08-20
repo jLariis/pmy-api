@@ -90,18 +90,30 @@ export class ShipmentsController {
     @Body('subsidiaryId') subsidiaryId: string,
     @Body('consNumber') consNumber: string,
     @Body('consDate') consDate?: string,
-    @Body('notRemoveCharge') notRemoveCharge: boolean = false,
+    @Body('notRemoveCharge') notRemoveCharge: any = false,
   ) {
+      console.log("🚀 ~ Raw notRemoveCharge:", notRemoveCharge);
+  
+    // Conversión robusta a boolean
+    const shouldNotRemove = 
+      notRemoveCharge === 'true' || 
+      notRemoveCharge === true || 
+      notRemoveCharge === '1' || 
+      notRemoveCharge === 1;
+    
+    console.log("🚀 ~ Parsed notRemoveCharge:", shouldNotRemove);
+    
     let dateForCons = null;
-
     if(consDate) {
       dateForCons = new Date(consDate);
     }
 
-    if(notRemoveCharge) {
+    if(shouldNotRemove) {
+      console.log('🔍 Calling addChargeShipments');
       return this.shipmentsService.addChargeShipments(file, subsidiaryId, consNumber, dateForCons);
     }
 
+    console.log('🔍 Calling processFileF2');
     return this.shipmentsService.processFileF2(file, subsidiaryId, consNumber, dateForCons);
   }
 

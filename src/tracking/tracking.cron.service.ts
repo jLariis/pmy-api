@@ -67,7 +67,7 @@ export class TrackingCronService {
     await this.shipmentService.updatePriorities();
   }
 
-  @Cron(CronExpression.EVERY_DAY_AT_6AM, { timeZone: 'America/Hermosillo' })
+  @Cron(CronExpression.EVERY_DAY_AT_8AM, { timeZone: 'America/Hermosillo' })
   async handleSendPriorityShipments(){
     this.logger.log('🕐 Ejecutando el envio de correo con envíos que deben ser proritarios...');
     await this.shipmentService.sendEmailWithHighPriorities();
@@ -76,6 +76,7 @@ export class TrackingCronService {
   @Cron(CronExpression.EVERY_2_HOURS, { timeZone: 'America/Hermosillo' })
   async handleSendShipmentWithStatus03(){
     /** Por ahora solo cabos */
+    this.logger.log('🕐 Ejecutando el envio de correo con Enviós DEX03...');
     const subdiaryId = 'abf2fc38-cb42-41b6-9554-4b71c11b8916'
     await this.shipmentService.getShipmentsWithStatus03(subdiaryId);
   }

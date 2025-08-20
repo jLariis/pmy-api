@@ -17,10 +17,10 @@ export const config = () => {
         logging: JSON.parse(process.env.DB_LOGGING),
         timezone: "Z",
         entities: [__dirname + '/../entities/*.entity.{js,ts}'],
-        ssl: {
+        /*ssl: {
             ca: readFileSync(path.join(__dirname, '../ssl', 'ca.pem')).toString(),
             rejectUnauthorized: true,
-        },
+        },*/
         } satisfies DataSourceOptions,
     };
 };
