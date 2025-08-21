@@ -209,6 +209,9 @@ export class PackageDispatchService {
     const response = await this.packageDispatchRepository.find({
       where: { subsidiary: { id: subsidiaryId } },
       relations: ['shipments', 'routes', 'drivers', 'vehicle', 'subsidiary'],
+      order: {
+        createdAt: 'DESC'
+      }
     });
 
     return response

@@ -204,6 +204,30 @@ export class ShipmentsService {
       order: {
         commitDateTime: "ASC",
       },
+      select: {
+        id: true,
+        trackingNumber: true,
+        recipientName: true,
+        commitDateTime: true,
+        status: true,
+        statusHistory: {
+          id: true,
+          status: true,
+          exceptionCode: true,
+          timestamp: true,
+          createdAt: true,
+        },
+        payment: {
+          id: true,
+          amount: true,
+          type: true,
+          status: true,
+        },
+        subsidiary: {
+          id: true,
+          name: true,
+        },
+      },
     });
   }
 
@@ -531,11 +555,69 @@ export class ShipmentsService {
   
   async findAllShipmentsAndCharges(): Promise<ShipmentAndChargeDto[]> {
     const shipments = await this.shipmentRepository.find({
+      select: {
+        id: true,
+        trackingNumber: true,
+        recipientName: true,
+        recipientAddress: true,
+        recipientCity: true,
+        recipientZip: true,
+        commitDateTime: true,
+        shipmentType: true,
+        priority: true,
+        status: true,
+        statusHistory: {
+          id: true,
+          status: true,
+          exceptionCode: true,
+          timestamp: true,
+          createdAt: true,
+        },
+        payment: {
+          id: true,
+          amount: true,
+          type: true,
+          status: true,
+        },
+        subsidiary: {
+          id: true,
+          name: true,
+        },
+      },
       relations: ['statusHistory', 'payment', 'subsidiary'],
       order: { commitDateTime: 'ASC' },
     });
 
     const charges = await this.chargeShipmentRepository.find({
+      select: {
+        id: true,
+        trackingNumber: true,
+        recipientName: true,
+        recipientAddress: true,
+        recipientCity: true,
+        recipientZip: true,
+        commitDateTime: true,
+        shipmentType: true,
+        priority: true,
+        status: true,
+        statusHistory: {
+          id: true,
+          status: true,
+          exceptionCode: true,
+          timestamp: true,
+          createdAt: true,
+        },
+        payment: {
+          id: true,
+          amount: true,
+          type: true,
+          status: true,
+        },
+        subsidiary: {
+          id: true,
+          name: true,
+        },
+      },
       relations: ['statusHistory', 'payment', 'charge', 'subsidiary'],
       order: { commitDateTime: 'ASC' },
     });

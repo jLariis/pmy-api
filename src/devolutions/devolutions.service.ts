@@ -136,6 +136,9 @@ export class DevolutionsService {
         subsidiary: {
           id: subsidiaryId
         }
+      },
+      order: {
+        date: 'DESC'
       }
     });
   }
