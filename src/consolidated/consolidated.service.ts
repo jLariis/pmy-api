@@ -72,6 +72,16 @@ export class ConsolidatedService {
 
     // 3. Consulta a la base de datos
     const consolidates = await this.consolidatedRepository.find({
+      select: {
+        id: true,
+        date: true,
+        numberOfPackages: true,
+        type: true,
+        subsidiary: {
+          id: true,
+          name: true
+        }
+      },
       where: consolidatedWhere,
       relations: ['subsidiary'],
       order: { date: 'DESC' },
@@ -92,6 +102,22 @@ export class ConsolidatedService {
     }
 
     const shipments = await this.shipmentRepository.find({
+      select: {
+        trackingNumber: true,
+        recipientName: true,
+        commitDateTime: true,
+        consolidatedId: true,
+        status: true,
+        statusHistory: {
+          status: true,
+          exceptionCode: true,
+          timestamp: true
+        },
+        subsidiary: {
+          id: true,
+          name: true
+        }
+      },
       where: shipmentWhere,
       relations: ['subsidiary', 'statusHistory'],
     });
