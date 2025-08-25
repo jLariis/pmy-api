@@ -4316,32 +4316,36 @@ export class ShipmentsService {
     async getShipmentsWithStatus03(subdiaryId: string) {
       const todayUTC = new Date();
       todayUTC.setUTCHours(0, 0, 0, 0);
-      console.log("🚀 ~ ConsolidatedService ~ lastConsolidatedBySucursal ~ todayUTC:", todayUTC)
+      console.log("🚀 ~ ConsolidatedService ~ todayUTC:", todayUTC);
 
       const tomorrowUTC = new Date(todayUTC);
       tomorrowUTC.setUTCDate(tomorrowUTC.getUTCDate() + 1);
-      console.log("🚀 ~ ConsolidatedService ~ lastConsolidatedBySucursal ~ tomorrowUTC:", tomorrowUTC)
+      console.log("🚀 ~ ConsolidatedService ~ tomorrowUTC:", tomorrowUTC);
 
-      const subsidiary = await this.subsidiaryRepository.findOneBy({id: subdiaryId});
+      const subsidiary = await this.subsidiaryRepository.findOneBy({ id: subdiaryId });
 
       const shipments = await this.shipmentRepository.find({
         select: ['trackingNumber', 'recipientName', 'recipientAddress', 'recipientZip', 'recipientPhone'],
         where: {
-          subsidiary: { id: subdiaryId},
+          subsidiary: { id: subdiaryId },
           status: ShipmentStatusType.NO_ENTREGADO,
           statusHistory: {
             exceptionCode: '03',
-            timestamp: Between(todayUTC, tomorrowUTC)
-          }
+            timestamp: Between(todayUTC, tomorrowUTC),
+          },
         },
-        relations: [
-          'statusHistory'
-        ]
-      })
+        relations: ['statusHistory'],
+      });
 
-      const sendEmail = await this.mailService.sendHighPriorityShipmentWithStatus03(subsidiary.name, shipments);
-      
-      console.log("🚀 ~ ShipmentsService ~ getShipmentsWithStatus03 ~ sendEmail:", sendEmail)
+      if (shipments.length > 0) {
+        const sendEmail = await this.mailService.sendHighPriorityShipmentWithStatus03(
+          subsidiary.name,
+          shipments,
+        );
+        console.log("🚀 ~ ShipmentsService ~ getShipmentsWithStatus03 ~ sendEmail:", sendEmail);
+      } else {
+        console.log("🚀 ~ ShipmentsService ~ getShipmentsWithStatus03: No shipments found, no email sent");
+      }
 
       return shipments;
     }
