@@ -1,13 +1,14 @@
 import { DispatchStatus } from "src/common/enums/dispatch-enum";
-import { Entity, PrimaryGeneratedColumn, OneToMany, Column, ManyToMany, JoinTable, ManyToOne, JoinColumn, BeforeInsert, BeforeUpdate } from "typeorm";
+import { Entity, PrimaryGeneratedColumn, OneToMany, Column, ManyToMany, JoinTable, ManyToOne, JoinColumn, BeforeInsert, BeforeUpdate, OneToOne } from "typeorm";
 import { Driver } from "./driver.entity";
 import { Route } from "./route.entity";
 import { Shipment } from "./shipment.entity";
 import { Subsidiary } from "./subsidiary.entity";
 import { Vehicle } from "./vehicle.entity";
 import { ChargeShipment } from "./charge-shipment.entity";
+import { RouteClosure } from "./route-closure.entity";
 
-@Entity('package_dispatch') // Changed to snake_case for database consistency
+@Entity('package_dispatch')
 export class PackageDispatch {
   @PrimaryGeneratedColumn('uuid')
   id: string;
@@ -53,6 +54,9 @@ export class PackageDispatch {
 
   @Column({ type: 'timestamp', nullable: true })
   estimatedArrival: Date | null; // Allow nullable
+
+  @OneToOne(() => RouteClosure, routeClosure => routeClosure.packageDispatch)
+  routeClosure: RouteClosure;
 
   @ManyToOne(() => Subsidiary, { nullable: true })
   @JoinColumn({ name: 'subsidiaryId' })

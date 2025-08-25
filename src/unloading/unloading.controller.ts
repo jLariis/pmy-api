@@ -4,6 +4,7 @@ import { CreateUnloadingDto } from './dto/create-unloading.dto';
 import { UpdateUnloadingDto } from './dto/update-unloading.dto';
 import { FileInterceptor, FilesInterceptor } from '@nestjs/platform-express';
 import { ApiTags, ApiBearerAuth, ApiOperation, ApiConsumes, ApiBody } from '@nestjs/swagger';
+import { ValidateTrackingNumbersDto } from './dto/validate-tracking-numbers.dto';
 
 @ApiTags('unloadings')
 @ApiBearerAuth()
@@ -26,10 +27,13 @@ export class UnloadingController {
     return this.unloadingService.findAll();
   }
 
-  @Get('validate-tracking-number/:trackingNumber/:subsidiaryId')
-  validateTrackingNumber(@Param('trackingNumber') trackingNumber: string, @Param('subsidiaryId') subsidiaryId: string) {
-    return this.unloadingService.validateTrackingNumber(trackingNumber, subsidiaryId);
-  }
+  @Post('validate-tracking-numbers')
+    validateTrackingNumbers(
+      @Body() body: ValidateTrackingNumbersDto
+    ) {
+      const { trackingNumbers, subsidiaryId } = body;
+      return this.unloadingService.validateTrackingNumbers(trackingNumbers, subsidiaryId);
+    }
 
   @Patch(':id')
   update(@Param('id') id: string, @Body() updateUnloadingDto: UpdateUnloadingDto) {
@@ -96,4 +100,10 @@ export class UnloadingController {
     return this.unloadingService.sendByEmail(pdfFile, excelFile, subsidiaryName, unloadingId);
   }
   
+  @Get('consolidateds/:subsidiaryId')
+  async getConsolidatedForStartUnloading(@Param('subsidiaryId') subsidiaryId: string){
+    return await this.unloadingService.getConsolidateToStartUnloading(subsidiaryId)
+  }
+
+
 }

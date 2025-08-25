@@ -96,11 +96,19 @@ export function parseDynamicFileF2(sheet: XLSX.Sheet) {
     const dataRows = allRows.slice(headerRowIndex + 1);
 
     return dataRows.map(row => {
+        const rawDate = row[headerMap['commitDate']];
+        const commitDate = formatExcelDateToMySQL(rawDate) ?? null;
+
+
         return {
             trackingNumber: row[headerMap['trackingNumber']],
             recipientName: row[headerMap['recipientName']] ?? 'Sin Nombre',
             recipientAddress: row[headerMap['recipientAddress']] ?? 'Sin Dirección',
             recipientZip: row[headerMap['recipientZip']] ?? 'N/A',
+            commitDate: commitDate, // ISO format string o null
+            commitTime: formatExcelTimeToMySQL(row[headerMap['commitTime']]),
+            recipientPhone: row[headerMap['recipientPhone']] ?? '',
+            recipientCity: row[headerMap['recipientCity']] ?? ''
         };
     });
 }

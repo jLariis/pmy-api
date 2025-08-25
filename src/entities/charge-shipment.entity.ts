@@ -12,24 +12,27 @@ import { Unloading } from "./unloading.entity";
 
 @Entity('charge_shipment')
 export class ChargeShipment {
-    @Index()
+    
     @ManyToOne(() => Charge, { nullable: true })
     @JoinColumn({ name: 'chargeId' })
+    @Index()
     charge: Charge;
 
-    @Index()
+    
       @PrimaryGeneratedColumn('uuid')
+      @Index()
       id: string;
     
       @Column()
       trackingNumber: string;
     
-      @Index()
+      
       @Column({
         type: 'enum',
         enum: ShipmentType,
         default: ShipmentType.FEDEX,
       })
+      @Index()
       shipmentType: ShipmentType;
     
       @Column()
