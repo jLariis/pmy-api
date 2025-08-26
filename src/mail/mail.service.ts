@@ -94,9 +94,9 @@ export class MailService {
 
     try {
       await this.mailerService.sendMail({
-        //to: 'paqueteriaymensajeriadelyaqui@hotmail.com',
-        //cc: 'sistemas@paqueteriaymensajeriadelyaqui.com',
-        to: 'javier.rappaz@gmail.com',
+        to: 'paqueteriaymensajeriadelyaqui@hotmail.com',
+        cc: 'sistemas@paqueteriaymensajeriadelyaqui.com',
+        //to: 'javier.rappaz@gmail.com',
         subject: `🚚 Salida a Ruta ${formattedDate} de ${subsidiaryName}`,
         html: htmlContent,
         headers: {
