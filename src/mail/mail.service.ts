@@ -5,6 +5,7 @@ import { toZonedTime } from 'date-fns-tz';
 import { PackageDispatch } from 'src/entities/package-dispatch.entity';
 import { Unloading } from 'src/entities/unloading.entity';
 import { ShipmentStatusForReportDto } from './dtos/shipment.dto';
+import { formatToHermosillo } from 'src/common/utils';
 
 @Injectable()
 export class MailService {
@@ -93,9 +94,9 @@ export class MailService {
 
     try {
       await this.mailerService.sendMail({
-        to: 'paqueteriaymensajeriadelyaqui@hotmail.com',
-        cc: 'sistemas@paqueteriaymensajeriadelyaqui.com',
-        //to: 'javier.rappaz@gmail.com',
+        //to: 'paqueteriaymensajeriadelyaqui@hotmail.com',
+        //cc: 'sistemas@paqueteriaymensajeriadelyaqui.com',
+        to: 'javier.rappaz@gmail.com',
         subject: `🚚 Salida a Ruta ${formattedDate} de ${subsidiaryName}`,
         html: htmlContent,
         headers: {
@@ -226,6 +227,7 @@ export class MailService {
             <td style="padding: 8px;">${s.recipientName}</td>
             <td style="padding: 8px; text-align: center;">${s.recipientAddress}</td>
             <td style="padding: 8px; text-align: center;">${s.recipientZip}</td>
+            <td style="padding: 8px; text-align: center;">${formatToHermosillo(s.timestamp)}</td>
             <td style="padding: 8px; text-align: center;">${this.formatMexicanPhoneNumber(s.recipientPhone)}</td>
           </tr>
         `
@@ -254,6 +256,7 @@ export class MailService {
                 <th style="padding: 10px;">Nombre</th>
                 <th style="padding: 10px;">Dirección</th>
                 <th style="padding: 10px;">Código Postal</th>
+                <th style="padding: 10px;">Fecha del Evento</th>
                 <th style="padding: 10px;">Número de Teléfono</th>
               </tr>
             </thead>
@@ -284,6 +287,7 @@ export class MailService {
 
     try {
       return await this.mailerService.sendMail({
+        //to: 'javier.rappaz@gmail.com',
         to: 'paqueteriaymensajeriadelyaqui@hotmail.com',
         cc: 'edgardolugo@paqueteriaymensajeriadelyaqui.com, gerardorobles@paqueteriaymensajeriadelyaqui.com, sistemas@paqueteriaymensajeriadelyaqui.com',
         subject: `🚨🚥 Paquetes con status DEX03 de ${subsidiaryName}`,

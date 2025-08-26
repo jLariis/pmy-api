@@ -41,6 +41,7 @@ import { ForPickUpDto } from './dto/for-pick-up.dto';
 import { IncomeValidationResult } from './dto/income-validation.dto';
 import { FedexTrackingResponseDto } from './dto/check-status-result.dto';
 import { PaymentTypeEnum } from 'src/common/enums/payment-type.enum';
+import { ShipmentStatusForReportDto } from 'src/mail/dtos/shipment.dto';
 
 @Injectable()
 export class ShipmentsService {
@@ -4324,18 +4325,23 @@ export class ShipmentsService {
 
       const subsidiary = await this.subsidiaryRepository.findOneBy({ id: subdiaryId });
 
-      const shipments = await this.shipmentRepository.find({
-        select: ['trackingNumber', 'recipientName', 'recipientAddress', 'recipientZip', 'recipientPhone'],
-        where: {
-          subsidiary: { id: subdiaryId },
-          status: ShipmentStatusType.NO_ENTREGADO,
-          statusHistory: {
-            exceptionCode: '03',
-            timestamp: Between(todayUTC, tomorrowUTC),
-          },
-        },
-        relations: ['statusHistory'],
-      });
+      const shipments = await this.shipmentRepository
+        .createQueryBuilder("shipment")
+        .leftJoin("shipment.statusHistory", "statusHistory")
+        .where("shipment.subsidiaryId = :subdiaryId", { subdiaryId })
+        .andWhere("shipment.status = :status", { status: ShipmentStatusType.NO_ENTREGADO })
+        .andWhere("statusHistory.exceptionCode = :exceptionCode", { exceptionCode: "03" })
+        .andWhere("statusHistory.timestamp BETWEEN :todayUTC AND :tomorrowUTC", { todayUTC, tomorrowUTC })
+        .select([
+          "shipment.trackingNumber AS trackingNumber",
+          "shipment.recipientName AS recipientName",
+          "shipment.recipientAddress AS recipientAddress",
+          "shipment.recipientZip AS recipientZip",
+          "shipment.recipientPhone AS recipientPhone",
+          "statusHistory.timestamp AS timestamp",
+        ])
+        .distinct(true)
+        .getRawMany<ShipmentStatusForReportDto>();
 
       if (shipments.length > 0) {
         const sendEmail = await this.mailService.sendHighPriorityShipmentWithStatus03(
