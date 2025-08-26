@@ -97,7 +97,8 @@ export class MailService {
         to: 'paqueteriaymensajeriadelyaqui@hotmail.com',
         cc: 'sistemas@paqueteriaymensajeriadelyaqui.com',
         //to: 'javier.rappaz@gmail.com',
-        subject: `🚚 Salida a Ruta ${formattedDate} de ${subsidiaryName}`,
+        //subject: `🚚 Salida a Ruta ${formattedDate} de ${subsidiaryName}`,
+        subject: `🚚 SALIDA ${packageDispatch.drivers[0].name.toLocaleUpperCase()} ${formattedDate}`,
         html: htmlContent,
         headers: {
           'X-Priority': '1',
