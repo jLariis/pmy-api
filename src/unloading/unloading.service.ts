@@ -211,54 +211,6 @@ export class UnloadingService {
     };
   }
 
-  async validateTrackingNumbersResp(
-    trackingNumbers: string[],
-    subsidiaryId?: string
-  ): Promise<(ValidatedUnloadingDto & { isCharge?: boolean })[]> {
-    const shipments = await this.shipmentRepository.find({
-      where: { trackingNumber: In(trackingNumbers) },
-      relations: ['subsidiary', 'statusHistory', 'payment', 'packageDispatch'],
-      order: { createdAt: 'DESC' }
-    });
-
-    const chargeShipments = await this.chargeShipmentRepository.find({
-      where: { trackingNumber: In(trackingNumbers) },
-      relations: ['subsidiary', 'charge', 'packageDispatch'],
-    });
-
-    // Indexar para búsqueda rápida
-    const shipmentsMap = new Map(shipments.map(s => [s.trackingNumber, s]));
-    const chargeMap = new Map(chargeShipments.map(c => [c.trackingNumber, c]));
-
-    const results: (ValidatedUnloadingDto & { isCharge?: boolean })[] = [];
-
-    for (const tn of trackingNumbers) {
-      const shipment = shipmentsMap.get(tn);
-      if (shipment) {
-        const validated = await this.validatePackage({ ...shipment, isValid: false }, subsidiaryId);
-        results.push(validated);
-        continue;
-      }
-
-      const chargeShipment = chargeMap.get(tn);
-      if (chargeShipment) {
-        const validatedCharge = await this.validatePackage({ ...chargeShipment, isValid: false }, subsidiaryId);
-        results.push({ ...validatedCharge, isCharge: true });
-        continue;
-      }
-
-      results.push({
-        trackingNumber: tn,
-        isValid: false,
-        reason: 'No se encontraron datos para el tracking number en la base de datos',
-        subsidiary: null,
-        status: null,
-      });
-    }
-
-    return results;
-  }
-
   async validateTrackingNumbers(
     trackingNumbers: string[],
     subsidiaryId?: string
@@ -284,7 +236,7 @@ export class UnloadingService {
 
     const validatedShipments: (ValidatedUnloadingDto & { isCharge?: boolean })[] = [];
 
-    // 2️⃣ Validar todos los trackingNumbers
+    // 2️⃣ Validar todos los trackingNumbers recibidos
     for (const tn of trackingNumbers) {
       const shipment = shipmentsMap.get(tn);
       if (shipment) {
@@ -311,29 +263,77 @@ export class UnloadingService {
 
     // 3️⃣ Obtener consolidado por subdiaryId
     const consolidatedsToValidate: ConsolidatedsDto = await this.getConsolidateToStartUnloading(subsidiaryId);
-
     const allConsolidateds: ConsolidatedItemDto[] = Object.values(consolidatedsToValidate).flat();
 
-    // 4️⃣ Asignar cada trackingNumber validado a su consolidado
+    // 4️⃣ Inicializar arrays added/notFound y asignar los validados
+    for (const consolidated of allConsolidateds) {
+      consolidated.added = [];
+      consolidated.notFound = [];
+    }
+
     for (const validated of validatedShipments) {
       if (validated.isCharge) {
-        // Solo agregar a f2Consolidated
-        const f2 = consolidatedsToValidate.f2Consolidated[0]; // asumimos que siempre hay como máximo uno
+        // Solo agregar a F2
+        const f2 = consolidatedsToValidate.f2Consolidated[0]; // usualmente hay 1
         if (!f2) continue;
-
-        if (!f2.added) f2.added = [];
-        f2.added.push(validated.trackingNumber);
+        f2.added.push({
+          trackingNumber: validated.trackingNumber,
+          recipientName: validated.recipientName,
+          recipientAddress: validated.recipientAddress,
+          recipientPhone: validated.recipientPhone
+        });
       } else {
-        // Agregar a air o ground según el shipment normal
+        // AER/TER según shipment normal
         const shipment = shipmentsMap.get(validated.trackingNumber);
         if (!shipment) continue;
 
         const consolidated = allConsolidateds.find(c => c.id === shipment.consolidatedId);
         if (!consolidated) continue;
 
-        if (!consolidated.added) consolidated.added = [];
-        consolidated.added.push(validated.trackingNumber);
+        consolidated.added.push({
+          trackingNumber: validated.trackingNumber,
+          recipientName: validated.recipientName,
+          recipientAddress: validated.recipientAddress,
+          recipientPhone: validated.recipientPhone
+        });
       }
+    }
+
+    // 5️⃣ Calcular notFound para AÉREO / TERRESTRE:
+    for (const consolidated of allConsolidateds.filter(c => c.typeCode !== 'F2')) {
+      const relatedShipments = await this.shipmentRepository.find({
+        where: { consolidatedId: consolidated.id },
+        select: ['trackingNumber', 'recipientName', 'recipientAddress', 'recipientPhone'],
+      });
+
+      consolidated.notFound = relatedShipments
+        .filter(s => !consolidated.added.some(a => a.trackingNumber === s.trackingNumber))
+        .map(s => ({
+          trackingNumber: s.trackingNumber,
+          recipientName: s.recipientName,
+          recipientAddress: s.recipientAddress,
+          recipientPhone: s.recipientPhone,
+        }));
+    }
+
+    // 6️⃣ Calcular notFound (y su conteo) para F2 (carga/31.5):
+    const f2 = consolidatedsToValidate.f2Consolidated[0];
+
+    if (f2) {
+      const f2ChargeShipments = await this.chargeShipmentRepository.find({
+        where: { charge: { id: f2.id } },
+        select: ['trackingNumber', 'recipientName', 'recipientAddress', 'recipientPhone'],
+        relations: ['charge'],
+      });
+
+      f2.notFound = f2ChargeShipments
+        .filter(cs => !f2.added.some(a => a.trackingNumber === cs.trackingNumber))
+        .map(cs => ({
+          trackingNumber: cs.trackingNumber,
+          recipientName: cs.recipientName,
+          recipientAddress: cs.recipientAddress,
+          recipientPhone: cs.recipientPhone,
+        }));
     }
 
     return { validatedShipments, consolidateds: consolidatedsToValidate };
@@ -375,40 +375,4 @@ export class UnloadingService {
 
     return await this.mailService.sendHighPriorityUnloadingEmail(file, excelFile, subsidiaryName, unloading)
   }
-
-  async checkUnloadingsOnConsolidated(
-    subdiaryId: string,
-    validatedShipments: string[],
-  ) {
-    // Traer todos los consolidados
-    const consolidateds = await this.getConsolidateToStartUnloading(subdiaryId);
-    const allConsolidateds = Object.values(consolidateds).flat();
-
-    // Recorremos los shipments validados
-    for (const validatedShipment of validatedShipments) {
-      const shipment = await this.shipmentRepository.findOneBy({
-        id: validatedShipment,
-      });
-
-      if (shipment) {
-        // Buscamos el consolidated al que pertenece este shipment
-        const consolidated = allConsolidateds.find(
-          (c) => c.id === shipment.consolidatedId
-        );
-
-        if (consolidated) {
-          // Si no existe la propiedad added, la inicializamos
-          if (!consolidated.added) {
-            consolidated.added = [];
-          }
-
-          // Agregamos el trackingNumber de este shipment
-          consolidated.added.push(shipment.trackingNumber);
-        }
-      }
-    }
-
-    return consolidateds;
-  }
-
 }

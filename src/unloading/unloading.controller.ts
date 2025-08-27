@@ -102,6 +102,7 @@ export class UnloadingController {
   
   @Get('consolidateds/:subsidiaryId')
   async getConsolidatedForStartUnloading(@Param('subsidiaryId') subsidiaryId: string){
+    console.log("🚀 ~ UnloadingController ~ getConsolidatedForStartUnloading ~ subsidiaryId:", subsidiaryId)
     return await this.unloadingService.getConsolidateToStartUnloading(subsidiaryId)
   }
 
