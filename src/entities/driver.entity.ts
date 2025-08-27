@@ -13,6 +13,9 @@ export class Driver {
   @Column()
   licenseNumber: string;
 
+  @Column({type: 'datetime', default: () => 'CURRENT_TIMESTAMP'})
+  licenseExpiration: Date;
+
   @Column()
   phoneNumber: string;
 

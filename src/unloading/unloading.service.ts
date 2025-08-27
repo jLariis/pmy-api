@@ -29,7 +29,7 @@ export class UnloadingService {
   ) {}
 
   async getConsolidateToStartUnloading(subdiaryId: string): Promise<ConsolidatedsDto> {
-    const todayUTC = new Date('2025-08-22');
+    const todayUTC = new Date();
     todayUTC.setUTCHours(0, 0, 0, 0);
 
     const tomorrowUTC = new Date(todayUTC);
