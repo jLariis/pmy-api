@@ -2392,13 +2392,21 @@ export class ShipmentsService {
 
       // Use default date as last resort
       if (!commitDateTime) {
-        commitDate = format(new Date(), 'yyyy-MM-dd');
-        commitTime = '18:00:00';
-        commitDateTime = new Date(`${commitDate}T${commitTime}`);
+        // Crear directamente la fecha UTC equivalente a 18:00 UTC-7
+        const now = new Date();
+        const utcDate = new Date(Date.UTC(
+          now.getUTCFullYear(),
+          now.getUTCMonth(),
+          now.getUTCDate(),
+          18 + 7, // 18:00 UTC-7 = 01:00 UTC (día siguiente)
+          0,
+          0
+        ));
+        
+        commitDateTime = utcDate;
         dateSource = 'Default';
-        this.logger.log(`⚠️ commitDateTime asignado por defecto para ${trackingNumber}: ${commitDateTime.toISOString()} (commitDate=${commitDate}, commitTime=${commitTime})`);
+        this.logger.log(`⚠️ commitDateTime asignado por defecto: ${commitDateTime.toISOString()}`);
       }
-
       // Update shipment with final date values
       newShipment.commitDate = commitDate;
       newShipment.commitTime = commitTime;
