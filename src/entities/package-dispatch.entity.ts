@@ -68,6 +68,9 @@ export class PackageDispatch {
   @Column({ type: 'timestamp', default: () => 'CURRENT_TIMESTAMP' })
   createdAt: Date;
 
+  @Column({ type: 'timestamp', default: () => 'CURRENT_TIMESTAMP' , nullable: true})
+  closedAt: Date;
+
   @Column({ type: 'timestamp', nullable: true })
   updatedAt: Date | null;
 

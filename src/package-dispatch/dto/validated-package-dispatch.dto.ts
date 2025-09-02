@@ -1,8 +1,9 @@
 import { Priority } from "src/common/enums/priority.enum"
 import { ShipmentStatusType } from "src/common/enums/shipment-status-type.enum"
-import { Consolidated, Subsidiary, Charge, Shipment, Payment } from "src/entities"
+import { Consolidated, Subsidiary, Charge, Payment, ShipmentStatus } from "src/entities"
 
 export class ValidatedPackageDispatchDto {
+    id?: string;
     trackingNumber: string
     commitDateTime?: Date
     consNumber?: string
@@ -22,4 +23,5 @@ export class ValidatedPackageDispatchDto {
     isValid: boolean
     reason?: string
     payment?: Payment
+    lastHistory?: ShipmentStatus
 }

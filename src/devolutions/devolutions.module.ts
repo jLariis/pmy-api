@@ -4,10 +4,11 @@ import { DevolutionsController } from './devolutions.controller';
 import { Devolution } from 'src/entities/devolution.entity';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ChargeShipment, Income, Shipment } from 'src/entities';
+import { MailService } from 'src/mail/mail.service';
 
 @Module({
   imports: [TypeOrmModule.forFeature([Devolution, Shipment, Income, ChargeShipment])],
   controllers: [DevolutionsController],
-  providers: [DevolutionsService],
+  providers: [DevolutionsService, MailService],
 })
 export class DevolutionsModule {}

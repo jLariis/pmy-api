@@ -6,11 +6,33 @@ import { PackageDispatch } from 'src/entities/package-dispatch.entity';
 import { Unloading } from 'src/entities/unloading.entity';
 import { ShipmentStatusForReportDto } from './dtos/shipment.dto';
 import { formatToHermosillo } from 'src/common/utils';
+import { RouteClosure } from 'src/entities/route-closure.entity';
 
 @Injectable()
 export class MailService {
   constructor(private readonly mailerService: MailerService) {}
 
+  formatMexicanPhoneNumber = (phone: string): string => {
+    // Quita todo lo que no sea dígito
+    let cleaned = phone.replace(/\D/g, "");
+
+    // Si ya empieza con 52 o 521, quitamos el 52 y dejamos solo los 10 dígitos
+    if (cleaned.startsWith("521")) {
+      cleaned = cleaned.slice(3);
+    } else if (cleaned.startsWith("52")) {
+      cleaned = cleaned.slice(2);
+    }
+
+    // Ahora cleaned debería tener solo 10 dígitos
+    if (cleaned.length === 10) {
+      return `+52 (${cleaned.slice(0, 3)}) ${cleaned.slice(3, 6)}-${cleaned.slice(6)}`;
+    }
+
+    // Si no cumple, regresamos el original sin cambios
+    return phone;
+  };
+
+  /** Enviar correo de Envios priotitarios */
   async sendHighPriorityShipmentsEmail(options: { to: string | string[], cc?: string | string[], htmlContent: string }) {
     const { to, cc, htmlContent } = options;
     
@@ -191,27 +213,78 @@ export class MailService {
     }
   }
 
+  /*** Enviar correo Devoluciones/Recolecciones */
+  async sendHighPriorityDevolutionsEmail(
+    file: Express.Multer.File,
+    excelFile: Express.Multer.File, 
+    subsidiaryName: string,
+  ){
+    const timeZone = 'America/Hermosillo'; 
 
-  formatMexicanPhoneNumber = (phone: string): string => {
-    // Quita todo lo que no sea dígito
-    let cleaned = phone.replace(/\D/g, "");
+    const attachments = [
+      {
+        filename: file.originalname,
+        content: file.buffer
+      },
+      {
+        filename: excelFile.originalname,
+        content: excelFile.buffer
+      }
+    ]
 
-    // Si ya empieza con 52 o 521, quitamos el 52 y dejamos solo los 10 dígitos
-    if (cleaned.startsWith("521")) {
-      cleaned = cleaned.slice(3);
-    } else if (cleaned.startsWith("52")) {
-      cleaned = cleaned.slice(2);
+    const now = new Date();
+    const zonedDate = toZonedTime(now, timeZone);
+    const formattedDate = format(zonedDate, "dd-MM-yyyy");
+
+    const htmlContent = `
+      <div style="font-family: Arial, sans-serif; color: #2c3e50; max-width: 800px; margin: auto;">
+        <h2 style="border-bottom: 3px solid #3498db; padding-bottom: 8px;">
+          🚚 Reporte de Devoluciones/Recolecciones
+          
+        </h2>
+
+        <p>
+          Se ha generado un nuevo reporte de <strong>Devoluciones/Recolecciones</strong> para la sucursal <strong>${subsidiaryName}</strong>.
+        </p>
+
+        <p style="margin-top: 20px;">
+          Puede consultar más detalles en: 
+          <a href="https://app-pmy.vercel.app/" target="_blank" style="color: #2980b9; text-decoration: none;">
+            https://app-pmy.vercel.app/
+          </a>
+        </p>
+
+        <hr style="margin: 30px 0; border: none; border-top: 1px solid #eee;" />
+
+        <p style="font-size: 0.9em; color: #7f8c8d;">
+          Este correo fue enviado automáticamente por el sistema.<br />
+          Por favor, no responda a este mensaje.
+        </p>
+      </div>
+    `;
+
+    try {
+      await this.mailerService.sendMail({
+        //to: 'paqueteriaymensajeriadelyaqui@hotmail.com',
+        //cc: 'sistemas@paqueteriaymensajeriadelyaqui.com',
+        to: 'javier.rappaz@gmail.com',
+        subject: `🚚 Devoluciones/Recolecciones ${formattedDate} de ${subsidiaryName}`,
+        html: htmlContent,
+        headers: {
+          'X-Priority': '1',
+          'X-MSMail-Priority': 'High',
+          Importance: 'High',
+        },
+        attachments: attachments
+      })
+
+    } catch (error) {
+      console.log(error);
+      throw error;
     }
 
-    // Ahora cleaned debería tener solo 10 dígitos
-    if (cleaned.length === 10) {
-      return `+52 (${cleaned.slice(0, 3)}) ${cleaned.slice(3, 6)}-${cleaned.slice(6)}`;
-    }
 
-    // Si no cumple, regresamos el original sin cambios
-    return phone;
-  };
-
+  }
 
   /*** Correos de DEX03 - Reporte */
   async sendHighPriorityShipmentWithStatus03(
@@ -304,5 +377,80 @@ export class MailService {
       console.log(error);
       throw error;
     }
+  }
+
+  /*** Enviar correo Cierre de Ruta */
+  async sendHighPriorityRouteClosureEmail(
+    file: Express.Multer.File,
+    excelFile: Express.Multer.File, 
+    routeClosure: RouteClosure,
+  ){
+    const timeZone = 'America/Hermosillo'; 
+
+    const attachments = [
+      {
+        filename: file.originalname,
+        content: file.buffer
+      },
+      {
+        filename: excelFile.originalname,
+        content: excelFile.buffer
+      }
+    ]
+
+    const now = new Date();
+    const zonedDate = toZonedTime(now, timeZone);
+    const formattedDate = format(zonedDate, "dd-MM-yyyy");
+
+    const htmlContent = `
+      <div style="font-family: Arial, sans-serif; color: #2c3e50; max-width: 800px; margin: auto;">
+        <h2 style="border-bottom: 3px solid #3498db; padding-bottom: 8px;">
+          🚚 Reporte de Cierre de Ruta
+          
+        </h2>
+
+        <p>
+          Se ha generado un nuevo reporte de <strong>Cierre de Ruta</strong> para la sucursal <strong>${routeClosure.subsidiary.name}</strong>.
+        </p>
+
+        <p style="margin-top: 20px;">
+          Puede consultar más detalles en: 
+          <a href="https://app-pmy.vercel.app/" target="_blank" style="color: #2980b9; text-decoration: none;">
+            https://app-pmy.vercel.app/
+          </a>
+        </p>
+
+        <hr style="margin: 30px 0; border: none; border-top: 1px solid #eee;" />
+
+        <p style="font-size: 0.9em; color: #7f8c8d;">
+          Este correo fue enviado automáticamente por el sistema.<br />
+          Por favor, no responda a este mensaje.
+        </p>
+      </div>
+    `;
+
+    try {
+      const emailSent = await this.mailerService.sendMail({
+        //to: 'paqueteriaymensajeriadelyaqui@hotmail.com',
+        //cc: 'sistemas@paqueteriaymensajeriadelyaqui.com',
+        to: 'javier.rappaz@gmail.com',
+        subject: `🚚 Cierre de Ruta ${formattedDate} de ${routeClosure.subsidiary.name}`,
+        html: htmlContent,
+        headers: {
+          'X-Priority': '1',
+          'X-MSMail-Priority': 'High',
+          Importance: 'High',
+        },
+        attachments: attachments
+      })
+      
+      console.log("🚀 ~ MailService ~ sendHighPriorityRouteClosureEmail ~ emailSent:", emailSent)
+
+    } catch (error) {
+      console.log(error);
+      throw error;
+    }
+
+
   }
 }

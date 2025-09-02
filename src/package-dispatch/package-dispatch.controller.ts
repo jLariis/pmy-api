@@ -3,7 +3,7 @@ import { PackageDispatchService } from './package-dispatch.service';
 import { CreatePackageDispatchDto } from './dto/create-package-dispatch.dto';
 import { UpdatePackageDispatchDto } from './dto/update-package-dispatch.dto';
 import { ApiTags, ApiBearerAuth, ApiConsumes, ApiOperation, ApiBody } from '@nestjs/swagger';
-import { FileInterceptor, FilesInterceptor } from '@nestjs/platform-express';
+import { FilesInterceptor } from '@nestjs/platform-express';
 
 @ApiTags('package-dispatchs')
 @ApiBearerAuth()

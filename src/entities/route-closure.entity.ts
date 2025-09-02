@@ -3,6 +3,7 @@ import { PackageDispatch } from "./package-dispatch.entity";
 import { User } from "./user.entity";
 import { Shipment } from "./shipment.entity";
 import { Subsidiary } from "./subsidiary.entity";
+import { json } from "stream/consumers";
 
 @Entity('route_closure')
 export class RouteClosure {
@@ -50,6 +51,12 @@ export class RouteClosure {
     })
     @JoinColumn({ name: 'created_by_user_id' })
     createdBy: User;
+
+    @Column({type: 'json'})
+    collections: string[];
+
+    @Column({default: ''})
+    actualKms: string;
 
     @Column({ type: 'timestamp', default: () => 'CURRENT_TIMESTAMP' })
     createdAt: Date;

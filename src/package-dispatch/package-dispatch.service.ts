@@ -4,13 +4,9 @@ import { UpdatePackageDispatchDto } from './dto/update-package-dispatch.dto';
 import { InjectRepository } from '@nestjs/typeorm';
 import { PackageDispatch } from 'src/entities/package-dispatch.entity';
 import { In, Repository } from 'typeorm';
-import { create } from 'domain';
 import { Shipment, ChargeShipment, Consolidated } from 'src/entities';
-import { remove } from 'winston';
 import { ValidatedPackageDispatchDto } from './dto/validated-package-dispatch.dto';
-import { ShipmentStatusType } from 'src/common/enums/shipment-status-type.enum';
 import { Devolution } from 'src/entities/devolution.entity';
-import { PackageDispatchDto } from './dto/package-dispatch.dto';
 import { MailService } from 'src/mail/mail.service';
 
 @Injectable()

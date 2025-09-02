@@ -6,6 +6,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { ChargeShipment, Income, Shipment } from 'src/entities';
 import { ShipmentStatusType } from 'src/common/enums/shipment-status-type.enum';
 import { ValidateShipmentDto } from './dto/valiation-devolution.dto';
+import { MailService } from 'src/mail/mail.service';
 
 @Injectable()
 export class DevolutionsService {
@@ -19,7 +20,8 @@ export class DevolutionsService {
     @InjectRepository(Income)
     private readonly incomeRepository: Repository<Income>,
     @InjectRepository(ChargeShipment)
-    private readonly chargeShipmentRepository: Repository<ChargeShipment>
+    private readonly chargeShipmentRepository: Repository<ChargeShipment>,
+    private readonly mailService: MailService
   ) {}
 
   async create(devolutions: CreateDevolutionDto[]): Promise<{
@@ -235,5 +237,9 @@ export class DevolutionsService {
         notes: null
       },
     };
+  }
+
+  async sendByEmail(pdfFile: Express.Multer.File, excelfile: Express.Multer.File, subsidiaryName: string) {
+    return await this.mailService.sendHighPriorityDevolutionsEmail(pdfFile, excelfile, subsidiaryName)
   }
 }

@@ -339,7 +339,6 @@ export class UnloadingService {
     return { validatedShipments, consolidateds: consolidatedsToValidate };
   }
 
-
   async findAll() {
     return `This action returns all unloading`;
   }

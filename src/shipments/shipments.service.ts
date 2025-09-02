@@ -848,6 +848,22 @@ export class ShipmentsService {
         await Promise.allSettled(batchPromises);
       }
 
+      // ✅ Crear el ingreso relacionado al charge solo si hubo migraciones exitosas
+      if (migrated.length > 0 && chargeSubsidiary) {
+        const newIncome = this.incomeRepository.create({
+          subsidiary: chargeSubsidiary,
+          shipmentType: ShipmentType.FEDEX,
+          incomeType: IncomeStatus.ENTREGADO,
+          cost: chargeSubsidiary.chargeCost,
+          isGrouped: true,
+          sourceType: IncomeSourceType.CHARGE,
+          charge: { id: savedCharge.id },
+          date: consDate ? consDate : new Date(),
+        });
+
+        await this.incomeRepository.save(newIncome);
+      }
+
       this.logger.log(`🎉 Process completed. Migrated: ${migrated.length}, Not found: ${notFoundTrackings.length}, Errors: ${errors.length}`);
 
       return {
@@ -1547,7 +1563,7 @@ export class ShipmentsService {
         noIncomeExceptionCodes: ['08', '03'],
         notFoundExceptionCodes: ['08'],
         minEvents08: 0,
-        allowException03: false,
+        allowException03: true,
         allowException16: false,
         allowExceptionOD: false,
         allowIncomeFor07: true,
@@ -2372,6 +2388,7 @@ export class ShipmentsService {
       // Set commitDateTime from FedEx if Excel date is invalid
       if (!commitDateTime) {
         const rawDate = trackResult?.standardTransitTimeWindow?.window?.ends;
+        console.log("🚀 ~ ShipmentsService ~ processShipment ~ rawDate:", rawDate)
         if (rawDate) {
           try {
             const parsedFedexDate = parse(rawDate, "yyyy-MM-dd'T'HH:mm:ssXXX", new Date());
@@ -3360,6 +3377,7 @@ export class ShipmentsService {
                   rules.allowedEventTypes.includes(e.eventType) || 
                   (e.exceptionCode === '03' && rules.allowException03)
                 );
+                console.log("🚀 ~ ShipmentsService ~ checkStatusOnFedexBySubsidiaryRulesTestingResp ~ allowedEvents:", allowedEvents)
                 if (!allowedEvents.length) {
                   const reason = `No se encontraron eventos validos para ${trackingNumber} (shipmentId=${shipment.id}) segun reglas de sucursal ${subsidiaryId}`;
                   this.logger.error(reason);
@@ -3406,13 +3424,14 @@ export class ShipmentsService {
                 const event = allowedEvents.find(
                   (e) =>
                     (mappedStatus === ShipmentStatusType.ENTREGADO && (e.eventType === 'DL' || e.derivedStatusCode === 'DL')) ||
-                    (mappedStatus === ShipmentStatusType.NO_ENTREGADO && ['DE', 'DU', 'RF', 'TD'].includes(e.eventType)) ||
-                    (mappedStatus === ShipmentStatusType.PENDIENTE && ['TA', 'HL'].includes(e.eventType)) ||
+                    (mappedStatus === ShipmentStatusType.NO_ENTREGADO && ['DE', 'DU', 'RF', 'TD', 'TA'].includes(e.eventType)) ||
+                    (mappedStatus === ShipmentStatusType.PENDIENTE && ['HL'].includes(e.eventType)) ||
                     (mappedStatus === ShipmentStatusType.EN_RUTA && ['OC', 'IT', 'AR', 'AF', 'CP', 'CC'].includes(e.eventType)) ||
                     (mappedStatus === ShipmentStatusType.RECOLECCION && ['PU'].includes(e.eventType)) ||
                     (e.exceptionCode === '03' && rules.allowException03)
                 );
                 if (!event) {
+                  this.logger.log("Entro aquí!!!!");
                   const reason = `No se encontro evento valido para el estatus ${latestStatusDetail?.derivedCode || latestEvent.derivedStatusCode} en ${trackingNumber} (shipmentId=${shipment.id}, subsidiaryId=${subsidiaryId})`;
                   this.logger.warn(reason);
                   shipmentsWithError.push({ trackingNumber, reason, shipmentId: shipment.id });
@@ -3719,6 +3738,8 @@ export class ShipmentsService {
                 return dateB - dateA;
               })[0];
 
+              console.log("🚀 ~ ShipmentsService ~ checkStatusOnFedexBySubsidiaryRulesTesting ~ latestEvent:", latestEvent)
+
               if (!latestEvent) {
                 const reason = `No se encontraron eventos validos para ${trackingNumber}`;
                 this.logger.error(reason);
@@ -3748,7 +3769,9 @@ export class ShipmentsService {
                 result.scanEvents.some((e) => e.date === latestEvent.date && e.eventType === latestEvent.eventType)
               ) || trackResults[0];
               const latestStatusDetail = latestTrackResult.latestStatusDetail;
+              console.log("🚀 ~ ShipmentsService ~ checkStatusOnFedexBySubsidiaryRulesTesting ~ latestStatusDetail:", latestStatusDetail)
               const exceptionCode = latestEvent.exceptionCode || latestStatusDetail?.ancillaryDetails?.[0]?.reason;
+              console.log("Exception: ", exceptionCode);
 
               // Priorizar ENTREGADO para eventos de entrega
               let mappedStatus: ShipmentStatusType;
@@ -3890,6 +3913,7 @@ export class ShipmentsService {
 
                 // Validar exceptionCode
                 if (exceptionCode && !rules.allowedExceptionCodes.includes(exceptionCode) && mappedStatus !== ShipmentStatusType.ENTREGADO) {
+                  console.log("Tiene que validar el 03")
                   if (exceptionCode === '03' && rules.allowException03) {
                     this.logger.log(`Permitiendo exceptionCode 03 para ${trackingNumber} debido a allowException03=true`);
                   } else {
@@ -3926,8 +3950,8 @@ export class ShipmentsService {
                 const event = allowedEvents.find(
                   (e) =>
                     (mappedStatus === ShipmentStatusType.ENTREGADO && (e.eventType === 'DL' || e.derivedStatusCode === 'DL')) ||
-                    (mappedStatus === ShipmentStatusType.NO_ENTREGADO && ['DE', 'DU', 'RF', 'TD'].includes(e.eventType)) ||
-                    (mappedStatus === ShipmentStatusType.PENDIENTE && ['TA', 'HL'].includes(e.eventType)) ||
+                    (mappedStatus === ShipmentStatusType.NO_ENTREGADO && ['DE', 'DU', 'RF', 'TD', 'TA'].includes(e.eventType)) ||
+                    (mappedStatus === ShipmentStatusType.PENDIENTE && ['HL'].includes(e.eventType)) ||
                     (mappedStatus === ShipmentStatusType.EN_RUTA && ['OC', 'IT', 'AR', 'AF', 'CP', 'CC'].includes(e.eventType)) ||
                     (mappedStatus === ShipmentStatusType.RECOLECCION && ['PU'].includes(e.eventType)) ||
                     (e.exceptionCode === '03' && rules.allowException03) ||
@@ -4156,6 +4180,7 @@ export class ShipmentsService {
             // 3. Mapear estados y códigos
             const mappedStatus = mapFedexStatusToLocalStatus(latestStatusDetail.derivedCode, latestStatusDetail.ancillaryDetails?.[0]?.reason);
             const exceptionCode = latestStatusDetail.ancillaryDetails?.[0]?.reason || latestTrackResult.scanEvents[0]?.exceptionCode || '';
+              console.log("🚀 ~ ShipmentsService ~ checkStatusOnFedexBySubsidiaryRulesTesting ~ exceptionCode:", exceptionCode)
             this.logger.debug(`🔄 Estado mapeado: ${mappedStatus}, Código de excepción: ${exceptionCode || 'N/A'}`);
 
             // 4. Buscar y actualizar el charge shipment
