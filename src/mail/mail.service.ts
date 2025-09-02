@@ -265,9 +265,9 @@ export class MailService {
 
     try {
       await this.mailerService.sendMail({
-        //to: 'paqueteriaymensajeriadelyaqui@hotmail.com',
-        //cc: 'sistemas@paqueteriaymensajeriadelyaqui.com',
-        to: 'javier.rappaz@gmail.com',
+        to: 'paqueteriaymensajeriadelyaqui@hotmail.com',
+        cc: 'sistemas@paqueteriaymensajeriadelyaqui.com',
+        //to: 'javier.rappaz@gmail.com',
         subject: `🚚 Devoluciones/Recolecciones ${formattedDate} de ${subsidiaryName}`,
         html: htmlContent,
         headers: {
@@ -431,9 +431,9 @@ export class MailService {
 
     try {
       const emailSent = await this.mailerService.sendMail({
-        //to: 'paqueteriaymensajeriadelyaqui@hotmail.com',
-        //cc: 'sistemas@paqueteriaymensajeriadelyaqui.com',
-        to: 'javier.rappaz@gmail.com',
+        to: 'paqueteriaymensajeriadelyaqui@hotmail.com',
+        cc: 'sistemas@paqueteriaymensajeriadelyaqui.com',
+        //to: 'javier.rappaz@gmail.com',
         subject: `🚚 Cierre de Ruta ${formattedDate} de ${routeClosure.subsidiary.name}`,
         html: htmlContent,
         headers: {
@@ -443,7 +443,7 @@ export class MailService {
         },
         attachments: attachments
       })
-      
+
       console.log("🚀 ~ MailService ~ sendHighPriorityRouteClosureEmail ~ emailSent:", emailSent)
 
     } catch (error) {
