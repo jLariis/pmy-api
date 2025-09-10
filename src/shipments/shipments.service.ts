@@ -16,7 +16,7 @@ import { Consolidated, Income, Payment, Subsidiary } from 'src/entities';
 import { PaymentStatus } from 'src/common/enums/payment-status.enum';
 import { DHLService } from './dto/dhl.service';
 import { DhlShipmentDto } from './dto/dhl/dhl-shipment.dto';
-import { FedExScanEventDto, FedExStatusDetailDto, FedExTrackingResponseDto } from './dto/fedex/fedex-tracking-response.dto';
+import { FedExScanEventDto, FedExTrackingResponseDto } from './dto/fedex/fedex-tracking-response.dto';
 import { SubsidiariesService } from 'src/subsidiaries/subsidiaries.service';
 import { Priority } from 'src/common/enums/priority.enum';
 import { IncomeStatus } from 'src/common/enums/income-status.enum';
@@ -34,8 +34,6 @@ import { ConsolidatedType } from 'src/common/enums/consolidated-type.enum';
 import { toZonedTime } from 'date-fns-tz';
 import { MailService } from 'src/mail/mail.service';
 import { SubsidiaryRules } from './dto/subsidiary-rules';
-import { ShipmentCheckResult, ShipmentStatusChange } from './dto/check-status-fedex-test';
-import { LatestStatusDetailDto } from './dto/fedex/latest-status-detail.dto';
 import { ForPickUp } from 'src/entities/for-pick-up.entity';
 import { ForPickUpDto } from './dto/for-pick-up.dto';
 import { IncomeValidationResult } from './dto/income-validation.dto';
@@ -2074,6 +2072,7 @@ export class ShipmentsService {
     const shipmentsToSave = workbook.SheetNames.flatMap((sheetName) =>
       parseDynamicSheet(workbook.Sheets[sheetName], { fileName: file.originalname, sheetName })
     );
+    //console.log("🚀 ~ ShipmentsService ~ addConsMasterBySubsidiary ~ shipmentsToSave:", shipmentsToSave)
     
     this.logger.log(`📄 Total de envíos procesados desde archivo: ${shipmentsToSave.length}`);
 

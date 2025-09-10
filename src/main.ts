@@ -44,7 +44,7 @@ async function bootstrap() {
     }),
   });
 
-  const port = process.env.PORT || 8080;
+  const port = process.env.PORT || 3001;
   
   app.setGlobalPrefix('api', {
     exclude: ['/']
@@ -63,7 +63,39 @@ async function bootstrap() {
   // Use custom errors & logger
   app.useGlobalFilters(new CustomExceptionFilter());
   app.useGlobalPipes(new ValidationPipe());
+
   app.enableCors();
+
+  /*const allowedOrigins = [
+    'http://localhost:3000',          // Desarrollo,
+    'http://localhost:4000',          // Desarrollo
+    'https://funky-directly-serval.ngrok-free.app', // Ngrok
+    'app://./',                       // Electron (protocolo especial)
+    'file://',                        // Electron (archivos locales)
+    'capacitor://localhost',          // Otras apps nativas
+    'http://localhost',               // Electron en producción
+  ];
+
+  app.enableCors({
+    origin: function (origin, callback) {
+      // Permitir requests sin origin (Electron, apps nativas, etc.)
+      if (!origin) return callback(null, true);
+      
+      if (allowedOrigins.includes(origin) || 
+          origin.startsWith('file://') ||
+          origin.startsWith('app://') ||
+          origin.includes('localhost')) {
+        return callback(null, true);
+      }
+      
+      callback(new Error('Not allowed by CORS'));
+    },
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS', 'HEAD'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'X-Requested-With'],
+    credentials: true,
+    preflightContinue: false,
+    optionsSuccessStatus: 204
+  });*/
 
   await app.listen(port);
 }

@@ -116,9 +116,9 @@ export class MailService {
 
     try {
       await this.mailerService.sendMail({
-        to: 'paqueteriaymensajeriadelyaqui@hotmail.com',
-        cc: 'sistemas@paqueteriaymensajeriadelyaqui.com',
-        //to: 'javier.rappaz@gmail.com',
+        //to: 'paqueteriaymensajeriadelyaqui@hotmail.com',
+        //cc: 'sistemas@paqueteriaymensajeriadelyaqui.com',
+        to: 'javier.rappaz@gmail.com',
         //subject: `🚚 Salida a Ruta ${formattedDate} de ${subsidiaryName}`,
         subject: `🚚 SALIDA ${packageDispatch.drivers[0].name.toLocaleUpperCase()} ${formattedDate}`,
         html: htmlContent,
@@ -194,9 +194,9 @@ export class MailService {
 
     try {
       await this.mailerService.sendMail({
-        to: 'paqueteriaymensajeriadelyaqui@hotmail.com',
-        cc: 'sistemas@paqueteriaymensajeriadelyaqui.com',
-        //to: 'javier.rappaz@gmail.com',
+        //to: 'paqueteriaymensajeriadelyaqui@hotmail.com',
+        //cc: 'sistemas@paqueteriaymensajeriadelyaqui.com',
+        to: 'javier.rappaz@gmail.com',
         subject: `🚚 Desembarque ${formattedDate} de ${subsidiaryName}`,
         html: htmlContent,
         headers: {
@@ -265,9 +265,9 @@ export class MailService {
 
     try {
       await this.mailerService.sendMail({
-        to: 'paqueteriaymensajeriadelyaqui@hotmail.com',
-        cc: 'sistemas@paqueteriaymensajeriadelyaqui.com',
-        //to: 'javier.rappaz@gmail.com',
+        //to: 'paqueteriaymensajeriadelyaqui@hotmail.com',
+        //cc: 'sistemas@paqueteriaymensajeriadelyaqui.com',
+        to: 'javier.rappaz@gmail.com',
         subject: `🚚 Devoluciones/Recolecciones ${formattedDate} de ${subsidiaryName}`,
         html: htmlContent,
         headers: {
@@ -361,9 +361,9 @@ export class MailService {
 
     try {
       return await this.mailerService.sendMail({
-        //to: 'javier.rappaz@gmail.com',
-        to: 'paqueteriaymensajeriadelyaqui@hotmail.com',
-        cc: 'edgardolugo@paqueteriaymensajeriadelyaqui.com, gerardorobles@paqueteriaymensajeriadelyaqui.com, sistemas@paqueteriaymensajeriadelyaqui.com',
+        to: 'javier.rappaz@gmail.com',
+        //to: 'paqueteriaymensajeriadelyaqui@hotmail.com',
+        //cc: 'edgardolugo@paqueteriaymensajeriadelyaqui.com, gerardorobles@paqueteriaymensajeriadelyaqui.com, sistemas@paqueteriaymensajeriadelyaqui.com',
         subject: `🚨🚥 Paquetes con status DEX03 de ${subsidiaryName}`,
         html: htmlContent,
         headers: {
@@ -431,9 +431,9 @@ export class MailService {
 
     try {
       const emailSent = await this.mailerService.sendMail({
-        to: 'paqueteriaymensajeriadelyaqui@hotmail.com',
-        cc: 'sistemas@paqueteriaymensajeriadelyaqui.com',
-        //to: 'javier.rappaz@gmail.com',
+        //to: 'paqueteriaymensajeriadelyaqui@hotmail.com',
+        //cc: 'sistemas@paqueteriaymensajeriadelyaqui.com',
+        to: 'javier.rappaz@gmail.com',
         subject: `🚚 Cierre de Ruta ${formattedDate} de ${routeClosure.subsidiary.name}`,
         html: htmlContent,
         headers: {

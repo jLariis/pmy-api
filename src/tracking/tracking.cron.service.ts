@@ -16,7 +16,7 @@ export class TrackingCronService {
     await this.shipmentService.checkStatusOnFedex();
   }*/
 
-  @Cron(CronExpression.EVERY_HOUR)
+  //@Cron(CronExpression.EVERY_HOUR)
   async handleCron() {
     this.logger.log('🕐 Ejecutando verificación de envíos...');
 
@@ -61,22 +61,22 @@ export class TrackingCronService {
     }
   }
 
-  @Cron(CronExpression.EVERY_DAY_AT_1AM, { timeZone: 'America/Hermosillo' })
-  async handleUpdatePriotiry(){
+  @Cron('0 0 1 * * 1-6', { timeZone: 'America/Hermosillo' })
+  async handleUpdatePriotiry() {
     this.logger.log('🕐 Ejecutando actualización de prioridades...');
     await this.shipmentService.updatePriorities();
   }
 
-  @Cron(CronExpression.EVERY_DAY_AT_8AM, { timeZone: 'America/Hermosillo' })
-  async handleSendPriorityShipments(){
-    this.logger.log('🕐 Ejecutando el envio de correo con envíos que deben ser proritarios...');
+  @Cron('0 0 8 * * 1-6', { timeZone: 'America/Hermosillo' })
+  async handleSendPriorityShipments() {
+    this.logger.log('🕐 Ejecutando el envío de correo con envíos que deben ser prioritarios...');
     await this.shipmentService.sendEmailWithHighPriorities();
   }
 
   
-  @Cron('0 0 8-22/2 * * *', { 
-    timeZone: 'America/Hermosillo' 
-  })
+  /*@Cron('0 0 8-22/2 * * 1-6', {
+    timeZone: 'America/Hermosillo'
+  })*/
   async handleSendShipmentWithStatus03(){
     /** Por ahora solo cabos */
     this.logger.log('🕐 Ejecutando el envio de correo con Enviós DEX03...');
