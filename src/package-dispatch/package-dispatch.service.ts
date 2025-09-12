@@ -202,15 +202,26 @@ export class PackageDispatchService {
   }
 
   async findAllBySubsidiary(subsidiaryId: string) {
-    const response = await this.packageDispatchRepository.find({
+   /* const response = await this.packageDispatchRepository.find({
       where: { subsidiary: { id: subsidiaryId } },
-      relations: ['shipments', 'routes', 'drivers', 'vehicle', 'subsidiary'],
+      relations: ['shipments', 'chargeShipments', 'routes', 'drivers', 'vehicle', 'subsidiary'],
       order: {
         createdAt: 'DESC'
       }
-    });
+    });*/
 
-    return response
+    const qb = this.packageDispatchRepository
+    .createQueryBuilder('pd')
+    .leftJoinAndSelect('pd.subsidiary', 'subsidiary')
+    .leftJoinAndSelect('pd.routes', 'routes')
+    .leftJoinAndSelect('pd.drivers', 'drivers')
+    .leftJoinAndSelect('pd.vehicle', 'vehicle')
+    .leftJoinAndSelect('pd.shipments', 'shipments')
+    .leftJoinAndSelect('pd.chargeShipments', 'chargeShipments')
+    .where('subsidiary.id = :subsidiaryId', { subsidiaryId })
+    .orderBy('pd.createdAt', 'DESC');
+
+    return qb.getMany();
   }
 
   findOne(id: string) {
