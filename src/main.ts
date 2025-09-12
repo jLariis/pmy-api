@@ -66,7 +66,7 @@ async function bootstrap() {
 
   app.enableCors();
 
-  /*const allowedOrigins = [
+  const allowedOrigins = [
     'http://localhost:3000',          // Desarrollo,
     'http://localhost:4000',          // Desarrollo
     'https://funky-directly-serval.ngrok-free.app', // Ngrok
@@ -95,7 +95,7 @@ async function bootstrap() {
     credentials: true,
     preflightContinue: false,
     optionsSuccessStatus: 204
-  });*/
+  });
 
   await app.listen(port);
 }
