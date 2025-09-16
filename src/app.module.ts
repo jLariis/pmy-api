@@ -24,6 +24,7 @@ import { VehiclesModule } from './vehicles/vehicles.module';
 import { PackageDispatchModule } from './package-dispatch/package-dispatch.module';
 import { UnloadingModule } from './unloading/unloading.module';
 import { RouteclosureModule } from './routeclosure/routeclosure.module';
+import { InventoriesModule } from './inventories/inventories.module';
 
 @Module({
   imports: [
@@ -69,7 +70,8 @@ import { RouteclosureModule } from './routeclosure/routeclosure.module';
     VehiclesModule,
     PackageDispatchModule,
     UnloadingModule,
-    RouteclosureModule
+    RouteclosureModule,
+    InventoriesModule
   ],
   controllers: [AppController],
   providers: [

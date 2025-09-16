@@ -1,5 +1,6 @@
 import { BeforeInsert, Column, Entity, Index, JoinColumn, ManyToOne, PrimaryGeneratedColumn } from 'typeorm';
 import { Subsidiary } from './subsidiary.entity';
+import { ReturningHistory } from './returning-history.entity';
 
 @Entity('collection')
 export class Collection {
@@ -22,6 +23,13 @@ export class Collection {
 
   @Column({ type: 'datetime', default: () => 'CURRENT_TIMESTAMP' })
   createdAt: Date;
+
+  @ManyToOne(() => ReturningHistory, returningHistory => returningHistory.devolutions, {
+          nullable: true,
+          onDelete: 'SET NULL',
+      })
+      @JoinColumn({ name: 'returningHistoryId' })
+      returningHistory?: ReturningHistory;
 
   @BeforeInsert()
   setDefaults() {

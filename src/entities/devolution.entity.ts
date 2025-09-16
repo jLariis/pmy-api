@@ -1,6 +1,7 @@
 import { ShipmentCanceledStatus } from "src/common/enums/shipment-status-type.enum";
 import { Column, Entity, JoinColumn, ManyToOne, PrimaryGeneratedColumn } from "typeorm";
 import { Subsidiary } from "./subsidiary.entity";
+import { ReturningHistory } from "./returning-history.entity";
 
 @Entity('devolution')
 export class Devolution {
@@ -19,6 +20,13 @@ export class Devolution {
 
     @Column({ type: 'datetime' })
     date: Date;
+
+    @ManyToOne(() => ReturningHistory, returningHistory => returningHistory.devolutions, {
+        nullable: true,
+        onDelete: 'SET NULL',
+    })
+    @JoinColumn({ name: 'returningHistoryId' })
+    returningHistory?: ReturningHistory;
     
     @Column({ type: 'datetime', default: () => 'CURRENT_TIMESTAMP' })
     createdAt: Date;
