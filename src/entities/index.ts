@@ -12,3 +12,5 @@ export * from './collection.entity';
 export * from './charge.entity';
 export * from  './charge-shipment.entity';
 export * from  './consolidated.entity';
+export * from './collection.entity';
+export * from './devolution.entity';

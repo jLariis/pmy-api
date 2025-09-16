@@ -6,7 +6,6 @@ export class Charge{
     @PrimaryGeneratedColumn('uuid')
     id: string;
 
-    @Column()
     @Column({ type: 'datetime' })
     chargeDate: Date;
     

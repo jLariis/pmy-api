@@ -7,6 +7,7 @@ import { Unloading } from 'src/entities/unloading.entity';
 import { ShipmentStatusForReportDto } from './dtos/shipment.dto';
 import { formatToHermosillo } from 'src/common/utils';
 import { RouteClosure } from 'src/entities/route-closure.entity';
+import { Inventory } from 'src/entities/inventory.entity';
 
 @Injectable()
 export class MailService {
@@ -116,9 +117,9 @@ export class MailService {
 
     try {
       await this.mailerService.sendMail({
-        //to: 'paqueteriaymensajeriadelyaqui@hotmail.com',
-        //cc: 'sistemas@paqueteriaymensajeriadelyaqui.com',
-        to: 'javier.rappaz@gmail.com',
+        to: 'paqueteriaymensajeriadelyaqui@hotmail.com',
+        cc: 'sistemas@paqueteriaymensajeriadelyaqui.com',
+        //to: 'javier.rappaz@gmail.com',
         //subject: `🚚 Salida a Ruta ${formattedDate} de ${subsidiaryName}`,
         subject: `🚚 SALIDA ${packageDispatch.drivers[0].name.toLocaleUpperCase()} ${formattedDate}`,
         html: htmlContent,
@@ -194,9 +195,9 @@ export class MailService {
 
     try {
       await this.mailerService.sendMail({
-        //to: 'paqueteriaymensajeriadelyaqui@hotmail.com',
-        //cc: 'sistemas@paqueteriaymensajeriadelyaqui.com',
-        to: 'javier.rappaz@gmail.com',
+        to: 'paqueteriaymensajeriadelyaqui@hotmail.com',
+        cc: 'sistemas@paqueteriaymensajeriadelyaqui.com',
+        //to: 'javier.rappaz@gmail.com',
         subject: `🚚 Desembarque ${formattedDate} de ${subsidiaryName}`,
         html: htmlContent,
         headers: {
@@ -265,9 +266,9 @@ export class MailService {
 
     try {
       await this.mailerService.sendMail({
-        //to: 'paqueteriaymensajeriadelyaqui@hotmail.com',
-        //cc: 'sistemas@paqueteriaymensajeriadelyaqui.com',
-        to: 'javier.rappaz@gmail.com',
+        to: 'paqueteriaymensajeriadelyaqui@hotmail.com',
+        cc: 'sistemas@paqueteriaymensajeriadelyaqui.com',
+        //to: 'javier.rappaz@gmail.com',
         subject: `🚚 Devoluciones/Recolecciones ${formattedDate} de ${subsidiaryName}`,
         html: htmlContent,
         headers: {
@@ -361,9 +362,9 @@ export class MailService {
 
     try {
       return await this.mailerService.sendMail({
-        to: 'javier.rappaz@gmail.com',
-        //to: 'paqueteriaymensajeriadelyaqui@hotmail.com',
-        //cc: 'edgardolugo@paqueteriaymensajeriadelyaqui.com, gerardorobles@paqueteriaymensajeriadelyaqui.com, sistemas@paqueteriaymensajeriadelyaqui.com',
+        //to: 'javier.rappaz@gmail.com',
+        to: 'paqueteriaymensajeriadelyaqui@hotmail.com',
+        cc: 'edgardolugo@paqueteriaymensajeriadelyaqui.com, gerardorobles@paqueteriaymensajeriadelyaqui.com, sistemas@paqueteriaymensajeriadelyaqui.com',
         subject: `🚨🚥 Paquetes con status DEX03 de ${subsidiaryName}`,
         html: htmlContent,
         headers: {
@@ -431,9 +432,9 @@ export class MailService {
 
     try {
       const emailSent = await this.mailerService.sendMail({
-        //to: 'paqueteriaymensajeriadelyaqui@hotmail.com',
-        //cc: 'sistemas@paqueteriaymensajeriadelyaqui.com',
-        to: 'javier.rappaz@gmail.com',
+        to: 'paqueteriaymensajeriadelyaqui@hotmail.com',
+        cc: 'sistemas@paqueteriaymensajeriadelyaqui.com',
+        //to: 'javier.rappaz@gmail.com',
         subject: `🚚 Cierre de Ruta ${formattedDate} de ${routeClosure.subsidiary.name}`,
         html: htmlContent,
         headers: {
@@ -452,5 +453,79 @@ export class MailService {
     }
 
 
+  }
+
+  /** Enviar correo de  Invetario */
+  async sendHighPriorityInventoryEmail(
+    file: Express.Multer.File,
+    excelFile: Express.Multer.File, 
+    subsidiaryName: string,
+    inventory: Inventory
+  ) {
+    const timeZone = 'America/Hermosillo'; 
+
+    const attachments = [
+      {
+        filename: file.originalname,
+        content: file.buffer
+      },
+      {
+        filename: excelFile.originalname,
+        content: excelFile.buffer
+      }
+    ]
+
+    const now = new Date();
+    const zonedDate = toZonedTime(now, timeZone);
+    const formattedDate = format(zonedDate, "dd-MM-yyyy");
+
+    const htmlContent = `
+      <div style="font-family: Arial, sans-serif; color: #2c3e50; max-width: 800px; margin: auto;">
+        <h2 style="border-bottom: 3px solid #3498db; padding-bottom: 8px;">
+          📦 Reporte de Inventario
+          
+        </h2>
+
+        <p>
+          Se ha generado un nuevo reporte de <strong>Inventario</strong> para la sucursal <strong>${subsidiaryName}</strong>.
+        </p>
+
+        <p><strong>Fecha y hora:</strong> ${format(toZonedTime(inventory.inventoryDate, timeZone), 'dd/MM/yyyy hh:mm aa')}</p>
+      
+        <p style="margin-top: 20px;">
+          Puede consultar más detalles utilizando el Número de seguimiento <strong>${inventory.trackingNumber}</strong> en: 
+          <a href="https://app-pmy.vercel.app/" target="_blank" style="color: #2980b9; text-decoration: none;">
+            https://app-pmy.vercel.app/
+          </a>
+        </p>
+
+        <hr style="margin: 30px 0; border: none; border-top: 1px solid #eee;" />
+
+        <p style="font-size: 0.9em; color: #7f8c8d;">
+          Este correo fue enviado automáticamente por el sistema.<br />
+          Por favor, no responda a este mensaje.
+        </p>
+      </div>
+    `;
+
+    try {
+      await this.mailerService.sendMail({
+        to: 'paqueteriaymensajeriadelyaqui@hotmail.com',
+        cc: 'sistemas@paqueteriaymensajeriadelyaqui.com',
+        //to: 'javier.rappaz@gmail.com',
+        subject: `📦 Inventario ${formattedDate} de ${subsidiaryName}`,
+        html: htmlContent,
+        headers: {
+          'X-Priority': '1',
+          'X-MSMail-Priority': 'High',
+          Importance: 'High',
+        },
+        attachments: attachments
+      })
+
+    } catch (error) {
+      console.log(error);
+      throw error;
+    }
   }
 }
