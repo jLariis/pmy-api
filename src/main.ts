@@ -64,12 +64,11 @@ async function bootstrap() {
   app.useGlobalFilters(new CustomExceptionFilter());
   app.useGlobalPipes(new ValidationPipe());
 
-  app.enableCors();
-
   const allowedOrigins = [
+    'https://app-pmy.vercel.app',
     'http://localhost:3000',          // Desarrollo,
     'http://localhost:4000',          // Desarrollo
-    'https://funky-directly-serval.ngrok-free.app', // Ngrok
+    'https://miracle-position-cook-casino.trycloudflare.com/', // Ngrok
     'app://./',                       // Electron (protocolo especial)
     'file://',                        // Electron (archivos locales)
     'capacitor://localhost',          // Otras apps nativas
@@ -91,7 +90,8 @@ async function bootstrap() {
       callback(new Error('Not allowed by CORS'));
     },
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS', 'HEAD'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'X-Requested-With'],
+    allowedHeaders: '*',
+    //allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'X-Requested-With'],
     credentials: true,
     preflightContinue: false,
     optionsSuccessStatus: 204
