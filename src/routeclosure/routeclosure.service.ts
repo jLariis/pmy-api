@@ -70,7 +70,13 @@ export class RouteclosureService {
 
     const packageDispatch = await this.packageDispatchRepository.findOne({
       where: { id: validateTrackingForClosure.packageDispatchId },
-      relations: ['shipments', 'shipments.statusHistory'],
+      relations: [
+        'shipments', 
+        'shipments.statusHistory', 
+        'shipments.payment',
+        'chargeShipments', 
+        'chargeShipments.statusHistory'
+      ],
     });
 
     // Primero validamos los trackings enviados
