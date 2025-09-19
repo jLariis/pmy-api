@@ -468,6 +468,9 @@ export class UnloadingService {
     const response = await this.unloadingRepository.find({
       where: { subsidiary: { id: subsidiaryId } },
       relations: ['shipments', 'chargeShipments','vehicle', 'subsidiary'],
+      order: {
+        createdAt: 'DESC'
+      }
     });
 
     return response
