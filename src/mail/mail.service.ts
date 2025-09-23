@@ -169,7 +169,7 @@ export class MailService {
         </h2>
 
         <p>
-          Se ha generado un nuevo reporte de <strong>Desembarque</strong> para la sucursal <strong>${subsidiaryName}</strong> saliendo en la unidad <strong>${unloading.vehicle.name}</strong>.
+          Se ha generado un nuevo reporte de <strong>Desembarque</strong> para la sucursal <strong>${subsidiaryName}</strong> descargado de la unidad <strong>${unloading.vehicle.name}</strong>.
         </p>
 
 
@@ -210,6 +210,28 @@ export class MailService {
 
     } catch (error) {
       console.log(error);
+      throw error;
+    }
+  }
+
+  /** Enviar correo de prioridades dentro de Descarga */
+  async sendHighPriorityUnloadingPriorityPackages(options: { to: string | string[], cc?: string | string[], htmlContent: string }) {
+    const { to, cc, htmlContent } = options;
+    
+    try {
+      await this.mailerService.sendMail({
+        to,
+        cc,
+        subject: '🔴 Envíos con Prioridad Alta en Desembarque',
+        html: htmlContent,
+        headers: {
+          'X-Priority': '1',
+          'X-MSMail-Priority': 'High',
+          Importance: 'High',
+        },
+      });
+    } catch (error) {
+      console.error('Error al enviar correo:', error);
       throw error;
     }
   }

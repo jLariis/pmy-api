@@ -2,10 +2,11 @@ import { Injectable } from '@nestjs/common';
 import { CreateInventoryDto } from './dto/create-inventory.dto';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Inventory } from 'src/entities/inventory.entity';
-import { In, Repository } from 'typeorm';
+import { In, Not, Repository } from 'typeorm';
 import { ChargeShipment, Consolidated, Shipment, Subsidiary } from 'src/entities';
 import { ValidatedPackageDispatchDto } from 'src/package-dispatch/dto/validated-package-dispatch.dto';
 import { MailService } from 'src/mail/mail.service';
+import { ShipmentStatusType } from 'src/common/enums/shipment-status-type.enum';
 
 @Injectable()
 export class InventoriesService {
@@ -15,7 +16,7 @@ export class InventoriesService {
     @InjectRepository(Shipment)
     private readonly shipmentRepository: Repository<Shipment>,
     @InjectRepository(ChargeShipment)
-    private readonly chargeShipmentRepository: Repository<Inventory>,
+    private readonly chargeShipmentRepository: Repository<ChargeShipment>,
     @InjectRepository(Consolidated)
     private readonly consolidatedRepository: Repository<Consolidated>,
     @InjectRepository(Subsidiary)
@@ -102,7 +103,10 @@ export class InventoriesService {
     subsidiaryId?: string
   ): Promise<ValidatedPackageDispatchDto & { isCharge?: boolean; consolidated?: Consolidated }> {
     const shipment = await this.shipmentRepository.findOne({
-      where: { trackingNumber },
+      where: { 
+        trackingNumber,
+        status: Not(ShipmentStatusType.DEVUELTO_A_FEDEX) 
+      },
       relations: ['subsidiary', 'statusHistory', 'payment'],
       order: { createdAt: 'DESC' }
     });
@@ -110,8 +114,12 @@ export class InventoriesService {
 
     if (!shipment) {
       const chargeShipment = await this.chargeShipmentRepository.findOne({
-        where: { trackingNumber },
+        where: { 
+          trackingNumber,
+          status: Not(ShipmentStatusType.DEVUELTO_A_FEDEX) 
+        },
         relations: ['subsidiary', 'charge'],
+        order: { createdAt: 'DESC' }
       });
 
       if (!chargeShipment) {
@@ -165,13 +173,13 @@ export class InventoriesService {
     }> {
       // 1️⃣ Traer shipments y chargeShipments en batch
       const shipments = await this.shipmentRepository.find({
-        where: { trackingNumber: In(trackingNumbers) },
+        where: { trackingNumber: In(trackingNumbers),  status: Not(ShipmentStatusType.DEVUELTO_A_FEDEX) },
         relations: ['subsidiary', 'statusHistory', 'payment', 'packageDispatch'],
         order: { createdAt: 'DESC' },
       });
   
       const chargeShipments = await this.chargeShipmentRepository.find({
-        where: { trackingNumber: In(trackingNumbers) },
+        where: { trackingNumber: In(trackingNumbers),  status: Not(ShipmentStatusType.DEVUELTO_A_FEDEX) },
         relations: ['subsidiary', 'charge', 'packageDispatch'],
       });
   

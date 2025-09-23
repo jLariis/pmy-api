@@ -1,18 +1,20 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { CreateUnloadingDto } from './dto/create-unloading.dto';
 import { UpdateUnloadingDto } from './dto/update-unloading.dto';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Unloading } from 'src/entities/unloading.entity';
-import { Between, In, Repository } from 'typeorm';
+import { Between, In, Not, Repository } from 'typeorm';
 import { Charge, ChargeShipment, Consolidated, Shipment } from 'src/entities';
 import { ValidatedPackageDispatchDto } from 'src/package-dispatch/dto/validated-package-dispatch.dto';
 import { ValidatedUnloadingDto } from './dto/validate-package-unloading.dto';
 import { MailService } from 'src/mail/mail.service';
 import { ConsolidatedType } from 'src/common/enums/consolidated-type.enum';
 import { ConsolidatedItemDto, ConsolidatedsDto } from './dto/consolidated.dto';
+import { ShipmentStatusType } from 'src/common/enums/shipment-status-type.enum';
 
 @Injectable()
 export class UnloadingService {
+  private readonly logger = new Logger(UnloadingService.name);
 
   constructor(
     @InjectRepository(Unloading)
@@ -220,14 +222,15 @@ export class UnloadingService {
   }> {
     // 1️⃣ Traer shipments y chargeShipments en batch
     const shipments = await this.shipmentRepository.find({
-      where: { trackingNumber: In(trackingNumbers) },
+      where: { trackingNumber: In(trackingNumbers), status: Not(ShipmentStatusType.DEVUELTO_A_FEDEX) },
       relations: ['subsidiary', 'statusHistory', 'payment', 'packageDispatch'],
       order: { createdAt: 'DESC' },
     });
 
     const chargeShipments = await this.chargeShipmentRepository.find({
-      where: { trackingNumber: In(trackingNumbers) },
+      where: { trackingNumber: In(trackingNumbers), },
       relations: ['subsidiary', 'charge', 'packageDispatch'],
+      order: { createdAt: 'DESC' },
     });
 
     // Mapas para acceso rápido por trackingNumber
@@ -348,14 +351,21 @@ export class UnloadingService {
   }> {
     // 1️⃣ Traer shipment o chargeShipment para el trackingNumber específico
     const shipment = await this.shipmentRepository.findOne({
-      where: { trackingNumber },
+      where: { 
+        trackingNumber,
+        status: Not(ShipmentStatusType.DEVUELTO_A_FEDEX) 
+      },
       relations: ['subsidiary', 'statusHistory', 'payment', 'packageDispatch'],
       order: { createdAt: 'DESC' },
     });
 
     const chargeShipment = await this.chargeShipmentRepository.findOne({
-      where: { trackingNumber },
+      where: { 
+        trackingNumber,
+        status: Not(ShipmentStatusType.DEVUELTO_A_FEDEX)
+      },
       relations: ['subsidiary', 'charge', 'packageDispatch'],
+      order: { createdAt: 'DESC' },
     });
 
     const validatedShipments: (ValidatedUnloadingDto & { isCharge?: boolean })[] = [];
@@ -488,14 +498,154 @@ export class UnloadingService {
     return `This action removes a #${id} unloading`;
   }
 
-  async sendByEmail(file: Express.Multer.File, excelFile: Express.Multer.File, subsidiaryName: string, unloadingId: string) {
-    const unloading = await this.unloadingRepository.findOne(
-      { 
-        where: {id: unloadingId},
-        relations: ['vehicle']
-      });
-    console.log("🚀 ~ PackageDispatchService ~ sendByEmail ~ unloading:", unloading)
+  async getPriorityFromUnloading(unloading: Unloading) {
+    const todayUTC = new Date();
+    todayUTC.setUTCHours(0, 0, 0, 0);
 
-    return await this.mailService.sendHighPriorityUnloadingEmail(file, excelFile, subsidiaryName, unloading)
+    const tomorrowUTC = new Date(todayUTC);
+    tomorrowUTC.setUTCDate(tomorrowUTC.getUTCDate() + 1);
+
+    if (!unloading) return null;
+
+    const shipments = (unloading.shipments || []).filter(
+      s => s.commitDateTime >= todayUTC && s.commitDateTime < tomorrowUTC
+    );
+
+    const chargeShipments = (unloading.chargeShipments || []).filter(
+      cs => cs.commitDateTime >= todayUTC && cs.commitDateTime < tomorrowUTC
+    );
+
+    const htmlRows = [...shipments, ...chargeShipments]
+      .map(
+        s => `
+          <tr style="border-bottom: 1px solid #ddd;">
+            <td style="padding: 8px; text-align: center;">${s.trackingNumber ?? "N/A"}</td>
+            <td style="padding: 8px;">${s.subsidiary?.name ?? "N/A"}</td>
+            <td style="padding: 8px; text-align: center;">
+              ${
+                s.commitDateTime
+                  ? new Date(s.commitDateTime).toLocaleDateString('es-MX', {
+                      timeZone: 'America/Hermosillo',
+                    })
+                  : "Sin fecha"
+              }
+            </td>
+            <td style="padding: 8px; text-align: center;">${s.status ?? "N/A"}</td>
+          </tr>
+        `
+      )
+      .join("");
+
+    const htmlContent = `
+      <div style="font-family: Arial, sans-serif; color: #2c3e50; max-width: 800px; margin: auto;">
+        <h2 style="border-bottom: 3px solid #e74c3c; padding-bottom: 8px;">
+          Reporte de Descarga con Paquetes Críticos
+        </h2>
+
+        <p>
+          Dentro de la descarga <strong>${unloading.trackingNumber ?? "N/A"}</strong>
+          se han detectado paquetes con fecha de vencimiento el día de hoy 
+          (<strong>${new Date(unloading.date).toLocaleDateString('es-MX', { timeZone: 'America/Hermosillo' })}</strong>).
+        </p>
+
+        <p style="color:#c0392b; font-weight:bold;">
+          Estos envíos deben ser considerados para <u>entrega inmediata</u>.
+        </p>
+
+        <table 
+          border="0" 
+          cellpadding="0" 
+          cellspacing="0" 
+          style="border-collapse: collapse; width: 100%; box-shadow: 0 0 10px rgba(0,0,0,0.05); margin-top: 15px;"
+        >
+          <thead style="background-color: #f7f7f7; text-align: center;">
+            <tr>
+              <th style="padding: 10px;">Tracking Number</th>
+              <th style="padding: 10px;">Destino</th>
+              <th style="padding: 10px;">Fecha de Vencimiento</th>
+              <th style="padding: 10px;">Estatus</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${
+              htmlRows ||
+              `<tr>
+                <td colspan="5" style="text-align: center; padding: 15px; color: #7f8c8d;">
+                  No se encontraron paquetes vencidos en el día.
+                </td>
+              </tr>`
+            }
+          </tbody>
+        </table>
+
+        <p style="margin-top: 20px; font-weight: bold; color: #c0392b;">
+          Este correo se genera automáticamente debido a la criticidad de la descarga.
+        </p>
+
+        <p style="margin-top: 20px;">
+          Para un monitoreo detallado de los envíos, por favor visite: 
+          <a href="https://app-pmy.vercel.app/" target="_blank" style="color: #2980b9; text-decoration: none;">
+            https://app-pmy.vercel.app/
+          </a>
+        </p>
+
+        <hr style="margin: 30px 0; border: none; border-top: 1px solid #eee;" />
+
+        <p style="font-size: 0.9em; color: #7f8c8d;">
+          Este correo fue enviado automáticamente por el sistema.<br />
+          Por favor, no responda a este mensaje.
+        </p>
+      </div>
+    `;
+
+    const result = await this.mailService.sendHighPriorityUnloadingPriorityPackages({
+      to: 'paqueteriaymensajeriadelyaqui@hotmail.com',
+      cc: 'sistemas@paqueteriaymensajeriadelyaqui.com',
+      //cc: 'javier.rappaz@gmail.com'
+      htmlContent
+    });
+
+    this.logger.debug('Correo enviado correctamente:', result);
+
+    return { ...unloading, shipments, chargeShipments };
   }
+
+  async sendByEmail(
+    file: Express.Multer.File, 
+    excelFile: Express.Multer.File, 
+    subsidiaryName: string, 
+    unloadingId: string
+  ) {
+    const unloading = await this.unloadingRepository.findOne({
+      where: { id: unloadingId },
+      relations: ['vehicle', 'shipments', 'shipments.subsidiary', 'chargeShipments', 'chargeShipments.subsidiary'],
+    });
+
+    if (!unloading) {
+      throw new NotFoundException(`Unloading con id ${unloadingId} no encontrado`);
+    }
+
+    this.logger.debug(`Unloading encontrado: ${unloading.id}`);
+
+    try {
+      // enviar correo con las prioridades
+      await this.getPriorityFromUnloading(unloading);
+    } catch (err) {
+      this.logger.error(`Error enviando correo de prioridades para unloading ${unloading.id}`, err);
+    }
+
+    // segundo correo con los archivos adjuntos
+    try {
+      return await this.mailService.sendHighPriorityUnloadingEmail(
+        file,
+        excelFile,
+        subsidiaryName,
+        unloading,
+      );
+    } catch (err) {
+      this.logger.error(`Error enviando correo de unloading con archivos adjuntos para ${unloading.id}`, err);
+      throw err; // importante propagar para que el flujo lo sepa
+    }
+  }
+
 }

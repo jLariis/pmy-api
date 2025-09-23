@@ -3,11 +3,12 @@ import { CreatePackageDispatchDto } from './dto/create-package-dispatch.dto';
 import { UpdatePackageDispatchDto } from './dto/update-package-dispatch.dto';
 import { InjectRepository } from '@nestjs/typeorm';
 import { PackageDispatch } from 'src/entities/package-dispatch.entity';
-import { In, Repository } from 'typeorm';
+import { In, Not, Repository } from 'typeorm';
 import { Shipment, ChargeShipment, Consolidated } from 'src/entities';
 import { ValidatedPackageDispatchDto } from './dto/validated-package-dispatch.dto';
 import { Devolution } from 'src/entities/devolution.entity';
 import { MailService } from 'src/mail/mail.service';
+import { ShipmentStatusType } from 'src/common/enums/shipment-status-type.enum';
 
 @Injectable()
 export class PackageDispatchService {
@@ -142,7 +143,10 @@ export class PackageDispatchService {
     subsidiaryId?: string
   ): Promise<ValidatedPackageDispatchDto & { isCharge?: boolean; consolidated?: Consolidated }> {
     const shipment = await this.shipmentRepository.findOne({
-      where: { trackingNumber },
+      where: { 
+        trackingNumber,
+        status: Not(ShipmentStatusType.DEVUELTO_A_FEDEX) 
+      },
       relations: ['subsidiary', 'statusHistory', 'payment'],
       order: { createdAt: 'DESC' }
     });
@@ -150,8 +154,12 @@ export class PackageDispatchService {
 
     if (!shipment) {
       const chargeShipment = await this.chargeShipmentRepository.findOne({
-        where: { trackingNumber },
+        where: { 
+          trackingNumber,
+          status: Not(ShipmentStatusType.DEVUELTO_A_FEDEX) 
+        },
         relations: ['subsidiary', 'charge'],
+        order: { createdAt: 'DESC' }
       });
 
       if (!chargeShipment) {
