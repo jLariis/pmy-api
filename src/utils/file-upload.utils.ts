@@ -135,18 +135,35 @@ export function parseDynamicSheetCharge(sheet: XLSX.Sheet) {
 
             const newPayment: Payment = new Payment();
             
-            const typeMatch = includesCharge.match(/^(COD|FTC|ROD)/);
-            const amountMatch = includesCharge.match(/([0-9]+(?:\.[0-9]+)?)/);
+            const typeMatch = includesCharge.match(/^(COD|FTC|ROD)/i);
+            const paymentType = typeMatch ? (typeMatch[1].toUpperCase() as PaymentTypeEnum) : null;
 
-            if(amountMatch) {
-                const paymentType = typeMatch ? typeMatch[1] as PaymentTypeEnum : null;
-                const paymentAmount = amountMatch ? parseFloat(amountMatch[1]) : null;
-                
-                if(!isNaN(paymentAmount)) {
-                    newPayment.amount = paymentAmount;
-                    newPayment.type = paymentType;
-                    newPayment.status = PaymentStatus.PENDING
-                }
+            // Buscar todos los "tokens" numéricos (permite separadores de miles y decimales)
+            const amountMatches = includesCharge.match(/([0-9]+(?:[.,\s][0-9]{3})*(?:\.[0-9]+)?)/g);
+
+            console.log("🚀 ~ parseDynamicSheetCharge ~ amountMatches:", amountMatches)
+
+            if (!amountMatches || amountMatches.length === 0) return null;
+
+            // Elegir el último candidato (normalmente el monto está al final)
+            const raw = amountMatches[amountMatches.length - 1];
+
+            let normalized = raw.trim();
+
+            if (normalized.includes('.') && normalized.includes(',') && normalized.indexOf(',') > normalized.indexOf('.')) {
+                normalized = normalized.replace(/\./g, '').replace(',', '.');
+            } else if (normalized.includes(',') && !normalized.includes('.')) {
+                normalized = normalized.replace(',', '.');
+            } else {
+                normalized = normalized.replace(/[\s,]/g, '');
+            }
+
+            const paymentAmount = parseFloat(normalized);
+
+            if (!isNaN(paymentAmount)) {
+                newPayment.amount = paymentAmount;
+                newPayment.type = paymentType;
+                newPayment.status = PaymentStatus.PENDING;
             }
 
             shipmentsWithCharge.push({
@@ -157,6 +174,7 @@ export function parseDynamicSheetCharge(sheet: XLSX.Sheet) {
         }
     });
 
+    console.log("🚀 ~ parseDynamicSheetCharge ~ shipmentsWithCharge:", shipmentsWithCharge)
     return shipmentsWithCharge;
 }
 

@@ -77,9 +77,9 @@ export class UnloadingController {
     @Body('subsidiaryName') subsidiaryName: string,
     @Body('unloadingId') unloadingId: string,
   ) {
-    console.log('🚀 ~ PackageDispatchController ~ sendEmail ~ files:', files);
-    console.log('🚀 ~ PackageDispatchController ~ sendEmail ~ subsidiaryName:', subsidiaryName);
-    console.log('🚀 ~ PackageDispatchController ~ sendEmail ~ unloadingId:', unloadingId);
+    console.log('🚀 ~ UnloadingController ~ sendEmail ~ files:', files);
+    console.log('🚀 ~ UnloadingController ~ sendEmail ~ subsidiaryName:', subsidiaryName);
+    console.log('🚀 ~ UnloadingController ~ sendEmail ~ unloadingId:', unloadingId);
 
     // Validate that both files are present
     if (!files || files.length !== 2) {
