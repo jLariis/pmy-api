@@ -34,13 +34,24 @@ export class DriversService {
 
   async findAll() {
     return await this.driverRepository.find({
-      relations: ['subsidiary']
+      relations: ['subsidiary'],
+      order: {
+        name: 'DESC'
+      }
     });
   }
 
   async findBySubsidiary(subsidiaryId: string) {
     return await this.driverRepository.find({ 
-      where: { subsidiary: { id: subsidiaryId } }
+      where: { 
+        subsidiary: { id: subsidiaryId } 
+      },
+      relations: [
+        'subsidiary'
+      ],
+      order: {
+        name: 'ASC'
+      }
     });
   }
 

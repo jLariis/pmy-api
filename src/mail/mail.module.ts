@@ -7,6 +7,7 @@ MailerModule.forRoot({
     host: process.env.EMAIL_SERVICE_HOST,
     port: process.env.EMAIL_SERVICE_PORT, // o 587
     secure: process.env.EMAIL_SERVICE_SECURE, // true para 465, false para 587
+    requireTLS: true,
     auth: {
       user: process.env.EMAIL_SERVICE_EMAIL,
       pass: process.env.EMAIL_SERVICE_PASSWORD,

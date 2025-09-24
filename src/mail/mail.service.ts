@@ -124,9 +124,6 @@ export class MailService {
         subject: `🚚 SALIDA ${packageDispatch.drivers[0].name.toLocaleUpperCase()} ${formattedDate}`,
         html: htmlContent,
         headers: {
-          'X-Priority': '1',
-          'X-MSMail-Priority': 'High',
-          Importance: 'High',
         },
         attachments: attachments
       })
@@ -201,9 +198,6 @@ export class MailService {
         subject: `🚚 Desembarque ${formattedDate} de ${subsidiaryName}`,
         html: htmlContent,
         headers: {
-          'X-Priority': '1',
-          'X-MSMail-Priority': 'High',
-          Importance: 'High',
         },
         attachments: attachments
       })
@@ -225,9 +219,6 @@ export class MailService {
         subject: '🔴 Envíos con Prioridad Alta en Desembarque',
         html: htmlContent,
         headers: {
-          'X-Priority': '1',
-          'X-MSMail-Priority': 'High',
-          Importance: 'High',
         },
       });
     } catch (error) {
@@ -294,9 +285,6 @@ export class MailService {
         subject: `🚚 Devoluciones/Recolecciones ${formattedDate} de ${subsidiaryName}`,
         html: htmlContent,
         headers: {
-          'X-Priority': '1',
-          'X-MSMail-Priority': 'High',
-          Importance: 'High',
         },
         attachments: attachments
       })
@@ -460,9 +448,6 @@ export class MailService {
         subject: `🚚 Cierre de Ruta ${formattedDate} de ${routeClosure.subsidiary.name}`,
         html: htmlContent,
         headers: {
-          'X-Priority': '1',
-          'X-MSMail-Priority': 'High',
-          Importance: 'High',
         },
         attachments: attachments
       })
@@ -538,9 +523,6 @@ export class MailService {
         subject: `📦 Inventario ${formattedDate} de ${subsidiaryName}`,
         html: htmlContent,
         headers: {
-          'X-Priority': '1',
-          'X-MSMail-Priority': 'High',
-          Importance: 'High',
         },
         attachments: attachments
       })

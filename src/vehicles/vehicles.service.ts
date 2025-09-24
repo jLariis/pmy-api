@@ -41,7 +41,8 @@ export class VehiclesService {
 
   async findBySubsidiary(subsidiaryId: string) {
     return await this.vehicleRepository.find({ 
-      where: { subsidiary: { id: subsidiaryId } }
+      where: { subsidiary: { id: subsidiaryId } },
+      relations: ['subsidiary']
     });
   }
   
