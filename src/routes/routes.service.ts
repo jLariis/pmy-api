@@ -39,7 +39,8 @@ export class RoutesService {
 
   async findBySubsidiary(subsidiaryId: string) {
     return await this.routeRepository.find({ 
-      where: { subsidiary: { id: subsidiaryId } }
+      where: { subsidiary: { id: subsidiaryId } },
+      relations: ['subsidiary']
     });
   }
 

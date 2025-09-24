@@ -15,11 +15,6 @@ export class RoutesController {
     return this.routesService.create(createRouteDto);
   }
 
-  @Get()
-  findAll() {
-    return this.routesService.findAll();
-  }
-
   @Get('subsidiary/:subsidiaryId')
   findBySubsidiary(@Param('subsidiaryId') subsidiaryId: string) {
     return this.routesService.findBySubsidiary(subsidiaryId);
@@ -29,6 +24,11 @@ export class RoutesController {
   findOne(@Param('id') id: string) {
     return this.routesService.findOne(id);
   }
+
+   @Get()
+    findAll() {
+      return this.routesService.findAll();
+    }
 
   @Patch(':id')
   update(@Param('id') id: string, @Body() updateRouteDto: UpdateRouteDto) {
