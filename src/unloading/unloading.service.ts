@@ -11,6 +11,8 @@ import { MailService } from 'src/mail/mail.service';
 import { ConsolidatedType } from 'src/common/enums/consolidated-type.enum';
 import { ConsolidatedItemDto, ConsolidatedsDto } from './dto/consolidated.dto';
 import { ShipmentStatusType } from 'src/common/enums/shipment-status-type.enum';
+import { zonedTimeToUtc } from 'src/common/utils';
+
 
 @Injectable()
 export class UnloadingService {
@@ -31,113 +33,80 @@ export class UnloadingService {
   ) {}
 
   async getConsolidateToStartUnloading(subdiaryId: string): Promise<ConsolidatedsDto> {
-    const todayUTC = new Date();
-    todayUTC.setUTCHours(0, 0, 0, 0);
+    const timeZone = "America/Hermosillo";
 
-    const tomorrowUTC = new Date(todayUTC);
-    tomorrowUTC.setUTCDate(tomorrowUTC.getUTCDate() + 1);
+    // Hoy en Hermosillo
+    const now = new Date();
+    const fmt = new Intl.DateTimeFormat("en-CA", {
+      timeZone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    });
 
-    // Rango de hoy
-    let consolidatedT = await this.consolidatedReporsitory.find({
+    // Sacar YYYY-MM-DD en zona local
+    const [{ value: y }, , { value: m }, , { value: d }] = fmt.formatToParts(now);
+    const todayStr = `${y}-${m}-${d}`;
+
+    // Rangos en hora local (NO UTC)
+    const todayLocal = new Date(`${todayStr} 00:00:00`);
+    const yesterdayLocal = new Date(todayLocal);
+    yesterdayLocal.setDate(yesterdayLocal.getDate() - 1);
+
+    const tomorrowLocal = new Date(todayLocal);
+    tomorrowLocal.setDate(tomorrowLocal.getDate() + 1);
+
+    // 🔥 Usamos estos rangos directo en la query
+    const consolidatedT = await this.consolidatedReporsitory.find({
       where: {
-        date: Between(todayUTC, tomorrowUTC),
-        subsidiary: {
-          id: subdiaryId
-        }
+        date: Between(yesterdayLocal, tomorrowLocal),
+        subsidiary: { id: subdiaryId },
       },
     });
 
-    let f2Consolidated = await this.chargeRepository.findOne({
+    const f2Consolidated = await this.chargeRepository.find({
       where: {
-        chargeDate: Between(todayUTC, tomorrowUTC),
-        subsidiary: {
-          id: subdiaryId
-        }
+        chargeDate: Between(yesterdayLocal, tomorrowLocal),
+        subsidiary: { id: subdiaryId },
       },
     });
-
-    // Si no encontró nada hoy, buscar ayer
-    if (consolidatedT.length === 0 && !f2Consolidated) {
-      const yesterdayUTC = new Date(todayUTC);
-      yesterdayUTC.setUTCDate(yesterdayUTC.getUTCDate() - 1);
-
-      const todayStartUTC = new Date(todayUTC);
-
-      consolidatedT = await this.consolidatedReporsitory.find({
-        select: {
-          id: true,
-          subsidiary: {
-            id: true,
-            name: true
-          },
-          numberOfPackages: true,
-          consNumber: true,
-          type: true
-        },
-        where: {
-          date: Between(yesterdayUTC, todayStartUTC),
-          subsidiary: {
-            id: subdiaryId
-          }
-        },
-      });
-
-      f2Consolidated = await this.chargeRepository.findOne({
-        select: {
-          id: true,
-          subsidiary: {
-            id: true,
-            name: true
-          },
-          numberOfPackages: true,
-          consNumber: true,
-        },
-        where: {
-          chargeDate: Between(yesterdayUTC, todayStartUTC),
-          subsidiary: {
-            id: subdiaryId
-          }
-        },
-      });
-    }
 
     const consolidateds: ConsolidatedsDto = {
       airConsolidated: consolidatedT
         .filter(c => c.type === ConsolidatedType.AEREO)
-        .map(c => ({ 
-          ...c, 
-          type: "Áereo", 
+        .map(c => ({
+          ...c,
+          type: "Áereo",
           typeCode: "AER",
           added: [],
           notFound: [],
-          color: "text-green-600 bg-green-100"
+          color: "text-green-600 bg-green-100",
         })),
 
       groundConsolidated: consolidatedT
         .filter(c => c.type === ConsolidatedType.ORDINARIA)
-        .map(c => ({ 
-          ...c, 
-          type: "Terrestre", 
-          typeCode: "TER", 
+        .map(c => ({
+          ...c,
+          type: "Terrestre",
+          typeCode: "TER",
           added: [],
           notFound: [],
-          color: "text-blue-600 bg-blue-100"
+          color: "text-blue-600 bg-blue-100",
         })),
 
-      f2Consolidated: f2Consolidated
-        ? [{
-            ...f2Consolidated,
-            type: "F2/Carga/31.5",
-            typeCode: "F2",
-            added: [],
-            notFound: [],
-            color: "text-orange-600 bg-orange-100",
-          }]
-        : [],
+      f2Consolidated: f2Consolidated.map(c => ({
+        ...c,
+        type: "F2/Carga/31.5",
+        typeCode: "F2",
+        added: [],
+        notFound: [],
+        color: "text-orange-600 bg-orange-100",
+      })),
     };
 
     return consolidateds;
   }
+
 
   async create(createUnloadingDto: CreateUnloadingDto) {
     const allShipmentIds = createUnloadingDto.shipments;
@@ -222,63 +191,130 @@ export class UnloadingService {
   }> {
     // 1️⃣ Traer shipments y chargeShipments en batch
     const shipments = await this.shipmentRepository.find({
-      where: { trackingNumber: In(trackingNumbers), status: Not(ShipmentStatusType.DEVUELTO_A_FEDEX) },
+      where: { 
+        trackingNumber: In(trackingNumbers), 
+        status: Not(ShipmentStatusType.DEVUELTO_A_FEDEX) 
+      },
       relations: ['subsidiary', 'statusHistory', 'payment', 'packageDispatch'],
-      order: { createdAt: 'DESC' },
+      order: { createdAt: 'DESC' }, // Ordenar por fecha descendente
     });
 
     const chargeShipments = await this.chargeShipmentRepository.find({
-      where: { trackingNumber: In(trackingNumbers), },
+      where: { 
+        trackingNumber: In(trackingNumbers),
+        status: Not(ShipmentStatusType.DEVUELTO_A_FEDEX)
+      },
       relations: ['subsidiary', 'charge', 'packageDispatch'],
-      order: { createdAt: 'DESC' },
+      order: { createdAt: 'DESC' }, // Ordenar por fecha descendente
     });
 
-    // Mapas para acceso rápido por trackingNumber
-    const shipmentsMap = new Map(shipments.map(s => [s.trackingNumber, s]));
-    const chargeMap = new Map(chargeShipments.map(c => [c.trackingNumber, c]));
+    // 2️⃣ FUNCIÓN PARA MANEJAR DUPLICADOS - Tomar el más reciente
+    const getMostRecentByTrackingNumber = <T extends { trackingNumber: string; createdAt: Date }>(
+      items: T[]
+    ): Map<string, T> => {
+      const map = new Map<string, T>();
+      
+      for (const item of items) {
+        const existing = map.get(item.trackingNumber);
+        if (!existing || new Date(item.createdAt) > new Date(existing.createdAt)) {
+          map.set(item.trackingNumber, item);
+        }
+      }
+      
+      return map;
+    };
+
+    // Crear mapas con los registros más recientes
+    const shipmentsMap = getMostRecentByTrackingNumber(shipments);
+    const chargeMap = getMostRecentByTrackingNumber(chargeShipments);
+
+    // 3️⃣ DEBUG: Verificar duplicados
+    console.log('=== DEBUG DUPLICADOS ===');
+    console.log('Total shipments encontrados:', shipments.length);
+    console.log('Total chargeShipments encontrados:', chargeShipments.length);
+    console.log('Shipments únicos (más recientes):', shipmentsMap.size);
+    console.log('ChargeShipments únicos (más recientes):', chargeMap.size);
+    
+    // Identificar duplicados
+    const trackingNumberCounts = new Map<string, number>();
+    [...shipments, ...chargeShipments].forEach(item => {
+      trackingNumberCounts.set(item.trackingNumber, (trackingNumberCounts.get(item.trackingNumber) || 0) + 1);
+    });
+    
+    const duplicates = Array.from(trackingNumberCounts.entries())
+      .filter(([_, count]) => count > 1)
+      .map(([tn]) => tn);
+    
+    console.log('Tracking numbers duplicados:', duplicates);
+    console.log('=== FIN DEBUG DUPLICADOS ===');
 
     const validatedShipments: (ValidatedUnloadingDto & { isCharge?: boolean })[] = [];
 
-    // 2️⃣ Validar todos los trackingNumbers recibidos
+    // 4️⃣ Validar todos los trackingNumbers recibidos (usando los más recientes)
     for (const tn of trackingNumbers) {
-      const shipment = shipmentsMap.get(tn);
-      if (shipment) {
-        const validated = await this.validatePackage({ ...shipment, isValid: false }, subsidiaryId);
-        validatedShipments.push(validated);
-        continue;
+      // Verificar si existe en shipments (más reciente)
+      const mostRecentShipment = shipmentsMap.get(tn);
+      const mostRecentCharge = chargeMap.get(tn);
+
+      // Decidir cuál usar: priorizar el más reciente entre ambos tipos
+      let recordToValidate: any = null;
+      let isCharge = false;
+
+      if (mostRecentShipment && mostRecentCharge) {
+        // Si existe en ambos, tomar el más reciente globalmente
+        const shipmentDate = new Date(mostRecentShipment.createdAt);
+        const chargeDate = new Date(mostRecentCharge.createdAt);
+        
+        if (chargeDate > shipmentDate) {
+          recordToValidate = mostRecentCharge;
+          isCharge = true;
+        } else {
+          recordToValidate = mostRecentShipment;
+          isCharge = false;
+        }
+        
+        console.log(`⚠️ Tracking number ${tn} duplicado en ambos tipos. Usando: ${isCharge ? 'CHARGE' : 'SHIPMENT'} (más reciente)`);
+      } else if (mostRecentShipment) {
+        recordToValidate = mostRecentShipment;
+        isCharge = false;
+      } else if (mostRecentCharge) {
+        recordToValidate = mostRecentCharge;
+        isCharge = true;
       }
 
-      const chargeShipment = chargeMap.get(tn);
-      if (chargeShipment) {
-        const validatedCharge = await this.validatePackage({ ...chargeShipment, isValid: false }, subsidiaryId);
-        validatedShipments.push({ ...validatedCharge, isCharge: true });
-        continue;
+      if (recordToValidate) {
+        const validated = await this.validatePackage({ ...recordToValidate, isValid: false }, subsidiaryId);
+        validatedShipments.push({ ...validated, isCharge });
+      } else {
+        validatedShipments.push({
+          trackingNumber: tn,
+          isValid: false,
+          reason: 'No se encontraron datos para el tracking number en la base de datos',
+          subsidiary: null,
+          status: null,
+        });
       }
-
-      validatedShipments.push({
-        trackingNumber: tn,
-        isValid: false,
-        reason: 'No se encontraron datos para el tracking number en la base de datos',
-        subsidiary: null,
-        status: null,
-      });
     }
 
-    // 3️⃣ Obtener consolidado por subdiaryId
+    // 5️⃣ Obtener consolidados para la descarga actual
     const consolidatedsToValidate: ConsolidatedsDto = await this.getConsolidateToStartUnloading(subsidiaryId);
     const allConsolidateds: ConsolidatedItemDto[] = Object.values(consolidatedsToValidate).flat();
 
-    // 4️⃣ Inicializar arrays added/notFound y asignar los validados
+    // 6️⃣ Inicializar arrays added/notFound
     for (const consolidated of allConsolidateds) {
       consolidated.added = [];
       consolidated.notFound = [];
     }
 
+    // 7️⃣ Asignar SOLO los válidos a added
     for (const validated of validatedShipments) {
+      if (!validated.isValid) continue;
+
       if (validated.isCharge) {
-        // Solo agregar a F2
-        const f2 = consolidatedsToValidate.f2Consolidated[0]; // usualmente hay 1
+        // Para carga (F2)
+        const f2 = consolidatedsToValidate.f2Consolidated[0];
         if (!f2) continue;
+        
         f2.added.push({
           trackingNumber: validated.trackingNumber,
           recipientName: validated.recipientName,
@@ -286,11 +322,11 @@ export class UnloadingService {
           recipientPhone: validated.recipientPhone
         });
       } else {
-        // AER/TER según shipment normal
-        const shipment = shipmentsMap.get(validated.trackingNumber);
-        if (!shipment) continue;
+        // Para shipments normales
+        const mostRecentShipment = shipmentsMap.get(validated.trackingNumber);
+        if (!mostRecentShipment) continue;
 
-        const consolidated = allConsolidateds.find(c => c.id === shipment.consolidatedId);
+        const consolidated = allConsolidateds.find(c => c.id === mostRecentShipment.consolidatedId);
         if (!consolidated) continue;
 
         consolidated.added.push({
@@ -302,14 +338,30 @@ export class UnloadingService {
       }
     }
 
-    // 5️⃣ Calcular notFound para AÉREO / TERRESTRE:
+    // 8️⃣ DEBUG: Verificar asignación
+    console.log('=== DEBUG ASIGNACIÓN ===');
+    console.log('Total validados:', validatedShipments.length);
+    console.log('Válidos:', validatedShipments.filter(v => v.isValid).length);
+    
+    for (const consolidated of allConsolidateds) {
+      console.log(`Consolidado ${consolidated.id} (${consolidated.typeCode}): ${consolidated.added.length} added`);
+    }
+    console.log('=== FIN DEBUG ASIGNACIÓN ===');
+
+    // 9️⃣ Calcular notFound para AÉREO / TERRESTRE
     for (const consolidated of allConsolidateds.filter(c => c.typeCode !== 'F2')) {
       const relatedShipments = await this.shipmentRepository.find({
-        where: { consolidatedId: consolidated.id },
+        where: { 
+          consolidatedId: consolidated.id,
+          status: Not(ShipmentStatusType.DEVUELTO_A_FEDEX)
+        },
         select: ['trackingNumber', 'recipientName', 'recipientAddress', 'recipientPhone'],
       });
 
-      consolidated.notFound = relatedShipments
+      // Tomar solo el más reciente por tracking number para los notFound también
+      const uniqueRelatedShipments = getMostRecentByTrackingNumber(relatedShipments);
+
+      consolidated.notFound = Array.from(uniqueRelatedShipments.values())
         .filter(s => !consolidated.added.some(a => a.trackingNumber === s.trackingNumber))
         .map(s => ({
           trackingNumber: s.trackingNumber,
@@ -319,17 +371,22 @@ export class UnloadingService {
         }));
     }
 
-    // 6️⃣ Calcular notFound (y su conteo) para F2 (carga/31.5):
+    // 🔟 Calcular notFound para F2
     const f2 = consolidatedsToValidate.f2Consolidated[0];
-
     if (f2) {
       const f2ChargeShipments = await this.chargeShipmentRepository.find({
-        where: { charge: { id: f2.id } },
+        where: { 
+          charge: { id: f2.id },
+          status: Not(ShipmentStatusType.DEVUELTO_A_FEDEX)
+        },
         select: ['trackingNumber', 'recipientName', 'recipientAddress', 'recipientPhone'],
         relations: ['charge'],
       });
 
-      f2.notFound = f2ChargeShipments
+      // Tomar solo el más reciente por tracking number
+      const uniqueF2ChargeShipments = getMostRecentByTrackingNumber(f2ChargeShipments);
+
+      f2.notFound = Array.from(uniqueF2ChargeShipments.values())
         .filter(cs => !f2.added.some(a => a.trackingNumber === cs.trackingNumber))
         .map(cs => ({
           trackingNumber: cs.trackingNumber,
@@ -618,7 +675,13 @@ export class UnloadingService {
   ) {
     const unloading = await this.unloadingRepository.findOne({
       where: { id: unloadingId },
-      relations: ['vehicle', 'shipments', 'shipments.subsidiary', 'chargeShipments', 'chargeShipments.subsidiary'],
+      relations: [
+        'vehicle', 
+        'shipments', 
+        'shipments.subsidiary', 
+        'chargeShipments', 
+        'chargeShipments.subsidiary'
+      ],
     });
 
     if (!unloading) {

@@ -532,4 +532,23 @@ export class MailService {
       throw error;
     }
   }
+
+  /** Enviar correo de prioridades dentro de Descarga */
+  async sendHighPriorityPackagesOnInvetory(options: { to: string | string[], cc?: string | string[], htmlContent: string }) {
+    const { to, cc, htmlContent } = options;
+    
+    try {
+      await this.mailerService.sendMail({
+        to,
+        cc,
+        subject: '🔴 Envíos con Prioridad Alta en Inventario',
+        html: htmlContent,
+        headers: {
+        },
+      });
+    } catch (error) {
+      console.error('Error al enviar correo:', error);
+      throw error;
+    }
+  }
 }
