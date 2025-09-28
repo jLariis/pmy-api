@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { CreateInventoryDto } from './dto/create-inventory.dto';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Inventory } from 'src/entities/inventory.entity';
@@ -10,6 +10,8 @@ import { ShipmentStatusType } from 'src/common/enums/shipment-status-type.enum';
 
 @Injectable()
 export class InventoriesService {
+  private readonly logger = new Logger(InventoriesService.name);
+
   constructor(
     @InjectRepository(Inventory)
     private readonly inventoryRepository: Repository<Inventory>,
@@ -235,14 +237,163 @@ export class InventoriesService {
     return await this.inventoryRepository.findOneBy({id});
   }
 
+  async getPriorityPackages(inventory: Inventory) {
+      const timeZone = "America/Hermosillo";
+
+      const todayUTC = new Date();
+      todayUTC.setUTCHours(0, 0, 0, 0);
+  
+      const tomorrowUTC = new Date(todayUTC);
+      tomorrowUTC.setUTCDate(tomorrowUTC.getUTCDate() + 1);
+  
+      if (!inventory) return null;
+  
+      const shipments = (inventory.shipments || []).filter(
+        s => s.commitDateTime >= todayUTC && s.commitDateTime < tomorrowUTC
+      );
+  
+      const chargeShipments = (inventory.chargeShipments || []).filter(
+        cs => cs.commitDateTime >= todayUTC && cs.commitDateTime < tomorrowUTC
+      );
+  
+      const htmlRows = [...shipments, ...chargeShipments]
+        .map(
+          (s) => `
+            <tr style="border-bottom: 1px solid #ddd;">
+              <td style="padding: 8px; text-align: center;">${s.trackingNumber ?? "N/A"}</td>
+              <td style="padding: 8px;">${s.subsidiary?.name ?? "N/A"}</td>
+              <td style="padding: 8px; text-align: center;">
+                ${
+                  s.commitDateTime
+                    ? new Date(s.commitDateTime).toLocaleDateString("es-MX", {
+                        timeZone: "America/Hermosillo",
+                      })
+                    : "Sin fecha"
+                }
+              </td>
+              <td style="padding: 8px; text-align: center;">
+                ${s.payment ? `${s.payment.type} $ ${s.payment.amount}` : ""}
+              </td>
+              <td style="padding: 8px; text-align: center;">${s.status ?? "N/A"}</td>
+            </tr>
+          `
+        )
+        .join("");
+  
+      const htmlContent = `
+        <div style="font-family: Arial, sans-serif; color: #2c3e50; max-width: 800px; margin: auto;">
+          <h2 style="border-bottom: 3px solid #e74c3c; padding-bottom: 8px;">
+            Reporte de Inventario con Paquetes Críticos
+          </h2>
+  
+          <p>
+            Dentro de la descarga <strong>${inventory.trackingNumber ?? "N/A"}</strong>
+            se han detectado paquetes con fecha de vencimiento el día de hoy 
+            (<strong>${new Date(inventory.inventoryDate).toLocaleDateString('es-MX', { timeZone: 'America/Hermosillo' })}</strong>).
+          </p>
+  
+          <p style="color:#c0392b; font-weight:bold;">
+            Estos envíos deben ser considerados para <u>entrega inmediata</u>.
+          </p>
+  
+          <table 
+            border="0" 
+            cellpadding="0" 
+            cellspacing="0" 
+            style="border-collapse: collapse; width: 100%; box-shadow: 0 0 10px rgba(0,0,0,0.05); margin-top: 15px;"
+          >
+            <thead style="background-color: #f7f7f7; text-align: center;">
+              <tr>
+                <th style="padding: 10px;">Tracking Number</th>
+                <th style="padding: 10px;">Destino</th>
+                <th style="padding: 10px;">Fecha de Vencimiento</th>
+                <th style="padding: 10px;">Cobro</th>
+                <th style="padding: 10px;">Estatus</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${
+                htmlRows ||
+                `<tr>
+                  <td colspan="5" style="text-align: center; padding: 15px; color: #7f8c8d;">
+                    No se encontraron paquetes vencidos en el día.
+                  </td>
+                </tr>`
+              }
+            </tbody>
+          </table>
+  
+          <p style="margin-top: 20px; font-weight: bold; color: #c0392b;">
+            Este correo se genera automáticamente debido a la criticidad de la descarga.
+          </p>
+  
+          <p style="margin-top: 20px;">
+            Para un monitoreo detallado de los envíos, por favor visite: 
+            <a href="https://app-pmy.vercel.app/" target="_blank" style="color: #2980b9; text-decoration: none;">
+              https://app-pmy.vercel.app/
+            </a>
+          </p>
+  
+          <hr style="margin: 30px 0; border: none; border-top: 1px solid #eee;" />
+  
+          <p style="font-size: 0.9em; color: #7f8c8d;">
+            Este correo fue enviado automáticamente por el sistema.<br />
+            Por favor, no responda a este mensaje.
+          </p>
+        </div>
+      `;
+  
+      const result = await this.mailService.sendHighPriorityUnloadingPriorityPackages({
+        to: 'paqueteriaymensajeriadelyaqui@hotmail.com',
+        cc: 'sistemas@paqueteriaymensajeriadelyaqui.com',
+        //cc: 'javier.rappaz@gmail.com'
+        htmlContent
+      });
+  
+      this.logger.debug('Correo enviado correctamente:', result);
+  
+      return { ...inventory, shipments, chargeShipments };
+  }
+
   async sendByEmail(file: Express.Multer.File, excelFile: Express.Multer.File, subsidiaryName: string, inventoryId: string) {
     const inventory = await this.inventoryRepository.findOne(
       { 
         where: {id: inventoryId},
-        relations: ['subsidiary']
+        relations: [
+          'subsidiary', 
+          'shipments', 
+          'chargeShipments', 
+          'shipments.subsidiary',
+          'shipments.payment', 
+          'chargeShipments.subsidiary',
+          'chargeShipments.payment',
+        ]
       });
-    console.log("🚀 ~ PackageDispatchService ~ sendByEmail ~ inventory:", inventory)
 
-    return await this.mailService.sendHighPriorityInventoryEmail(file, excelFile, subsidiaryName, inventory)
+    if(!inventory) {
+      throw new NotFoundException(`Inventario con id ${inventoryId} no encontrado`);
+    }
+
+    this.logger.debug(`Inventario encontrado: ${inventory.id}`);
+
+    try {
+      await this.getPriorityPackages(inventory);
+    } catch (err) {
+      this.logger.error(`Error al enviar correo de prioridades para inventario: ${inventory.id}`, err);
+      throw err;
+    }
+
+
+    try {
+      return await this.mailService.sendHighPriorityInventoryEmail(
+        file, 
+        excelFile, 
+        subsidiaryName, 
+        inventory
+      );
+    } catch (err) {
+      this.logger.error(`Error al enviar correo de inventario con archivos adjuntos para ${inventory.id}`, err);
+      throw err;
+    }
   }
 }
