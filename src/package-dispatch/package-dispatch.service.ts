@@ -9,6 +9,10 @@ import { ValidatedPackageDispatchDto } from './dto/validated-package-dispatch.dt
 import { Devolution } from 'src/entities/devolution.entity';
 import { MailService } from 'src/mail/mail.service';
 import { ShipmentStatusType } from 'src/common/enums/shipment-status-type.enum';
+import { FedexService } from 'src/shipments/fedex.service';
+import { FedexTrackingResponse } from 'src/shipments/dto/FedexTrackingCompleteInfo.dto';
+import { Priority } from 'src/common/enums/priority.enum';
+import { ShipmentType } from 'src/common/enums/shipment-type.enum';
 
 @Injectable()
 export class PackageDispatchService {
@@ -24,7 +28,8 @@ export class PackageDispatchService {
     private readonly consolidatedRepository: Repository<Consolidated>,
     @InjectRepository(Devolution)
     private readonly devolutionRepository: Repository<Devolution>,
-    private readonly mailService: MailService
+    private readonly mailService: MailService,
+    private readonly fedexService: FedexService
   ){
 
   }
@@ -145,33 +150,36 @@ export class PackageDispatchService {
     const shipment = await this.shipmentRepository.findOne({
       where: { 
         trackingNumber,
-        status: Not(ShipmentStatusType.DEVUELTO_A_FEDEX) 
+        //status: Not(ShipmentStatusType.DEVUELTO_A_FEDEX) 
       },
       relations: ['subsidiary', 'statusHistory', 'payment'],
       order: { createdAt: 'DESC' }
     });
 
-
     if (!shipment) {
       const chargeShipment = await this.chargeShipmentRepository.findOne({
         where: { 
           trackingNumber,
-          status: Not(ShipmentStatusType.DEVUELTO_A_FEDEX) 
+          //status: Not(ShipmentStatusType.DEVUELTO_A_FEDEX) 
         },
         relations: ['subsidiary', 'charge'],
         order: { createdAt: 'DESC' }
       });
 
       if (!chargeShipment) {
-      // Retornar DTO mínimo con un mensaje indicando el motivo
-      return {
-        trackingNumber,
-        isValid: false,
-        reason: 'No se encontraron datos para el tracking number en la base de datos',
-        subsidiary: null,
-        status: null,
-      };
-    }
+        const result = await this.fedexService.completePackageInfo(trackingNumber);
+
+        console.log("🚀 ~ PackageDispatchService ~ validateTrackingNumber ~ packageInfo:", result)
+
+        // Retornar DTO mínimo con un mensaje indicando el motivo
+        return {
+          trackingNumber,
+          isValid: false,
+          reason: 'No se encontraron datos para el tracking number en la base de datos',
+          subsidiary: null,
+          status: null,
+        };
+      }
 
       const validatedCharge = await this.validatePackage(
         {
