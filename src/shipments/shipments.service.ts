@@ -2315,10 +2315,12 @@ export class ShipmentsService {
     let commitDateTime: Date | undefined;
     let dateSource = '';
 
+    //Formatear a utc los commit que vienen normal
     if (shipment.commitDate && shipment.commitTime) {
       try {
         const parsedDate = parse(shipment.commitDate, 'yyyy-MM-dd', new Date());
         const parsedTime = parse(shipment.commitTime, 'HH:mm:ss', new Date());
+        
         if (!isNaN(parsedDate.getTime()) && !isNaN(parsedTime.getTime())) {
           commitDate = format(parsedDate, 'yyyy-MM-dd');
           commitTime = format(parsedTime, 'HH:mm:ss');
