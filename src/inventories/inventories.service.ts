@@ -249,11 +249,17 @@ export class InventoriesService {
       if (!inventory) return null;
   
       const shipments = (inventory.shipments || []).filter(
-        s => s.commitDateTime >= todayUTC && s.commitDateTime < tomorrowUTC
+        s => 
+          s.commitDateTime >= todayUTC && 
+          s.commitDateTime < tomorrowUTC &&
+          s.status === ShipmentStatusType.EN_RUTA
       );
   
       const chargeShipments = (inventory.chargeShipments || []).filter(
-        cs => cs.commitDateTime >= todayUTC && cs.commitDateTime < tomorrowUTC
+        cs => 
+          cs.commitDateTime >= todayUTC && 
+          cs.commitDateTime < tomorrowUTC &&
+          cs.status === ShipmentStatusType.EN_RUTA
       );
   
       const htmlRows = [...shipments, ...chargeShipments]
@@ -287,7 +293,7 @@ export class InventoriesService {
           </h2>
   
           <p>
-            Dentro de la descarga <strong>${inventory.trackingNumber ?? "N/A"}</strong>
+            Dentro del Inventario <strong>${inventory.trackingNumber ?? "N/A"}</strong>
             se han detectado paquetes con fecha de vencimiento el día de hoy 
             (<strong>${new Date(inventory.inventoryDate).toLocaleDateString('es-MX', { timeZone: 'America/Hermosillo' })}</strong>).
           </p>
