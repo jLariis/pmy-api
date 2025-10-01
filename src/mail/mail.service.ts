@@ -216,7 +216,7 @@ export class MailService {
       await this.mailerService.sendMail({
         to,
         cc,
-        subject: '🔴 Envíos con Prioridad Alta en Desembarque',
+        subject: '🔴 Envíos con Prioridad Alta en Inventario',
         html: htmlContent,
         headers: {
         },
