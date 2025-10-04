@@ -351,7 +351,7 @@ export class InventoriesService {
   
       const result = await this.mailService.sendHighPriorityUnloadingPriorityPackages({
         to: 'paqueteriaymensajeriadelyaqui@hotmail.com',
-        cc: 'sistemas@paqueteriaymensajeriadelyaqui.com',
+        cc: ['sistemas@paqueteriaymensajeriadelyaqui.com','bodegacsl@paqueteriaymensajeriadelyaqui.com'],
         //cc: 'javier.rappaz@gmail.com'
         htmlContent
       });

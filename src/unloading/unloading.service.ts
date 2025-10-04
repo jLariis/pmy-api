@@ -12,6 +12,7 @@ import { ConsolidatedType } from 'src/common/enums/consolidated-type.enum';
 import { ConsolidatedItemDto, ConsolidatedsDto } from './dto/consolidated.dto';
 import { ShipmentStatusType } from 'src/common/enums/shipment-status-type.enum';
 import { zonedTimeToUtc } from 'src/common/utils';
+import { UnloadingReportDto } from './dto/unloading-report.dto';
 
 
 @Injectable()
@@ -553,6 +554,999 @@ export class UnloadingService {
 
   remove(id: number) {
     return `This action removes a #${id} unloading`;
+  }
+
+  async getUnloadingReportRespMonitoreo(startDate?: Date, endDate?: Date): Promise<UnloadingReportDto[]> {
+    // Convertir fechas a UTC considerando UTC-7 (Hermosillo/Arizona)
+    let startDateUTC: Date;
+    let endDateUTC: Date;
+
+    if (startDate && endDate) {
+        // Convertir fechas proporcionadas de UTC-7 a UTC
+        startDateUTC = this.convertHermosilloToUTC(startDate);
+        endDateUTC = this.convertHermosilloToUTC(endDate);
+    } else if (startDate && !endDate) {
+        // Solo startDate proporcionado
+        startDateUTC = this.convertHermosilloToUTC(startDate);
+        endDateUTC = new Date(startDateUTC);
+        endDateUTC.setUTCDate(endDateUTC.getUTCDate() + 1);
+    } else if (!startDate && endDate) {
+        // Solo endDate proporcionado
+        endDateUTC = this.convertHermosilloToUTC(endDate);
+        startDateUTC = new Date(endDateUTC);
+        startDateUTC.setUTCDate(startDateUTC.getUTCDate() - 1);
+    } else {
+        // Sin fechas proporcionadas, usar hoy en Hermosillo convertido a UTC
+        const nowHermosillo = new Date();
+        startDateUTC = this.convertHermosilloToUTC(nowHermosillo);
+        startDateUTC.setUTCHours(0, 0, 0, 0);
+        endDateUTC = new Date(startDateUTC);
+        endDateUTC.setUTCDate(endDateUTC.getUTCDate() + 1);
+    }
+
+    try {
+      console.log('===== FILTROS HERMOSILLO -> UTC =====');
+      console.log('Fecha desde (Hermosillo):', this.convertUTCToHermosillo(startDateUTC).toLocaleString('es-MX'));
+      console.log('Fecha hasta (Hermosillo):', this.convertUTCToHermosillo(endDateUTC).toLocaleString('es-MX'));
+      console.log('Fecha desde (UTC):', startDateUTC.toISOString());
+      console.log('Fecha hasta (UTC):', endDateUTC.toISOString());
+
+      // PRIMERO: Verificar qué hay en la base de datos
+      console.log('🔍 VERIFICANDO DATOS EN BD...');
+      
+      // 1. Verificar rango de fechas en BD
+      const dateRange = await this.unloadingRepository
+        .createQueryBuilder('u')
+        .select('MIN(u.date)', 'minDate')
+        .addSelect('MAX(u.date)', 'maxDate')
+        .getRawOne();
+      
+      console.log('📅 Rango de fechas en BD:');
+      console.log('Mínima:', dateRange.minDate, this.formatDateForDisplay(dateRange.minDate));
+      console.log('Máxima:', dateRange.maxDate, this.formatDateForDisplay(dateRange.maxDate));
+
+      // 2. Verificar unloadings en el rango sin joins
+      const unloadingsInRange = await this.unloadingRepository
+        .createQueryBuilder('u')
+        .where('u.date >= :startDate AND u.date < :endDate', {
+          startDate: startDateUTC.toISOString(),
+          endDate: endDateUTC.toISOString()
+        })
+        .getMany();
+      
+      console.log(`📊 Unloadings en rango ${startDateUTC.toISOString()} a ${endDateUTC.toISOString()}:`, unloadingsInRange.length);
+      
+      unloadingsInRange.forEach(u => {
+        console.log(`   - ${u.id}: ${u.date} (${this.formatDateForDisplay(u.date.toString())})`);
+      });
+
+      // 3. Si no hay unloadings, buscar los más recientes
+      if (unloadingsInRange.length === 0) {
+        console.log('🔎 Buscando unloadings recientes...');
+        const recentUnloadings = await this.unloadingRepository
+          .createQueryBuilder('u')
+          .orderBy('u.date', 'DESC')
+          .limit(5)
+          .getMany();
+        
+        console.log('📦 Unloadings más recientes:');
+        recentUnloadings.forEach(u => {
+          console.log(`   - ${u.id}: ${u.date} (${this.formatDateForDisplay(u.date.toString())})`);
+        });
+      }
+
+      // 4. Ahora hacer la consulta completa
+      const rawData = await this.unloadingRepository
+        .createQueryBuilder('u')
+        .leftJoinAndSelect('u.subsidiary', 's')
+        .leftJoinAndSelect('u.shipments', 'sh')
+        .leftJoinAndSelect('sh.packageDispatch', 'shPD')
+        .leftJoinAndSelect('shPD.drivers', 'shDriver')
+        .leftJoinAndSelect('u.chargeShipments', 'cs')
+        .leftJoinAndSelect('cs.packageDispatch', 'csPD')
+        .leftJoinAndSelect('csPD.drivers', 'csDriver')
+        .where('u.date >= :startDate AND u.date < :endDate', {
+          startDate: startDateUTC.toISOString(),
+          endDate: endDateUTC.toISOString()
+        })
+        .getMany();
+
+      console.log('===== RESULTADOS =====');
+      console.log('Unloadings encontrados con joins:', rawData.length);
+
+      // Procesar los datos
+      const formattedData: UnloadingReportDto[] = rawData.map(unloading => {
+        if (!unloading) return null;
+
+        const uniqueShipments = this.removeDuplicateShipments(unloading.shipments || []);
+        const uniqueChargeShipments = this.removeDuplicateShipments(unloading.chargeShipments || []);
+
+        return {
+          id: unloading.id,
+          date: unloading.date,
+          subsidiary: {
+            id: unloading.subsidiary?.id || 'unknown',
+            name: unloading.subsidiary?.name || 'Sucursal Desconocida',
+          },
+          shipments: uniqueShipments.map(sh => ({
+            id: sh.id,
+            trackingNumber: sh.trackingNumber,
+            status: sh.status,
+            commitDateTime: sh.commitDateTime,
+            routeId: sh.routeId,
+            packageDispatch: sh.packageDispatch ? {
+              id: sh.packageDispatch.id,
+              trackingNumber: sh.packageDispatch.trackingNumber,
+              firstDriverName: this.getFirstDriverName(sh.packageDispatch.drivers),
+            } : null,
+          })),
+          chargeShipments: uniqueChargeShipments.map(cs => ({
+            id: cs.id,
+            trackingNumber: cs.trackingNumber,
+            status: cs.status,
+            commitDateTime: cs.commitDateTime,
+            routeId: cs.routeId,
+            packageDispatch: cs.packageDispatch ? {
+              id: cs.packageDispatch.id,
+              trackingNumber: cs.packageDispatch.trackingNumber,
+              firstDriverName: this.getFirstDriverName(cs.packageDispatch.drivers),
+            } : null,
+          })),
+        };
+      }).filter(Boolean);
+
+      console.log('===== DATOS FORMATEADOS =====');
+      console.log('Total unloadings a procesar:', formattedData.length);
+
+      return formattedData;
+
+    } catch (error) {
+      console.error('Error en getUnloadingReport:', error);
+      throw error;
+    }
+  }
+
+  async getUnloadingReport(startDate?: Date, endDate?: Date): Promise<UnloadingReportDto[]> {
+    // Convertir fechas a UTC considerando UTC-7 (Hermosillo/Arizona)
+    let startDateUTC: Date;
+    let endDateUTC: Date;
+
+    if (startDate && endDate) {
+        // Convertir fechas proporcionadas de UTC-7 a UTC
+        startDateUTC = this.convertHermosilloToUTC(startDate);
+        endDateUTC = this.convertHermosilloToUTC(endDate);
+    } else if (startDate && !endDate) {
+        // Solo startDate proporcionado
+        startDateUTC = this.convertHermosilloToUTC(startDate);
+        endDateUTC = new Date(startDateUTC);
+        endDateUTC.setUTCDate(endDateUTC.getUTCDate() + 1);
+    } else if (!startDate && endDate) {
+        // Solo endDate proporcionado
+        endDateUTC = this.convertHermosilloToUTC(endDate);
+        startDateUTC = new Date(endDateUTC);
+        startDateUTC.setUTCDate(startDateUTC.getUTCDate() - 1);
+    } else {
+        // Sin fechas proporcionadas, usar hoy en Hermosillo convertido a UTC
+        const nowHermosillo = new Date();
+        startDateUTC = this.convertHermosilloToUTC(nowHermosillo);
+        startDateUTC.setUTCHours(0, 0, 0, 0);
+        endDateUTC = new Date(startDateUTC);
+        endDateUTC.setUTCDate(endDateUTC.getUTCDate() + 1);
+    }
+
+    try {
+      console.log('===== FILTROS HERMOSILLO -> UTC =====');
+      console.log('Fecha desde (Hermosillo):', this.convertUTCToHermosillo(startDateUTC).toLocaleString('es-MX'));
+      console.log('Fecha hasta (Hermosillo):', this.convertUTCToHermosillo(endDateUTC).toLocaleString('es-MX'));
+      console.log('Fecha desde (UTC):', startDateUTC.toISOString());
+      console.log('Fecha hasta (UTC):', endDateUTC.toISOString());
+
+      // PRIMERO: Verificar qué hay en la base de datos
+      console.log('🔍 VERIFICANDO DATOS EN BD...');
+      
+      // 1. Verificar rango de fechas en BD
+      const dateRange = await this.unloadingRepository
+        .createQueryBuilder('u')
+        .select('MIN(u.date)', 'minDate')
+        .addSelect('MAX(u.date)', 'maxDate')
+        .getRawOne();
+      
+      console.log('📅 Rango de fechas en BD:');
+      console.log('Mínima:', dateRange.minDate, this.formatDateForDisplay(dateRange.minDate));
+      console.log('Máxima:', dateRange.maxDate, this.formatDateForDisplay(dateRange.maxDate));
+
+      // 2. Verificar unloadings en el rango sin joins
+      const unloadingsInRange = await this.unloadingRepository
+        .createQueryBuilder('u')
+        .where('u.date >= :startDate AND u.date < :endDate', {
+          startDate: startDateUTC.toISOString(),
+          endDate: endDateUTC.toISOString()
+        })
+        .getMany();
+      
+      console.log(`📊 Unloadings en rango ${startDateUTC.toISOString()} a ${endDateUTC.toISOString()}:`, unloadingsInRange.length);
+
+      // 3. Si no hay unloadings, buscar los más recientes
+      if (unloadingsInRange.length === 0) {
+        console.log('🔎 Buscando unloadings recientes...');
+        const recentUnloadings = await this.unloadingRepository
+          .createQueryBuilder('u')
+          .orderBy('u.date', 'DESC')
+          .limit(5)
+          .getMany();
+        
+        console.log('📦 Unloadings más recientes:');
+        recentUnloadings.forEach(u => {
+          console.log(`   - ${u.id}: ${u.date} (${this.formatDateForDisplay(u.date.toString())})`);
+        });
+      }
+
+      // 4. Ahora hacer la consulta completa CON FILTRO EN SHIPMENTS Y CHARGE SHIPMENTS
+      const rawData = await this.unloadingRepository
+        .createQueryBuilder('u')
+        .leftJoinAndSelect('u.subsidiary', 's')
+        .leftJoinAndSelect(
+          'u.shipments', 
+          'sh',
+          'sh.commitDateTime >= :startDate AND sh.commitDateTime < :endDate', // FILTRO SHIPMENTS
+          { startDate: startDateUTC.toISOString(), endDate: endDateUTC.toISOString() }
+        )
+        .leftJoinAndSelect('sh.packageDispatch', 'shPD')
+        .leftJoinAndSelect('shPD.drivers', 'shDriver')
+        .leftJoinAndSelect(
+          'u.chargeShipments',
+          'cs',
+          'cs.commitDateTime >= :startDate AND cs.commitDateTime < :endDate', // FILTRO CHARGE SHIPMENTS
+          { startDate: startDateUTC.toISOString(), endDate: endDateUTC.toISOString() }
+        )
+        .leftJoinAndSelect('cs.packageDispatch', 'csPD')
+        .leftJoinAndSelect('csPD.drivers', 'csDriver')
+        .where('u.date >= :startDate AND u.date < :endDate', {
+          startDate: startDateUTC.toISOString(),
+          endDate: endDateUTC.toISOString()
+        })
+        .getMany();
+
+      console.log('===== RESULTADOS =====');
+      console.log('Unloadings encontrados con joins:', rawData.length);
+
+      // DEBUG: Verificar shipments y chargeShipments filtrados
+      rawData.forEach((u, index) => {
+        console.log(`Unloading ${index + 1}:`, {
+          id: u.id,
+          date: u.date,
+          subsidiary: u.subsidiary?.name,
+          shipments: u.shipments?.length || 0,
+          chargeShipments: u.chargeShipments?.length || 0,
+          shipmentsSample: u.shipments?.slice(0, 2).map(s => ({
+            tracking: s.trackingNumber,
+            commitDate: s.commitDateTime
+          })),
+          chargeSample: u.chargeShipments?.slice(0, 2).map(cs => ({
+            tracking: cs.trackingNumber,
+            commitDate: cs.commitDateTime
+          }))
+        });
+      });
+
+      // Procesar los datos
+      const formattedData: UnloadingReportDto[] = rawData.map(unloading => {
+        if (!unloading) return null;
+
+        // Filtrar adicionalmente por si algún shipment se coló sin commitDateTime (aunque el join debería prevenirlo)
+        const filteredShipments = (unloading.shipments || []).filter(sh => 
+          sh.commitDateTime && 
+          new Date(sh.commitDateTime) >= startDateUTC && 
+          new Date(sh.commitDateTime) < endDateUTC
+        );
+
+        const filteredChargeShipments = (unloading.chargeShipments || []).filter(cs => 
+          cs.commitDateTime && 
+          new Date(cs.commitDateTime) >= startDateUTC && 
+          new Date(cs.commitDateTime) < endDateUTC
+        );
+
+        const uniqueShipments = this.removeDuplicateShipments(filteredShipments);
+        const uniqueChargeShipments = this.removeDuplicateShipments(filteredChargeShipments);
+
+        console.log(`📦 Unloading ${unloading.id}: ${uniqueShipments.length} shipments, ${uniqueChargeShipments.length} chargeShipments después del filtro`);
+
+        return {
+          id: unloading.id,
+          date: unloading.date,
+          subsidiary: {
+            id: unloading.subsidiary?.id || 'unknown',
+            name: unloading.subsidiary?.name || 'Sucursal Desconocida',
+          },
+          shipments: uniqueShipments.map(sh => ({
+            id: sh.id,
+            trackingNumber: sh.trackingNumber,
+            status: sh.status,
+            commitDateTime: sh.commitDateTime,
+            routeId: sh.routeId,
+            packageDispatch: sh.packageDispatch ? {
+              id: sh.packageDispatch.id,
+              trackingNumber: sh.packageDispatch.trackingNumber,
+              firstDriverName: this.getFirstDriverName(sh.packageDispatch.drivers),
+            } : null,
+          })),
+          chargeShipments: uniqueChargeShipments.map(cs => ({
+            id: cs.id,
+            trackingNumber: cs.trackingNumber,
+            status: cs.status,
+            commitDateTime: cs.commitDateTime,
+            routeId: cs.routeId,
+            packageDispatch: cs.packageDispatch ? {
+              id: cs.packageDispatch.id,
+              trackingNumber: cs.packageDispatch.trackingNumber,
+              firstDriverName: this.getFirstDriverName(cs.packageDispatch.drivers),
+            } : null,
+          })),
+        };
+      }).filter(Boolean);
+
+      console.log('===== DATOS FORMATEADOS =====');
+      console.log('Total unloadings a procesar:', formattedData.length);
+      
+      // Resumen final
+      const totalShipments = formattedData.reduce((sum, u) => sum + u.shipments.length, 0);
+      const totalChargeShipments = formattedData.reduce((sum, u) => sum + u.chargeShipments.length, 0);
+      console.log(`📊 Resumen: ${totalShipments} shipments + ${totalChargeShipments} chargeShipments = ${totalShipments + totalChargeShipments} paquetes total`);
+
+      return formattedData;
+
+    } catch (error) {
+      console.error('Error en getUnloadingReport:', error);
+      throw error;
+    }
+  }
+
+  // Métodos auxiliares para conversión de timezone
+  private convertHermosilloToUTC(date: Date): Date {
+    // Hermosillo es UTC-7, así que para convertir a UTC sumamos 7 horas
+    const utcDate = new Date(date.getTime() + (7 * 60 * 60 * 1000));
+    return utcDate;
+  }
+
+  private convertUTCToHermosillo(date: Date): Date {
+    // Para convertir UTC a Hermosillo restamos 7 horas
+    const hermosilloDate = new Date(date.getTime() - (7 * 60 * 60 * 1000));
+    return hermosilloDate;
+  }
+
+  private formatDateForDisplay(dateString: string): string {
+    if (!dateString) return 'N/A';
+    const date = new Date(dateString);
+    return date.toLocaleString('es-MX', { 
+      timeZone: 'America/Hermosillo',
+      dateStyle: 'short',
+      timeStyle: 'short' 
+    });
+  }
+
+  private getFirstDriverName(drivers: any[]): string | null {
+    if (!drivers || !Array.isArray(drivers) || drivers.length === 0) {
+      return null;
+    }
+    return drivers[0]?.name || null;
+  }
+
+  private removeDuplicateShipments(shipments: any[]): any[] {
+    if (!shipments || !Array.isArray(shipments)) {
+      return [];
+    }
+    
+    const seen = new Set();
+    return shipments.filter(shipment => {
+      if (!shipment || !shipment.id) {
+        return false;
+      }
+      const key = shipment.id;
+      if (seen.has(key)) {
+        return false;
+      }
+      seen.add(key);
+      return true;
+    });
+  }
+
+  async sendUnloadingReportResp() {
+    const unloadings = await this.getUnloadingReport();
+
+    // Combinar todos los shipments de todos los unloadings
+    let allShipments = [];
+    
+    unloadings.forEach(unloading => {
+        const unloadingShipments = [
+            ...(unloading.shipments || []),
+            ...(unloading.chargeShipments || [])
+        ];
+        
+        // Agregar información de la descarga a cada shipment
+        unloadingShipments.forEach(shipment => {
+            if (shipment.trackingNumber) { // Solo incluir si tiene tracking number
+                allShipments.push({
+                    ...shipment,
+                    subsidiaryName: unloading.subsidiary?.name,
+                    unloadingDate: unloading.date
+                });
+            }
+        });
+    });
+
+    // Si no hay shipments con datos, no enviar correo
+    if (allShipments.length === 0) {
+        this.logger.debug('No se encontraron shipments para enviar en el reporte');
+        return;
+    }
+
+    // Ordenar por conductor y luego por tracking number
+    allShipments.sort((a, b) => {
+        const driverA = a.packageDispatch?.firstDriverName || 'Sin conductor';
+        const driverB = b.packageDispatch?.firstDriverName || 'Sin conductor';
+        
+        if (driverA !== driverB) {
+            return driverA.localeCompare(driverB);
+        }
+        
+        return (a.trackingNumber || '').localeCompare(b.trackingNumber || '');
+    });
+
+    // Generar filas de la tabla HTML agrupadas por conductor
+    let currentDriver = '';
+    
+    const htmlRows = allShipments
+        .map(shipment => {
+            const driver = shipment.packageDispatch?.firstDriverName || 'Sin conductor asignado';
+            const routeTracking = shipment.packageDispatch?.trackingNumber || 'N/A';
+            
+            let driverHeader = '';
+            if (driver !== currentDriver) {
+                currentDriver = driver;
+                driverHeader = `
+                    <tr style="background-color: #e8f4fd;">
+                        <td colspan="6" style="padding: 10px; font-weight: bold; border-bottom: 2px solid #3498db;">
+                            🚗 Conductor: ${driver} | Salida a ruta: ${routeTracking}
+                        </td>
+                    </tr>
+                `;
+            }
+
+            return `
+                ${driverHeader}
+                <tr style="border-bottom: 1px solid #ddd;">
+                    <td style="padding: 8px; text-align: center;">${shipment.trackingNumber ?? "N/A"}</td>
+                    <td style="padding: 8px;">${shipment.subsidiaryName ?? "N/A"}</td>
+                    <td style="padding: 8px; text-align: center;">
+                        ${
+                            shipment.commitDateTime
+                            ? new Date(shipment.commitDateTime).toLocaleDateString('es-MX', {
+                                timeZone: 'America/Hermosillo',
+                            })
+                            : "Sin fecha"
+                        }
+                    </td>
+                    <td style="padding: 8px; text-align: center;">
+                        <span style="
+                            padding: 4px 8px;
+                            border-radius: 12px;
+                            font-size: 0.85em;
+                            font-weight: bold;
+                            ${this.getStatusStyle(shipment.status)}
+                        ">
+                            ${this.translateStatus(shipment.status) ?? "N/A"}
+                        </span>
+                    </td>
+                    <td style="padding: 8px; text-align: center;">${routeTracking}</td>
+                </tr>
+            `;
+        })
+        .join("");
+
+    const htmlContent = `
+        <div style="font-family: Arial, sans-serif; color: #2c3e50; max-width: 1000px; margin: auto;">
+            <h2 style="border-bottom: 3px solid #e74c3c; padding-bottom: 8px; color: #2c3e50;">
+                📦 Reporte Consolidado de Descargas
+            </h2>
+
+            <div style="background-color: #f8f9fa; padding: 15px; border-radius: 5px; margin-bottom: 20px;">
+                <h3 style="margin-top: 0; color: #2c3e50;">Resumen General</h3>
+                <div style="display: flex; gap: 20px; flex-wrap: wrap;">
+                    <div style="flex: 1; min-width: 200px;">
+                        <strong>Total de paquetes:</strong> ${allShipments.length}<br>
+                        <strong>Total de conductores:</strong> ${this.getUniqueDriversCount(allShipments)}<br>
+                        <strong>Fecha de generación:</strong> ${new Date().toLocaleDateString('es-MX', { timeZone: 'America/Hermosillo' })}
+                    </div>
+                    <div style="flex: 1; min-width: 200px;">
+                        ${this.generateStatusSummary(allShipments)}
+                    </div>
+                </div>
+            </div>
+
+            <table 
+                border="0" 
+                cellpadding="0" 
+                cellspacing="0" 
+                style="border-collapse: collapse; width: 100%; box-shadow: 0 0 10px rgba(0,0,0,0.05); margin-top: 15px;"
+            >
+                <thead style="background-color: #2c3e50; color: white; text-align: center;">
+                    <tr>
+                        <th style="padding: 12px;">Tracking Paquete</th>
+                        <th style="padding: 12px;">Sucursal</th>
+                        <th style="padding: 12px;">Fecha Compromiso</th>
+                        <th style="padding: 12px;">Estatus</th>
+                        <th style="padding: 12px;">Tracking Salida</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${htmlRows}
+                </tbody>
+            </table>
+
+            <div style="margin-top: 25px; padding: 15px; background-color: #fff3cd; border: 1px solid #ffeaa7; border-radius: 5px;">
+                <h4 style="margin-top: 0; color: #856404;">📋 Consideraciones</h4>
+                <ul style="margin-bottom: 0; color: #856404;">
+                    <li>Los paquetes están agrupados por conductor y ordenados por tracking number</li>
+                    <li>El <strong>Tracking Salida</strong> corresponde a la salida a ruta del conductor</li>
+                    <li>Paquetes con estatus <span style="color: #c0392b; font-weight: bold;">ENTREGADO</span> ya fueron completados</li>
+                    <li>Paquetes con estatus <span style="color: #e67e22; font-weight: bold;">EN RUTA</span> están en proceso de entrega</li>
+                </ul>
+            </div>
+
+            <p style="margin-top: 25px; text-align: center;">
+                Para un monitoreo detallado de los envíos, visite: 
+                <a href="https://app-pmy.vercel.app/" target="_blank" style="color: #2980b9; text-decoration: none; font-weight: bold;">
+                    https://app-pmy.vercel.app/
+                </a>
+            </p>
+
+            <hr style="margin: 30px 0; border: none; border-top: 1px solid #eee;" />
+
+            <p style="font-size: 0.9em; color: #7f8c8d; text-align: center;">
+                📧 Este correo fue generado automáticamente por el sistema de seguimiento<br />
+                ⏰ Hora de generación: ${new Date().toLocaleString('es-MX', { timeZone: 'America/Hermosillo' })}<br />
+                🙏 Por favor, no responda a este mensaje
+            </p>
+        </div>
+    `;
+
+    try {
+        const result = await this.mailService.sendHighPriorityUnloadingPriorityPackages({
+            //to: 'paqueteriaymensajeriadelyaqui@hotmail.com',
+            //cc: 'sistemas@paqueteriaymensajeriadelyaqui.com',
+            to: 'javier.rappaz@gmail.com',
+            htmlContent
+        });
+
+        console.log("🚀 ~ UnloadingService ~ sendUnloadingReport ~ result:", result)
+
+        this.logger.debug(`Correo consolidado enviado correctamente con ${allShipments.length} paquetes:`, result);
+    } catch (error) {
+        this.logger.error('Error al enviar correo consolidado:', error);
+    }
+  }
+
+  async sendUnloadingReport(startDate?: Date, endDate?: Date) {
+    const unloadings = await this.getUnloadingReport(startDate, endDate);
+
+    console.log('===== DEBUG UNLOADINGS =====');
+    console.log('Total unloadings:', unloadings.length);
+    unloadings.forEach((u, index) => {
+        console.log(`Unloading ${index + 1}:`, {
+            id: u.id,
+            subsidiary: u.subsidiary.name,
+            shipments: u.shipments.length,
+            chargeShipments: u.chargeShipments.length,
+            shipmentsSinRuta: u.shipments.filter(s => !s.packageDispatch?.firstDriverName).length,
+            chargeSinRuta: u.chargeShipments.filter(cs => !cs.packageDispatch?.firstDriverName).length
+        });
+    });
+
+    // Separar paquetes con y sin ruta
+    let shipmentsWithRoute = [];
+    let shipmentsWithoutRoute = [];
+    
+    unloadings.forEach(unloading => {
+        const unloadingShipments = [
+            ...(unloading.shipments || []),
+            ...(unloading.chargeShipments || [])
+        ];
+        
+        unloadingShipments.forEach(shipment => {
+            if (shipment.trackingNumber) {
+                const shipmentWithMeta = {
+                    ...shipment,
+                    subsidiaryName: unloading.subsidiary?.name,
+                    unloadingDate: unloading.date
+                };
+                
+                // DEBUG DETALLADO de cada shipment
+                const hasDriver = shipment.packageDispatch?.firstDriverName;
+                console.log(`📦 ${shipment.trackingNumber}: ${hasDriver ? 'CON RUTA' : 'SIN RUTA'} - Driver: ${shipment.packageDispatch?.firstDriverName || 'N/A'}`);
+                
+                if (hasDriver) {
+                    shipmentsWithRoute.push(shipmentWithMeta);
+                } else {
+                    shipmentsWithoutRoute.push(shipmentWithMeta);
+                }
+            }
+        });
+    });
+
+    console.log('===== RESUMEN FINAL =====');
+    console.log('Total con ruta:', shipmentsWithRoute.length);
+    console.log('Total sin ruta:', shipmentsWithoutRoute.length);
+    console.log('Ejemplos sin ruta:', shipmentsWithoutRoute.slice(0, 3).map(s => s.trackingNumber));
+
+    // Si no hay shipments con datos, no enviar correo
+    if (shipmentsWithRoute.length === 0 && shipmentsWithoutRoute.length === 0) {
+        this.logger.debug('No se encontraron shipments para enviar en el reporte');
+        return;
+    }
+
+    // Ordenar paquetes con ruta por conductor Y por salida a ruta
+    shipmentsWithRoute.sort((a, b) => {
+        const driverA = a.packageDispatch?.firstDriverName || 'Sin conductor';
+        const driverB = b.packageDispatch?.firstDriverName || 'Sin conductor';
+        
+        if (driverA !== driverB) {
+            return driverA.localeCompare(driverB);
+        }
+        
+        const routeA = a.packageDispatch?.trackingNumber || '';
+        const routeB = b.packageDispatch?.trackingNumber || '';
+        
+        if (routeA !== routeB) {
+            return routeA.localeCompare(routeB);
+        }
+        
+        return (a.trackingNumber || '').localeCompare(b.trackingNumber || '');
+    });
+
+    // Ordenar paquetes sin ruta por tracking number
+    shipmentsWithoutRoute.sort((a, b) => {
+        return (a.trackingNumber || '').localeCompare(b.trackingNumber || '');
+    });
+
+    // Generar HTML para ambas secciones
+    const htmlWithRoute = this.generateRouteSection(shipmentsWithRoute, 'Con Salida a Ruta');
+    const htmlWithoutRoute = this.generateNoRouteSection(shipmentsWithoutRoute, 'Sin Salida a Ruta');
+
+    // Crear contenido HTML más robusto
+    const htmlContent = this.generateEmailContent(
+        shipmentsWithRoute, 
+        shipmentsWithoutRoute, 
+        htmlWithRoute, 
+        htmlWithoutRoute
+    );
+
+    console.log('===== ENVIANDO CORREO =====');
+    console.log('Tamaño aproximado del HTML:', htmlContent.length, 'caracteres');
+    
+    try {
+        const result = await this.mailService.sendHighPriorityUnloadingPriorityPackages({
+            //to: 'paqueteriaymensajeriadelyaqui@hotmail.com',
+            //cc: ['sistemas@paqueteriaymensajeriadelyaqui.com','bodegacsl@paqueteriaymensajeriadelyaqui.com'],
+            to: 'javier.rappaz@gmail.com',
+            //subject: this.generateEmailSubject(shipmentsWithRoute, shipmentsWithoutRoute, startDate, endDate),
+            htmlContent
+        });
+
+        this.logger.debug(`✅ Correo enviado: ${shipmentsWithRoute.length} con ruta, ${shipmentsWithoutRoute.length} sin ruta`);
+        return {
+            success: true,
+            withRoute: shipmentsWithRoute.length,
+            withoutRoute: shipmentsWithoutRoute.length,
+            totalUnloadings: unloadings.length
+        };
+    } catch (error) {
+        console.error('❌ Error al enviar correo:', error);
+        this.logger.error('Error al enviar correo:', error);
+        throw error;
+    }
+  }
+
+  // NUEVO MÉTODO para generar el contenido del email de forma más robusta
+  private generateEmailContent(
+      shipmentsWithRoute: any[], 
+      shipmentsWithoutRoute: any[], 
+      htmlWithRoute: string, 
+      htmlWithoutRoute: string
+  ): string {
+      return `
+  <!DOCTYPE html>
+  <html>
+  <head>
+      <meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <title>Reporte de Descargas</title>
+  </head>
+  <body style="font-family: Arial, sans-serif; color: #2c3e50; max-width: 1000px; margin: auto; padding: 20px;">
+      <h2 style="border-bottom: 3px solid #e74c3c; padding-bottom: 8px; color: #2c3e50;">
+          📦 Reporte Consolidado de Descargas
+      </h2>
+
+      <div style="background-color: #f8f9fa; padding: 15px; border-radius: 5px; margin-bottom: 20px;">
+          <h3 style="margin-top: 0; color: #2c3e50;">Resumen General</h3>
+          <div style="display: flex; gap: 20px; flex-wrap: wrap;">
+              <div style="flex: 1; min-width: 200px;">
+                  <strong>Total de paquetes:</strong> ${shipmentsWithRoute.length + shipmentsWithoutRoute.length}<br>
+                  <strong>Con salida a ruta:</strong> ${shipmentsWithRoute.length}<br>
+                  <strong>Sin salida a ruta:</strong> ${shipmentsWithoutRoute.length}<br>
+                  <strong>Total de conductores:</strong> ${this.getUniqueDriversCount(shipmentsWithRoute)}<br>
+                  <strong>Total de salidas a ruta:</strong> ${this.getUniqueRoutesCount(shipmentsWithRoute)}<br>
+                  <strong>Fecha de generación:</strong> ${new Date().toLocaleDateString('es-MX', { timeZone: 'America/Hermosillo' })}
+              </div>
+              <div style="flex: 1; min-width: 200px;">
+                  ${this.generateStatusSummary([...shipmentsWithRoute, ...shipmentsWithoutRoute])}
+              </div>
+          </div>
+      </div>
+
+      ${htmlWithRoute}
+      ${shipmentsWithoutRoute.length > 0 ? htmlWithoutRoute : '<div style="margin-bottom: 30px;"><p>✅ No hay paquetes sin salida a ruta.</p></div>'}
+
+      <div style="margin-top: 25px; padding: 15px; background-color: #fff3cd; border: 1px solid #ffeaa7; border-radius: 5px;">
+          <h4 style="margin-top: 0; color: #856404;">📋 Consideraciones</h4>
+          <ul style="margin-bottom: 0; color: #856404;">
+              <li>Los paquetes están agrupados por conductor y salida a ruta, ordenados por tracking number</li>
+              <li>El <strong>Tracking Salida</strong> corresponde a la salida a ruta del conductor</li>
+              <li>Paquetes <strong>Sin Salida a Ruta</strong> requieren atención inmediata para asignación</li>
+              <li>Paquetes con estatus <span style="color: #c0392b; font-weight: bold;">ENTREGADO</span> ya fueron completados</li>
+              <li>Paquetes con estatus <span style="color: #e67e22; font-weight: bold;">EN RUTA</span> están en proceso de entrega</li>
+          </ul>
+      </div>
+
+      <p style="margin-top: 25px; text-align: center;">
+          Para un monitoreo detallado de los envíos, visite: 
+          <a href="https://app-pmy.vercel.app/" target="_blank" style="color: #2980b9; text-decoration: none; font-weight: bold;">
+              https://app-pmy.vercel.app/
+          </a>
+      </p>
+
+      <hr style="margin: 30px 0; border: none; border-top: 1px solid #eee;" />
+
+      <p style="font-size: 0.9em; color: #7f8c8d; text-align: center;">
+          📧 Este correo fue generado automáticamente por el sistema de seguimiento<br />
+          ⏰ Hora de generación: ${new Date().toLocaleString('es-MX', { timeZone: 'America/Hermosillo' })}<br />
+          🙏 Por favor, no responda a este mensaje
+      </p>
+  </body>
+  </html>`;
+  }
+
+  // NUEVO MÉTODO para generar el asunto del correo
+  private generateEmailSubject(shipmentsWithRoute: any[], shipmentsWithoutRoute: any[], startDate?: Date, endDate?: Date): string {
+      const total = shipmentsWithRoute.length + shipmentsWithoutRoute.length;
+      const period = startDate && endDate 
+          ? `${startDate.toLocaleDateString('es-MX')} a ${endDate.toLocaleDateString('es-MX')}`
+          : 'del día';
+      
+      return `📦 Reporte Descargas: ${total} paquetes (${shipmentsWithRoute.length} con ruta, ${shipmentsWithoutRoute.length} sin ruta) - ${period}`;
+  }
+
+  // MÉTODO MEJORADO para sección sin ruta
+  private generateNoRouteSection(shipments: any[], title: string): string {
+      if (shipments.length === 0) {
+          return '';
+      }
+
+      const htmlRows = shipments
+          .map(shipment => `
+              <tr style="border-bottom: 1px solid #ddd;">
+                  <td style="padding: 8px; text-align: center;">${shipment.trackingNumber ?? "N/A"}</td>
+                  <td style="padding: 8px;">${shipment.subsidiaryName ?? "N/A"}</td>
+                  <td style="padding: 8px; text-align: center;">
+                      ${
+                          shipment.commitDateTime
+                          ? new Date(shipment.commitDateTime).toLocaleDateString('es-MX', {
+                              timeZone: 'America/Hermosillo',
+                          })
+                          : "Sin fecha"
+                      }
+                  </td>
+                  <td style="padding: 8px; text-align: center;">
+                      <span style="
+                          padding: 4px 8px;
+                          border-radius: 12px;
+                          font-size: 0.85em;
+                          font-weight: bold;
+                          ${this.getStatusStyle(shipment.status)}
+                      ">
+                          ${this.translateStatus(shipment.status) ?? "N/A"}
+                      </span>
+                  </td>
+                  <td style="padding: 8px; text-align: center; color: #e74c3c; font-weight: bold;">
+                      ⚠️ SIN ASIGNAR
+                  </td>
+              </tr>
+          `)
+          .join("");
+
+      return `
+          <div style="margin-bottom: 30px;">
+              <h3 style="color: #e74c3c; border-left: 4px solid #e74c3c; padding-left: 10px; background-color: #fdf2f2; padding: 10px; border-radius: 4px;">
+                  ⚠️ ${title} <span style="font-size: 0.8em; color: #7f8c8d;">(${shipments.length} paquetes)</span>
+              </h3>
+              <div style="background-color: #fdf2f2; padding: 10px; border-radius: 4px; margin-bottom: 10px;">
+                  <p style="margin: 0; color: #e74c3c; font-weight: bold;">
+                      ❗ Estos ${shipments.length} paquetes requieren asignación inmediata a una ruta
+                  </p>
+              </div>
+              <table 
+                  border="0" 
+                  cellpadding="0" 
+                  cellspacing="0" 
+                  style="border-collapse: collapse; width: 100%; box-shadow: 0 0 10px rgba(0,0,0,0.05);"
+              >
+                  <thead style="background-color: #f8d7da; color: #721c24; text-align: center;">
+                      <tr>
+                          <th style="padding: 12px;">Tracking Paquete</th>
+                          <th style="padding: 12px;">Sucursal</th>
+                          <th style="padding: 12px;">Fecha Compromiso</th>
+                          <th style="padding: 12px;">Estatus</th>
+                          <th style="padding: 12px;">Situación</th>
+                      </tr>
+                  </thead>
+                  <tbody>
+                      ${htmlRows}
+                  </tbody>
+              </table>
+          </div>
+      `;
+  }
+
+  // MÉTODO ACTUALIZADO para paquetes con ruta (agrupa por conductor Y salida a ruta)
+  private generateRouteSection(shipments: any[], title: string): string {
+      let currentDriver = '';
+      let currentRoute = '';
+      
+      const htmlRows = shipments
+          .map(shipment => {
+              const driver = shipment.packageDispatch?.firstDriverName || 'Sin conductor asignado';
+              const routeTracking = shipment.packageDispatch?.trackingNumber || 'N/A';
+              
+              let routeHeader = '';
+              if (driver !== currentDriver || routeTracking !== currentRoute) {
+                  currentDriver = driver;
+                  currentRoute = routeTracking;
+                  routeHeader = `
+                      <tr style="background-color: #e8f4fd;">
+                          <td colspan="5" style="padding: 10px; font-weight: bold; border-bottom: 2px solid #3498db;">
+                              🚗 Conductor: ${driver} | 📦 Salida a ruta: ${routeTracking}
+                          </td>
+                      </tr>
+                  `;
+              }
+
+              return `
+                  ${routeHeader}
+                  <tr style="border-bottom: 1px solid #ddd;">
+                      <td style="padding: 8px; text-align: center;">${shipment.trackingNumber ?? "N/A"}</td>
+                      <td style="padding: 8px;">${shipment.subsidiaryName ?? "N/A"}</td>
+                      <td style="padding: 8px; text-align: center;">
+                          ${
+                              shipment.commitDateTime
+                              ? new Date(shipment.commitDateTime).toLocaleDateString('es-MX', {
+                                  timeZone: 'America/Hermosillo',
+                              })
+                              : "Sin fecha"
+                          }
+                      </td>
+                      <td style="padding: 8px; text-align: center;">
+                          <span style="
+                              padding: 4px 8px;
+                              border-radius: 12px;
+                              font-size: 0.85em;
+                              font-weight: bold;
+                              ${this.getStatusStyle(shipment.status)}
+                          ">
+                              ${this.translateStatus(shipment.status) ?? "N/A"}
+                          </span>
+                      </td>
+                      <td style="padding: 8px; text-align: center;">${routeTracking}</td>
+                  </tr>
+              `;
+          })
+          .join("");
+
+      return `
+          <div style="margin-bottom: 30px;">
+              <h3 style="color: #2c3e50; border-left: 4px solid #3498db; padding-left: 10px;">
+                  📋 ${title} <span style="font-size: 0.8em; color: #7f8c8d;">(${shipments.length} paquetes)</span>
+              </h3>
+              <table 
+                  border="0" 
+                  cellpadding="0" 
+                  cellspacing="0" 
+                  style="border-collapse: collapse; width: 100%; box-shadow: 0 0 10px rgba(0,0,0,0.05);"
+              >
+                  <thead style="background-color: #2c3e50; color: white; text-align: center;">
+                      <tr>
+                          <th style="padding: 12px;">Tracking Paquete</th>
+                          <th style="padding: 12px;">Sucursal</th>
+                          <th style="padding: 12px;">Fecha Compromiso</th>
+                          <th style="padding: 12px;">Estatus</th>
+                          <th style="padding: 12px;">Tracking Salida</th>
+                      </tr>
+                  </thead>
+                  <tbody>
+                      ${htmlRows || `
+                          <tr>
+                              <td colspan="5" style="text-align: center; padding: 20px; color: #7f8c8d;">
+                                  No hay paquetes en esta categoría
+                              </td>
+                          </tr>
+                      `}
+                  </tbody>
+              </table>
+          </div>
+      `;
+  }
+
+  // NUEVO MÉTODO para contar salidas a ruta únicas
+  private getUniqueRoutesCount(shipments: any[]): number {
+      const routes = new Set();
+      shipments.forEach(shipment => {
+          if (shipment.packageDispatch?.trackingNumber) {
+              routes.add(shipment.packageDispatch.trackingNumber);
+          }
+      });
+      return routes.size;
+  }
+
+  // Métodos auxiliares
+  getUniqueDriversCount(shipments) {
+      const drivers = new Set();
+      shipments.forEach(shipment => {
+          if (shipment.packageDispatch?.firstDriverName) {
+              drivers.add(shipment.packageDispatch.firstDriverName);
+          }
+      });
+      return drivers.size;
+  }
+
+  generateStatusSummary(shipments) {
+      const statusCount = {};
+      
+      shipments.forEach(shipment => {
+          const status = shipment.status || 'desconocido';
+          statusCount[status] = (statusCount[status] || 0) + 1;
+      });
+
+      const summaryItems = Object.entries(statusCount)
+          .map(([status, count]) => 
+              `<div style="margin: 3px 0;">
+                  <strong>${this.translateStatus(status)}:</strong> ${count}
+              </div>`
+          )
+          .join('');
+
+      return summaryItems;
+  }
+
+  getStatusStyle(status) {
+      const styles = {
+          'entregado': 'background-color: #d4edda; color: #155724;',
+          'en_ruta': 'background-color: #fff3cd; color: #856404;',
+          'recoleccion': 'background-color: #cce7ff; color: #004085;',
+          'no_entregado': 'background-color: #f8d7da; color: #721c24;',
+          'desconocido': 'background-color: #e2e3e5; color: #383d41;'
+      };
+      
+      return styles[status] || 'background-color: #f8f9fa; color: #6c757d;';
+  }
+
+  translateStatus(status) {
+      const translations = {
+          'entregado': 'ENTREGADO',
+          'en_ruta': 'EN RUTA',
+          'recoleccion': 'RECOLECCIÓN',
+          'no_entregado': 'NO ENTREGADO',
+          'desconocido': 'DESCONOCIDO'
+      };
+      
+      return translations[status] || status?.toUpperCase() || 'N/A';
   }
 
   async getPriorityFromUnloading(unloading: Unloading) {

@@ -25,6 +25,7 @@ import { PackageDispatchModule } from './package-dispatch/package-dispatch.modul
 import { UnloadingModule } from './unloading/unloading.module';
 import { RouteclosureModule } from './routeclosure/routeclosure.module';
 import { InventoriesModule } from './inventories/inventories.module';
+import { MonitoringModule } from './monitoring/monitoring.module';
 
 @Module({
   imports: [
@@ -71,7 +72,8 @@ import { InventoriesModule } from './inventories/inventories.module';
     PackageDispatchModule,
     UnloadingModule,
     RouteclosureModule,
-    InventoriesModule
+    InventoriesModule,
+    MonitoringModule
   ],
   controllers: [AppController],
   providers: [

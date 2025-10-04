@@ -31,7 +31,7 @@ import { IncomeSourceType } from 'src/common/enums/income-source-type.enum';
 import { GetShipmentKpisDto } from './dto/get-shipment-kpis.dto';
 import { ConsolidatedService } from 'src/consolidated/consolidated.service';
 import { ConsolidatedType } from 'src/common/enums/consolidated-type.enum';
-import { toZonedTime } from 'date-fns-tz';
+import { toDate, toZonedTime } from 'date-fns-tz';
 import { MailService } from 'src/mail/mail.service';
 import { SubsidiaryRules } from './dto/subsidiary-rules';
 import { ForPickUp } from 'src/entities/for-pick-up.entity';
@@ -2318,20 +2318,34 @@ export class ShipmentsService {
     //Formatear a utc los commit que vienen normal
     if (shipment.commitDate && shipment.commitTime) {
       try {
+        const timeZone = 'America/Hermosillo';
         const parsedDate = parse(shipment.commitDate, 'yyyy-MM-dd', new Date());
         const parsedTime = parse(shipment.commitTime, 'HH:mm:ss', new Date());
-        
+
         if (!isNaN(parsedDate.getTime()) && !isNaN(parsedTime.getTime())) {
           commitDate = format(parsedDate, 'yyyy-MM-dd');
           commitTime = format(parsedTime, 'HH:mm:ss');
-          commitDateTime = new Date(`${commitDate}T${commitTime}`);
+
+          // Fecha local como string
+          const localDateTime = `${commitDate}T${commitTime}`;
+
+          // ⬇️ Aquí está el truco: usar toDate con timeZone
+          // Esto interpreta localDateTime como si fuera Hermosillo y devuelve UTC
+          commitDateTime = toDate(localDateTime, { timeZone });
+
           dateSource = 'Excel';
-          this.logger.log(`📅 commitDateTime asignado desde Excel para ${trackingNumber}: ${commitDateTime.toISOString()} (commitDate=${commitDate}, commitTime=${commitTime})`);
+          this.logger.log(
+            `📅 commitDateTime (UTC) asignado desde Excel para ${trackingNumber}: ${commitDateTime.toISOString()} (commitDate=${commitDate}, commitTime=${commitTime}, TZ=${timeZone})`,
+          );
         } else {
-          this.logger.log(`⚠️ Formato inválido en Excel para ${trackingNumber}: commitDate=${shipment.commitDate}, commitTime=${shipment.commitTime}`);
+          this.logger.log(
+            `⚠️ Formato inválido en Excel para ${trackingNumber}: commitDate=${shipment.commitDate}, commitTime=${shipment.commitTime}`,
+          );
         }
       } catch (err) {
-        this.logger.log(`⚠️ Error al parsear datos de Excel para ${trackingNumber}: ${err.message}`);
+        this.logger.log(
+          `⚠️ Error al parsear datos de Excel para ${trackingNumber}: ${err.message}`,
+        );
       }
     }
 
