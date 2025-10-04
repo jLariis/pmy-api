@@ -1225,9 +1225,9 @@ export class UnloadingService {
     
     try {
         const result = await this.mailService.sendHighPriorityUnloadingPriorityPackages({
-            //to: 'paqueteriaymensajeriadelyaqui@hotmail.com',
-            //cc: ['sistemas@paqueteriaymensajeriadelyaqui.com','bodegacsl@paqueteriaymensajeriadelyaqui.com'],
-            to: 'javier.rappaz@gmail.com',
+            to: 'paqueteriaymensajeriadelyaqui@hotmail.com',
+            cc: ['sistemas@paqueteriaymensajeriadelyaqui.com','bodegacsl@paqueteriaymensajeriadelyaqui.com'],
+            //to: 'javier.rappaz@gmail.com',
             //subject: this.generateEmailSubject(shipmentsWithRoute, shipmentsWithoutRoute, startDate, endDate),
             htmlContent
         });
