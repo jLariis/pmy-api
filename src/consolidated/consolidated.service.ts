@@ -26,6 +26,43 @@ export class ConsolidatedService {
     return Math.floor(diffTime / (1000 * 60 * 60 * 24));
   }
 
+  async findBySubsidiary(subdiaryId: string): Promise<{
+    id: string, 
+    type: string, 
+    date: Date,
+    consNumber: string,
+    numberOfPackages: number,
+    subsidiary: {
+      id: string,
+      name: string
+    }
+  }[]> {
+    const result = await this.consolidatedRepository.find({
+      select: {
+        id: true,
+        type: true,
+        date: true,
+        consNumber: true,
+        numberOfPackages: true,
+        subsidiary: {
+          id: true,
+          name: true,
+        }
+      },
+      where: {
+        subsidiary: {
+          id: subdiaryId
+        }
+      },
+      relations: [
+        'subsidiary'
+      ]
+    });
+
+    return result;
+  }
+
+
   async findAll(
     subsidiaryId?: string,
     fromDate?: Date,

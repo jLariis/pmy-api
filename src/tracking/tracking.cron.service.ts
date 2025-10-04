@@ -1,13 +1,15 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule'; // Tu servicio que accede a la BD
 import { ShipmentsService } from 'src/shipments/shipments.service';
+import { UnloadingService } from 'src/unloading/unloading.service';
 
 @Injectable()
 export class TrackingCronService {
   private readonly logger = new Logger(TrackingCronService.name);
 
   constructor(
-    private readonly shipmentService: ShipmentsService
+    private readonly shipmentService: ShipmentsService,
+    private readonly unloadingService: UnloadingService
   ) {}
 
   /*@Cron(CronExpression.EVERY_HOUR)
@@ -16,7 +18,7 @@ export class TrackingCronService {
     await this.shipmentService.checkStatusOnFedex();
   }*/
 
-  //@Cron(CronExpression.EVERY_HOUR)
+  @Cron(CronExpression.EVERY_HOUR)
   async handleCron() {
     this.logger.log('🕐 Ejecutando verificación de envíos...');
 
@@ -74,14 +76,28 @@ export class TrackingCronService {
   }
 
   
-  /*@Cron('0 0 8-22/2 * * 1-6', {
+  @Cron('0 0 8-22/2 * * 1-6', {
     timeZone: 'America/Hermosillo'
-  })*/
+  })
   async handleSendShipmentWithStatus03(){
     /** Por ahora solo cabos */
     this.logger.log('🕐 Ejecutando el envio de correo con Enviós DEX03...');
     const subdiaryId = 'abf2fc38-cb42-41b6-9554-4b71c11b8916'
     await this.shipmentService.getShipmentsWithStatus03(subdiaryId);
+  }
+
+  @Cron('0 15,17 * * 1-5', {
+    timeZone: 'America/Hermosillo',
+  })
+  async handleUnloadingMonitoring() {
+    this.logger.log(`🕐 Ejecutando envío de correo de monitoreo de desembarque`);
+
+    try {
+      await this.unloadingService.sendUnloadingReport();
+      this.logger.log('✅ Envío de monitoreo de desembarque completado.');
+    } catch (error) {
+      this.logger.error('❌ Error al enviar el reporte de monitoreo:', error);
+    }
   }
 }
 

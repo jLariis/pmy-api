@@ -11,9 +11,11 @@ import { ChargeShipment } from 'src/entities/charge-shipment.entity';
 import { ConsolidatedService } from 'src/consolidated/consolidated.service';
 import { MailService } from 'src/mail/mail.service';
 import { ForPickUp } from 'src/entities/for-pick-up.entity';
+import { UnloadingService } from 'src/unloading/unloading.service';
+import { Unloading } from 'src/entities/unloading.entity';
 
 @Module({
-    imports: [TypeOrmModule.forFeature([Shipment, ShipmentStatus,Subsidiary, Income, ChargeShipment, Charge, Consolidated, ForPickUp])],
-    providers: [TrackingCronService, ShipmentsService, FedexService, DHLService, SubsidiariesService, ConsolidatedService, MailService],
+    imports: [TypeOrmModule.forFeature([Shipment, ShipmentStatus,Subsidiary, Income, ChargeShipment, Charge, Consolidated, ForPickUp, Unloading])],
+    providers: [TrackingCronService, ShipmentsService, FedexService, DHLService, SubsidiariesService, ConsolidatedService, MailService, UnloadingService],
 })
 export class TrackingModule {}
