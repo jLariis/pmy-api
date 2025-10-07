@@ -130,4 +130,9 @@ export class UsersService {
   remove(id: string) {
     return this.userRepository.delete(id);
   }
+
+  async bcryptPass(password: string) {
+    const hashedPassword = await bcrypt.hash(password, 10);
+    return hashedPassword;
+  }
 }

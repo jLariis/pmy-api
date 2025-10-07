@@ -349,7 +349,7 @@ export class InventoriesService {
         </div>
       `;
   
-      const result = await this.mailService.sendHighPriorityUnloadingPriorityPackages({
+      const result = await this.mailService.sendHighPriorityPackagesOnInvetory({
         to: 'paqueteriaymensajeriadelyaqui@hotmail.com',
         cc: ['sistemas@paqueteriaymensajeriadelyaqui.com','bodegacsl@paqueteriaymensajeriadelyaqui.com'],
         //cc: 'javier.rappaz@gmail.com'

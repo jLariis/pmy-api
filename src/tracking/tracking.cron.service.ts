@@ -3,6 +3,7 @@ import { Cron, CronExpression } from '@nestjs/schedule'; // Tu servicio que acce
 import { ShipmentsService } from 'src/shipments/shipments.service';
 import { UnloadingService } from 'src/unloading/unloading.service';
 
+
 @Injectable()
 export class TrackingCronService {
   private readonly logger = new Logger(TrackingCronService.name);
@@ -18,31 +19,39 @@ export class TrackingCronService {
     await this.shipmentService.checkStatusOnFedex();
   }*/
 
-  @Cron(CronExpression.EVERY_HOUR)
+  //@Cron(CronExpression.EVERY_HOUR)
   async handleCron() {
     this.logger.log('🕐 Ejecutando verificación de envíos...');
 
     // Obtener los envíos a validar usando getShipmentsToValidate
     const shipments = await this.shipmentService.getShipmentsToValidate();
+    const chargeShipments = await this.shipmentService.getSimpleChargeShipments();
 
-    // Extraer los trackingNumbers de los envíos
     const trackingNumbers = shipments.map(shipment => shipment.trackingNumber);
+    const trackingNumbersChargeShipments = chargeShipments.map(shipment => shipment.trackingNumber);
+
+    if (!trackingNumbersChargeShipments.length) {
+      this.logger.log('📪 No hay envíos F2 para procesar');
+    }
 
     if (!trackingNumbers.length) {
       this.logger.log('📪 No hay envíos para procesar');
       return;
     }
 
-    this.logger.log(`📦 Procesando ${trackingNumbers.length} trackingNumbers: ${JSON.stringify(trackingNumbers)}`);
+    this.logger.log(`📦 Procesando ${trackingNumbers.length} trackingNumbers: ${JSON.stringify(trackingNumbers)}, trackingNumbesF2: ${JSON.stringify(trackingNumbersChargeShipments)}`);
 
     // Llamar al Método 2 con shouldPersist = true para emular el comportamiento del Método 1
     try {
       const result = await this.shipmentService.checkStatusOnFedexBySubsidiaryRulesTesting(trackingNumbers, true);
+      const resultChargShipments = await this.shipmentService.checkStatusOnFedexChargeShipment(trackingNumbersChargeShipments);
 
       // Registrar resultados para auditoría
       this.logger.log(
         `✅ Resultado: ${result.updatedShipments.length} envíos actualizados, ` +
+        `${resultChargShipments.updatedChargeShipments.length} envíos F2 actualizados, ` +
         `${result.shipmentsWithError.length} errores, ` +
+        `${resultChargShipments.chargeShipmentsWithError.length} errores de F2, ` +
         `${result.unusualCodes.length} códigos inusuales, ` +
         `${result.shipmentsWithOD.length} excepciones OD o fallos de validación`
       );
@@ -51,6 +60,11 @@ export class TrackingCronService {
       if (result.shipmentsWithError.length) {
         this.logger.warn(`⚠️ Errores detectados: ${JSON.stringify(result.shipmentsWithError, null, 2)}`);
       }
+
+      if (resultChargShipments.chargeShipmentsWithError.length) {
+        this.logger.warn(`⚠️ Errores detectados en F2: ${JSON.stringify(resultChargShipments.chargeShipmentsWithError, null, 2)}`);
+      }
+
       if (result.unusualCodes.length) {
         this.logger.warn(`⚠️ Códigos inusuales: ${JSON.stringify(result.unusualCodes, null, 2)}`);
       }
@@ -76,9 +90,9 @@ export class TrackingCronService {
   }
 
   
-  @Cron('0 0 8-22/2 * * 1-6', {
+  /*@Cron('0 0 8-22/2 * * 1-6', {
     timeZone: 'America/Hermosillo'
-  })
+  })*/
   async handleSendShipmentWithStatus03(){
     /** Por ahora solo cabos */
     this.logger.log('🕐 Ejecutando el envio de correo con Enviós DEX03...');
@@ -86,7 +100,7 @@ export class TrackingCronService {
     await this.shipmentService.getShipmentsWithStatus03(subdiaryId);
   }
 
-  @Cron('0 15,17 * * 1-5', {
+  @Cron('0 15,17 * * 1-6', {
     timeZone: 'America/Hermosillo',
   })
   async handleUnloadingMonitoring() {

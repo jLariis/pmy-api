@@ -445,7 +445,7 @@ export class MailService {
         to: 'paqueteriaymensajeriadelyaqui@hotmail.com',
         cc: ['sistemas@paqueteriaymensajeriadelyaqui.com','bodegacsl@paqueteriaymensajeriadelyaqui.com'],
         //to: 'javier.rappaz@gmail.com',
-        subject: `🚚 Cierre de Ruta ${formattedDate} de ${routeClosure.subsidiary.name}`,
+        subject: `🚚 CIERRE DE RUTA - ${routeClosure.packageDispatch.drivers[0].name.toUpperCase()} - ${formattedDate} DE ${routeClosure.subsidiary.name.toUpperCase()}`,
         html: htmlContent,
         headers: {
         },
