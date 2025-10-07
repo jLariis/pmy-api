@@ -33,4 +33,18 @@ export class UsersController {
   remove(@Param('id') id: string) {
     return this.usersService.remove(id);
   }
+
+  @Post('bcrypt-pass')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        pass: { type: 'string', example: 'MiContraseña123' },
+      },
+      required: ['pass'],
+    },
+  })
+  async bcryptPass(@Body('pass') pass: string) {
+    return this.usersService.bcryptPass(pass);
+  }
 }

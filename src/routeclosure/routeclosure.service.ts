@@ -170,7 +170,7 @@ export class RouteclosureService {
         where: {
           id: routeClosureId
         },
-        relations: ['subsidiary']
+        relations: ['subsidiary', 'packageDispatch', 'packageDispatch.drivers']
       });
 
     return await this.mailService.sendHighPriorityRouteClosureEmail(pdfFile, excelFile, routeClosure);

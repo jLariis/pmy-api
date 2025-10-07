@@ -62,7 +62,7 @@ export class RouteclosureController {
       })
     sendEmail(
       @UploadedFiles() files: Express.Multer.File[],
-      @Body('packageDispatchId') routeClosureId: string
+      @Body('routeClosureId') routeClosureId: string
     ) {
       console.log('🚀 ~ PackageDispatchController ~ sendEmail ~ files:', files);
           console.log('🚀 ~ PackageDispatchController ~ sendEmail ~ routeClosureId:', routeClosureId);
