@@ -157,6 +157,7 @@ export class InventoriesService {
       {
         ...shipment,
         isValid: false,
+        isCharge: false,
       },
       subsidiaryId
     );
@@ -196,7 +197,7 @@ export class InventoriesService {
         const shipment = shipmentsMap.get(tn);
         if (shipment) {
           const validated = await this.validatePackage({ ...shipment, isValid: false }, subsidiaryId);
-          validatedShipments.push(validated);
+          validatedShipments.push({...validated, isCharge: false});
           continue;
         }
   
