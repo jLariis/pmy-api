@@ -348,6 +348,16 @@ export class ShipmentsController {
       return await this.shipmentsService.getShipmentsWithStatus03(subsidiaryId);
     }
 
+    @Get('fedex-info/:trackingNumber')
+    async getCompleteData(@Param('trackingNumber') trackingNumber: string) {
+      return await this.shipmentsService.getCompleteDataForPackage(trackingNumber);
+    }
+
+    @Get('search-by-trackingnumber/:trackingNumber')
+    async searchByTrackingNumber(@Param('trackingNumber') trackingNumber: string) {
+      return await this.shipmentsService.getShipmentDetailsByTrackingNumber(trackingNumber)
+    }
+
   /**************************************************************************************************************** */
 
 }

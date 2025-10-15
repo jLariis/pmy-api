@@ -49,18 +49,48 @@ function formatExcelTimeToMySQL(timeStr?: string): string {
   return `${hours}:${minutes}:${seconds}`;
 }
 
-export function parseDynamicSheet(sheet: XLSX.Sheet, options: ParseOptions): ParsedShipmentDto[] {
+export function parseDynamicSheet(workbook: XLSX.WorkBook, options: ParseOptions): ParsedShipmentDto[] {
     const { fileName } = options;
-
     const is315 = fileName.toLowerCase().includes('31.5');
     
-    const allRows: any[][] = XLSX.utils.sheet_to_json(sheet, {
+    const sheetNames = workbook.SheetNames;
+    console.log(`📊 Archivo contiene ${sheetNames.length} hoja(s):`, sheetNames);
+
+    // Buscar la primera hoja con headers válidos
+    let targetSheet: XLSX.Sheet | null = null;
+    let headerMap: Record<string, number> = {};
+    let headerRowIndex = 0;
+
+    for (const sheetName of sheetNames) {
+        console.log(`🔍 Buscando headers en hoja: "${sheetName}"`);
+        const sheet = workbook.Sheets[sheetName];
+        
+        try {
+            const headerResult = getHeaderIndexMap(sheet);
+            targetSheet = sheet;
+            headerMap = headerResult.map;
+            headerRowIndex = headerResult.headerRowIndex;
+            console.log(`✅ Headers encontrados en hoja: "${sheetName}"`);
+            break; // ¡IMPORTANTE! Salir al encontrar la primera hoja válida
+        } catch (error) {
+            console.log(`❌ No se encontraron headers en hoja "${sheetName}" - continuando...`);
+            continue;
+        }
+    }
+
+    if (!targetSheet) {
+        throw new Error('No se pudieron detectar encabezados válidos en ninguna hoja del archivo');
+    }
+
+    // Procesar solo la hoja que encontró headers
+    const allRows: any[][] = XLSX.utils.sheet_to_json(targetSheet, {
         header: 1,
         range: 0,
         blankrows: false
     });
+    
+    console.log("🚀 ~ parseDynamicSheet ~ allRows encontrados:", allRows.length);
 
-    const { map: headerMap, headerRowIndex } = getHeaderIndexMap(sheet);
     const dataRows = allRows.slice(headerRowIndex + 1);
 
     return dataRows.map(row => {
@@ -75,12 +105,12 @@ export function parseDynamicSheet(sheet: XLSX.Sheet, options: ParseOptions): Par
             recipientAddress: row[headerMap['recipientAddress']] ?? 'Sin Dirección',
             recipientCity,
             recipientZip: row[headerMap['recipientZip']] ?? 'N/A',
-            commitDate: commitDate, // ISO format string o null
+            commitDate: commitDate,
             commitTime: formatExcelTimeToMySQL(row[headerMap['commitTime']]),
             recipientPhone: row[headerMap['recipientPhone']] ?? 'Sin Teléfono',
             payment,
             consNumber: row[headerMap['consNumber']] ?? null,
-            isPartOfCharge: is315, // si es true es carga completa si es false es normal
+            isPartOfCharge: is315,
         };
     });
 }
