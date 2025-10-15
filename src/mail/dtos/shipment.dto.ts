@@ -4,5 +4,6 @@ export class ShipmentStatusForReportDto {
     recipientAddress: string;
     recipientZip: string;
     recipientPhone: string;
+    doItByUser?: string;
     timestamp: string;
 }

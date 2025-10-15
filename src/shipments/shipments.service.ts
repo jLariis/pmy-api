@@ -40,6 +40,7 @@ import { IncomeValidationResult } from './dto/income-validation.dto';
 import { FedexTrackingResponseDto } from './dto/check-status-result.dto';
 import { PaymentTypeEnum } from 'src/common/enums/payment-type.enum';
 import { ShipmentStatusForReportDto } from 'src/mail/dtos/shipment.dto';
+import { SearchShipmentDto } from './dto/search-package.dto';
 
 @Injectable()
 export class ShipmentsService {
@@ -303,7 +304,7 @@ export class ShipmentsService {
       this.logger.log(`📄 Leyendo archivo Excel: ${file.originalname}`);
       const workbook = XLSX.read(file.buffer, { type: 'buffer' });
       const shipmentsToSave = workbook.SheetNames.flatMap((sheetName) =>
-        parseDynamicSheet(workbook.Sheets[sheetName], { fileName: file.originalname, sheetName })
+        parseDynamicSheet(workbook, { fileName: file.originalname, sheetName })
       );
 
       //console.log("🚀 ~ ShipmentsService ~ validateDataforTracking ~ shipmentsToSave:", shipmentsToSave)
@@ -2069,9 +2070,8 @@ export class ShipmentsService {
 
     this.logger.log(`📄 Leyendo archivo Excel: ${file.originalname}`);
     const workbook = XLSX.read(file.buffer, { type: 'buffer' });
-    const shipmentsToSave = workbook.SheetNames.flatMap((sheetName) =>
-      parseDynamicSheet(workbook.Sheets[sheetName], { fileName: file.originalname, sheetName })
-    );
+    const shipmentsToSave = parseDynamicSheet(workbook, { fileName: file.originalname })
+    
     //console.log("🚀 ~ ShipmentsService ~ addConsMasterBySubsidiary ~ shipmentsToSave:", shipmentsToSave)
     
     this.logger.log(`📄 Total de envíos procesados desde archivo: ${shipmentsToSave.length}`);
@@ -4376,6 +4376,7 @@ export class ShipmentsService {
       const shipments = await this.shipmentRepository
         .createQueryBuilder("shipment")
         .leftJoin("shipment.statusHistory", "statusHistory")
+        .leftJoin("shipment.packageDispatch", "packageDispatch")
         .where("shipment.subsidiaryId = :subdiaryId", { subdiaryId })
         .andWhere("shipment.status = :status", { status: ShipmentStatusType.NO_ENTREGADO })
         .andWhere("statusHistory.exceptionCode = :exceptionCode", { exceptionCode: "03" })
@@ -4388,6 +4389,15 @@ export class ShipmentsService {
           "shipment.recipientPhone AS recipientPhone",
           "statusHistory.timestamp AS timestamp",
         ])
+        .addSelect(subQuery => {
+          return subQuery
+            .select("d.name")
+            .from("driver", "d")
+            .innerJoin("package_dispatch_drivers", "pdd", "pdd.driverId = d.id")
+            .where("pdd.dispatchId = packageDispatch.id")
+            .orderBy("d.id", "ASC")
+            .limit(1);
+        }, "doItByUser")
         .distinct(true)
         .getRawMany<ShipmentStatusForReportDto>();
 
@@ -4403,6 +4413,126 @@ export class ShipmentsService {
 
       return shipments;
     }
+
+    async getCompleteDataForPackage(trackingNumber: string) {
+      return await this.fedexService.completePackageInfo(trackingNumber);
+    }
+
+    async getShipmentDetailsByTrackingNumber(trackingNumber: string): Promise<SearchShipmentDto | null> {
+      // Buscar todos los shipments con ese trackingNumber y ordenar por fecha más reciente
+      const shipments = await this.shipmentRepository.find({
+          where: { trackingNumber },
+          relations: [
+              'packageDispatch',
+              'packageDispatch.drivers',
+              'unloading',
+              'unloading.subsidiary',
+              'payment',
+              'subsidiary'
+          ],
+          order: { commitDateTime: 'DESC' }
+      });
+
+      // Buscar también los chargeShipments
+      const chargeShipments = await this.chargeShipmentRepository.find({
+          where: { trackingNumber },
+          relations: [
+              'packageDispatch',
+              'packageDispatch.drivers',
+              'unloading',
+              'unloading.subsidiary',
+              'payment',
+              'charge',
+              'subsidiary'
+          ],
+          order: { commitDateTime: 'DESC' }
+      });
+
+      // Combinar y tomar el más reciente
+      const allShipments = [...shipments, ...chargeShipments];
+      if (allShipments.length === 0) {
+          console.log(`❌ No se encontró el envío con trackingNumber: ${trackingNumber}`);
+          return null;
+      }
+
+      // Selecciona el que tenga la fecha más reciente
+      const targetShipment = allShipments.sort((a, b) => 
+          new Date(b.commitDateTime).getTime() - new Date(a.commitDateTime).getTime()
+      )[0];
+
+      // Extraer ruta y conductor principal
+      const packageDispatch = targetShipment.packageDispatch;
+      const firstDriver = packageDispatch?.drivers?.[0] || null;
+      const unloading = targetShipment.unloading;
+
+      // Determinar si es un chargeShipment
+      const isChargeShipment = 'charge' in targetShipment;
+      
+      // Crear objeto base de respuesta
+      const response: SearchShipmentDto = {
+          trackingNumber: targetShipment.trackingNumber,
+          commitDateTime: targetShipment.commitDateTime?.toISOString?.() || '',
+          recipient: {
+              name: targetShipment.recipientName ?? 'Sin Destinatario',
+              address: targetShipment.recipientAddress ?? 'Sin Dirección',
+              phoneNumber: targetShipment.recipientPhone ?? 'Sin Teléfono',
+              zipCode: targetShipment.recipientZip ?? 'Sin CP'
+          },
+          priority: targetShipment.priority,
+          payment: {
+              type: targetShipment.payment?.type,
+              amount: targetShipment.payment?.amount ?? 0
+          },
+          status: packageDispatch ? 'En ruta' : 'En bodega',
+          subsidiary: targetShipment.subsidiary?.name || 'Desconocida',
+          unloading: {
+              id: unloading?.id || '',
+              trackingNumber: unloading?.trackingNumber || ''
+          },
+          route: packageDispatch ? {
+              id: packageDispatch.id,
+              trackingNumber: packageDispatch.trackingNumber,
+              driver: {
+                  name: firstDriver?.name || 'Sin conductor'
+              }
+          } : undefined
+      };
+
+      // Agregar consolidated o charge según el tipo
+      /*if (isChargeShipment) {
+          // Es un chargeShipment - agregar charge
+          response.charge = targetShipment.charge ? {
+              id: targetShipment.charge.id,
+              type: 'charge'
+          } : undefined;
+      } else {
+          // Es un shipment normal - agregar consolidated
+          response.consolidated = targetShipment.consolidated ? {
+              id: targetShipment.consolidated.id,
+              type: targetShipment.consolidated.type
+          } : undefined;
+      }*/
+
+      // DEBUG
+      console.log('===== DETALLE DE SHIPMENT =====');
+      console.log({
+          trackingNumber: response.trackingNumber,
+          commitDateTime: response.commitDateTime,
+          status: response.status,
+          subsidiary: response.subsidiary,
+          unloading: response.unloading?.id || 'N/A',
+          route: response.route?.trackingNumber || 'Sin ruta',
+          driver: response.route?.driver?.name || 'N/A',
+          priority: response.priority,
+          recipient: response.recipient,
+          //consolidated: response.consolidated?.id || 'N/A',
+          charge: response.charge?.id || 'N/A'
+      });
+
+      return response;
+    }
+
+
 
 
     /************************************************* */

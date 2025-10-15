@@ -1,7 +1,15 @@
 import * as XLSX from 'xlsx';
 
-export function normalizeHeader(header: string): string {
-    return headerAliases[header.trim().toLowerCase()] ?? header.trim().toLowerCase();
+function normalizeHeader(header: string): string {
+    if (!header || typeof header !== 'string') return '';
+    
+    return header
+        .trim()
+        .toLowerCase()
+        .replace(/[^\w\d\s]/g, ' ')  // Remover caracteres especiales
+        .replace(/\s+/g, ' ')        // Multiples espacios a uno solo
+        .trim()
+        .replace(/\s/g, '');         // Eliminar TODOS los espacios
 }
 
 export interface HeaderDetectionResult {
@@ -9,30 +17,67 @@ export interface HeaderDetectionResult {
     map: Record<string, number>;
 }
 
-export function getHeaderIndexMap(sheet: XLSX.Sheet, maxScanRows = 20, isForCharges: boolean = false): HeaderDetectionResult {
+export function getHeaderIndexMap(sheet: XLSX.Sheet, maxScanRows = 10, isForCharges: boolean = false): HeaderDetectionResult {
     const allRows = XLSX.utils.sheet_to_json(sheet, {
         header: 1,
         range: 0,
-        blankrows: false,
+        defval: '',
+        blankrows: true
     }) as any[][];
+
+    console.log('=== DEBUG - PRIMERAS FILAS CRUDAS ===');
+    for (let i = 0; i < Math.min(6, allRows.length); i++) {
+        console.log(`Fila ${i}:`, allRows[i]);
+    }
 
     for (let i = 0; i < Math.min(allRows.length, maxScanRows); i++) {
         const row = allRows[i];
-
-        // Normaliza todos los valores de la fila
-        const normalizedRow = row.map(cell => (typeof cell === 'string' ? normalizeHeader(cell) : ''));
         
-        const hasKnownHeader = (isForCharges ? normalizedRow.some(h => Object.values(chargeHeaderAliases).includes(h)) : normalizedRow.some(h => Object.values(headerAliases).includes(h)));
-    
+        // DEBUG: Mostrar qué hay en esta fila específica
+        console.log(`=== ANALIZANDO FILA ${i} ===`);
+        console.log('Fila original:', row);
+        
+        // Normalizar SIN FILTRAR - mantener todas las celdas
+        const normalizedRow = row.map(cell => {
+            if (typeof cell === 'string') {
+                const normalized = normalizeHeader(cell);
+                console.log(`Celda "${cell}" → normalizada: "${normalized}"`);
+                return normalized;
+            }
+            return '';
+        });
+
+        console.log('Fila completa normalizada:', normalizedRow);
+
+        // Verificar si esta fila contiene headers conocidos
+        const targetAliases = isForCharges ? chargeHeaderAliases : headerAliases;
+        const allPossibleHeaders = Object.values(targetAliases).flat();
+        
+        console.log('Headers posibles:', allPossibleHeaders);
+        
+        // ✅ CAMBIO CLAVE: Buscar en las KEYS del headerAliases, no en los values
+        const hasKnownHeader = normalizedRow.some(normalizedHeader => 
+            normalizedHeader && Object.keys(headerAliases).includes(normalizedHeader)
+        );
+
+        console.log(`¿Fila ${i} tiene header conocido?`, hasKnownHeader);
+
         if (hasKnownHeader) {
             const headerMap: Record<string, number> = {};
-
-            normalizedRow.forEach((header, index) => {
-                if (header) {
-                    headerMap[header] = index;
+            
+            // Crear mapping con todas las celdas
+            row.forEach((originalCell, index) => {
+                if (typeof originalCell === 'string' && originalCell.trim() !== '') {
+                    const normalized = normalizeHeader(originalCell);
+                    if (normalized && headerAliases[normalized]) {
+                        // Usar el nombre estandarizado del headerAliases
+                        headerMap[headerAliases[normalized]] = index;
+                    }
                 }
             });
 
+            console.log('Header map encontrado:', headerMap);
+            
             return {
                 headerRowIndex: i,
                 map: headerMap,
@@ -40,36 +85,89 @@ export function getHeaderIndexMap(sheet: XLSX.Sheet, maxScanRows = 20, isForChar
         }
     }
 
-    throw new Error('No se pudieron detectar encabezados válidos en las primeras filas.');
+    throw new Error(`No se pudieron detectar encabezados válidos en las primeras ${maxScanRows} filas.`);
 }
 
+
 export const headerAliases: Record<string, string> = {
-    'tracking number': 'trackingNumber',
-    'tracking no': 'trackingNumber',
-    'numero_guia': 'trackingNumber',
-    'hwb no': 'trackingNumber',
-    'recip name': 'recipientName',
-    'recipient name': 'recipientName',
-    'nombre_dest': 'recipientName',
-    'recipient address': 'recipientAddress',
-    'recip addr': 'recipientAddress',
-    'rcvr addr 1': 'recipientAddress',
-    'rcvr addr 2': 'recipientAddress2',
-    'calle_dest': 'recipientAddress',
-    'recipient city': 'recipientCity',
-    'recip city': 'recipientCity',
-    'recipient zip': 'recipientZip',
-    'recip postal': 'recipientZip',
-    'rcvr postcode': 'recipientZip',
-    'codigo_postal_dest': 'recipientZip',
-    'commit date': 'commitDate',
+    // Tracking Number - SOLO versiones normalizadas en KEYS
+    'trackingnumber': 'trackingNumber',
+    'tracking': 'trackingNumber',
+    'trackingno': 'trackingNumber',
+    'numeroguia': 'trackingNumber',
+    'hwbno': 'trackingNumber',
+    'númerodeseguimiento': 'trackingNumber',
+    'guia': 'trackingNumber',
+
+    // Recipient Name
+    'recipname': 'recipientName',
+    'recipientname': 'recipientName',
+    'nombredest': 'recipientName', // "nombre_dest" → "nombredest"
+    'nombre': 'recipientName',
+    'destinatario': 'recipientName',
+    'receptor': 'recipientName',
+    
+    // Recipient Address
+    'recipaddr': 'recipientAddress',
+    'recipientaddress': 'recipientAddress',
+    'rcvraddr1': 'recipientAddress', // "rcvr addr 1" → "rcvraddr1"
+    'calledest': 'recipientAddress', // "calle_dest" → "calledest"
+    'address': 'recipientAddress',
+    'direccion': 'recipientAddress',
+    'domicilio': 'recipientAddress',
+    
+    // Recipient Address 2
+    'rcvraddr2': 'recipientAddress2', // "rcvr addr 2" → "rcvraddr2"
+    'address2': 'recipientAddress2',
+    'direccion2': 'recipientAddress2',
+    
+    // Recipient City
+    'recipientcity': 'recipientCity',
+    'recipcity': 'recipientCity', // "recip city" → "recipcity"
+    'ciudad': 'recipientCity',
+    'city': 'recipientCity',
+    
+    // Recipient Zip
+    'recipientzip': 'recipientZip',
+    'recipostal': 'recipientZip', // "recip postal" → "recipostal"
+    'rcvrpostcode': 'recipientZip', // "rcvr postcode" → "rcvrpostcode"
+    'codigopostaldest': 'recipientZip', // "codigo_postal_dest" → "codigopostaldest"
+    'zip': 'recipientZip',
+    'postal': 'recipientZip',
+    'codigopostal': 'recipientZip',
+    
+    // Commit Date
+    'commitdate': 'commitDate',
     'edd': 'commitDate',
-    'commit time': 'commitTime',
-    'recip phone': 'recipientPhone',
+    'date': 'commitDate',
+    'fecha': 'commitDate',
+    'fechacompromiso': 'commitDate',
+    'fechaentrega': 'commitDate',
+    
+    // Commit Time
+    'committime': 'commitTime',
+    'time': 'commitTime',
+    'hora': 'commitTime',
+    'horacompromiso': 'commitTime',
+    
+    // Recipient Phone
+    'recipphone': 'recipientPhone',
     'phone': 'recipientPhone',
-    'cod': 'payment',
-    'last comm scan update': 'cod',
-    'comm comment (comment contain) all': 'cod',
+    'telefono': 'recipientPhone',
+    'celular': 'recipientPhone',
+    'phonenumber': 'recipientPhone',
+    
+    // Payment/COD
+    'cod': 'cod',
+    'payment': 'cod',
+    'cashondelivery': 'cod',
+    'contraentrega': 'cod',
+    'pagocontraentrega': 'cod',
+    'pago': 'cod',
+    
+    // Additional fields - NORMALIZAR
+    'lastcommscanupdate': 'cod', // "last comm scan update" → "lastcommscanupdate"
+    'commcommentcommentcontainall': 'cod', // "comm comment (comment contain) all" → "commcommentcommentcontainall"
 };
 
 export const chargeHeaderAliases: Record<string, string> = {

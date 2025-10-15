@@ -41,6 +41,9 @@ export class FedexService {
 
     for (const complete of fedexResponse.output.completeTrackResults) {
       for (const track of complete.trackResults) {
+        //console.log("🚀 ~ FedexService ~ mapFedexToValidatedDto ~ track:", track)
+        //console.log("🚀 ~ FedexService ~ mapFedexToValidatedDto ~ address:", track.recipientInformation)
+        //console.log("🚀 ~ FedexService ~ mapFedexToValidatedDto ~ address:", track.destinationLocation?.locationContactAndAddress?.address.streetLines)
         const dto: ValidatedPackageDispatchDto = {
           id: undefined, // lo asignas tú si ya lo tienes en BD
           trackingNumber: track.trackingNumberInfo?.trackingNumber,
@@ -187,7 +190,7 @@ export class FedexService {
       });
 
       this.logger.log('✅ Data de FedEx obtenida exitosamente');
-
+      console.log("Fedex Data: ", response.data.output.completeTrackResults[0].trackResults[0])
       return this.mapFedexToValidatedDto(response.data);
       
     } catch (error) {
