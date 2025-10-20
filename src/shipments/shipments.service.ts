@@ -1084,10 +1084,20 @@ export class ShipmentsService {
     if(shipmentsWithCharge.length === 0) return 'No se encontraron envios con cobro.'
 
     for(const { trackingNumber, recipientAddress, payment }of shipmentsWithCharge) {
-      let shipmentToUpdate = await this.shipmentRepository.findOneBy({
+      let shipmentToUpdate = await this.shipmentRepository.findOne({
+        where: {
+          trackingNumber,
+          recipientAddress
+        },
+        order: {
+          createdAt: 'DESC'
+        }
+      })
+
+      /*let shipmentToUpdate = await this.shipmentRepository.findOneBy({
         trackingNumber,
         recipientAddress
-      })
+      })*/
 
       if(shipmentToUpdate) {
         shipmentToUpdate.payment = payment;
@@ -1923,7 +1933,8 @@ export class ShipmentsService {
     }
   }
 
-  private async processFedexScanEventsToStatuses(
+  /** por si algo falta con la solución circular a shipment en Hillo / Hillo Ext */
+  private async processFedexScanEventsToStatusesResp(
     scanEvents: FedExScanEventDto[],
     shipment: Shipment
   ): Promise<ShipmentStatus[]> {
@@ -2027,7 +2038,8 @@ export class ShipmentsService {
     return statuses;
   }
 
-  async addConsMasterBySubsidiary(
+  /** por si algo falta con la solución circular a shipment en Hillo / Hillo Ext */
+  async addConsMasterBySubsidiaryResp(
     file: Express.Multer.File,
     subsidiaryId: string,
     consNumber: string,
@@ -2259,7 +2271,982 @@ export class ShipmentsService {
     };
   }
 
-  private async processShipment(
+  private async processFedexScanEventsToStatuses(
+    scanEvents: FedExScanEventDto[],
+    shipment: Shipment
+  ): Promise<ShipmentStatus[]> {
+    this.logger.log(`🔍 Iniciando processScanEventsToStatuses para ${shipment.trackingNumber} con ${scanEvents.length} eventos`);
+    const { statuses, hasException, hasDelivered } = scanEvents
+      .sort((a, b) => {
+        const dateA = toZonedTime(parse(a.date, "yyyy-MM-dd'T'HH:mm:ssXXX", new Date()), 'UTC', { timeZone: 'America/Mexico_City' });
+        const dateB = toZonedTime(parse(b.date, "yyyy-MM-dd'T'HH:mm:ssXXX", new Date()), 'UTC', { timeZone: 'America/Mexico_City' });
+        return dateA.getTime() - dateB.getTime();
+      })
+      .reduce<{
+        statuses: ShipmentStatus[];
+        hasException: boolean;
+        hasDelivered: boolean;
+      }>(
+        (acc, event, index) => {
+          this.logger.log(`📌 Procesando evento ${index + 1}/${scanEvents.length} para ${shipment.trackingNumber}`);
+          const mappedStatus = mapFedexStatusToLocalStatus(event.derivedStatusCode, event.exceptionCode);
+          if (mappedStatus === ShipmentStatusType.DESCONOCIDO) {
+            this.logger.warn(`⚠️ Estado desconocido para evento: ${event.derivedStatusCode}`);
+            return acc;
+          }
+
+          const timestamp = toZonedTime(parse(event.date, "yyyy-MM-dd'T'HH:mm:ssXXX", new Date()), 'UTC', { timeZone: 'America/Mexico_City' });
+          if (isNaN(timestamp.getTime())) {
+            this.logger.warn(`⚠️ Fecha inválida para evento: ${event.date}`);
+            return acc;
+          }
+
+          // 🔥 CORRECCIÓN: NO asignar la relación shipment aquí para evitar referencias circulares
+          const statusEntry = Object.assign(new ShipmentStatus(), {
+            // shipment, // ← NO asignar la relación aquí
+            status: mappedStatus,
+            exceptionCode: event.exceptionCode || undefined,
+            notes: event.exceptionCode
+              ? `${event.exceptionCode} - ${event.exceptionDescription}`
+              : `${event.eventType} - ${event.eventDescription}`,
+            timestamp,
+          });
+
+          acc.statuses.push(statusEntry);
+          acc.hasException ||= mappedStatus === ShipmentStatusType.NO_ENTREGADO;
+          acc.hasDelivered ||= mappedStatus === ShipmentStatusType.ENTREGADO;
+
+          const logLine = `📝 [${shipment.trackingNumber}] Registrado status: ${statusEntry.status} - ${statusEntry.notes}`;
+          this.logger.log(logLine);
+          this.logBuffer.push(`${logLine} at ${statusEntry.timestamp.toISOString()}`);
+
+          return acc;
+        },
+        { statuses: [], hasException: false, hasDelivered: false }
+      );
+
+    if (hasException && hasDelivered) {
+      const msg = `📦 [${shipment.trackingNumber}] Excepciones previas pero entrega exitosa. Conservando todos los estados.`;
+      this.logger.log(msg);
+      this.logBuffer.push(msg);
+      return statuses;
+    }
+
+    if (!hasDelivered && hasException) {
+      const lastNoEntIndex = statuses.reduce(
+        (last, s, i) => (s.status === ShipmentStatusType.NO_ENTREGADO ? i : last),
+        -1
+      );
+
+      if (lastNoEntIndex >= 0 && lastNoEntIndex < statuses.length - 1) {
+        // Separar los eventos posteriores al último NO_ENTREGADO
+        const eventsAfterNoEnt = statuses.splice(lastNoEntIndex + 1);
+        
+        // Filtrar solo los eventos EN_RUTA que NO tienen exceptionCode 67
+        const removed = eventsAfterNoEnt.filter(
+          (s) => s.status === ShipmentStatusType.EN_RUTA && s.exceptionCode !== '67'
+        );
+        
+        // Reincorporar los eventos que no deben ser eliminados
+        const keptEvents = eventsAfterNoEnt.filter(
+          (s) => s.status !== ShipmentStatusType.EN_RUTA || s.exceptionCode === '67'
+        );
+        
+        statuses.push(...keptEvents);
+        
+        // Loggear los eventos conservados con exceptionCode 67
+        keptEvents
+          .filter(s => s.exceptionCode === '67')
+          .forEach(s => {
+            const info = `✅ [${shipment.trackingNumber}] Conservando EN_RUTA con exceptionCode 67: ${s.notes}`;
+            this.logger.log(info);
+            this.logBuffer.push(info);
+          });
+        
+        // Loggear los eventos eliminados
+        for (const rem of removed) {
+          const warn = `🗑️ [${shipment.trackingNumber}] Eliminado EN_RUTA posterior a NO_ENTREGADO: ${rem.notes}`;
+          this.logger.warn(warn);
+          this.logBuffer.push(warn);
+        }
+      }
+    }
+
+    this.logger.log(`✅ Finalizado processScanEventsToStatuses para ${shipment.trackingNumber} con ${statuses.length} estados`);
+    return statuses;
+  }
+
+ /*** TESTING ARCHIVOS HILLO !!*/
+  async addConsMasterBySubsidiaryBuenoFuncional(
+    file: Express.Multer.File,
+    subsidiaryId: string,
+    consNumber: string,
+    consDate?: Date,
+    isAereo?: boolean
+  ): Promise<{
+    saved: number;
+    failed: number;
+    duplicated: number;
+    duplicatedTrackings: ParsedShipmentDto[];
+    failedTrackings: { trackingNumber: string; reason: string }[];
+    errors: { trackingNumber: string; reason: string }[];
+  }> {
+    const startTime = Date.now();
+    this.logger.log(`📂 Iniciando procesamiento de archivo: ${file?.originalname}`);
+
+    if (!file) {
+      const reason = 'No se subió ningún archivo';
+      this.logger.error(`❌ ${reason}`);
+      this.logBuffer.push(reason);
+      throw new BadRequestException(reason);
+    }
+
+    if (!file.originalname.toLowerCase().match(/\.(csv|xlsx?)$/)) {
+      const reason = 'Tipo de archivo no soportado';
+      this.logger.error(`❌ ${reason}`);
+      this.logBuffer.push(reason);
+      throw new BadRequestException(reason);
+    }
+
+    this.logger.log(`🔍 Validando subsidiaria con ID: ${subsidiaryId}`);
+    const predefinedSubsidiary = await this.subsidiaryService.findById(subsidiaryId);
+
+    if (!predefinedSubsidiary) {
+      const reason = `Subsidiaria con ID '${subsidiaryId}' no encontrada`;
+      this.logger.error(`❌ ${reason}`);
+      this.logBuffer.push(reason);
+      throw new BadRequestException(reason);
+    }
+
+    this.logger.log(`📄 Leyendo archivo Excel: ${file.originalname}`);
+    const workbook = XLSX.read(file.buffer, { type: 'buffer' });
+    const shipmentsToSave = parseDynamicSheet(workbook, { fileName: file.originalname })
+    
+    this.logger.log(`📄 Total de envíos procesados desde archivo: ${shipmentsToSave.length}`);
+
+    // Crear Consolidated
+    this.logger.log(`📦 Creando consolidado para ${shipmentsToSave.length} envíos`);
+    const consolidated = Object.assign(new Consolidated(), {
+      date: consDate || new Date(),
+      type: isAereo ? ConsolidatedType.AEREO : ConsolidatedType.ORDINARIA,
+      numberOfPackages: shipmentsToSave.length,
+      subsidiary: predefinedSubsidiary,
+      subsidiaryId: predefinedSubsidiary.id,
+      consNumber,
+      isCompleted: false,
+      efficiency: 0,
+      commitDateTime: new Date(),
+    });
+
+    try {
+      const savedConsolidated = await this.consolidatedService.create(consolidated);
+      if (!savedConsolidated?.id) {
+        const reason = `Error: Consolidated no retornó un ID válido tras guardar`;
+        this.logger.error(`❌ ${reason}`);
+        this.logBuffer.push(reason);
+        throw new Error(reason);
+      }
+      consolidated.id = savedConsolidated.id;
+      this.logger.log(`📦 Consolidado creado con ID: ${consolidated.id}`);
+      this.logBuffer.push(`📦 Consolidado creado con ID: ${consolidated.id}`);
+    } catch (err) {
+      const reason = `Error al crear consolidado: ${err.message}`;
+      this.logger.error(`❌ ${reason}`);
+      this.logBuffer.push(reason);
+      throw new BadRequestException(reason);
+    }
+
+    const result = {
+      saved: 0,
+      failed: 0,
+      duplicated: 0,
+      duplicatedTrackings: [] as ParsedShipmentDto[],
+      failedTrackings: [] as { trackingNumber: string; reason: string }[],
+    };
+
+    const shipmentsWithError = {
+      duplicated: [] as { trackingNumber: string; reason: string }[],
+      fedexError: [] as { trackingNumber: string; reason: string }[],
+      saveError: [] as { trackingNumber: string; reason: string }[],
+    };
+
+    const processedTrackingNumbers = new Set<string>();
+    const shipmentsToGenerateIncomes: { shipment: Shipment; timestamp: Date; exceptionCode: string | undefined }[] = [];
+    const batches = Array.from(
+      { length: Math.ceil(shipmentsToSave.length / this.BATCH_SIZE) },
+      (_, i) => shipmentsToSave.slice(i * this.BATCH_SIZE, (i + 1) * this.BATCH_SIZE)
+    );
+    this.logger.log(`📦 Procesando ${batches.length} lotes de ${this.BATCH_SIZE} envíos cada uno`);
+
+    // Start transaction
+    await this.shipmentRepository.manager.transaction(async (transactionalEntityManager) => {
+      for (let i = 0; i < batches.length; i++) {
+        const batch = batches[i];
+        this.logger.log(`📦 Iniciando lote ${i + 1}/${batches.length} con ${batch.length} envíos`);
+        this.shipmentBatch = []; // Reset batch for each loop
+
+        // Process shipments and collect valid ones
+        await Promise.all(
+          batch.map((shipment, index) =>
+            this.processShipment(
+              shipment,
+              predefinedSubsidiary,
+              consolidated,
+              result,
+              shipmentsWithError,
+              i + 1,
+              index + 1,
+              processedTrackingNumbers,
+              shipmentsToGenerateIncomes, 
+              consolidated.id
+            )
+          )
+        );
+
+        // Save batch of shipments
+        if (this.shipmentBatch.length) {
+          try {
+            this.logger.debug(`💾 Intentando guardar lote ${i + 1} con ${this.shipmentBatch.length} envíos`);
+            
+            // 🔥🔥🔥 PRE-LIMPIEZA COMPLETA: Extraer y limpiar todas las relaciones circulares
+            const statusHistoryMap = new Map<string, ShipmentStatus[]>(); // trackingNumber -> statusHistory[]
+            const paymentMap = new Map<string, Payment>(); // trackingNumber -> Payment
+            
+            this.shipmentBatch.forEach((shipment, index) => {
+              this.logger.debug(`🔍 Preparando shipment ${index + 1}/${this.shipmentBatch.length}: ${shipment.trackingNumber}`);
+              
+              // 1. Extraer y limpiar statusHistory
+              if (shipment.statusHistory && Array.isArray(shipment.statusHistory)) {
+                this.logger.debug(`🔍 Extrayendo ${shipment.statusHistory.length} statusHistory entries para ${shipment.trackingNumber}`);
+                
+                // Guardar una copia limpia en el mapa
+                const cleanStatusHistory = shipment.statusHistory.map(status => {
+                  const cleanStatus = Object.assign(new ShipmentStatus(), {
+                    status: status.status,
+                    timestamp: status.timestamp,
+                    exceptionCode: status.exceptionCode,
+                    notes: status.notes,
+                    // 🔥 NO incluir shipment o id - se asignarán después
+                  });
+                  return cleanStatus;
+                });
+                
+                statusHistoryMap.set(shipment.trackingNumber, cleanStatusHistory);
+                
+                // Limpiar el array original temporalmente para evitar referencias circulares
+                shipment.statusHistory.length = 0;
+              }
+              
+              // 2. Extraer y limpiar Payment
+              if (shipment.payment && typeof shipment.payment === 'object') {
+                this.logger.debug(`🔍 Extrayendo payment para ${shipment.trackingNumber}`);
+                
+                // Guardar una copia limpia en el mapa
+                const cleanPayment = Object.assign(new Payment(), {
+                  amount: shipment.payment.amount,
+                  type: shipment.payment.type,
+                  status: shipment.payment.status,
+                  // 🔥 NO incluir relaciones circulares
+                });
+                
+                paymentMap.set(shipment.trackingNumber, cleanPayment);
+                
+                // Limpiar el payment original
+                shipment.payment = undefined;
+              }
+              
+              // 3. Limpiar otras relaciones para evitar ciclos
+              if (shipment.subsidiary && typeof shipment.subsidiary === 'object') {
+                shipment.subsidiary = { id: shipment.subsidiary.id } as Subsidiary;
+              }
+              
+              // 4. Verificar que no queden referencias circulares
+              try {
+                JSON.stringify(shipment);
+                this.logger.debug(`✅ Shipment ${shipment.trackingNumber} se serializa correctamente después de la limpieza`);
+              } catch (jsonError) {
+                this.logger.error(`❌ ERROR: Shipment ${shipment.trackingNumber} aún tiene referencias circulares: ${jsonError.message}`);
+                // Forzar limpieza más agresiva
+                shipment.statusHistory = [];
+                shipment.payment = undefined;
+                shipment.subsidiary = { id: predefinedSubsidiary.id } as Subsidiary;
+              }
+            });
+
+            // 🔥 GUARDAR SHIPMENTS PRINCIPALES (sin relaciones circulares)
+            this.logger.debug(`🔍 Guardando ${this.shipmentBatch.length} shipments principales`);
+            const savedShipments = await transactionalEntityManager.save(Shipment, this.shipmentBatch, { chunk: 50 });
+            this.logger.log(`💾 Guardados ${this.shipmentBatch.length} envíos en lote ${i + 1}`);
+            this.logBuffer.push(`💾 Guardados ${this.shipmentBatch.length} envíos en lote ${i + 1}`);
+
+            // Assign IDs to shipments
+            this.shipmentBatch.forEach((shipment, idx) => {
+              shipment.id = savedShipments[idx]?.id;
+              if (!shipment.id) {
+                const reason = `Error: No se asignó ID al envío ${shipment.trackingNumber} tras guardar lote ${i + 1}`;
+                this.logger.error(`❌ ${reason}`);
+                this.logBuffer.push(reason);
+                shipmentsWithError.saveError.push({ trackingNumber: shipment.trackingNumber, reason });
+                result.failed++;
+                result.saved--;
+              } else {
+                this.logger.debug(`✅ Shipment ${shipment.trackingNumber} guardado con ID: ${shipment.id}`);
+              }
+            });
+
+            // 🔥 GUARDAR PAYMENTS CON LAS RELACIONES CORRECTAS
+            const allPaymentsToSave: Payment[] = [];
+
+            paymentMap.forEach((payment, trackingNumber) => {
+              const correspondingShipment = savedShipments.find(s => s.trackingNumber === trackingNumber);
+              if (correspondingShipment?.id) {
+                // Asignar la relación correcta al payment
+                payment.shipment = { id: correspondingShipment.id } as Shipment;
+                allPaymentsToSave.push(payment);
+                this.logger.debug(`🔍 Asignada relación de payment para ${trackingNumber}`);
+              } else {
+                this.logger.warn(`⚠️ No se encontró shipment para payment de ${trackingNumber}`);
+              }
+            });
+
+            if (allPaymentsToSave.length > 0) {
+              try {
+                const savedPayments = await transactionalEntityManager.save(Payment, allPaymentsToSave, { chunk: 50 });
+                this.logger.log(`💾 Guardados ${savedPayments.length} payments para lote ${i + 1}`);
+                
+                // 🔥 RESTAURAR PAYMENTS EN LOS OBJETOS SHIPMENT
+                this.shipmentBatch.forEach(shipment => {
+                  if (shipment.id) {
+                    const shipmentPayment = allPaymentsToSave.find(
+                      payment => payment.shipment?.id === shipment.id
+                    );
+                    if (shipmentPayment) {
+                      shipment.payment = shipmentPayment;
+                      this.logger.debug(`🔍 Restaurado payment para ${shipment.trackingNumber}`);
+                    }
+                  }
+                });
+              } catch (paymentError) {
+                this.logger.error(`❌ Error guardando payments para lote ${i + 1}: ${paymentError.message}`);
+              }
+            }
+
+            // 🔥 GUARDAR STATUS HISTORY CON LAS RELACIONES CORRECTAS
+            const allStatusHistoryToSave: ShipmentStatus[] = [];
+
+            statusHistoryMap.forEach((statusHistory, trackingNumber) => {
+              const correspondingShipment = savedShipments.find(s => s.trackingNumber === trackingNumber);
+              if (correspondingShipment?.id) {
+                // Asignar la relación correcta a cada statusHistory
+                statusHistory.forEach(status => {
+                  status.shipment = { id: correspondingShipment.id } as Shipment;
+                  allStatusHistoryToSave.push(status);
+                });
+                this.logger.debug(`🔍 Asignadas ${statusHistory.length} relaciones de statusHistory para ${trackingNumber}`);
+              } else {
+                this.logger.warn(`⚠️ No se encontró shipment para statusHistory de ${trackingNumber}`);
+              }
+            });
+
+            if (allStatusHistoryToSave.length > 0) {
+              try {
+                const savedStatusHistory = await transactionalEntityManager.save(ShipmentStatus, allStatusHistoryToSave, { chunk: 50 });
+                this.logger.log(`💾 Guardados ${savedStatusHistory.length} statusHistory entries para lote ${i + 1}`);
+                
+                // 🔥 RESTAURAR STATUS HISTORY EN LOS OBJETOS SHIPMENT
+                this.shipmentBatch.forEach(shipment => {
+                  if (shipment.id) {
+                    const shipmentStatusHistory = allStatusHistoryToSave.filter(
+                      status => status.shipment?.id === shipment.id
+                    );
+                    if (shipmentStatusHistory.length > 0) {
+                      shipment.statusHistory = shipmentStatusHistory;
+                      this.logger.debug(`🔍 Restaurados ${shipmentStatusHistory.length} statusHistory entries para ${shipment.trackingNumber}`);
+                    }
+                  }
+                });
+              } catch (statusError) {
+                this.logger.error(`❌ Error guardando statusHistory para lote ${i + 1}: ${statusError.message}`);
+              }
+            }
+
+            // 🔥 GENERAR INCOMES (ahora los shipments tienen todas las relaciones correctas)
+            this.logger.debug(`🔍 Generando incomes para ${shipmentsToGenerateIncomes.length} shipments`);
+            const incomesToProcess = [...shipmentsToGenerateIncomes];
+            
+            for (const { shipment, timestamp, exceptionCode } of incomesToProcess) {
+              if (!shipment.id) {
+                const reason = `Error: No se puede generar income para ${shipment.trackingNumber} porque falta shipment.id`;
+                this.logger.error(`❌ ${reason}`);
+                this.logBuffer.push(reason);
+                shipmentsWithError.saveError.push({ trackingNumber: shipment.trackingNumber, reason });
+                result.failed++;
+                result.saved--;
+                continue;
+              }
+              try {
+                this.logger.debug(`💰 Generando income para shipment ${shipment.trackingNumber} (ID: ${shipment.id})`);
+                await this.generateIncomes(shipment, timestamp, exceptionCode, transactionalEntityManager);
+                this.logger.log(`✅ Income generado para ${shipment.trackingNumber}`);
+                
+                // Remover de la lista una vez procesado
+                const index = shipmentsToGenerateIncomes.findIndex(item => item.shipment.trackingNumber === shipment.trackingNumber);
+                if (index !== -1) {
+                  shipmentsToGenerateIncomes.splice(index, 1);
+                }
+              } catch (err) {
+                const reason = `Error en generateIncomes para ${shipment.trackingNumber}: ${err.message}`;
+                this.logger.error(`❌ ${reason}`);
+                this.logBuffer.push(reason);
+                shipmentsWithError.saveError.push({ trackingNumber: shipment.trackingNumber, reason });
+                result.failed++;
+                result.saved--;
+              }
+            }
+
+            this.shipmentBatch = [];
+            this.logger.debug(`🔍 Lote ${i + 1}: Limpiados arrays temporales`);
+            
+          } catch (err) {
+            const reason = `Error al guardar lote de envíos ${i + 1}: ${err.message}`;
+            this.logger.error(`❌ ${reason}`);
+            this.logBuffer.push(reason);
+            
+            // DEBUG DETALLADO del error
+            this.logger.error(`🔍 DEBUG Error en lote ${i + 1}:`, {
+              message: err.message,
+              stack: err.stack,
+              batchSize: this.shipmentBatch.length,
+              firstTracking: this.shipmentBatch[0]?.trackingNumber,
+              errorDetails: JSON.stringify(err, Object.getOwnPropertyNames(err))
+            });
+
+            // Verificar si es el error de dependencia cíclica
+            if (err.message.includes('Cyclic dependency') || err.message.includes('circular reference') || err.message.includes('cyclic')) {
+              this.logger.error(`🔄 ERROR DE DEPENDENCIA CÍCLICA DETECTADO EN LOTE ${i + 1}`);
+              
+              // Analizar las relaciones del primer shipment para debug
+              if (this.shipmentBatch.length > 0) {
+                const problemShipment = this.shipmentBatch[0];
+                this.logger.error(`🔍 Analizando shipment problemático: ${problemShipment.trackingNumber}`, {
+                  shipment: {
+                    trackingNumber: problemShipment.trackingNumber,
+                    consolidatedId: problemShipment.consolidatedId,
+                    subsidiary: problemShipment.subsidiary ? {
+                      id: problemShipment.subsidiary.id,
+                      name: problemShipment.subsidiary.name,
+                    } : 'null',
+                    statusHistoryCount: problemShipment.statusHistory?.length || 0,
+                    hasPayment: !!problemShipment.payment
+                  }
+                });
+
+                // Intentar detectar ciclos manualmente
+                this.detectCircularReferences(problemShipment);
+              }
+            }
+
+            shipmentsWithError.saveError.push({ trackingNumber: `LOTE_${i + 1}`, reason });
+            result.failed += this.shipmentBatch.length;
+            // No restamos de saved porque estos shipments nunca se contaron como guardados
+            this.shipmentBatch = [];
+          }
+        }
+        this.logger.log(`✅ Finalizado lote ${i + 1}/${batches.length}`);
+      }
+    });
+
+    // Evitar Consolidated innecesario si todos son duplicados
+    if (result.duplicated === shipmentsToSave.length) {
+      await this.consolidatedService.remove(consolidated.id);
+      this.logger.warn(`⚠️ Todos los envíos son duplicados. Consolidado ${consolidated.id} eliminado.`);
+      this.logBuffer.push(`⚠️ Todos los envíos son duplicados. Consolidado ${consolidated.id} eliminado.`);
+    } else {
+      // Actualizar consolidado
+      this.logger.log(`📊 Actualizando consolidado ${consolidated.id}`);
+      consolidated.isCompleted = true;
+      consolidated.efficiency = shipmentsToSave.length
+        ? (result.saved / shipmentsToSave.length) * 100
+        : 0;
+      consolidated.commitDateTime = new Date();
+      try {
+        await this.consolidatedService.create(consolidated);
+        this.logger.log(`📊 Consolidado ${consolidated.id} actualizado: efficiency ${consolidated.efficiency}%`);
+        this.logBuffer.push(`📊 Consolidado ${consolidated.id} actualizado: efficiency ${consolidated.efficiency}%`);
+      } catch (err) {
+        const reason = `Error al actualizar consolidado ${consolidated.id}: ${err.message}`;
+        this.logger.error(`❌ ${reason}`);
+        this.logBuffer.push(reason);
+      }
+    }
+
+    await this.flushLogBuffer();
+    await this.logErrors(shipmentsWithError);
+
+    const durationMin = ((Date.now() - startTime) / 60000).toFixed(2);
+    this.logger.log(`⏱️ Tiempo total de procesamiento: ${durationMin} minutos`);
+    this.logger.log(
+      `✅ Proceso finalizado: ${result.saved} guardados, ${result.duplicated} duplicados, ${result.failed} fallidos`
+    );
+
+    return {
+      ...result,
+      errors: [
+        ...shipmentsWithError.duplicated,
+        ...shipmentsWithError.fedexError,
+        ...shipmentsWithError.saveError,
+      ],
+    };
+  }
+
+  async addConsMasterBySubsidiary(
+    file: Express.Multer.File,
+    subsidiaryId: string,
+    consNumber: string,
+    consDate?: Date,
+    isAereo?: boolean
+  ): Promise<{
+    saved: number;
+    failed: number;
+    duplicated: number;
+    duplicatedTrackings: ParsedShipmentDto[];
+    failedTrackings: { trackingNumber: string; reason: string }[];
+    errors: { trackingNumber: string; reason: string }[];
+  }> {
+    const startTime = Date.now();
+    this.logger.log(`📂 Iniciando procesamiento de archivo: ${file?.originalname}`);
+
+    if (!file) {
+      const reason = 'No se subió ningún archivo';
+      this.logger.error(`❌ ${reason}`);
+      this.logBuffer.push(reason);
+      throw new BadRequestException(reason);
+    }
+
+    if (!file.originalname.toLowerCase().match(/\.(csv|xlsx?)$/)) {
+      const reason = 'Tipo de archivo no soportado';
+      this.logger.error(`❌ ${reason}`);
+      this.logBuffer.push(reason);
+      throw new BadRequestException(reason);
+    }
+
+    this.logger.log(`🔍 Validando subsidiaria con ID: ${subsidiaryId}`);
+    const predefinedSubsidiary = await this.subsidiaryService.findById(subsidiaryId);
+
+    if (!predefinedSubsidiary) {
+      const reason = `Subsidiaria con ID '${subsidiaryId}' no encontrada`;
+      this.logger.error(`❌ ${reason}`);
+      this.logBuffer.push(reason);
+      throw new BadRequestException(reason);
+    }
+
+    this.logger.log(`📄 Leyendo archivo Excel: ${file.originalname}`);
+    const workbook = XLSX.read(file.buffer, { type: 'buffer' });
+    const shipmentsToSave = parseDynamicSheet(workbook, { fileName: file.originalname })
+    
+    this.logger.log(`📄 Total de envíos procesados desde archivo: ${shipmentsToSave.length}`);
+
+    // Crear Consolidated
+    this.logger.log(`📦 Creando consolidado para ${shipmentsToSave.length} envíos`);
+    const consolidated = Object.assign(new Consolidated(), {
+      date: consDate || new Date(),
+      type: isAereo ? ConsolidatedType.AEREO : ConsolidatedType.ORDINARIA,
+      numberOfPackages: shipmentsToSave.length,
+      subsidiary: predefinedSubsidiary,
+      subsidiaryId: predefinedSubsidiary.id,
+      consNumber,
+      isCompleted: false,
+      efficiency: 0,
+      commitDateTime: new Date(),
+    });
+
+    try {
+      const savedConsolidated = await this.consolidatedService.create(consolidated);
+      if (!savedConsolidated?.id) {
+        const reason = `Error: Consolidated no retornó un ID válido tras guardar`;
+        this.logger.error(`❌ ${reason}`);
+        this.logBuffer.push(reason);
+        throw new Error(reason);
+      }
+      consolidated.id = savedConsolidated.id;
+      this.logger.log(`📦 Consolidado creado con ID: ${consolidated.id}`);
+      this.logBuffer.push(`📦 Consolidado creado con ID: ${consolidated.id}`);
+    } catch (err) {
+      const reason = `Error al crear consolidado: ${err.message}`;
+      this.logger.error(`❌ ${reason}`);
+      this.logBuffer.push(reason);
+      throw new BadRequestException(reason);
+    }
+
+    const result = {
+      saved: 0,
+      failed: 0,
+      duplicated: 0,
+      duplicatedTrackings: [] as ParsedShipmentDto[],
+      failedTrackings: [] as { trackingNumber: string; reason: string }[],
+    };
+
+    const shipmentsWithError = {
+      duplicated: [] as { trackingNumber: string; reason: string }[],
+      fedexError: [] as { trackingNumber: string; reason: string }[],
+      saveError: [] as { trackingNumber: string; reason: string }[],
+    };
+
+    const processedTrackingNumbers = new Set<string>();
+    const shipmentsToGenerateIncomes: { shipment: Shipment; timestamp: Date; exceptionCode: string | undefined }[] = [];
+    const batches = Array.from(
+      { length: Math.ceil(shipmentsToSave.length / this.BATCH_SIZE) },
+      (_, i) => shipmentsToSave.slice(i * this.BATCH_SIZE, (i + 1) * this.BATCH_SIZE)
+    );
+    this.logger.log(`📦 Procesando ${batches.length} lotes de ${this.BATCH_SIZE} envíos cada uno`);
+
+    // Start transaction
+    await this.shipmentRepository.manager.transaction(async (transactionalEntityManager) => {
+      for (let i = 0; i < batches.length; i++) {
+        const batch = batches[i];
+        this.logger.log(`📦 Iniciando lote ${i + 1}/${batches.length} con ${batch.length} envíos`);
+        this.shipmentBatch = []; // Reset batch for each loop
+
+        // Process shipments and collect valid ones
+        await Promise.all(
+          batch.map((shipment, index) =>
+            this.processShipment(
+              shipment,
+              predefinedSubsidiary,
+              consolidated,
+              result,
+              shipmentsWithError,
+              i + 1,
+              index + 1,
+              processedTrackingNumbers,
+              shipmentsToGenerateIncomes, 
+              consolidated.id
+            )
+          )
+        );
+
+        // Save batch of shipments
+        if (this.shipmentBatch.length) {
+          try {
+            this.logger.debug(`💾 Intentando guardar lote ${i + 1} con ${this.shipmentBatch.length} envíos`);
+            
+            // PRE-LIMPIEZA: Extraer y limpiar todas las relaciones circulares
+            const statusHistoryMap = new Map<string, ShipmentStatus[]>(); 
+            const paymentMap = new Map<string, Payment>(); 
+            
+            this.shipmentBatch.forEach((shipment, index) => {
+              this.logger.debug(`🔍 Preparando shipment ${index + 1}/${this.shipmentBatch.length}: ${shipment.trackingNumber} (Status: ${shipment.status})`);
+              
+              // 1. Extraer y limpiar statusHistory
+              if (shipment.statusHistory && Array.isArray(shipment.statusHistory)) {
+                this.logger.debug(`🔍 Extrayendo ${shipment.statusHistory.length} statusHistory entries para ${shipment.trackingNumber}`);
+                
+                const cleanStatusHistory = shipment.statusHistory.map(status => {
+                  const cleanStatus = Object.assign(new ShipmentStatus(), {
+                    status: status.status,
+                    timestamp: status.timestamp,
+                    exceptionCode: status.exceptionCode,
+                    notes: status.notes,
+                  });
+                  return cleanStatus;
+                });
+                
+                statusHistoryMap.set(shipment.trackingNumber, cleanStatusHistory);
+                shipment.statusHistory.length = 0;
+              }
+              
+              // 2. Extraer y limpiar Payment
+              if (shipment.payment && typeof shipment.payment === 'object') {
+                this.logger.debug(`🔍 Extrayendo payment para ${shipment.trackingNumber}: $${shipment.payment.amount} - ${shipment.payment.status}`);
+                
+                const cleanPayment = Object.assign(new Payment(), {
+                  amount: shipment.payment.amount,
+                  type: shipment.payment.type,
+                  status: shipment.payment.status,
+                });
+                
+                paymentMap.set(shipment.trackingNumber, cleanPayment);
+                shipment.payment = undefined;
+              }
+              
+              // 3. Limpiar otras relaciones para evitar ciclos
+              if (shipment.subsidiary && typeof shipment.subsidiary === 'object') {
+                shipment.subsidiary = { id: shipment.subsidiary.id } as Subsidiary;
+              }
+            });
+
+            // GUARDAR SHIPMENTS PRINCIPALES
+            this.logger.debug(`🔍 Guardando ${this.shipmentBatch.length} shipments principales`);
+            const savedShipments = await transactionalEntityManager.save(Shipment, this.shipmentBatch, { chunk: 50 });
+            this.logger.log(`💾 Guardados ${this.shipmentBatch.length} envíos en lote ${i + 1}`);
+
+            // Assign IDs to shipments y registrar SOLO fallidos reales
+            const failedShipmentsInBatch: { trackingNumber: string; reason: string }[] = [];
+            
+            this.shipmentBatch.forEach((shipment, idx) => {
+              shipment.id = savedShipments[idx]?.id;
+              if (!shipment.id) {
+                const reason = `Error: No se asignó ID al envío ${shipment.trackingNumber} tras guardar`;
+                this.logger.error(`❌ ${reason}`);
+                failedShipmentsInBatch.push({ trackingNumber: shipment.trackingNumber, reason });
+                shipmentsWithError.saveError.push({ trackingNumber: shipment.trackingNumber, reason });
+                result.failed++;
+                result.saved--;
+              } else {
+                this.logger.debug(`✅ Shipment ${shipment.trackingNumber} guardado con ID: ${shipment.id} (Status: ${shipment.status})`);
+              }
+            });
+
+            // REGISTRAR FALLIDOS DEL BATCH (solo errores reales de guardado)
+            if (failedShipmentsInBatch.length > 0) {
+              this.logger.error(`❌ ${failedShipmentsInBatch.length} envíos fallaron en el GUARDADO:`);
+              failedShipmentsInBatch.forEach(failed => {
+                this.logger.error(`   - ${failed.trackingNumber}: ${failed.reason}`);
+                result.failedTrackings.push(failed);
+              });
+            }
+
+            // GUARDAR PAYMENTS
+            const allPaymentsToSave: Payment[] = [];
+
+            paymentMap.forEach((payment, trackingNumber) => {
+              const correspondingShipment = savedShipments.find(s => s.trackingNumber === trackingNumber && s.id);
+              if (correspondingShipment?.id) {
+                payment.shipment = { id: correspondingShipment.id } as Shipment;
+                allPaymentsToSave.push(payment);
+              }
+            });
+
+            if (allPaymentsToSave.length > 0) {
+              try {
+                await transactionalEntityManager.save(Payment, allPaymentsToSave, { chunk: 50 });
+                this.logger.log(`💾 Guardados ${allPaymentsToSave.length} payments`);
+                
+                // RESTAURAR PAYMENTS
+                this.shipmentBatch.forEach(shipment => {
+                  if (shipment.id) {
+                    const shipmentPayment = allPaymentsToSave.find(
+                      payment => payment.shipment?.id === shipment.id
+                    );
+                    if (shipmentPayment) {
+                      shipment.payment = shipmentPayment;
+                    }
+                  }
+                });
+              } catch (paymentError) {
+                this.logger.error(`❌ Error guardando payments: ${paymentError.message}`);
+              }
+            }
+
+            // GUARDAR STATUS HISTORY
+            const allStatusHistoryToSave: ShipmentStatus[] = [];
+
+            statusHistoryMap.forEach((statusHistory, trackingNumber) => {
+              const correspondingShipment = savedShipments.find(s => s.trackingNumber === trackingNumber && s.id);
+              if (correspondingShipment?.id) {
+                statusHistory.forEach(status => {
+                  status.shipment = { id: correspondingShipment.id } as Shipment;
+                  allStatusHistoryToSave.push(status);
+                });
+              }
+            });
+
+            if (allStatusHistoryToSave.length > 0) {
+              try {
+                await transactionalEntityManager.save(ShipmentStatus, allStatusHistoryToSave, { chunk: 50 });
+                this.logger.log(`💾 Guardados ${allStatusHistoryToSave.length} statusHistory entries`);
+                
+                // RESTAURAR STATUS HISTORY
+                this.shipmentBatch.forEach(shipment => {
+                  if (shipment.id) {
+                    const shipmentStatusHistory = allStatusHistoryToSave.filter(
+                      status => status.shipment?.id === shipment.id
+                    );
+                    if (shipmentStatusHistory.length > 0) {
+                      shipment.statusHistory = shipmentStatusHistory;
+                    }
+                  }
+                });
+              } catch (statusError) {
+                this.logger.error(`❌ Error guardando statusHistory: ${statusError.message}`);
+              }
+            }
+
+            // 🔥 CORRECCIÓN: GENERAR INCOMES - NO contar como fallidos los "no_entregados"
+            this.logger.debug(`🔍 Procesando incomes para ${shipmentsToGenerateIncomes.length} shipments`);
+            const incomesToProcess = [...shipmentsToGenerateIncomes];
+            const skippedIncomes: { trackingNumber: string; reason: string }[] = [];
+            
+            for (const { shipment, timestamp, exceptionCode } of incomesToProcess) {
+              if (!shipment.id) {
+                // Este ya se contó como fallido anteriormente, solo registrar
+                const reason = `No se puede generar income - shipment no guardado: ${shipment.trackingNumber}`;
+                this.logger.warn(`⚠️ ${reason}`);
+                continue;
+              }
+
+              try {
+                this.logger.debug(`💰 Generando income para ${shipment.trackingNumber} (Status: ${shipment.status})`);
+                await this.generateIncomes(shipment, timestamp, exceptionCode, transactionalEntityManager);
+                this.logger.log(`✅ Income generado para ${shipment.trackingNumber}`);
+                
+                // Remover de la lista
+                const index = shipmentsToGenerateIncomes.findIndex(item => item.shipment.trackingNumber === shipment.trackingNumber);
+                if (index !== -1) {
+                  shipmentsToGenerateIncomes.splice(index, 1);
+                }
+              } catch (err) {
+                // 🔥 CORRECCIÓN IMPORTANTE: NO contar como fallido, solo registrar como skipped
+                const reason = `No se generó income para ${shipment.trackingNumber}: ${err.message}`;
+                this.logger.warn(`⚠️ ${reason}`);
+                skippedIncomes.push({ trackingNumber: shipment.trackingNumber, reason });
+                shipmentsWithError.saveError.push({ trackingNumber: shipment.trackingNumber, reason });
+                // 🔥 NO incrementar result.failed aquí - el shipment SÍ se guardó exitosamente
+              }
+            }
+
+            // REGISTRAR INCOMES SKIPPEADOS (no fallidos)
+            if (skippedIncomes.length > 0) {
+              this.logger.warn(`⚠️ ${skippedIncomes.length} incomes no se generaron (pero shipments se guardaron):`);
+              skippedIncomes.forEach(skipped => {
+                this.logger.warn(`   - ${skipped.trackingNumber}: ${skipped.reason}`);
+              });
+            }
+
+            this.shipmentBatch = [];
+            
+          } catch (err) {
+            const reason = `Error al guardar lote de envíos ${i + 1}: ${err.message}`;
+            this.logger.error(`❌ ${reason}`);
+            
+            // REGISTRAR TODOS LOS SHIPMENTS DEL BATCH COMO FALLIDOS (solo en error crítico)
+            this.shipmentBatch.forEach(shipment => {
+              const failedReason = `Error crítico en lote: ${err.message}`;
+              shipmentsWithError.saveError.push({ trackingNumber: shipment.trackingNumber, reason: failedReason });
+              result.failedTrackings.push({ trackingNumber: shipment.trackingNumber, reason: failedReason });
+              result.failed++;
+              result.saved--;
+            });
+
+            this.logger.error(`❌ ERROR CRÍTICO: ${this.shipmentBatch.length} envíos fallaron:`);
+            this.shipmentBatch.forEach(shipment => {
+              this.logger.error(`   - ${shipment.trackingNumber}`);
+            });
+
+            this.shipmentBatch = [];
+          }
+        }
+        this.logger.log(`✅ Finalizado lote ${i + 1}/${batches.length}`);
+      }
+    });
+
+    // 🔥 CORRECCIÓN: CALCULAR ESTADÍSTICAS FINALES CORRECTAS
+    const totalProcessed = shipmentsToSave.length;
+    const totalSaved = result.saved;
+    const totalDuplicated = result.duplicated;
+    const totalFailed = result.failed; // Solo errores reales de guardado
+    
+    // Identificar shipments con status "no_entregado" que fueron guardados exitosamente
+    const savedButNotDelivered = totalSaved - result.failedTrackings.length;
+
+    // 🔥 RESUMEN FINAL CORREGIDO
+    this.logger.log(`📊 RESUMEN FINAL CORREGIDO:`);
+    this.logger.log(`   📄 Total procesado desde archivo: ${totalProcessed}`);
+    this.logger.log(`   ✅ Guardados exitosos: ${totalSaved} (incluyendo ${savedButNotDelivered} con status NO_ENTREGADO)`);
+    this.logger.log(`   🔁 Duplicados: ${totalDuplicated}`);
+    this.logger.log(`   ❌ Fallidos por ERROR: ${totalFailed}`);
+    
+    if (result.failedTrackings.length > 0) {
+      this.logger.log(`   📋 ENVÍOS FALLIDOS POR ERROR (${result.failedTrackings.length}):`);
+      result.failedTrackings.forEach((failed, index) => {
+        this.logger.log(`      ${index + 1}. ${failed.trackingNumber}: ${failed.reason}`);
+      });
+    } else {
+      this.logger.log(`   🎉 No hay envíos fallidos por error`);
+    }
+
+    if (result.duplicatedTrackings.length > 0) {
+      this.logger.log(`   🔁 ENVÍOS DUPLICADOS (${result.duplicatedTrackings.length}):`);
+      result.duplicatedTrackings.forEach((dup, index) => {
+        this.logger.log(`      ${index + 1}. ${dup.trackingNumber}`);
+      });
+    }
+
+    // Evitar Consolidated innecesario si todos son duplicados
+    if (result.duplicated === shipmentsToSave.length) {
+      await this.consolidatedService.remove(consolidated.id);
+      this.logger.warn(`⚠️ Todos los envíos son duplicados. Consolidado ${consolidated.id} eliminado.`);
+    } else {
+      // Actualizar consolidado
+      this.logger.log(`📊 Actualizando consolidado ${consolidated.id}`);
+      consolidated.isCompleted = true;
+      consolidated.efficiency = shipmentsToSave.length
+        ? (totalSaved / shipmentsToSave.length) * 100
+        : 0;
+      consolidated.commitDateTime = new Date();
+      try {
+        await this.consolidatedService.create(consolidated);
+        this.logger.log(`📊 Consolidado ${consolidated.id} actualizado: efficiency ${consolidated.efficiency.toFixed(2)}%`);
+      } catch (err) {
+        this.logger.error(`❌ Error al actualizar consolidado: ${err.message}`);
+      }
+    }
+
+    await this.flushLogBuffer();
+    await this.logErrors(shipmentsWithError);
+
+    const durationMin = ((Date.now() - startTime) / 60000).toFixed(2);
+    this.logger.log(`⏱️ Tiempo total de procesamiento: ${durationMin} minutos`);
+    this.logger.log(
+      `✅ Proceso finalizado: ${totalSaved} guardados, ${totalDuplicated} duplicados, ${totalFailed} fallidos`
+    );
+
+    return {
+      saved: totalSaved,
+      failed: totalFailed,
+      duplicated: totalDuplicated,
+      duplicatedTrackings: result.duplicatedTrackings,
+      failedTrackings: result.failedTrackings, // Solo errores reales de guardado
+      errors: [
+        ...shipmentsWithError.duplicated,
+        ...shipmentsWithError.fedexError,
+        ...shipmentsWithError.saveError,
+      ],
+    };
+  }
+
+  // Métodos auxiliares para detectar referencias circulares
+  private detectCircularReferences(shipment: Shipment) {
+    try {
+      this.logger.debug(`🔍 Intentando serializar shipment ${shipment.trackingNumber}`);
+      JSON.stringify(shipment);
+      this.logger.debug(`✅ Shipment ${shipment.trackingNumber} se serializa correctamente`);
+    } catch (jsonError) {
+      this.logger.error(`🔍 Error al serializar shipment: ${jsonError.message}`);
+      this.analyzeProblematicProperties(shipment);
+    }
+  }
+
+  private analyzeProblematicProperties(obj: any, path = 'root', visited = new Set()) {
+    if (visited.has(obj)) {
+      this.logger.error(`🔄 Referencia circular detectada en: ${path}`);
+      return;
+    }
+    visited.add(obj);
+
+    if (obj && typeof obj === 'object') {
+      for (const key in obj) {
+        if (obj[key] && typeof obj[key] === 'object') {
+          this.analyzeProblematicProperties(obj[key], `${path}.${key}`, new Set(visited));
+        }
+      }
+    }
+  }
+
+ /*** */ 
+
+  /** por si algo falta con la solución circular a shipment en Hillo / Hillo Ext */
+  private async processShipmentResp(
     shipment: ParsedShipmentDto,
     predefinedSubsidiary: Subsidiary,
     consolidated: Consolidated,
@@ -2439,6 +3426,292 @@ export class ShipmentsService {
         dateSource = 'Default';
         this.logger.log(`⚠️ commitDateTime asignado por defecto: ${commitDateTime.toISOString()}`);
       }
+      // Update shipment with final date values
+      newShipment.commitDate = commitDate;
+      newShipment.commitTime = commitTime;
+      newShipment.commitDateTime = commitDateTime;
+      newShipment.priority = getPriority(commitDateTime);
+
+      this.logger.log(`📅 Fecha final asignada para ${trackingNumber} desde ${dateSource}: commitDateTime=${commitDateTime.toISOString()}`);
+
+      Object.assign(newShipment, {
+        statusHistory: histories,
+        status: histories[histories.length - 1]?.status || ShipmentStatusType.PENDIENTE,
+        receivedByName: trackResult?.deliveryDetails?.receivedByName || '',
+        shipmentType: ShipmentType.FEDEX,
+      });
+
+      if (shipment.payment) {
+        const typeMatch =  shipment.payment.match(/^(COD|FTC|ROD)/);
+        const amountMatch =  shipment.payment.match(/([0-9]+(?:\.[0-9]+)?)/);
+
+        if (amountMatch) {
+          const paymentType = typeMatch ? typeMatch[1] as PaymentTypeEnum : null;
+          const paymentAmount = amountMatch ? parseFloat(amountMatch[1]) : null;
+                         
+          if (!isNaN(paymentAmount) && paymentAmount > 0) {
+            newShipment.payment = Object.assign(new Payment(), {
+              amount: paymentAmount,
+              type: paymentType,
+              status: histories.some((h) => h.status === ShipmentStatusType.ENTREGADO)
+                ? PaymentStatus.PAID
+                : PaymentStatus.PENDING,
+            });
+            this.logger.log(
+              `💰 Monto de pago: $${paymentAmount} - Estatus: ${newShipment.payment.status}`
+            );
+          }
+        }
+      }
+
+      // Add to batch for saving later
+      this.shipmentBatch.push(newShipment);
+      result.saved++;
+
+      // Validación para income con reglas extendidas
+      if ([ShipmentStatusType.ENTREGADO, ShipmentStatusType.NO_ENTREGADO].includes(newShipment.status)) {
+        const matchedHistory = histories
+          .filter((h) => h.status === newShipment.status)
+          .sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime())[0];
+        const exceptionCodes = histories.map((h) => h.exceptionCode).filter(Boolean);
+
+        const validationResult = await this.applyIncomeValidationRules(
+          newShipment,
+          newShipment.status,
+          exceptionCodes,
+          histories,
+          trackingNumber,
+          matchedHistory?.timestamp || new Date()
+        );
+
+        if (validationResult.isValid && matchedHistory) {
+          shipmentsToGenerateIncomes.push({
+            shipment: newShipment,
+            timestamp: validationResult.timestamp,
+            exceptionCode: matchedHistory.exceptionCode,
+          });
+          this.logger.log(`✅ Incluido income para ${newShipment.status}: ${trackingNumber}`);
+        } else {
+          const reason = validationResult.reason || `❌ No se encontró matchedHistory válido para income: ${trackingNumber}`;
+          this.logger.log(reason);
+          this.logBuffer.push(reason);
+          result.failed++;
+          result.saved--;
+          result.failedTrackings.push({ trackingNumber, reason });
+          shipmentsWithError.saveError.push({ trackingNumber, reason });
+          return;
+        }
+      }
+    } catch (err) {
+      const reason = `Error al procesar shipment ${trackingNumber}: ${err.message}`;
+      this.logger.error(`❌ ${reason}`);
+      result.failed++;
+      result.saved--;
+      result.failedTrackings.push({ trackingNumber, reason });
+      shipmentsWithError.saveError.push({ trackingNumber, reason });
+      this.logBuffer.push(reason);
+    }
+  }
+
+  private async processShipment(
+    shipment: ParsedShipmentDto,
+    predefinedSubsidiary: Subsidiary,
+    consolidated: Consolidated,
+    result: any,
+    shipmentsWithError: any,
+    batchNumber: number,
+    shipmentIndex: number,
+    processedTrackingNumbers: Set<string>,
+    shipmentsToGenerateIncomes: { shipment: Shipment; timestamp: Date; exceptionCode: string | undefined }[],
+    consolidatedId: string
+  ): Promise<void> {
+    const trackingNumber = shipment.trackingNumber;
+    this.logger.log(`📦 Procesando envío ${shipmentIndex}/${this.BATCH_SIZE} del lote ${batchNumber}: ${trackingNumber}`);
+    this.logger.log(`📅 commitDate desde archivo: ${shipment.commitDate}, commitTime desde archivo: ${shipment.commitTime}`);
+
+    if (!consolidated.id) {
+      const reason = `Error: consolidated.id no está definido para ${trackingNumber}`;
+      this.logger.error(`❌ ${reason}`);
+      result.failed++;
+      result.failedTrackings.push({ trackingNumber, reason });
+      shipmentsWithError.saveError.push({ trackingNumber, reason });
+      this.logBuffer.push(reason);
+      return;
+    }
+
+    // Check in-memory duplicates
+    if (processedTrackingNumbers.has(trackingNumber)) {
+      const reason = `Envío duplicado en el lote actual: ${trackingNumber}`;
+      this.logger.warn(`🔁 ${reason}`);
+      result.duplicated++;
+      result.duplicatedTrackings.push(shipment);
+      shipmentsWithError.duplicated.push({ trackingNumber, reason });
+      this.logBuffer.push(reason);
+      return;
+    }
+
+    // Check database duplicates
+    if (await this.existShipment(trackingNumber, consolidatedId)) {
+      const reason = `Envío duplicado en la base de datos: ${trackingNumber}`;
+      this.logger.warn(`🔁 ${reason}`);
+      result.duplicated++;
+      result.duplicatedTrackings.push(shipment);
+      shipmentsWithError.duplicated.push({ trackingNumber, reason });
+      this.logBuffer.push(reason);
+      return;
+    }
+
+    processedTrackingNumbers.add(trackingNumber);
+
+    // Validate and format commitDate and commitTime from Excel
+    let commitDate: string | undefined;
+    let commitTime: string | undefined;
+    let commitDateTime: Date | undefined;
+    let dateSource = '';
+
+    //Formatear a utc los commit que vienen normal
+    if (shipment.commitDate && shipment.commitTime) {
+      try {
+        const timeZone = 'America/Hermosillo';
+        const parsedDate = parse(shipment.commitDate, 'yyyy-MM-dd', new Date());
+        const parsedTime = parse(shipment.commitTime, 'HH:mm:ss', new Date());
+
+        if (!isNaN(parsedDate.getTime()) && !isNaN(parsedTime.getTime())) {
+          commitDate = format(parsedDate, 'yyyy-MM-dd');
+          commitTime = format(parsedTime, 'HH:mm:ss');
+
+          // Fecha local como string
+          const localDateTime = `${commitDate}T${commitTime}`;
+
+          // ⬇️ Aquí está el truco: usar toDate con timeZone
+          // Esto interpreta localDateTime como si fuera Hermosillo y devuelve UTC
+          commitDateTime = toDate(localDateTime, { timeZone });
+
+          dateSource = 'Excel';
+          this.logger.log(
+            `📅 commitDateTime (UTC) asignado desde Excel para ${trackingNumber}: ${commitDateTime.toISOString()} (commitDate=${commitDate}, commitTime=${commitTime}, TZ=${timeZone})`,
+          );
+        } else {
+          this.logger.log(
+            `⚠️ Formato inválido en Excel para ${trackingNumber}: commitDate=${shipment.commitDate}, commitTime=${shipment.commitTime}`,
+          );
+        }
+      } catch (err) {
+        this.logger.log(
+          `⚠️ Error al parsear datos de Excel para ${trackingNumber}: ${err.message}`,
+        );
+      }
+    }
+
+    const newShipment = Object.assign(new Shipment(), {
+      trackingNumber,
+      shipmentType: ShipmentType.FEDEX,
+      recipientName: shipment.recipientName || '',
+      recipientAddress: shipment.recipientAddress || '',
+      recipientCity: shipment.recipientCity || predefinedSubsidiary.name,
+      recipientZip: shipment.recipientZip || '',
+      commitDate: commitDate || undefined,
+      commitTime: commitTime || undefined,
+      commitDateTime: commitDateTime || undefined,
+      recipientPhone: shipment.recipientPhone || '',
+      status: ShipmentStatusType.PENDIENTE,
+      priority: Priority.BAJA,
+      consNumber: consolidated.consNumber || '',
+      receivedByName: '',
+      subsidiary: predefinedSubsidiary,
+      subsidiaryId: predefinedSubsidiary.id,
+      consolidatedId: consolidated.id,
+    });
+
+    let fedexShipmentData: FedExTrackingResponseDto;
+
+    try {
+      this.logger.log(`📬 Consultando FedEx para ${trackingNumber}`);
+      fedexShipmentData = await this.trackPackageWithRetry(trackingNumber);
+      this.logger.log(`📬 Datos FedEx recibidos para: ${trackingNumber}`);
+    } catch (err) {
+      const reason = `Error FedEx (${trackingNumber}): ${err.message}`;
+      this.logger.error(`❌ ${reason}`);
+      result.failed++;
+      result.failedTrackings.push({ trackingNumber, reason });
+      shipmentsWithError.fedexError.push({ trackingNumber, reason });
+      this.logBuffer.push(reason);
+      return;
+    }
+
+    try {
+      const trackResults = fedexShipmentData.output.completeTrackResults[0].trackResults;
+      
+      // 🔥 CORRECCIÓN: Crear un objeto shipment mínimo para evitar referencias circulares
+      const shipmentReference = Object.assign(new Shipment(), {
+        trackingNumber: trackingNumber,
+        // Solo incluir propiedades necesarias, NO incluir relaciones bidireccionales
+      });
+
+      const histories = await this.processFedexScanEventsToStatusesResp(
+        trackResults.flatMap((result) => result.scanEvents || []),
+        shipmentReference
+      );
+
+      // 🔥 LIMPIAR REFERENCIAS CIRCULARES INMEDIATAMENTE
+      if (histories && Array.isArray(histories)) {
+        histories.forEach(status => {
+          // Eliminar cualquier referencia circular que se haya creado
+          status.shipment = undefined;
+          status.id = undefined; // Los IDs se generarán al guardar
+        });
+      }
+
+      this.logger.log(
+        `📜 Historial generado para ${trackingNumber}: ${histories.map((h) => h.status).join(', ')}`
+      );
+
+      const trackResult = trackResults.find((r) => r.latestStatusDetail?.derivedCode === 'DL') || trackResults.sort((a, b) => {
+        const dateA = a.scanEvents[0]?.date ? new Date(a.scanEvents[0].date).getTime() : 0;
+        const dateB = b.scanEvents[0]?.date ? new Date(b.scanEvents[0].date).getTime() : 0;
+        return dateB - dateA;
+      })[0];
+
+      // Set commitDateTime from FedEx if Excel date is invalid
+      if (!commitDateTime) {
+        const rawDate = trackResult?.standardTransitTimeWindow?.window?.ends;
+        console.log("🚀 ~ ShipmentsService ~ processShipment ~ rawDate:", rawDate)
+        if (rawDate) {
+          try {
+            const parsedFedexDate = parse(rawDate, "yyyy-MM-dd'T'HH:mm:ssXXX", new Date());
+            if (!isNaN(parsedFedexDate.getTime())) {
+              commitDate = format(parsedFedexDate, 'yyyy-MM-dd');
+              commitTime = format(parsedFedexDate, 'HH:mm:ss');
+              commitDateTime = parsedFedexDate;
+              dateSource = 'FedEx';
+              this.logger.log(`📅 commitDateTime asignado desde FedEx para ${trackingNumber}: ${commitDateTime.toISOString()} (commitDate=${commitDate}, commitTime=${commitTime})`);
+            } else {
+              this.logger.log(`⚠️ Formato de fecha inválido en FedEx para ${trackingNumber}: ${rawDate}`);
+            }
+          } catch (err) {
+            this.logger.log(`⚠️ Error al parsear fecha de FedEx para ${trackingNumber}: ${err.message}`);
+          }
+        }
+      }
+
+      // Use default date as last resort
+      if (!commitDateTime) {
+        // Crear directamente la fecha UTC equivalente a 18:00 UTC-7
+        const now = new Date();
+        const utcDate = new Date(Date.UTC(
+          now.getUTCFullYear(),
+          now.getUTCMonth(),
+          now.getUTCDate(),
+          18 + 7, // 18:00 UTC-7 = 01:00 UTC (día siguiente)
+          0,
+          0
+        ));
+        
+        commitDateTime = utcDate;
+        dateSource = 'Default';
+        this.logger.log(`⚠️ commitDateTime asignado por defecto: ${commitDateTime.toISOString()}`);
+      }
+
       // Update shipment with final date values
       newShipment.commitDate = commitDate;
       newShipment.commitTime = commitTime;
@@ -4532,7 +5805,7 @@ export class ShipmentsService {
       return response;
     }
 
-
+    //async getShipmentsTo
 
 
     /************************************************* */
