@@ -18,6 +18,7 @@ export function mapFedexStatusToLocalStatus(derivedStatusCode: string, exception
     'DP': ShipmentStatusType.EN_RUTA,
     'CP': ShipmentStatusType.EN_RUTA,
     'CC': ShipmentStatusType.EN_RUTA,
+    'DY': ShipmentStatusType.EN_RUTA, //podría ser pendiente 
     'DE': ShipmentStatusType.NO_ENTREGADO,
     'DU': ShipmentStatusType.NO_ENTREGADO,
     'RF': ShipmentStatusType.NO_ENTREGADO,

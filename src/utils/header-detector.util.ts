@@ -135,6 +135,7 @@ export const headerAliases: Record<string, string> = {
     'zip': 'recipientZip',
     'postal': 'recipientZip',
     'codigopostal': 'recipientZip',
+    'recippostal': 'recipientZip',
     
     // Commit Date
     'commitdate': 'commitDate',
