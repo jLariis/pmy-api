@@ -8,6 +8,8 @@ export class ValidateShipmentDto {
   subsidiaryName: string;  // Existente
   hasIncome: boolean;
   isCharge: boolean;
+  hasError?: boolean;
+  errorMessage?: string;
   lastStatus: {
     type: string | null;
     exceptionCode: string | null;

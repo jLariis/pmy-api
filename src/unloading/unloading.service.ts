@@ -532,6 +532,28 @@ export class UnloadingService {
     return `This action returns all unloading`;
   }
 
+  /** For combo box on monitoring*/
+  async findBySubsidiaryId(subsidiaryId: string) {
+     const response = await this.unloadingRepository.find({
+      where: { subsidiary: { id: subsidiaryId } },
+      select: {
+        id: true,
+        trackingNumber: true,
+        date: true,
+        subsidiary: {
+          id: true,
+          name: true
+        }
+      },
+      relations: ['subsidiary'],
+      order: {
+        createdAt: 'DESC'
+      }
+    });
+
+    return response
+  }
+
   async findAllBySubsidiary(subsidiaryId: string) {
     const response = await this.unloadingRepository.find({
       where: { subsidiary: { id: subsidiaryId } },
@@ -1704,5 +1726,144 @@ export class UnloadingService {
       throw err; // importante propagar para que el flujo lo sepa
     }
   }
+
+  async findShipmentsByUnloadingId(id: string) {
+    // Buscar el Unloading
+    const unloading = await this.unloadingRepository.findOne({
+      where: { id },
+      relations: ['subsidiary'],
+    });
+
+    if (!unloading) {
+      throw new Error(`No se encontró ningún Unloading con id: ${id}`);
+    }
+
+    // Buscar Shipments y ChargeShipments relacionados directamente con el Unloading
+    const [shipments, chargeShipments] = await Promise.all([
+      this.shipmentRepository.find({
+        where: { unloading: { id } },
+        relations: [
+          'packageDispatch',
+          'packageDispatch.drivers',
+          'packageDispatch.vehicle',
+          'packageDispatch.routes',
+          'packageDispatch.subsidiary',
+          'packageDispatch.routeClosure',
+          'packageDispatch.routeClosure.createdBy',
+          'unloading',
+          'unloading.subsidiary',
+          'payment',
+        ],
+      }),
+      this.chargeShipmentRepository.find({
+        where: { unloading: { id } },
+        relations: [
+          'packageDispatch',
+          'packageDispatch.drivers',
+          'packageDispatch.vehicle',
+          'packageDispatch.routes',
+          'packageDispatch.subsidiary',
+          'packageDispatch.routeClosure',
+          'packageDispatch.routeClosure.createdBy',
+          'unloading',
+          'unloading.subsidiary',
+          'payment',
+        ],
+      }),
+    ]);
+
+    if (shipments.length === 0 && chargeShipments.length === 0) {
+      return [];
+    }
+
+    const mapShipment = async (shipment: any, isCharge: boolean) => {
+      const dispatch = shipment.packageDispatch;
+      const inWarehouse = !dispatch;
+      const ubication = inWarehouse ? 'EN BODEGA' : 'EN RUTA';
+      const driverName =
+        dispatch?.drivers?.length && dispatch.drivers[0]
+          ? dispatch.drivers[0].name
+          : null;
+
+      // 🔍 Buscar el Consolidated manualmente por consNumber
+      let consolidated = null;
+      if (shipment.consNumber) {
+        consolidated = await this.consolidatedReporsitory.findOne({
+          where: { consNumber: shipment.consNumber },
+        });
+      }
+
+      return {
+        shipmentData: {
+          trackingNumber: shipment.trackingNumber,
+          shipmentStatus: shipment.statusShipment,
+          ubication,
+          unloading: shipment.unloading
+            ? {
+                trackingNumber: shipment.unloading.trackingNumber,
+                date: shipment.unloading.date,
+                subsidiary: shipment.unloading.subsidiary
+                  ? shipment.unloading.subsidiary.name
+                  : null,
+              }
+            : null,
+          consolidated: consolidated
+            ? {
+                consNumber: consolidated.consNumber,
+                date: consolidated.createdAt,
+              }
+            : null,
+          destination: shipment.recipientCity || null,
+          isCharge,
+        },
+        packageDispatch: dispatch
+          ? {
+              id: dispatch.id,
+              trackingNumber: dispatch.trackingNumber,
+              createdAt: dispatch.createdAt,
+              status: dispatch.status,
+              driver: driverName,
+              vehicle: dispatch.vehicle
+                ? {
+                    name: dispatch.vehicle.name || null,
+                    plateNumber: dispatch.vehicle.plateNumber || null,
+                  }
+                : null,
+              routes: dispatch.routes?.length
+                ? dispatch.routes.map((r) => r.name)
+                : [],
+              subsidiary: dispatch.subsidiary
+                ? {
+                    id: dispatch.subsidiary.id,
+                    name: dispatch.subsidiary.name,
+                  }
+                : null,
+              routeClosure: dispatch.routeClosure
+                ? {
+                    closeDate: dispatch.routeClosure.closeDate,
+                    closedBy: dispatch.routeClosure.createdBy
+                      ? dispatch.routeClosure.createdBy.name
+                      : null,
+                  }
+                : null,
+            }
+          : null,
+      };
+    };
+
+    // Esperar todos los map async
+    const normalShipments = await Promise.all(
+      shipments.map((s) => mapShipment(s, false)),
+    );
+    const chargeShipmentsMapped = await Promise.all(
+      chargeShipments.map((s) => mapShipment(s, true)),
+    );
+
+    return [...normalShipments, ...chargeShipmentsMapped];
+  }
+
+
+
+
 
 }
