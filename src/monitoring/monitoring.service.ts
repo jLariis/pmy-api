@@ -4,6 +4,7 @@ import { FedexService } from 'src/shipments/fedex.service';
 import { ShipmentsService } from 'src/shipments/shipments.service';
 import { ConsolidatedService } from 'src/consolidated/consolidated.service';
 import { PackageDispatchService } from 'src/package-dispatch/package-dispatch.service';
+import { UnloadingService } from 'src/unloading/unloading.service';
 
 @Injectable()
 export class MonitoringService {
@@ -14,7 +15,8 @@ export class MonitoringService {
     private readonly fedexService: FedexService,
     private readonly shipmentService: ShipmentsService,
     private readonly packageDispatchService: PackageDispatchService,
-    private readonly consolidatedService: ConsolidatedService
+    private readonly consolidatedService: ConsolidatedService,
+    private readonly unloadingService: UnloadingService
   ) {}
 
   async getConsolidatedsBySubsidiary(subdiaryId: string) {
@@ -23,20 +25,28 @@ export class MonitoringService {
   }
 
   async getPackageDispatchBySubsidiary(subdiaryId: string) {
-    const packageDispatchs = await this.packageDispatchService.findAllBySubsidiary(subdiaryId);
+    const packageDispatchs = await this.packageDispatchService.findBySubsidiary(subdiaryId);
     return packageDispatchs;
   }
 
-  async getDriversBySubsidiary(subdiaryId) {
+  async getUnloadingsBySubsidiary(subdiaryId: string) {
+    const unloadings = await this.unloadingService.findBySubsidiaryId(subdiaryId);
+    return unloadings;
+  }
 
+  async getInfoFromPackageDispatch(packageDispatchId: string) {
+    const packageDispatch = await this.packageDispatchService.findShipmentsByDispatchId(packageDispatchId);
+    return packageDispatch;
   }
 
   async getInfoFromConsolidated(consolidatedId: string) {
-
+    const packages = await this.consolidatedService.findShipmentsByConsolidatedId(consolidatedId);
+    return packages;
   }
 
-  async getInfoFromConsolidateds() {
-    
+  async getInfoFromUnloading(unloadingId: string) {
+    const packages = await this.unloadingService.findShipmentsByUnloadingId(unloadingId);
+    return packages; 
   }
 
 

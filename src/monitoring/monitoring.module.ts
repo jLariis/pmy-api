@@ -13,10 +13,22 @@ import { RouteClosure } from 'src/entities/route-closure.entity';
 import { ForPickUp } from 'src/entities/for-pick-up.entity';
 import { DHLService } from 'src/shipments/dto/dhl.service';
 import { SubsidiariesService } from 'src/subsidiaries/subsidiaries.service';
+import { UnloadingService } from 'src/unloading/unloading.service';
+import { Unloading } from 'src/entities/unloading.entity';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Shipment, ChargeShipment, Consolidated, Subsidiary, PackageDispatch, Devolution, RouteClosure, Income, Charge, ShipmentStatus, ForPickUp])],
+  imports: [TypeOrmModule.forFeature([Shipment, ChargeShipment, Consolidated, Subsidiary, PackageDispatch, Devolution, RouteClosure, Income, Charge, ShipmentStatus, ForPickUp, Unloading])],
   controllers: [MonitoringController],
-  providers: [MonitoringService, FedexService, SubsidiariesService, DHLService, MailService, PackageDispatchService, ShipmentsService, ConsolidatedService],
+  providers: [
+    MonitoringService, 
+    FedexService, 
+    SubsidiariesService, 
+    DHLService, 
+    MailService, 
+    PackageDispatchService, 
+    ShipmentsService, 
+    ConsolidatedService,
+    UnloadingService
+  ],
 })
 export class MonitoringModule {}

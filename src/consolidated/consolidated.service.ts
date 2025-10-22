@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { CreateConsolidatedDto } from './dto/create-consolidated.dto';
 import { UpdateConsolidatedDto } from './dto/update-consolidated.dto';
 import { Between, IsNull, Not, Repository } from 'typeorm';
-import { Consolidated, Shipment } from 'src/entities';
+import { ChargeShipment, Consolidated, Shipment } from 'src/entities';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ShipmentConsolidatedDto } from './dto/shipment.dto';
 import { ConsolidatedDto } from './dto/consolidated.dto';
@@ -13,7 +13,10 @@ export class ConsolidatedService {
     @InjectRepository(Consolidated)
     private readonly consolidatedRepository: Repository<Consolidated>,
     @InjectRepository(Shipment)
-    private readonly shipmentRepository: Repository<Shipment>
+    private readonly shipmentRepository: Repository<Shipment>,
+    @InjectRepository(ChargeShipment)
+    private readonly chargeShipmentRepository: Repository<ChargeShipment>,
+
   ){}
 
   async create(createConsolidatedDto: CreateConsolidatedDto) {
@@ -61,7 +64,6 @@ export class ConsolidatedService {
 
     return result;
   }
-
 
   async findAll(
     subsidiaryId?: string,
@@ -244,5 +246,104 @@ export class ConsolidatedService {
 
     return consolidated;
   }
+
+  async findShipmentsByConsolidatedId(id: string) {
+    console.log("🔍 Buscando consolidated con id:", id);
+
+    let consolidated = await this.consolidatedRepository.findOne({
+      where: { id },
+      select: ['id', 'consNumber', 'createdAt'],
+    });
+    
+    console.log("🟢 consolidated:", consolidated);
+
+    if (!consolidated) return [];
+
+    console.log("🔹 consNumber del consolidated:", consolidated.consNumber);
+
+    const shipments = await this.shipmentRepository.find({
+      where: { consNumber: consolidated.consNumber },
+      relations: [
+        'packageDispatch',
+        'packageDispatch.vehicle',
+        'packageDispatch.subsidiary',
+        'packageDispatch.drivers',
+        'unloading',
+      ],
+    });
+    console.log("📦 Shipments encontrados:", shipments.length);
+
+    const chargeShipments = await this.chargeShipmentRepository.find({
+      where: { consNumber: consolidated.consNumber },
+      relations: [
+        'packageDispatch',
+        'packageDispatch.vehicle',
+        'packageDispatch.subsidiary',
+        'packageDispatch.drivers',
+        'unloading',
+      ],
+    });
+    console.log("⚡ ChargeShipments encontrados:", chargeShipments.length);
+
+    if (shipments.length === 0 && chargeShipments.length === 0) {
+      console.warn("⚠️ No se encontraron shipments ni chargeShipments con ese consNumber");
+      return [];
+    }
+
+    const mapShipment = (shipment: any, isCharge: boolean) => {
+      const dispatch = shipment.packageDispatch;
+      const driverName = dispatch?.drivers?.length ? dispatch.drivers[0].name : null;
+      const ubication = dispatch ? 'EN RUTA' : 'EN BODEGA';
+
+      return {
+        shipmentData: {
+          trackingNumber: shipment.trackingNumber,
+          shipmentStatus: shipment.statusShipment,
+          ubication,
+          unloading: shipment.unloading
+            ? {
+                trackingNumber: shipment.unloading.trackingNumber,
+                date: shipment.unloading.date,
+              }
+            : null,
+          consolidated: {
+            consNumber: consolidated.consNumber,
+            date: consolidated.createdAt,
+          },
+          destination: shipment.recipientCity || null,
+          isCharge,
+        },
+        packageDispatch: dispatch
+          ? {
+              id: dispatch.id,
+              trackingNumber: dispatch.trackingNumber,
+              createdAt: dispatch.createdAt,
+              status: dispatch.status,
+              driver: driverName,
+              vehicle: dispatch.vehicle
+                ? {
+                    name: dispatch.vehicle.name || null,
+                    plateNumber: dispatch.vehicle.plateNumber || null,
+                  }
+                : null,
+              subsidiary: dispatch.subsidiary
+                ? {
+                    id: dispatch.subsidiary.id,
+                    name: dispatch.subsidiary.name,
+                  }
+                : null,
+            }
+          : null,
+      };
+    };
+
+    const normalShipments = shipments.map(s => mapShipment(s, false));
+    const chargeShipmentsMapped = chargeShipments.map(s => mapShipment(s, true));
+
+    const result = [...normalShipments, ...chargeShipmentsMapped];
+    console.log("✅ Resultado final:", result.length);
+    return result;
+  }
+
 
 }
