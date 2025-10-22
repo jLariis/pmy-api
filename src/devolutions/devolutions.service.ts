@@ -43,6 +43,7 @@ export class DevolutionsService {
 
         // 1. Validar si la devolución ya existe
         const existingDevolution = await this.devolutionRepository.findOneBy({ trackingNumber });
+
         if (existingDevolution) {
           duplicates.push(trackingNumber);
           this.logger.warn(`Devolución duplicada: ${trackingNumber}`);
@@ -146,16 +147,17 @@ export class DevolutionsService {
   }
 
   async validateOnShipment(trackingNumber: string): Promise<ValidateShipmentDto | null> {
-    // 1. Primero buscamos en Shipment normal
-    const regularShipment = await this.shipmentRepository.findOne({
+    // 1. Buscar todos los Shipments con el trackingNumber
+    const shipments = await this.shipmentRepository.find({
       where: { trackingNumber },
       relations: ['subsidiary', 'statusHistory'],
       select: {
         id: true,
         trackingNumber: true,
         status: true,
+        createdAt: true,
         subsidiary: {
-          id: true,  // <-- Agregado
+          id: true,
           name: true,
         },
         statusHistory: {
@@ -164,59 +166,87 @@ export class DevolutionsService {
           exceptionCode: true,
           notes: true,
           createdAt: true,
-          timestamp: true
-        },
-      },
-      order: {
-        statusHistory: {
-          timestamp: 'DESC',
+          timestamp: true,
         },
       },
     });
 
-    console.log("🚀 ~ DevolutionsService ~ validateOnShipment ~ regularShipment:", regularShipment)
+    // Si no hay Shipments, buscar en ChargeShipment
+    if (!shipments || shipments.length === 0) {
+      const chargeShipment = await this.chargeShipmentRepository.findOne({
+        where: { trackingNumber },
+        relations: ['subsidiary'],
+        select: {
+          id: true,
+          trackingNumber: true,
+          status: true,
+          exceptionCode: true,
+          subsidiary: {
+            id: true,
+            name: true,
+          },
+        },
+      });
 
-    if (regularShipment) {
+      if (!chargeShipment) {
+        return null;
+      }
+
       const incomeExists = await this.incomeRepository.exists({
         where: { trackingNumber },
       });
 
-      const lastStatus = regularShipment.statusHistory?.[0];
-      
+      // Verificar condición en chargeShipment
+      const isProblematic =
+        chargeShipment.status === ShipmentStatusType.NO_ENTREGADO &&
+        ['03', '07', '08', '17'].includes(chargeShipment.exceptionCode || '');
+
+      if (isProblematic) {
+        console.warn(
+          `⚠️ ChargeShipment ${chargeShipment.trackingNumber} tiene un estado NO_ENTREGADO con excepción ${chargeShipment.exceptionCode}`,
+        );
+      }
+
       return {
-        id: regularShipment.id,
-        trackingNumber: regularShipment.trackingNumber,
-        status: regularShipment.status,
-        subsidiaryId: regularShipment.subsidiary.id,  // <-- Agregado
-        subsidiaryName: regularShipment.subsidiary.name,
+        id: chargeShipment.id,
+        trackingNumber: chargeShipment.trackingNumber,
+        status: chargeShipment.status,
+        subsidiaryId: chargeShipment.subsidiary.id,
+        subsidiaryName: chargeShipment.subsidiary.name,
         hasIncome: incomeExists,
-        isCharge: false,
-        lastStatus: lastStatus ? {
-          type: lastStatus.status,
-          exceptionCode: lastStatus.exceptionCode || null,
-          notes: lastStatus.notes
-        } : null,
+        isCharge: true,
+        hasError: isProblematic ? true : false,
+        errorMessage: isProblematic ? 'No tiene un dex registrado se debe revisar' : '',
+        lastStatus: {
+          type: chargeShipment.status || null,
+          exceptionCode: chargeShipment.exceptionCode || null,
+          notes: null,
+        },
       };
     }
 
-    // 2. Si no se encuentra en Shipment, buscamos en ChargeShipment
-    const chargeShipment = await this.chargeShipmentRepository.findOne({
-      where: { trackingNumber },
-      relations: ['subsidiary'],
-      select: {
-        id: true,
-        trackingNumber: true,
-        status: true,
-        exceptionCode: true,
-        subsidiary: {
-          id: true,  // <-- Agregado
-          name: true,
-        },
-      },
-    });
+    // 2. Tomar el shipment más reciente según createdAt
+    const latestShipment = shipments.sort(
+      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+    )[0];
 
-    if (!chargeShipment) {
-      return null;
+    // 3. Ordenar su statusHistory por timestamp
+    const orderedHistory = (latestShipment.statusHistory || []).sort(
+      (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime(),
+    );
+
+    const lastStatus = orderedHistory[orderedHistory.length - 1];
+
+    // 4. Verificar condición de NO_ENTREGADO con exceptionCode 03, 07, 08 o 17
+    const isProblematic =
+      lastStatus &&
+      lastStatus.status === ShipmentStatusType.NO_ENTREGADO &&
+      ['03', '07', '08', '17'].includes(lastStatus.exceptionCode || '');
+
+    if (isProblematic) {
+      console.warn(
+        `⚠️ Shipment ${latestShipment.trackingNumber} tiene un último estado NO_ENTREGADO con excepción ${lastStatus.exceptionCode}`,
+      );
     }
 
     const incomeExists = await this.incomeRepository.exists({
@@ -224,20 +254,25 @@ export class DevolutionsService {
     });
 
     return {
-      id: chargeShipment.id,
-      trackingNumber: chargeShipment.trackingNumber,
-      status: chargeShipment.status,
-      subsidiaryId: chargeShipment.subsidiary.id,  // <-- Agregado
-      subsidiaryName: chargeShipment.subsidiary.name,
+      id: latestShipment.id,
+      trackingNumber: latestShipment.trackingNumber,
+      status: latestShipment.status,
+      subsidiaryId: latestShipment.subsidiary.id,
+      subsidiaryName: latestShipment.subsidiary.name,
       hasIncome: incomeExists,
-      isCharge: true,
-      lastStatus: {
-        type: chargeShipment.status || null,
-        exceptionCode: chargeShipment.exceptionCode || null,
-        notes: null
-      },
+      isCharge: false,
+      hasError: isProblematic ? true : false,
+      errorMessage: isProblematic ? 'No tiene un dex registrado se debe revisar' : '',
+      lastStatus: lastStatus
+        ? {
+            type: lastStatus.status,
+            exceptionCode: lastStatus.exceptionCode || null,
+            notes: lastStatus.notes,
+          }
+        : null,
     };
   }
+
 
   async sendByEmail(pdfFile: Express.Multer.File, excelfile: Express.Multer.File, subsidiaryName: string) {
     return await this.mailService.sendHighPriorityDevolutionsEmail(pdfFile, excelfile, subsidiaryName)

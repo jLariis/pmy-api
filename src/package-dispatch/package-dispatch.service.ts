@@ -217,6 +217,45 @@ export class PackageDispatchService {
     return `This action returns all packageDispatch`;
   }
 
+  async findBySubsidiary(subsidiaryId: string) {
+    const qb = this.packageDispatchRepository
+      .createQueryBuilder('dispatch')
+      .leftJoinAndSelect('dispatch.subsidiary', 'subsidiary')
+      .leftJoinAndSelect('dispatch.vehicle', 'vehicle')
+      .leftJoinAndSelect('dispatch.drivers', 'drivers')
+      .leftJoinAndSelect('dispatch.routes', 'routes')
+      .leftJoinAndSelect('dispatch.shipments', 'shipments')
+      .leftJoinAndSelect('dispatch.chargeShipments', 'chargeShipments')
+      .where('subsidiary.id = :subsidiaryId', { subsidiaryId })
+      .orderBy('dispatch.createdAt', 'DESC');
+
+    const dispatches = await qb.getMany();
+
+    // Transformamos los datos según lo que necesitas
+    return dispatches.map((dispatch) => ({
+      id: dispatch.id,
+      trackingNumber: dispatch.trackingNumber,
+      createdAt: dispatch.createdAt,
+      status: dispatch.status,
+      vehicle: dispatch.vehicle
+        ? {
+            name: dispatch.vehicle.name,
+            plateNumber: dispatch.vehicle.plateNumber,
+          }
+        : null,
+      subsidiary: dispatch.subsidiary
+        ? {
+            id: dispatch.subsidiary.id,
+            name: dispatch.subsidiary.name,
+          }
+        : null,
+      driver: dispatch.drivers?.length ? dispatch.drivers[0].name : null, // 👈 primer conductor
+      route: dispatch.routes?.length ? dispatch.routes[0].name : null, // 👈 primera ruta
+      normalPackages: dispatch.shipments?.length || 0, // 👈 Shipments
+      f2Packages: dispatch.chargeShipments?.length || 0, // 👈 ChargeShipments
+    }));
+  }
+
   async findAllBySubsidiary(subsidiaryId: string) {
    /* const response = await this.packageDispatchRepository.find({
       where: { subsidiary: { id: subsidiaryId } },
@@ -238,6 +277,90 @@ export class PackageDispatchService {
     .orderBy('pd.createdAt', 'DESC');
 
     return qb.getMany();
+  }
+
+  async findShipmentsByDispatchId(dispatchId: string) {
+    const dispatch = await this.packageDispatchRepository
+      .createQueryBuilder('dispatch')
+      .leftJoinAndSelect('dispatch.vehicle', 'vehicle')
+      .leftJoinAndSelect('dispatch.subsidiary', 'subsidiary')
+      .leftJoinAndSelect('dispatch.drivers', 'drivers')
+      .leftJoinAndSelect('dispatch.shipments', 'shipments')
+      .leftJoinAndSelect('shipments.unloading', 'unloading')
+      .leftJoinAndSelect('dispatch.chargeShipments', 'chargeShipments')
+      .leftJoinAndSelect('chargeShipments.unloading', 'chargeUnloading')
+      .where('dispatch.id = :dispatchId', { dispatchId })
+      .getOne();
+
+    if (!dispatch) return [];
+
+    const driverName = dispatch.drivers?.length ? dispatch.drivers[0].name : null;
+
+    const allConsNumbers = [
+      ...(dispatch.shipments || []).map(s => s.consNumber).filter(Boolean),
+      ...(dispatch.chargeShipments || []).map(s => s.consNumber).filter(Boolean),
+    ];
+
+    const consolidatedMap = new Map<string, { consNumber: string; date: Date }>();
+    if (allConsNumbers.length) {
+      const consolidatedList = await this.consolidatedRepository.find({
+        where: allConsNumbers.map(consNumber => ({ consNumber })),
+        select: ['consNumber', 'createdAt'],
+      });
+      consolidatedList.forEach(c => {
+        consolidatedMap.set(c.consNumber, { consNumber: c.consNumber, date: c.createdAt });
+      });
+    }
+
+    const mapShipment = (shipment: any, isCharge: boolean) => {
+      const consolidated = shipment.consNumber
+        ? consolidatedMap.get(shipment.consNumber) || null
+        : null;
+
+      const ubication = dispatch.id ? 'EN RUTA' : 'EN BODEGA';
+
+      return {
+        shipmentData: {
+          trackingNumber: shipment.trackingNumber,
+          shipmentStatus: shipment.statusShipment, // ✅ Aquí está el shipmentStatus
+          ubication,
+          unloading: shipment.unloading
+            ? {
+                trackingNumber: shipment.unloading.trackingNumber,
+                date: shipment.unloading.date,
+              }
+            : null,
+          consolidated,
+          destination: shipment.recipientCity || null,
+          commiteDateTime: shipment.commitDateTime,
+          isCharge,
+        },
+        packageDispatch: {
+          id: dispatch.id,
+          trackingNumber: dispatch.trackingNumber,
+          createdAt: dispatch.createdAt,
+          status: dispatch.status,
+          driver: driverName,
+          vehicle: dispatch.vehicle
+            ? {
+                name: dispatch.vehicle.name || null,
+                plateNumber: dispatch.vehicle.plateNumber || null,
+              }
+            : null,
+          subsidiary: dispatch.subsidiary
+            ? {
+                id: dispatch.subsidiary.id,
+                name: dispatch.subsidiary.name,
+              }
+            : null,
+        },
+      };
+    };
+
+    const normalShipments = (dispatch.shipments || []).map(s => mapShipment(s, false));
+    const chargeShipments = (dispatch.chargeShipments || []).map(s => mapShipment(s, true));
+
+    return [...normalShipments, ...chargeShipments];
   }
 
   findOne(id: string) {
