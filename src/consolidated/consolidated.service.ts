@@ -254,7 +254,7 @@ export class ConsolidatedService {
       where: { id },
       select: ['id', 'consNumber', 'createdAt'],
     });
-    
+
     console.log("🟢 consolidated:", consolidated);
 
     if (!consolidated) return [];
@@ -268,6 +268,7 @@ export class ConsolidatedService {
         'packageDispatch.vehicle',
         'packageDispatch.subsidiary',
         'packageDispatch.drivers',
+        'subsidiary',
         'unloading',
       ],
     });
@@ -280,6 +281,7 @@ export class ConsolidatedService {
         'packageDispatch.vehicle',
         'packageDispatch.subsidiary',
         'packageDispatch.drivers',
+        'subsidiary',
         'unloading',
       ],
     });
@@ -298,7 +300,8 @@ export class ConsolidatedService {
       return {
         shipmentData: {
           trackingNumber: shipment.trackingNumber,
-          shipmentStatus: shipment.statusShipment,
+          shipmentStatus: shipment.status,
+          warehouse: shipment.subsidiary.name,
           ubication,
           unloading: shipment.unloading
             ? {
@@ -311,6 +314,7 @@ export class ConsolidatedService {
             date: consolidated.createdAt,
           },
           destination: shipment.recipientCity || null,
+          payment: shipment.payment,
           isCharge,
         },
         packageDispatch: dispatch

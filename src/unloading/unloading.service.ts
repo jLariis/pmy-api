@@ -534,25 +534,58 @@ export class UnloadingService {
 
   /** For combo box on monitoring*/
   async findBySubsidiaryId(subsidiaryId: string) {
-     const response = await this.unloadingRepository.find({
+    // Traer unloadings con la relación directa a vehicle
+    const unloadings = await this.unloadingRepository.find({
       where: { subsidiary: { id: subsidiaryId } },
       select: {
         id: true,
         trackingNumber: true,
         date: true,
+        vehicle: {
+          id: true,
+          plateNumber: true,
+          name: true,
+        },
         subsidiary: {
           id: true,
-          name: true
-        }
+          name: true,
+        },
       },
-      relations: ['subsidiary'],
-      order: {
-        createdAt: 'DESC'
-      }
+      relations: ['subsidiary', 'vehicle'],
+      order: { createdAt: 'DESC' },
     });
 
-    return response
+    if (!unloadings.length) return [];
+
+    const results = await Promise.all(
+      unloadings.map(async (unloading) => {
+        // Buscar Shipments y ChargeShipments ligados al unloading
+        const [shipments, chargeShipments] = await Promise.all([
+          this.shipmentRepository.find({
+            where: { unloading: { id: unloading.id } },
+          }),
+          this.chargeShipmentRepository.find({
+            where: { unloading: { id: unloading.id } },
+          }),
+        ]);
+
+        // Calcular número total de paquetes
+        const numberOfPackages = shipments.length + chargeShipments.length;
+
+        return {
+          id: unloading.id,
+          trackingNumber: unloading.trackingNumber,
+          date: unloading.date,
+          subsidiary: unloading.subsidiary,
+          vehicle: unloading.vehicle,
+          numberOfPackages,
+        };
+      }),
+    );
+
+    return results;
   }
+
 
   async findAllBySubsidiary(subsidiaryId: string) {
     const response = await this.unloadingRepository.find({
@@ -1752,6 +1785,7 @@ export class UnloadingService {
           'packageDispatch.routeClosure.createdBy',
           'unloading',
           'unloading.subsidiary',
+          'subsidiary',
           'payment',
         ],
       }),
@@ -1768,6 +1802,7 @@ export class UnloadingService {
           'unloading',
           'unloading.subsidiary',
           'payment',
+          'subsidiary'
         ],
       }),
     ]);
@@ -1796,8 +1831,9 @@ export class UnloadingService {
       return {
         shipmentData: {
           trackingNumber: shipment.trackingNumber,
-          shipmentStatus: shipment.statusShipment,
+          shipmentStatus: shipment.status,
           ubication,
+          warehouse: shipment.subsidiary.name,
           unloading: shipment.unloading
             ? {
                 trackingNumber: shipment.unloading.trackingNumber,
@@ -1814,6 +1850,7 @@ export class UnloadingService {
               }
             : null,
           destination: shipment.recipientCity || null,
+          payment: shipment.payment,
           isCharge,
         },
         packageDispatch: dispatch
