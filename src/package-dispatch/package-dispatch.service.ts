@@ -287,6 +287,7 @@ export class PackageDispatchService {
       .leftJoinAndSelect('dispatch.drivers', 'drivers')
       .leftJoinAndSelect('dispatch.shipments', 'shipments')
       .leftJoinAndSelect('shipments.unloading', 'unloading')
+      .leftJoinAndSelect('shipments.payment', 'payment')
       .leftJoinAndSelect('dispatch.chargeShipments', 'chargeShipments')
       .leftJoinAndSelect('chargeShipments.unloading', 'chargeUnloading')
       .where('dispatch.id = :dispatchId', { dispatchId })
@@ -322,7 +323,7 @@ export class PackageDispatchService {
       return {
         shipmentData: {
           trackingNumber: shipment.trackingNumber,
-          shipmentStatus: shipment.statusShipment, // ✅ Aquí está el shipmentStatus
+          shipmentStatus: shipment.status, // ✅ Aquí está el shipmentStatus
           ubication,
           unloading: shipment.unloading
             ? {
@@ -333,6 +334,7 @@ export class PackageDispatchService {
           consolidated,
           destination: shipment.recipientCity || null,
           commiteDateTime: shipment.commitDateTime,
+          payment: shipment.payment,
           isCharge,
         },
         packageDispatch: {
