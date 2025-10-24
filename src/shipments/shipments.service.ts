@@ -5805,7 +5805,65 @@ export class ShipmentsService {
       return response;
     }
 
-    //async getShipmentsTo
+    async getShipmentHistoryFromFedex(id: string) {
+      const shipment = await this.shipmentRepository.findOne({ where: { id } });
+
+      if (!shipment || !shipment.trackingNumber) {
+        throw new Error("No se encontró el envío o no tiene número de guía");
+      }
+
+      const fedexData = await this.fedexService.trackPackage(shipment.trackingNumber);
+
+      // Validar que venga la estructura esperada
+      if (
+        !fedexData?.output.completeTrackResults ||
+        !Array.isArray(fedexData.output.completeTrackResults)
+      ) {
+        throw new Error("Respuesta inválida de FedEx");
+      }
+
+      // Mapeamos todos los trackResults (pueden venir varios)
+      const allResults = fedexData.output.completeTrackResults.flatMap((result: any) =>
+        (result.trackResults || []).map((track: any) => {
+          const lastStatus = track.latestStatusDetail
+            ? {
+                code: track.latestStatusDetail.code,
+                description: track.latestStatusDetail.description,
+                city: track.latestStatusDetail.scanLocation?.city || null,
+                state: track.latestStatusDetail.scanLocation?.stateOrProvinceCode || null,
+                country: track.latestStatusDetail.scanLocation?.countryName || null,
+                date: track.dateAndTimes?.find((d: any) => d.type === "ACTUAL_DELIVERY")?.dateTime || null,
+              }
+            : null;
+
+          // Escanear historial completo
+          const history =
+            track.scanEvents?.map((event: any) => ({
+              date: event.date,
+              eventType: event.eventType,
+              description: event.eventDescription,
+              city: event.scanLocation?.city || null,
+              state: event.scanLocation?.stateOrProvinceCode || null,
+              country: event.scanLocation?.countryName || null,
+              postalCode: event.scanLocation?.postalCode || null,
+              derivedStatus: event.derivedStatus || null,
+            })) || [];
+
+          return { lastStatus, history };
+        })
+      );
+
+      // Combinar todos los historiales en uno solo (si hay varios trackResults)
+      const mergedHistory = allResults.flatMap(r => r.history);
+      const lastStatus = allResults.find(r => r.lastStatus)?.lastStatus || null;
+
+      return {
+        trackingNumber: shipment.trackingNumber,
+        lastStatus,
+        history: mergedHistory,
+      };
+    }
+
 
 
     /************************************************* */

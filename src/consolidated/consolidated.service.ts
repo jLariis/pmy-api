@@ -59,7 +59,9 @@ export class ConsolidatedService {
       },
       relations: [
         'subsidiary'
-      ]
+      ], order: {
+        date: 'DESC'
+      }
     });
 
     return result;
@@ -299,8 +301,10 @@ export class ConsolidatedService {
 
       return {
         shipmentData: {
+          id: shipment.id,
           trackingNumber: shipment.trackingNumber,
           shipmentStatus: shipment.status,
+          commitDateTime: shipment.commitDateTime,
           warehouse: shipment.subsidiary.name,
           ubication,
           unloading: shipment.unloading
@@ -315,6 +319,7 @@ export class ConsolidatedService {
           },
           destination: shipment.recipientCity || null,
           payment: shipment.payment,
+          createdDate: shipment.createdAt,
           isCharge,
         },
         packageDispatch: dispatch

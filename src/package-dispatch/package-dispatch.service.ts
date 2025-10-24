@@ -322,8 +322,10 @@ export class PackageDispatchService {
 
       return {
         shipmentData: {
+          id: shipment.id,
           trackingNumber: shipment.trackingNumber,
-          shipmentStatus: shipment.status, // ✅ Aquí está el shipmentStatus
+          shipmentStatus: shipment.status, 
+          commitDateTime: shipment.commitDateTime,
           ubication,
           unloading: shipment.unloading
             ? {
@@ -334,6 +336,7 @@ export class PackageDispatchService {
           consolidated,
           destination: shipment.recipientCity || null,
           commiteDateTime: shipment.commitDateTime,
+          createdDate: shipment.createdAt,
           payment: shipment.payment,
           isCharge,
         },
