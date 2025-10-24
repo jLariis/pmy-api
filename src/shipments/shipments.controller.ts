@@ -358,6 +358,11 @@ export class ShipmentsController {
       return await this.shipmentsService.getShipmentDetailsByTrackingNumber(trackingNumber)
     }
 
+    @Get('history/:id')
+    async getHistoryById(@Param('id') id: string) {
+      return await this.shipmentsService.getShipmentHistoryFromFedex(id);
+    }
+
   /**************************************************************************************************************** */
 
 }

@@ -1830,8 +1830,10 @@ export class UnloadingService {
 
       return {
         shipmentData: {
+          id: shipment.id,
           trackingNumber: shipment.trackingNumber,
           shipmentStatus: shipment.status,
+          commitDateTime: shipment.commitDateTime,
           ubication,
           warehouse: shipment.subsidiary.name,
           unloading: shipment.unloading
@@ -1851,6 +1853,7 @@ export class UnloadingService {
             : null,
           destination: shipment.recipientCity || null,
           payment: shipment.payment,
+          createdDate: shipment.createdAt,
           isCharge,
         },
         packageDispatch: dispatch
