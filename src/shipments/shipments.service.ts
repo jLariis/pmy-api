@@ -553,7 +553,7 @@ export class ShipmentsService {
 
   /*********** Nuevos métodos para realizar el guardado de envios ****************************************************/
   
-  async findAllShipmentsAndCharges(): Promise<ShipmentAndChargeDto[]> {
+  async findAllShipmentsAndCharges(subsidiaryId: string): Promise<ShipmentAndChargeDto[]> {
     const shipments = await this.shipmentRepository.find({
       select: {
         id: true,
@@ -585,7 +585,12 @@ export class ShipmentsService {
         },
       },
       relations: ['statusHistory', 'payment', 'subsidiary'],
-      order: { commitDateTime: 'ASC' },
+      where: {
+        subsidiary: {
+          id: subsidiaryId
+        }
+      },
+      order: { commitDateTime: 'DESC' },
     });
 
     const charges = await this.chargeShipmentRepository.find({
@@ -619,7 +624,12 @@ export class ShipmentsService {
         },
       },
       relations: ['statusHistory', 'payment', 'charge', 'subsidiary'],
-      order: { commitDateTime: 'ASC' },
+      where: {
+        subsidiary: {
+          id: subsidiaryId
+        }
+      },
+      order: { commitDateTime: 'DESC' },
     });
 
     const chargeDtos: ShipmentAndChargeDto[] = charges.map(charge => ({
@@ -634,7 +644,7 @@ export class ShipmentsService {
     allShipments.sort((a, b) => {
       const dateA = new Date(a.commitDateTime).getTime();
       const dateB = new Date(b.commitDateTime).getTime();
-      return dateA - dateB;
+      return dateB - dateA;
     });
 
     return allShipments;

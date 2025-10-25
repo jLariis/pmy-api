@@ -29,11 +29,10 @@ export class User {
   lastName?: string;
 
   @Column({ default: 'user' })
-  role: 'admin' | 'user';
+  role: 'admin' | 'user' | 'auxiliar' | 'superamin' | 'bodega';
 
   @ManyToOne(() => Subsidiary, { nullable: true })
   @JoinColumn({ name: 'subsidiaryId' })
-  //@Exclude() // Evitar serializar el objeto Subsidiary
   subsidiary: Subsidiary;
 
   @Column({ nullable: true })
@@ -50,11 +49,11 @@ export class User {
 
   @BeforeInsert()
   setCreatedAt() {
-    this.createdAt = new Date(); // Fecha en UTC
+    this.createdAt = new Date();
   }
 
   @BeforeUpdate()
   setUpdatedAt() {
-    this.updatedAt = new Date(); // Fecha en UTC
+    this.updatedAt = new Date();
   }
 }

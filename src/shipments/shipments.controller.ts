@@ -20,10 +20,10 @@ export class ShipmentsController {
     private readonly fedexService: FedexService
   ) {}
 
-  @Get()
+  @Get(':subsidiaryId')
   @ApiOperation({ summary: 'Consultar todos los envios' })
-  allShipments(){
-    return this.shipmentsService.findAllShipmentsAndCharges();
+  allShipments(@Param('subsidiaryId') subsidiaryId: string){
+    return this.shipmentsService.findAllShipmentsAndCharges(subsidiaryId);
   }
 
   @Post('upload')
