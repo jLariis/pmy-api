@@ -12,7 +12,9 @@ import { ForPickUp } from 'src/entities/for-pick-up.entity';
 
 @Module({
   controllers: [ConsolidatedController],
-  imports: [TypeOrmModule.forFeature([Consolidated, Shipment, Income, Subsidiary, Charge, ChargeShipment, ShipmentStatus, ForPickUp])],
+  imports: [
+    TypeOrmModule.forFeature([Consolidated, Shipment, Income, Subsidiary, Charge, ChargeShipment, ShipmentStatus, ForPickUp]),
+  ],
   providers: [ConsolidatedService, ShipmentsService, FedexService, DHLService, SubsidiariesService, MailService],
   exports: [ConsolidatedService]
 })

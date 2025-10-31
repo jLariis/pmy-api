@@ -49,6 +49,20 @@ export class MonitoringService {
     return packages; 
   }
 
+  async updateFedexFromConsolidated(consolidatedId: string) {
+    const updatedPackages = await this.consolidatedService.updateFedexDataByConsolidatedId(consolidatedId);
+    return updatedPackages;
+  }
+
+  async updateFedexFromUnloading(unloadingId: string) {
+    const updatedPackages = await this.unloadingService.updateFedexDataByUnloadingId(unloadingId);
+    return updatedPackages;
+  }
+
+  async updateFedexFromPackageDispatch(packageDispatchId: string) {
+    const updatedPackages = await this.packageDispatchService.updateFedexDataByPackageDispatchId(packageDispatchId);
+    return updatedPackages;
+  }
 
 
 
