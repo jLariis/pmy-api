@@ -11,6 +11,7 @@ import {
 import { PaymentStatus } from '../common/enums/payment-status.enum';
 import { Shipment } from './shipment.entity';
 import { PaymentTypeEnum } from 'src/common/enums/payment-type.enum';
+import { ChargeShipment } from './charge-shipment.entity';
 
 @Entity('payment')
 export class Payment {
@@ -38,6 +39,11 @@ export class Payment {
   @OneToOne(() => Shipment, shipment => shipment.payment)
   @JoinColumn({ name: 'shipmentId'})
   shipment: Shipment;
+
+  @Index()
+  @OneToOne(() => ChargeShipment, chargeShipment => chargeShipment.payment)
+  @JoinColumn({ name: 'chargeShipmentId'})
+  chargeShipment: ChargeShipment;
 
   @Column({ type: 'datetime', default: () => 'CURRENT_TIMESTAMP' })
   createdAt: Date;
