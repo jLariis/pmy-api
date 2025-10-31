@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, InternalServerErrorException, Logger } from '@nestjs/common';
+import { BadRequestException, forwardRef, Inject, Injectable, InternalServerErrorException, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Between, Brackets, EntityManager, In, Repository } from 'typeorm';
 import { Shipment } from 'src/entities/shipment.entity';
@@ -73,6 +73,7 @@ export class ShipmentsService {
     private readonly fedexService: FedexService,
     private readonly dhlService: DHLService,
     private readonly subsidiaryService: SubsidiariesService,
+    @Inject(forwardRef(() => ConsolidatedService))
     private readonly consolidatedService: ConsolidatedService,
     private readonly mailService: MailService
   ) { }

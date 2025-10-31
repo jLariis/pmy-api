@@ -31,4 +31,9 @@ export class SubsidiariesService {
     return city;
   }
 
+  async delete(id: string) {
+    return await this.subsidiaryRepository.delete(id);
+  }
+
+
 }

@@ -38,4 +38,19 @@ export class MonitoringController {
     return this.monitoringService.getInfoFromConsolidated(consolidatedId);
   }
 
+  @Get('update-by-consolidated/:packageDispatchId')
+  updateFedexFromPackageDispatch(@Param('packageDispatchId') packageDispatchId: string) {
+    return this.monitoringService.updateFedexFromPackageDispatch(packageDispatchId);
+  }
+
+  @Get('update-by-unloading/:unloadingId')
+  updateFedexFromUnloading(@Param('unloadingId') unloadingId: string) {
+    return this.monitoringService.updateFedexFromUnloading(unloadingId);
+  }
+
+  @Get('update-by-consolidated/:consolidatedId')
+  updateFedexFromConsolidated(@Param('consolidatedId') consolidatedId: string) {
+    return this.monitoringService.updateFedexFromConsolidated(consolidatedId);
+  }
+
 }

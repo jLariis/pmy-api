@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Post } from '@nestjs/common';
 import { SubsidiariesService } from './subsidiaries.service';
 import { Subsidiary } from 'src/entities';
 import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
@@ -23,6 +23,11 @@ export class SubsidiariesController {
   @Get(':id')
   findById(@Param('id') id: string) {
     return this.subsidiariesService.findById(id);
+  }
+
+  @Delete(':id')
+  deleteById(@Param('id') id: string) {
+    return this.subsidiariesService.delete(id)
   }
 
 }

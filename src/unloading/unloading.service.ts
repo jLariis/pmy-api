@@ -1,4 +1,4 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { forwardRef, Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { CreateUnloadingDto } from './dto/create-unloading.dto';
 import { UpdateUnloadingDto } from './dto/update-unloading.dto';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -13,6 +13,7 @@ import { ConsolidatedItemDto, ConsolidatedsDto } from './dto/consolidated.dto';
 import { ShipmentStatusType } from 'src/common/enums/shipment-status-type.enum';
 import { zonedTimeToUtc } from 'src/common/utils';
 import { UnloadingReportDto } from './dto/unloading-report.dto';
+import { ShipmentsService } from 'src/shipments/shipments.service';
 
 
 @Injectable()
@@ -30,7 +31,9 @@ export class UnloadingService {
     private readonly consolidatedReporsitory: Repository<Consolidated>,
     @InjectRepository(Charge)
     private readonly chargeRepository: Repository<Charge>,
-    private readonly mailService: MailService
+    private readonly mailService: MailService,
+    @Inject(forwardRef(() => ShipmentsService))
+    private readonly shipmentService: ShipmentsService
   ) {}
 
   async getConsolidateToStartUnloading(subdiaryId: string): Promise<ConsolidatedsDto> {
@@ -1902,6 +1905,108 @@ export class UnloadingService {
     return [...normalShipments, ...chargeShipmentsMapped];
   }
 
+  async updateFedexDataByUnloadingId(unloadingId: string) {
+    // Validar que se proporcione el ID del unloading
+    if (!unloadingId) {
+      throw new Error('El ID del unloading es requerido');
+    }
+
+    // 1. Buscar el unloading específico por ID
+    const unloading = await this.unloadingRepository.findOne({
+      where: { id: unloadingId },
+      select: ['id', 'trackingNumber'] // Ajusta según el nombre del campo en tu entidad
+    });
+
+    if (!unloading) {
+      console.warn(`No se encontró el unloading con ID: ${unloadingId}`);
+      return [];
+    }
+
+    console.log(`🔍 Procesando unloading: ${unloading.trackingNumber}`);
+
+    // 2. Obtener solo IDs y tracking numbers de shipments
+    const shipmentsForFedex = [];
+    const shipmentsTrackingNumbers = [];
+    const chargeShipmentsTrackingNumbers = [];
+
+    // Obtener solo ID y trackingNumber de shipments normales
+    const shipments = await this.shipmentRepository.find({
+      where: { unloading: { id: unloading.id } },
+      select: ['id', 'trackingNumber']
+    });
+
+    // Obtener solo ID y trackingNumber de chargeShipments
+    const chargeShipments = await this.chargeShipmentRepository.find({
+      where: { unloading: { id: unloading.id } },
+      select: ['id', 'trackingNumber']
+    });
+
+    console.log(`📦 Shipments: ${shipments.length}, ChargeShipments: ${chargeShipments.length}`);
+
+    if (shipments.length === 0 && chargeShipments.length === 0) {
+      console.warn(`⚠️ No se encontraron shipments para unloading ${unloading.trackingNumber}`);
+      return [];
+    }
+
+    // Combinar y mapear solo los datos necesarios
+    const allShipments = [
+      ...shipments.map(s => ({
+        id: s.id,
+        trackingNumber: s.trackingNumber,
+        isCharge: false
+      })),
+      ...chargeShipments.map(s => ({
+        id: s.id,
+        trackingNumber: s.trackingNumber,
+        isCharge: true
+      }))
+    ];
+
+    shipmentsTrackingNumbers.push(...shipments.map(s => s.trackingNumber));
+    chargeShipmentsTrackingNumbers.push(...chargeShipments.map(s => s.trackingNumber));
+    shipmentsForFedex.push(...allShipments);
+
+    console.log(`✅ Unloading ${unloading.trackingNumber}: ${allShipments.length} shipments listos para FedEx`);
+
+    // 3. Procesar con FedEx
+    try {
+      const result = await this.shipmentService.checkStatusOnFedexBySubsidiaryRulesTesting(shipmentsTrackingNumbers, true);
+      const resultChargShipments = await this.shipmentService.checkStatusOnFedexChargeShipment(chargeShipmentsTrackingNumbers);
+
+      // Registrar resultados para auditoría
+      this.logger.log(
+        `✅ Resultado para unloading ${unloading.trackingNumber}: ` +
+        `${result.updatedShipments.length} envíos actualizados, ` +
+        `${resultChargShipments.updatedChargeShipments.length} envíos F2 actualizados, ` +
+        `${result.shipmentsWithError.length} errores, ` +
+        `${resultChargShipments.chargeShipmentsWithError.length} errores de F2, ` +
+        `${result.unusualCodes.length} códigos inusuales, ` +
+        `${result.shipmentsWithOD.length} excepciones OD o fallos de validación`
+      );
+
+      // Registrar detalles de errores, códigos inusuales y excepciones OD si los hay
+      if (result.shipmentsWithError.length) {
+        this.logger.warn(`⚠️ Errores detectados: ${JSON.stringify(result.shipmentsWithError, null, 2)}`);
+      }
+
+      if (resultChargShipments.chargeShipmentsWithError.length) {
+        this.logger.warn(`⚠️ Errores detectados en F2: ${JSON.stringify(resultChargShipments.chargeShipmentsWithError, null, 2)}`);
+      }
+
+      if (result.unusualCodes.length) {
+        this.logger.warn(`⚠️ Códigos inusuales: ${JSON.stringify(result.unusualCodes, null, 2)}`);
+      }
+      
+      if (result.shipmentsWithOD.length) {
+        this.logger.warn(`⚠️ Excepciones OD o fallos de validación: ${JSON.stringify(result.shipmentsWithOD, null, 2)}`);
+      }
+
+    } catch (err) {
+      this.logger.error(`❌ Error al actualizar FedEx para unloading ${unloading.trackingNumber}: ${err.message}`);
+    }
+
+    return shipmentsForFedex;
+  }
 
 
 

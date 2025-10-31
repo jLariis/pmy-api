@@ -29,6 +29,12 @@ export class Subsidiary {
   @Column({ default: '', nullable: true })
   managerPhone: string;
 
+  @Column({ default: '', nullable: true })
+  officeEmail: string
+
+  @Column({ default: '', nullable: true })
+  officeEmailToCopy: string
+
   @Column({
     type: 'decimal',
     precision: 10,

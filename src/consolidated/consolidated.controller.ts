@@ -10,13 +10,25 @@ import { ApiTags } from '@nestjs/swagger';
 export class ConsolidatedController {
   constructor(
     private readonly consolidatedService: ConsolidatedService,
-    private readonly shipmentService: ShipmentsService
   ) {}
 
   @Get('update-fedex-status')
-  async updateFedexStatus() {
-    console.log("Actualizando estatus de FEDEX!")
-    return await this.shipmentService.checkStatusOnFedex();
+  async updateFedexStatus(
+    @Query('subsidiaryId') subsidiaryId?: string,
+    @Query('fromDate') fromDate?: string,
+    @Query('toDate') toDate?: string
+  ) {
+    console.log("Actualizando estatus de FEDEX!", { subsidiaryId, fromDate, toDate });
+    
+    // Convertir strings a Date si vienen
+    const fromDateObj = fromDate ? new Date(fromDate) : undefined;
+    const toDateObj = toDate ? new Date(toDate) : undefined;
+
+    return await this.consolidatedService.updateFedexDataBySucursalAndDate(
+      subsidiaryId, 
+      fromDateObj, 
+      toDateObj
+    );
   }
 
   @Post()
@@ -55,6 +67,11 @@ export class ConsolidatedController {
   getLastConsolidated(@Param('subsidiaryId') subsidiaryId: string) {
     console.log("🚀 ~ ConsolidatedController ~ getLastConsolidated ~ subsidiaryId:", subsidiaryId)
     return this.consolidatedService.lastConsolidatedBySucursal(subsidiaryId);
+  }
+
+  @Get('shipments/:consolidatedId')
+  getShipmentsByConsolidatedId(@Param('consolidatedId') consolidatedId: string) {
+    return this.consolidatedService.getShipmentsByConsolidatedId(consolidatedId);
   }
 
 }
