@@ -36,13 +36,19 @@ export class Payment {
   status: PaymentStatus;
 
   @Index()
-  @OneToOne(() => Shipment, shipment => shipment.payment)
-  @JoinColumn({ name: 'shipmentId'})
+  @OneToOne(() => Shipment, shipment => shipment.payment, { 
+    nullable: true,
+    onDelete: 'CASCADE' 
+  })
+  @JoinColumn({ name: 'shipmentId' })
   shipment: Shipment;
 
   @Index()
-  @OneToOne(() => ChargeShipment, chargeShipment => chargeShipment.payment)
-  @JoinColumn({ name: 'chargeShipmentId'})
+  @OneToOne(() => ChargeShipment, chargeShipment => chargeShipment.payment, { 
+    nullable: true,
+    onDelete: 'CASCADE' 
+  })
+  @JoinColumn({ name: 'chargeShipmentId' })
   chargeShipment: ChargeShipment;
 
   @Column({ type: 'datetime', default: () => 'CURRENT_TIMESTAMP' })
