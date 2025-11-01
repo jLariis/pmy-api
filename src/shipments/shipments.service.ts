@@ -5718,19 +5718,30 @@ export class ShipmentsService {
       });
 
       // Buscar también los chargeShipments
-      const chargeShipments = await this.chargeShipmentRepository.find({
-          where: { trackingNumber },
-          relations: [
-              'packageDispatch',
-              'packageDispatch.drivers',
-              'unloading',
-              'unloading.subsidiary',
-              'payment',
-              'charge',
-              'subsidiary'
-          ],
-          order: { commitDateTime: 'DESC' }
+      const chargeShipments = await this.chargeShipmentRepository
+          .createQueryBuilder('chargeShipment')
+          .leftJoinAndSelect('chargeShipment.payment', 'payment')
+          .leftJoinAndSelect('chargeShipment.packageDispatch', 'packageDispatch')
+          .leftJoinAndSelect('packageDispatch.drivers', 'drivers')
+          .leftJoinAndSelect('chargeShipment.unloading', 'unloading')
+          .leftJoinAndSelect('unloading.subsidiary', 'unloadingSubsidiary')
+          .leftJoinAndSelect('chargeShipment.charge', 'charge')
+          .leftJoinAndSelect('chargeShipment.subsidiary', 'subsidiary')
+          .where('chargeShipment.trackingNumber = :trackingNumber', { trackingNumber })
+          .orderBy('chargeShipment.commitDateTime', 'DESC')
+          .getMany();
+
+      console.log(`💰 ChargeShipments encontrados: ${chargeShipments.length}`);
+      chargeShipments.forEach((chargeShipment, index) => {
+          console.log(`   ChargeShipment ${index + 1}:`, {
+              id: chargeShipment.id,
+              hasPayment: !!chargeShipment.payment,
+              paymentId: chargeShipment.payment?.id,
+              paymentAmount: chargeShipment.payment?.amount
+          });
       });
+
+      console.log("🚀 ~ ShipmentsService ~ getShipmentDetailsByTrackingNumber ~ chargeShipments:", chargeShipments)
 
       // Combinar y tomar el más reciente
       const allShipments = [...shipments, ...chargeShipments];
@@ -5809,6 +5820,7 @@ export class ShipmentsService {
           driver: response.route?.driver?.name || 'N/A',
           priority: response.priority,
           recipient: response.recipient,
+          payment: response.payment,
           //consolidated: response.consolidated?.id || 'N/A',
           charge: response.charge?.id || 'N/A'
       });
