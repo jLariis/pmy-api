@@ -68,8 +68,9 @@ export class ChargeShipment {
       })
       priority: Priority;
     
-      @OneToOne(() => Payment, { cascade: true })
-      @JoinColumn()
+      @OneToOne(() => Payment, payment => payment.chargeShipment, { 
+        cascade: true 
+      })
       payment: Payment;
     
       @OneToMany(() => ShipmentStatus, status => status.shipment, { cascade: true })
