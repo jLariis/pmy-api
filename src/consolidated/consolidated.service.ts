@@ -315,6 +315,7 @@ export class ConsolidatedService {
         'packageDispatch.subsidiary',
         'packageDispatch.drivers',
         'subsidiary',
+        'payment',
         'unloading',
       ],
     });
@@ -327,6 +328,7 @@ export class ConsolidatedService {
         'packageDispatch.vehicle',
         'packageDispatch.subsidiary',
         'packageDispatch.drivers',
+        'payment',
         'subsidiary',
         'unloading',
       ],

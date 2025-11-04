@@ -167,7 +167,7 @@ export class PackageDispatchService {
           trackingNumber,
           //status: Not(ShipmentStatusType.DEVUELTO_A_FEDEX) 
         },
-        relations: ['subsidiary', 'charge'],
+        relations: ['subsidiary', 'charge', 'payment'],
         order: { createdAt: 'DESC' }
       });
 

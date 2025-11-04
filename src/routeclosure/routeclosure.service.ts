@@ -75,7 +75,8 @@ export class RouteclosureService {
         'shipments.statusHistory', 
         'shipments.payment',
         'chargeShipments', 
-        'chargeShipments.statusHistory'
+        'chargeShipments.statusHistory',
+        'chargeShipments.payment'
       ],
     });
 
