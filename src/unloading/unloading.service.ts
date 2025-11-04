@@ -39,7 +39,7 @@ export class UnloadingService {
   async getConsolidateToStartUnloading(subdiaryId: string): Promise<ConsolidatedsDto> {
     const timeZone = "America/Hermosillo";
 
-    // Hoy en Hermosillo
+    // Fecha actual en zona local
     const now = new Date();
     const fmt = new Intl.DateTimeFormat("en-CA", {
       timeZone,
@@ -48,29 +48,39 @@ export class UnloadingService {
       day: "2-digit",
     });
 
-    // Sacar YYYY-MM-DD en zona local
     const [{ value: y }, , { value: m }, , { value: d }] = fmt.formatToParts(now);
     const todayStr = `${y}-${m}-${d}`;
 
-    // Rangos en hora local (NO UTC)
-    const todayLocal = new Date(`${todayStr} 00:00:00`);
-    const yesterdayLocal = new Date(todayLocal);
-    yesterdayLocal.setDate(yesterdayLocal.getDate() - 1);
+    // Día actual (0 = domingo, 1 = lunes, ..., 6 = sábado)
+    const dayOfWeek = new Date(`${todayStr}T00:00:00`).getDay();
 
-    const tomorrowLocal = new Date(todayLocal);
-    tomorrowLocal.setDate(tomorrowLocal.getDate() + 1);
+    // Crear fechas base en zona local
+    const todayLocal = new Date(`${todayStr}T00:00:00`);
+    const startDate = new Date(todayLocal);
+    const endDate = new Date(todayLocal);
 
-    // 🔥 Usamos estos rangos directo en la query
+    // Si es lunes, retrocede 3 días (viernes)
+    if (dayOfWeek === 1) {
+      startDate.setDate(startDate.getDate() - 3);
+    } else {
+      // En otros días, solo retrocede 1 (ayer)
+      startDate.setDate(startDate.getDate() - 1);
+    }
+
+    // Siempre sumamos 1 para incluir el siguiente día (mañana)
+    endDate.setDate(endDate.getDate() + 1);
+
+    // 🔥 Consulta usando el rango ajustado
     const consolidatedT = await this.consolidatedReporsitory.find({
       where: {
-        date: Between(yesterdayLocal, tomorrowLocal),
+        date: Between(startDate, endDate),
         subsidiary: { id: subdiaryId },
       },
     });
 
     const f2Consolidated = await this.chargeRepository.find({
       where: {
-        chargeDate: Between(yesterdayLocal, tomorrowLocal),
+        chargeDate: Between(startDate, endDate),
         subsidiary: { id: subdiaryId },
       },
     });
@@ -110,7 +120,6 @@ export class UnloadingService {
 
     return consolidateds;
   }
-
 
   async create(createUnloadingDto: CreateUnloadingDto) {
     const allShipmentIds = createUnloadingDto.shipments;
@@ -208,7 +217,7 @@ export class UnloadingService {
         trackingNumber: In(trackingNumbers),
         status: Not(ShipmentStatusType.DEVUELTO_A_FEDEX)
       },
-      relations: ['subsidiary', 'charge', 'packageDispatch'],
+      relations: ['subsidiary', 'charge', 'packageDispatch', 'payment'],
       order: { createdAt: 'DESC' }, // Ordenar por fecha descendente
     });
 
@@ -425,7 +434,7 @@ export class UnloadingService {
         trackingNumber,
         status: Not(ShipmentStatusType.DEVUELTO_A_FEDEX)
       },
-      relations: ['subsidiary', 'charge', 'packageDispatch'],
+      relations: ['subsidiary', 'charge', 'packageDispatch', 'payment'],
       order: { createdAt: 'DESC' },
     });
 
