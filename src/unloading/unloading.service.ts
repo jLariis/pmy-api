@@ -1940,13 +1940,19 @@ export class UnloadingService {
 
     // Obtener solo ID y trackingNumber de shipments normales
     const shipments = await this.shipmentRepository.find({
-      where: { unloading: { id: unloading.id } },
+      where: { 
+        unloading: { id: unloading.id },
+        status: In([ShipmentStatusType.EN_RUTA, ShipmentStatusType.DESCONOCIDO, ShipmentStatusType.PENDIENTE, ShipmentStatusType.NO_ENTREGADO]) 
+      },
       select: ['id', 'trackingNumber']
     });
 
     // Obtener solo ID y trackingNumber de chargeShipments
     const chargeShipments = await this.chargeShipmentRepository.find({
-      where: { unloading: { id: unloading.id } },
+      where: { 
+        unloading: { id: unloading.id }, 
+        status: In([ShipmentStatusType.EN_RUTA, ShipmentStatusType.DESCONOCIDO, ShipmentStatusType.PENDIENTE, ShipmentStatusType.NO_ENTREGADO])
+      },
       select: ['id', 'trackingNumber']
     });
 

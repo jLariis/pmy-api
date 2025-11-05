@@ -1,12 +1,13 @@
 import { forwardRef, Inject, Injectable, Logger } from '@nestjs/common';
 import { CreateConsolidatedDto } from './dto/create-consolidated.dto';
 import { UpdateConsolidatedDto } from './dto/update-consolidated.dto';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import { ChargeShipment, Consolidated, Shipment } from 'src/entities';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ShipmentConsolidatedDto } from './dto/shipment.dto';
 import { ConsolidatedDto } from './dto/consolidated.dto';
 import { ShipmentsService } from 'src/shipments/shipments.service';
+import { ShipmentStatusType } from 'src/common/enums/shipment-status-type.enum';
 
 @Injectable()
 export class ConsolidatedService {
@@ -575,13 +576,19 @@ export class ConsolidatedService {
 
     // Obtener solo ID y trackingNumber de shipments normales
     const shipments = await this.shipmentRepository.find({
-      where: { consolidatedId: consolidated.id },
+      where: { 
+        consolidatedId: consolidated.id,
+        status: In([ShipmentStatusType.EN_RUTA, ShipmentStatusType.DESCONOCIDO, ShipmentStatusType.PENDIENTE, ShipmentStatusType.NO_ENTREGADO]) 
+      },
       select: ['id', 'trackingNumber']
     });
 
     // Obtener solo ID y trackingNumber de chargeShipments
     const chargeShipments = await this.chargeShipmentRepository.find({
-      where: { consolidatedId: consolidated.id },
+      where: { 
+        consolidatedId: consolidated.id,
+        status: In([ShipmentStatusType.EN_RUTA, ShipmentStatusType.DESCONOCIDO, ShipmentStatusType.PENDIENTE, ShipmentStatusType.NO_ENTREGADO]) 
+      },
       select: ['id', 'trackingNumber']
     });
 

@@ -285,53 +285,89 @@ export class PackageDispatchService {
   }
 
   async findShipmentsByDispatchId(dispatchId: string) {
-    const dispatch = await this.packageDispatchRepository
-      .createQueryBuilder('dispatch')
-      .leftJoinAndSelect('dispatch.vehicle', 'vehicle')
-      .leftJoinAndSelect('dispatch.subsidiary', 'subsidiary')
-      .leftJoinAndSelect('dispatch.drivers', 'drivers')
-      .leftJoinAndSelect('dispatch.shipments', 'shipments')
-      .leftJoinAndSelect('shipments.unloading', 'unloading')
-      .leftJoinAndSelect('shipments.payment', 'payment')
-      .leftJoinAndSelect('dispatch.chargeShipments', 'chargeShipments')
-      .leftJoinAndSelect('chargeShipments.unloading', 'chargeUnloading')
-      .where('dispatch.id = :dispatchId', { dispatchId })
-      .getOne();
+    console.log(`\nBuscando envíos para dispatchId: ${dispatchId}`);
 
-    if (!dispatch) return [];
+    // === 1. BUSCAR SHIPMENTS DIRECTAMENTE ===
+    const shipments = await this.shipmentRepository.find({
+          where: { packageDispatch: {id: dispatchId} },
+          relations: [
+              'packageDispatch',
+              'packageDispatch.drivers',
+              'packageDispatch.vehicle',
+              'packageDispatch.subsidiary',
+              'unloading',
+              'unloading.subsidiary',
+              'payment',
+              'subsidiary'
+          ],
+          order: { commitDateTime: 'DESC' }
+      });
 
-    const driverName = dispatch.drivers?.length ? dispatch.drivers[0].name : null;
+    console.log("🚀 ~ PackageDispatchService ~ findShipmentsByDispatchId ~ shipments:", shipments)
 
-    const allConsNumbers = [
-      ...(dispatch.shipments || []).map(s => s.consNumber).filter(Boolean),
-      ...(dispatch.chargeShipments || []).map(s => s.consNumber).filter(Boolean),
-    ];
+    // === 2. BUSCAR CHARGE SHIPMENTS DIRECTAMENTE ===
+    const chargeShipments = await this.chargeShipmentRepository
+      .createQueryBuilder('chargeShipment')
+      .leftJoinAndSelect('chargeShipment.payment', 'payment')
+      .leftJoinAndSelect('chargeShipment.unloading', 'unloading')
+      .leftJoinAndSelect('chargeShipment.packageDispatch', 'packageDispatch')
+      .leftJoinAndSelect('packageDispatch.vehicle', 'vehicle')
+      .leftJoinAndSelect('packageDispatch.subsidiary', 'subsidiary')
+      .leftJoinAndSelect('packageDispatch.drivers', 'drivers')
+      .where('packageDispatch.id = :dispatchId', { dispatchId })
+      .getMany();
+
+    console.log(`Shipments encontrados: ${shipments.length}`);
+    console.log(`ChargeShipments encontrados: ${chargeShipments.length}`);
+
+    // === DEBUG: Ver si payment está cargado ===
+    shipments.forEach((s, i) => {
+      console.log(`[Shipment ${i + 1}] ${s.trackingNumber} → Payment: ${!!s.payment ? 'SÍ' : 'NO'} ${s.payment ? `(ID: ${s.payment.id})` : ''}`);
+    });
+
+    chargeShipments.forEach((cs, i) => {
+      console.log(`[Charge ${i + 1}] ${cs.trackingNumber} → Payment: ${!!cs.payment ? 'SÍ' : 'NO'} ${cs.payment ? `(ID: ${cs.payment.id})` : ''}`);
+    });
+
+    // === 3. CONSOLIDATED por consolidatedId ===
+    const allConsolidatedIds = Array.from(
+      new Set([
+        ...shipments.map(s => s.consolidatedId).filter(Boolean),
+        ...chargeShipments.map(s => s.consolidatedId).filter(Boolean),
+      ])
+    );
 
     const consolidatedMap = new Map<string, { consNumber: string; date: Date }>();
-    if (allConsNumbers.length) {
-      const consolidatedList = await this.consolidatedRepository.find({
-        where: allConsNumbers.map(consNumber => ({ consNumber })),
-        select: ['consNumber', 'createdAt'],
+    if (allConsolidatedIds.length > 0) {
+      const list = await this.consolidatedRepository.find({
+        where: { id: In(allConsolidatedIds) },
+        select: ['id', 'consNumber', 'createdAt'],
       });
-      consolidatedList.forEach(c => {
-        consolidatedMap.set(c.consNumber, { consNumber: c.consNumber, date: c.createdAt });
-      });
+      list.forEach(c => consolidatedMap.set(c.id, { consNumber: c.consNumber, date: c.createdAt }));
     }
 
-    const mapShipment = (shipment: any, isCharge: boolean) => {
-      const consolidated = shipment.consNumber
-        ? consolidatedMap.get(shipment.consNumber) || null
-        : null;
+    // === 4. UNIFICAR DATOS (packageDispatch es el mismo) ===
+    const packageDispatch = shipments[0]?.packageDispatch || chargeShipments[0]?.packageDispatch;
+    if (!packageDispatch) {
+      console.log('No se encontró packageDispatch');
+      return [];
+    }
 
-      const ubication = dispatch.id ? 'EN RUTA' : 'EN BODEGA';
+    const driverName = packageDispatch.drivers?.[0]?.name ?? null;
+
+    // === 5. MAPEO FINAL ===
+    const mapShipment = (shipment: any, isCharge: boolean) => {
+      const consolidated = shipment.consolidatedId
+        ? consolidatedMap.get(shipment.consolidatedId) || null
+        : null;
 
       return {
         shipmentData: {
           id: shipment.id,
           trackingNumber: shipment.trackingNumber,
-          shipmentStatus: shipment.status, 
+          shipmentStatus: shipment.status,
           commitDateTime: shipment.commitDateTime,
-          ubication,
+          ubication: 'EN RUTA',
           unloading: shipment.unloading
             ? {
                 trackingNumber: shipment.unloading.trackingNumber,
@@ -340,37 +376,41 @@ export class PackageDispatchService {
             : null,
           consolidated,
           destination: shipment.recipientCity || null,
-          commiteDateTime: shipment.commitDateTime,
           createdDate: shipment.createdAt,
-          payment: shipment.payment,
+          payment: shipment.payment ? { amount: +shipment.payment.amount, type: shipment.payment.type } : null,
           isCharge,
         },
         packageDispatch: {
-          id: dispatch.id,
-          trackingNumber: dispatch.trackingNumber,
-          createdAt: dispatch.createdAt,
-          status: dispatch.status,
+          id: packageDispatch.id,
+          trackingNumber: packageDispatch.trackingNumber,
+          createdAt: packageDispatch.createdAt,
+          status: packageDispatch.status,
           driver: driverName,
-          vehicle: dispatch.vehicle
+          vehicle: packageDispatch.vehicle
             ? {
-                name: dispatch.vehicle.name || null,
-                plateNumber: dispatch.vehicle.plateNumber || null,
+                name: packageDispatch.vehicle.name || null,
+                plateNumber: packageDispatch.vehicle.plateNumber || null,
               }
             : null,
-          subsidiary: dispatch.subsidiary
+          subsidiary: packageDispatch.subsidiary
             ? {
-                id: dispatch.subsidiary.id,
-                name: dispatch.subsidiary.name,
+                id: packageDispatch.subsidiary.id,
+                name: packageDispatch.subsidiary.name,
               }
             : null,
         },
       };
     };
 
-    const normalShipments = (dispatch.shipments || []).map(s => mapShipment(s, false));
-    const chargeShipments = (dispatch.chargeShipments || []).map(s => mapShipment(s, true));
+    const result = [
+      ...shipments.map(s => mapShipment(s, false)),
+      ...chargeShipments.map(cs => mapShipment(cs, true)),
+    ];
 
-    return [...normalShipments, ...chargeShipments];
+    console.log(`\nTotal envíos mapeados: ${result.length}`);
+    console.log(`Con payment: ${result.filter(r => !!r.shipmentData.payment).length}\n`);
+
+    return result;
   }
 
   findOne(id: string) {
@@ -424,7 +464,12 @@ export class PackageDispatchService {
 
     // Obtener solo ID y trackingNumber de shipments normales
     const shipments = await this.shipmentRepository.find({
-      where: { packageDispatch: {id: packageDispatch.id }},
+      where: { 
+        packageDispatch: {
+          id: packageDispatch.id 
+        },
+        status: In([ShipmentStatusType.EN_RUTA, ShipmentStatusType.DESCONOCIDO, ShipmentStatusType.PENDIENTE, ShipmentStatusType.NO_ENTREGADO])
+      },
       select: ['id', 'trackingNumber']
     });
 
