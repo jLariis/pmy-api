@@ -365,7 +365,10 @@ export class ConsolidatedService {
             date: consolidated.createdAt,
           },
           destination: shipment.recipientCity || null,
-          payment: shipment.payment,
+          payment: shipment.payment ? {
+            type: shipment.payment.type,
+            amount: +shipment.payment.amount
+          } : null,
           createdDate: shipment.createdAt,
           isCharge,
         },
