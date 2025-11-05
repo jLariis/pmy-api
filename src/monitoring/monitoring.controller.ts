@@ -38,7 +38,7 @@ export class MonitoringController {
     return this.monitoringService.getInfoFromConsolidated(consolidatedId);
   }
 
-  @Get('update-by-consolidated/:packageDispatchId')
+  @Get('update-by-package-dispatch/:packageDispatchId')
   updateFedexFromPackageDispatch(@Param('packageDispatchId') packageDispatchId: string) {
     return this.monitoringService.updateFedexFromPackageDispatch(packageDispatchId);
   }

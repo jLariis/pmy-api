@@ -11,7 +11,6 @@ import { MailService } from 'src/mail/mail.service';
 import { ConsolidatedType } from 'src/common/enums/consolidated-type.enum';
 import { ConsolidatedItemDto, ConsolidatedsDto } from './dto/consolidated.dto';
 import { ShipmentStatusType } from 'src/common/enums/shipment-status-type.enum';
-import { zonedTimeToUtc } from 'src/common/utils';
 import { UnloadingReportDto } from './dto/unloading-report.dto';
 import { ShipmentsService } from 'src/shipments/shipments.service';
 
@@ -597,7 +596,6 @@ export class UnloadingService {
 
     return results;
   }
-
 
   async findAllBySubsidiary(subsidiaryId: string) {
     const response = await this.unloadingRepository.find({
@@ -1864,7 +1862,10 @@ export class UnloadingService {
               }
             : null,
           destination: shipment.recipientCity || null,
-          payment: shipment.payment,
+          payment: shipment.payment ? {
+            type: shipment.payment.type,
+            amount: +shipment.payment.amount
+          } : null,
           createdDate: shipment.createdAt,
           isCharge,
         },
@@ -1940,13 +1941,19 @@ export class UnloadingService {
 
     // Obtener solo ID y trackingNumber de shipments normales
     const shipments = await this.shipmentRepository.find({
-      where: { unloading: { id: unloading.id } },
+      where: { 
+        unloading: { id: unloading.id },
+        status: In([ShipmentStatusType.EN_RUTA, ShipmentStatusType.DESCONOCIDO, ShipmentStatusType.PENDIENTE, ShipmentStatusType.NO_ENTREGADO]) 
+      },
       select: ['id', 'trackingNumber']
     });
 
     // Obtener solo ID y trackingNumber de chargeShipments
     const chargeShipments = await this.chargeShipmentRepository.find({
-      where: { unloading: { id: unloading.id } },
+      where: { 
+        unloading: { id: unloading.id }, 
+        status: In([ShipmentStatusType.EN_RUTA, ShipmentStatusType.DESCONOCIDO, ShipmentStatusType.PENDIENTE, ShipmentStatusType.NO_ENTREGADO])
+      },
       select: ['id', 'trackingNumber']
     });
 

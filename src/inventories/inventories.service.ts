@@ -120,7 +120,7 @@ export class InventoriesService {
           trackingNumber,
           status: Not(ShipmentStatusType.DEVUELTO_A_FEDEX) 
         },
-        relations: ['subsidiary', 'charge'],
+        relations: ['subsidiary', 'charge', 'payment'],
         order: { createdAt: 'DESC' }
       });
 
@@ -183,7 +183,7 @@ export class InventoriesService {
   
       const chargeShipments = await this.chargeShipmentRepository.find({
         where: { trackingNumber: In(trackingNumbers),  status: Not(ShipmentStatusType.DEVUELTO_A_FEDEX) },
-        relations: ['subsidiary', 'charge', 'packageDispatch'],
+        relations: ['subsidiary', 'charge', 'packageDispatch', 'payment'],
       });
   
       // Mapas para acceso rápido por trackingNumber
