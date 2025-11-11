@@ -45,12 +45,10 @@ export class DevolutionsController {
     })
   sendEmail(
     @UploadedFiles() files: Express.Multer.File[],
-    @Body('subsidiaryName') subsidiaryName: string,
-    @Body('packageDispatchId') packageDispatchId: string
+    @Body('subsidiaryName') subsidiaryName: string
   ) {
     console.log('🚀 ~ PackageDispatchController ~ sendEmail ~ files:', files);
         console.log('🚀 ~ PackageDispatchController ~ sendEmail ~ subsidiaryName:', subsidiaryName);
-        console.log('🚀 ~ PackageDispatchController ~ sendEmail ~ packageDispatchId:', packageDispatchId);
     
         // Validate that both files are present
         if (!files || files.length !== 2) {

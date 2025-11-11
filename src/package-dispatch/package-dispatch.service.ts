@@ -130,7 +130,10 @@ export class PackageDispatchService {
       reason = 'El paquete existe en una devolución';
     }*/
 
-    if (packageToValidate.subsidiary.id !== subsidiaryId) {
+    console.log("🚀 ~ PackageDispatchService ~ validatePackage ~ packageToValidate.subsidiary.id:", packageToValidate.subsidiary.id)
+    console.log("🚀 ~ PackageDispatchService ~ validatePackage ~ subsidiaryId:", subsidiaryId)
+    
+    if (packageToValidate.subsidiary.id.trim() !== subsidiaryId.trim()) {
       isValid = false;
       reason = 'El paquete no pertenece a la sucursal actual';
     }
@@ -431,7 +434,7 @@ export class PackageDispatchService {
     const packageDispatch = await this.packageDispatchRepository.findOne(
       { 
         where: {id: packageDispatchId},
-        relations: ['drivers', 'routes', 'vehicle']
+        relations: ['drivers', 'routes', 'vehicle', 'subsidiary']
       });
     console.log("🚀 ~ PackageDispatchService ~ sendByEmail ~ packageDispatch:", packageDispatch)
 

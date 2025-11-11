@@ -3,7 +3,7 @@ import { CreateDevolutionDto } from './dto/create-devolution.dto';
 import { Repository } from 'typeorm';
 import { Devolution } from 'src/entities/devolution.entity';
 import { InjectRepository } from '@nestjs/typeorm';
-import { ChargeShipment, Income, Shipment } from 'src/entities';
+import { ChargeShipment, Income, Shipment, Subsidiary } from 'src/entities';
 import { ShipmentStatusType } from 'src/common/enums/shipment-status-type.enum';
 import { ValidateShipmentDto } from './dto/valiation-devolution.dto';
 import { MailService } from 'src/mail/mail.service';
@@ -21,6 +21,8 @@ export class DevolutionsService {
     private readonly incomeRepository: Repository<Income>,
     @InjectRepository(ChargeShipment)
     private readonly chargeShipmentRepository: Repository<ChargeShipment>,
+    @InjectRepository(Subsidiary)
+    private readonly subsidiaryRepository: Repository<Subsidiary>,
     private readonly mailService: MailService
   ) {}
 
@@ -275,6 +277,8 @@ export class DevolutionsService {
 
 
   async sendByEmail(pdfFile: Express.Multer.File, excelfile: Express.Multer.File, subsidiaryName: string) {
-    return await this.mailService.sendHighPriorityDevolutionsEmail(pdfFile, excelfile, subsidiaryName)
+    const subsidiary = await this.subsidiaryRepository.findOneBy({name: subsidiaryName});
+
+    return await this.mailService.sendHighPriorityDevolutionsEmail(pdfFile, excelfile, subsidiary)
   }
 }

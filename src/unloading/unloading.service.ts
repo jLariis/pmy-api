@@ -1715,8 +1715,8 @@ export class UnloadingService {
     `;
 
     const result = await this.mailService.sendHighPriorityUnloadingPriorityPackages({
-      to: 'paqueteriaymensajeriadelyaqui@hotmail.com',
-      cc: 'sistemas@paqueteriaymensajeriadelyaqui.com',
+      to: unloading.subsidiary.officeEmail,
+      cc: `${unloading.subsidiary.officeEmailToCopy}, sistemas@paqueteriaymensajeriadelyaqui.com`,
       //cc: 'javier.rappaz@gmail.com'
       htmlContent
     });
@@ -1737,6 +1737,7 @@ export class UnloadingService {
       relations: [
         'vehicle', 
         'shipments', 
+        'subsidiary',
         'shipments.subsidiary', 
         'chargeShipments', 
         'chargeShipments.subsidiary'
