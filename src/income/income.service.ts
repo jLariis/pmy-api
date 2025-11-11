@@ -162,9 +162,20 @@ export class IncomeService {
           throw new BadRequestException('La fecha inicial no puede ser mayor que la fecha final');
       }
 
-      // Normalización a UTC
-      const startOfRange = startOfDay(fromDate);
-      const endOfRange = endOfDay(toDate);
+      // Las fechas del frontend representan fechas en Hermosillo (UTC-7)
+      // Necesitamos convertirlas a UTC para buscar en la BD
+      // Ejemplo: 03-Nov 00:00 Hermosillo = 03-Nov 07:00 UTC
+      const HERMOSILLO_OFFSET_MS = 7 * 60 * 60 * 1000; // 7 horas en milisegundos
+
+      // Convertir fecha de Hermosillo a UTC
+      // fromDate ya viene como medianoche, le sumamos 7 horas para obtener medianoche en UTC
+      const startUTC = new Date(fromDate.getTime() + HERMOSILLO_OFFSET_MS);
+
+      // Para el fin del día: toDate + 7 horas + 23:59:59.999
+      const endUTC = new Date(toDate.getTime() + HERMOSILLO_OFFSET_MS + (24 * 60 * 60 * 1000) - 1);
+
+      console.log("startUTC: ", startUTC.toISOString());
+      console.log("endUTC: ", endUTC.toISOString());
 
       // Consulta a la base de datos con LEFT JOIN a Shipment
       const incomes = await this.incomeRepository.createQueryBuilder('income')
@@ -172,12 +183,13 @@ export class IncomeService {
           .leftJoinAndSelect('shipment.statusHistory', 'statusHistory')
           .where({
               subsidiary: { id: subsidiaryId },
-              date: Between(startOfRange, endOfRange),
+              date: Between(startUTC, endUTC),
           })
           .orderBy('income.date', 'ASC')
           .getMany();
 
-      return this.formatIncomesNew(incomes, startOfRange, endOfRange);
+      // Pasar las fechas originales (Hermosillo) para el formateo
+      return this.formatIncomesNew(incomes, fromDate, toDate);
     }
 
     async formatIncomesNewUTC(
@@ -300,17 +312,17 @@ export class IncomeService {
 
     async formatIncomesNew(
         incomes: Income[],
-        utcFromDate: Date,
-        utcToDate: Date
+        hermFromDate: Date,
+        hermToDate: Date
     ): Promise<FormatIncomesDto[]> {
         const report: FormatIncomesDto[] = [];
         const oneDayMs = 24 * 60 * 60 * 1000;
 
         // 1. Filtrar ingresos para excluir nonDeliveryStatus = '03'
         const filteredIncomes = incomes.filter(i => {
-            return !(i.sourceType === 'shipment' && 
-                    i.shipmentType === 'fedex' && 
-                    i.incomeType === 'no_entregado' && 
+            return !(i.sourceType === 'shipment' &&
+                    i.shipmentType === 'fedex' &&
+                    i.incomeType === 'no_entregado' &&
                     i.nonDeliveryStatus === '03');
         });
 
@@ -332,12 +344,8 @@ export class IncomeService {
             return acc;
         }, {} as Record<string, Income[]>);
 
-        // 4. Procesar exactamente el rango solicitado (21-27 de julio)
-        // Convertir fechas de entrada a Hermosillo primero
-        const hermFromDate = utcFromDate;
-        const hermToDate = utcToDate;
-        
-        // Ajustar a inicio y fin de día local
+        // 4. Procesar exactamente el rango solicitado
+        // Las fechas ya vienen en formato Hermosillo desde getIncome
         const startDate = startOfDay(hermFromDate);
         const endDate = endOfDay(hermToDate);
 
@@ -440,13 +448,7 @@ export class IncomeService {
             currentDate = new Date(currentDate.getTime() + oneDayMs);
         }
 
-        // Filtrar solo días dentro del rango solicitado (21-27)
-        const filteredReport = report.filter(entry => {
-            const entryDate = new Date(entry.date);
-            return entryDate >= startDate && entryDate <= endDate;
-        });
-
-        return filteredReport;
+        return report;
     }
     
     /******* HASTA AQUI */
