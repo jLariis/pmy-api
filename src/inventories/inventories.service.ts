@@ -351,8 +351,8 @@ export class InventoriesService {
       `;
   
       const result = await this.mailService.sendHighPriorityPackagesOnInvetory({
-        to: 'paqueteriaymensajeriadelyaqui@hotmail.com',
-        cc: ['sistemas@paqueteriaymensajeriadelyaqui.com','bodegacsl@paqueteriaymensajeriadelyaqui.com'],
+        to: inventory.subsidiary.officeEmail,
+        cc: `${inventory.subsidiary.officeEmailToCopy}, sistemas@paqueteriaymensajeriadelyaqui.com`,
         //cc: 'javier.rappaz@gmail.com'
         htmlContent
       });

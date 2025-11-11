@@ -8,6 +8,7 @@ import { ShipmentStatusForReportDto } from './dtos/shipment.dto';
 import { formatToHermosillo } from 'src/common/utils';
 import { RouteClosure } from 'src/entities/route-closure.entity';
 import { Inventory } from 'src/entities/inventory.entity';
+import { Subsidiary } from 'src/entities';
 
 @Injectable()
 export class MailService {
@@ -97,7 +98,7 @@ export class MailService {
         <p><strong>Responsable(s):</strong> ${drivers}</p>
         <p><strong>Siguiendo la ruta(s):</strong> ${routes}</p>
 
-        <p style="margin-top: 20px;">A continuación se detalla la información correspondiente a los paquetes incluidos:</p>
+        <p style="margin-top: 20px;">Adjunto se detalla la información correspondiente a los paquetes incluidos.</p>
 
         <p style="margin-top: 20px;">
           Puede consultar más detalles utilizando el Número de seguimiento <strong>${packageDispatch.trackingNumber}</strong> en: 
@@ -117,9 +118,8 @@ export class MailService {
 
     try {
       await this.mailerService.sendMail({
-        to: 'paqueteriaymensajeriadelyaqui@hotmail.com',
-        cc: ['sistemas@paqueteriaymensajeriadelyaqui.com','bodegacsl@paqueteriaymensajeriadelyaqui.com'],
-        //to: 'javier.rappaz@gmail.com',
+        to: packageDispatch.subsidiary.officeEmail,
+        cc: `${packageDispatch.subsidiary.officeEmailToCopy}, sistemas@paqueteriaymensajeriadelyaqui.com`,
         //subject: `🚚 Salida a Ruta ${formattedDate} de ${subsidiaryName}`,
         subject: `🚚 SALIDA ${packageDispatch.drivers[0].name.toLocaleUpperCase()} ${formattedDate}`,
         html: htmlContent,
@@ -192,9 +192,8 @@ export class MailService {
 
     try {
       await this.mailerService.sendMail({
-        to: 'paqueteriaymensajeriadelyaqui@hotmail.com',
-        cc: ['sistemas@paqueteriaymensajeriadelyaqui.com','bodegacsl@paqueteriaymensajeriadelyaqui.com'],
-        //to: 'javier.rappaz@gmail.com',
+        to: unloading.subsidiary.officeEmail,
+        cc: `${unloading.subsidiary.officeEmailToCopy}, sistemas@paqueteriaymensajeriadelyaqui.com`,
         subject: `🚚 Desembarque ${formattedDate} de ${subsidiaryName}`,
         html: htmlContent,
         headers: {
@@ -231,7 +230,7 @@ export class MailService {
   async sendHighPriorityDevolutionsEmail(
     file: Express.Multer.File,
     excelFile: Express.Multer.File, 
-    subsidiaryName: string,
+    subsidiary: Subsidiary,
   ){
     const timeZone = 'America/Hermosillo'; 
 
@@ -258,7 +257,7 @@ export class MailService {
         </h2>
 
         <p>
-          Se ha generado un nuevo reporte de <strong>Devoluciones/Recolecciones</strong> para la sucursal <strong>${subsidiaryName}</strong>.
+          Se ha generado un nuevo reporte de <strong>Devoluciones/Recolecciones</strong> para la sucursal <strong>${subsidiary.name}</strong>.
         </p>
 
         <p style="margin-top: 20px;">
@@ -279,10 +278,10 @@ export class MailService {
 
     try {
       await this.mailerService.sendMail({
-        to: 'paqueteriaymensajeriadelyaqui@hotmail.com',
-        cc: ['sistemas@paqueteriaymensajeriadelyaqui.com','bodegacsl@paqueteriaymensajeriadelyaqui.com'],
+        to: subsidiary.officeEmail,
+        cc: `${subsidiary.officeEmailToCopy}, sistemas@paqueteriaymensajeriadelyaqui.com`,
         //to: 'javier.rappaz@gmail.com',
-        subject: `🚚 Devoluciones/Recolecciones ${formattedDate} de ${subsidiaryName}`,
+        subject: `🚚 Devoluciones/Recolecciones ${formattedDate} de ${subsidiary.name}`,
         html: htmlContent,
         headers: {
         },
@@ -444,8 +443,8 @@ export class MailService {
 
     try {
       const emailSent = await this.mailerService.sendMail({
-        to: 'paqueteriaymensajeriadelyaqui@hotmail.com',
-        cc: ['sistemas@paqueteriaymensajeriadelyaqui.com','bodegacsl@paqueteriaymensajeriadelyaqui.com'],
+        to: routeClosure.subsidiary.officeEmail,
+        cc: `${routeClosure.subsidiary.officeEmailToCopy}, sistemas@paqueteriaymensajeriadelyaqui.com`,
         //to: 'javier.rappaz@gmail.com',
         subject: `🚚 CIERRE DE RUTA - ${routeClosure.packageDispatch.drivers[0].name.toUpperCase()} - ${formattedDate} DE ${routeClosure.subsidiary.name.toUpperCase()}`,
         html: htmlContent,
@@ -519,8 +518,8 @@ export class MailService {
 
     try {
       await this.mailerService.sendMail({
-        to: 'paqueteriaymensajeriadelyaqui@hotmail.com',
-        cc: ['sistemas@paqueteriaymensajeriadelyaqui.com','bodegacsl@paqueteriaymensajeriadelyaqui.com'],
+        to: inventory.subsidiary.officeEmail,
+        cc: `${inventory.subsidiary.officeEmailToCopy}, sistemas@paqueteriaymensajeriadelyaqui.com`,
         //to: 'javier.rappaz@gmail.com',
         subject: `📦 Inventario ${formattedDate} de ${subsidiaryName}`,
         html: htmlContent,
