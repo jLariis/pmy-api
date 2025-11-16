@@ -309,7 +309,7 @@ export class ConsolidatedService {
     console.log("🔹 consNumber del consolidated:", consolidated.consNumber);
 
     const shipments = await this.shipmentRepository.find({
-      where: { consNumber: consolidated.consNumber },
+      where: { consolidatedId: consolidated.id },
       relations: [
         'packageDispatch',
         'packageDispatch.vehicle',
@@ -323,7 +323,7 @@ export class ConsolidatedService {
     console.log("📦 Shipments encontrados:", shipments.length);
 
     const chargeShipments = await this.chargeShipmentRepository.find({
-      where: { consNumber: consolidated.consNumber },
+      where: { consolidatedId: consolidated.id },
       relations: [
         'packageDispatch',
         'packageDispatch.vehicle',

@@ -5890,6 +5890,232 @@ export class ShipmentsService {
 
 
     /************************************************* */
+
+
+    /***** Agrear shipments directamente */
+    async addShipment(dto: ParsedShipmentDto): Promise<any> {
+      try {
+        this.logger.log("📥 addShipment() recibido");
+        this.logger.log(JSON.stringify(dto, null, 2));
+
+        // Validar que venga un trackingNumber
+        if (!dto.trackingNumber) {
+          throw new Error("trackingNumber es requerido");
+        }
+
+        // Obtener sucursal (como tú manejas subsidiaries)
+        const subsidiary = await this.subsidiaryRepository.findOne({
+          where: { id: dto.subsidiary.id },
+        });
+
+        if (!subsidiary) {
+          throw new Error(`Subsidiary ${dto.subsidiary.id} no encontrada`);
+        }
+
+        // -------------------------
+        // LLAMAR processShipmentDirect()
+        // -------------------------
+        const savedShipment = await this.processShipmentDirect(dto, subsidiary);
+
+        this.logger.log(`✅ Shipment guardado: ${savedShipment.trackingNumber}`);
+
+        return {
+          ok: true,
+          message: "Shipment procesado y guardado correctamente",
+          shipment: savedShipment,
+        };
+
+      } catch (err) {
+        this.logger.error(`❌ Error en addShipment(): ${err.message}`);
+
+        return {
+          ok: false,
+          message: err.message,
+        };
+      }
+    }
+
+    async processShipmentDirect(
+      shipment: ParsedShipmentDto,
+      predefinedSubsidiary: Subsidiary
+    ): Promise<Shipment> {
+
+      const trackingNumber = shipment.trackingNumber;
+
+      this.logger.log(`📦 Procesando envío: ${trackingNumber}`);
+      this.logger.log(`📅 commitDate=${shipment.commitDate}, commitTime=${shipment.commitTime}`);
+
+      // -----------------------
+      // PARSEO commitDate/Time
+      // -----------------------
+      let commitDate: string | undefined;
+      let commitTime: string | undefined;
+      let commitDateTime: Date | undefined;
+      let dateSource = "";
+
+      if (shipment.commitDate && shipment.commitTime) {
+        try {
+          const timeZone = "America/Hermosillo";
+
+          const parsedDate = parse(shipment.commitDate, "yyyy-MM-dd", new Date());
+          const parsedTime = parse(shipment.commitTime, "HH:mm:ss", new Date());
+
+          if (!isNaN(parsedDate.getTime()) && !isNaN(parsedTime.getTime())) {
+            commitDate = format(parsedDate, "yyyy-MM-dd");
+            commitTime = format(parsedTime, "HH:mm:ss");
+
+            const localDateTime = `${commitDate}T${commitTime}`;
+            commitDateTime = toDate(localDateTime, { timeZone });
+            dateSource = "Excel";
+          }
+        } catch {}
+      }
+
+      // -----------------------
+      // CREAR SHIPMENT BASE
+      // -----------------------
+      const newShipment = Object.assign(new Shipment(), {
+        trackingNumber,
+        shipmentType: ShipmentType.FEDEX,
+        recipientName: shipment.recipientName || '',
+        recipientAddress: shipment.recipientAddress || '',
+        recipientCity: shipment.recipientCity || predefinedSubsidiary.name,
+        recipientZip: shipment.recipientZip || '',
+        commitDate,
+        commitTime,
+        commitDateTime,
+        recipientPhone: shipment.recipientPhone || '',
+        status: ShipmentStatusType.PENDIENTE,
+        priority: Priority.BAJA,
+        receivedByName: '',
+        subsidiary: predefinedSubsidiary,
+        subsidiaryId: predefinedSubsidiary.id,
+      });
+
+      // -----------------------
+      // CONSULTAR FEDEX
+      // -----------------------
+      let fedexShipmentData: FedExTrackingResponseDto;
+
+      try {
+        this.logger.log(`📬 Consultando FedEx para ${trackingNumber}`);
+        fedexShipmentData = await this.trackPackageWithRetry(trackingNumber);
+      } catch (err) {
+        throw new Error(`Error consultando FedEx: ${err.message}`);
+      }
+
+      // -----------------------
+      // PROCESAR HISTORIES / SCAN EVENTS
+      // -----------------------
+      const trackResults = fedexShipmentData.output.completeTrackResults[0].trackResults;
+
+      const shipmentReference = Object.assign(new Shipment(), { trackingNumber });
+
+      const histories = await this.processFedexScanEventsToStatusesResp(
+        trackResults.flatMap(r => r.scanEvents ?? []),
+        shipmentReference
+      );
+
+      histories.forEach(h => {
+        h.shipment = undefined; // no referencias circulares
+        h.id = undefined;       // ID se genera al guardar
+      });
+
+      // -----------------------
+      // ULTIMO STATUS (como antes)
+      // -----------------------
+      const lastStatus = histories[histories.length - 1]?.status;
+      newShipment.status = lastStatus ?? ShipmentStatusType.PENDIENTE;
+
+      // recibido por
+      const latestResult =
+        trackResults.find(r => r.latestStatusDetail?.derivedCode === "DL") ??
+        trackResults.sort((a, b) => {
+          const da = a.scanEvents[0]?.date ? new Date(a.scanEvents[0].date).getTime() : 0;
+          const db = b.scanEvents[0]?.date ? new Date(b.scanEvents[0].date).getTime() : 0;
+          return db - da;
+        })[0];
+
+      newShipment.receivedByName = latestResult?.deliveryDetails?.receivedByName || "";
+
+      // -----------------------
+      // commitDateTime desde FedEx si Excel falló
+      // -----------------------
+      if (!commitDateTime) {
+        const rawDate = latestResult?.standardTransitTimeWindow?.window?.ends;
+
+        if (rawDate) {
+          try {
+            const parsedFedexDate = parse(rawDate, "yyyy-MM-dd'T'HH:mm:ssXXX", new Date());
+            if (!isNaN(parsedFedexDate.getTime())) {
+              commitDate = format(parsedFedexDate, "yyyy-MM-dd");
+              commitTime = format(parsedFedexDate, "HH:mm:ss");
+              commitDateTime = parsedFedexDate;
+              dateSource = "FedEx";
+            }
+          } catch {}
+        }
+      }
+
+      // -----------------------
+      // FECHA DEFAULT
+      // -----------------------
+      if (!commitDateTime) {
+        const now = new Date();
+        commitDateTime = new Date(Date.UTC(
+          now.getUTCFullYear(),
+          now.getUTCMonth(),
+          now.getUTCDate(),
+          18 + 7,
+          0,
+          0
+        ));
+        dateSource = "Default";
+      }
+
+      newShipment.commitDate = commitDate;
+      newShipment.commitTime = commitTime;
+      newShipment.commitDateTime = commitDateTime;
+      newShipment.priority = getPriority(commitDateTime);
+
+      // -----------------------
+      // PAYMENT (igual que antes)
+      // -----------------------
+      if (shipment.payment) {
+        const typeMatch = shipment.payment.match(/^(COD|FTC|ROD)/);
+        const amountMatch = shipment.payment.match(/([0-9]+(?:\.[0-9]+)?)/);
+
+        if (amountMatch) {
+          const paymentType = typeMatch ? typeMatch[1] as PaymentTypeEnum : null;
+          const paymentAmount = parseFloat(amountMatch[1]);
+
+          if (!isNaN(paymentAmount) && paymentAmount > 0) {
+            newShipment.payment = Object.assign(new Payment(), {
+              amount: paymentAmount,
+              type: paymentType,
+              status: histories.some(h => h.status === ShipmentStatusType.ENTREGADO)
+                ? PaymentStatus.PAID
+                : PaymentStatus.PENDING,
+            });
+          }
+        }
+      }
+
+      // aplicar histories ya procesado
+      newShipment.statusHistory = histories;
+
+      // -----------------------
+      // GUARDAR DIRECTAMENTE
+      // -----------------------
+      const saved = await this.shipmentRepository.save(newShipment);
+
+      return saved;
+    }
+
+
+
+
+    /*********************************** */
 }
 
 

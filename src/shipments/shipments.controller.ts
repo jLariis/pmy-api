@@ -8,6 +8,7 @@ import { FedExTrackingResponseDto } from './dto/fedex/fedex-tracking-response.dt
 import { GetShipmentKpisDto } from './dto/get-shipment-kpis.dto';
 import { CheckFedexStatusDto } from './dto/check-status-fedex-test';
 import { ForPickUpDto } from './dto/for-pick-up.dto';
+import { ParsedShipmentDto } from './dto/parsed-shipment.dto';
 
 @ApiTags('shipments')
 @ApiBearerAuth()
@@ -281,7 +282,6 @@ export class ShipmentsController {
     }
   }
 
-
   @Get(':trackingNumber')
   async getShipmentById(@Param('trackingNumber') trackingNumber: string) {
     return this.shipmentsService.findByTrackingNumber(trackingNumber);
@@ -364,5 +364,10 @@ export class ShipmentsController {
     }
 
   /**************************************************************************************************************** */
+
+  @Post("add-shipment")
+  async addSingleShipment(@Body() dto: ParsedShipmentDto) {
+    return this.shipmentsService.addShipment(dto);
+  }  
 
 }
