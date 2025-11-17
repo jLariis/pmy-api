@@ -9,6 +9,7 @@ import { GetShipmentKpisDto } from './dto/get-shipment-kpis.dto';
 import { CheckFedexStatusDto } from './dto/check-status-fedex-test';
 import { ForPickUpDto } from './dto/for-pick-up.dto';
 import { ParsedShipmentDto } from './dto/parsed-shipment.dto';
+import { ShipmentToSaveDto } from './dto/shipment-to-save.dto';
 
 @ApiTags('shipments')
 @ApiBearerAuth()
@@ -366,7 +367,7 @@ export class ShipmentsController {
   /**************************************************************************************************************** */
 
   @Post("add-shipment")
-  async addSingleShipment(@Body() dto: ParsedShipmentDto) {
+  async addSingleShipment(@Body() dto: ShipmentToSaveDto) {
     return this.shipmentsService.addShipment(dto);
   }  
 

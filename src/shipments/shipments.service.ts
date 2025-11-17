@@ -41,6 +41,7 @@ import { FedexTrackingResponseDto } from './dto/check-status-result.dto';
 import { PaymentTypeEnum } from 'src/common/enums/payment-type.enum';
 import { ShipmentStatusForReportDto } from 'src/mail/dtos/shipment.dto';
 import { SearchShipmentDto } from './dto/search-package.dto';
+import { ShipmentToSaveDto } from './dto/shipment-to-save.dto';
 
 @Injectable()
 export class ShipmentsService {
@@ -5893,7 +5894,7 @@ export class ShipmentsService {
 
 
     /***** Agrear shipments directamente */
-    async addShipment(dto: ParsedShipmentDto): Promise<any> {
+    async addShipment(dto: ShipmentToSaveDto): Promise<any> {
       try {
         this.logger.log("📥 addShipment() recibido");
         this.logger.log(JSON.stringify(dto, null, 2));
@@ -5936,7 +5937,7 @@ export class ShipmentsService {
     }
 
     async processShipmentDirect(
-      shipment: ParsedShipmentDto,
+      shipment: ShipmentToSaveDto,
       predefinedSubsidiary: Subsidiary
     ): Promise<Shipment> {
 
@@ -5986,7 +5987,7 @@ export class ShipmentsService {
         commitDateTime,
         recipientPhone: shipment.recipientPhone || '',
         status: ShipmentStatusType.PENDIENTE,
-        priority: Priority.BAJA,
+        priority: shipment.priority,
         receivedByName: '',
         subsidiary: predefinedSubsidiary,
         subsidiaryId: predefinedSubsidiary.id,
