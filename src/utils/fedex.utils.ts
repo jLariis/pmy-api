@@ -9,9 +9,13 @@ function isValidFedexStatus(status: string): status is ShipmentFedexStatusType {
 }
 
 export function mapFedexStatusToLocalStatus(derivedStatusCode: string, exceptionCode?: string): ShipmentStatusType {
+  console.log("🚀 ~ mapFedexStatusToLocalStatus ~ derivedStatusCode:", derivedStatusCode)
+  
   const statusMap: { [key: string]: ShipmentStatusType } = {
     'DL': ShipmentStatusType.ENTREGADO,
     'PU': ShipmentStatusType.RECOLECCION,
+    '67': ShipmentStatusType.EN_RUTA,
+    'OW': ShipmentStatusType.EN_RUTA,
     'IT': ShipmentStatusType.EN_RUTA,
     'AR': ShipmentStatusType.EN_RUTA,
     'AF': ShipmentStatusType.EN_RUTA,
