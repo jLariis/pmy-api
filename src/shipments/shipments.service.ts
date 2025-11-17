@@ -5967,7 +5967,7 @@ export class ShipmentsService {
 
             const localDateTime = `${commitDate}T${commitTime}`;
             commitDateTime = toDate(localDateTime, { timeZone });
-            dateSource = "Excel";
+            dateSource = "Save Direct";
           }
         } catch {}
       }
@@ -5986,7 +5986,7 @@ export class ShipmentsService {
         commitTime,
         commitDateTime,
         recipientPhone: shipment.recipientPhone || '',
-        status: ShipmentStatusType.PENDIENTE,
+        status: shipment.status,
         priority: shipment.priority,
         receivedByName: '',
         subsidiary: predefinedSubsidiary,
@@ -6026,7 +6026,7 @@ export class ShipmentsService {
       // ULTIMO STATUS (como antes)
       // -----------------------
       const lastStatus = histories[histories.length - 1]?.status;
-      newShipment.status = lastStatus ?? ShipmentStatusType.PENDIENTE;
+      newShipment.status = lastStatus ?? ShipmentStatusType.EN_RUTA;
 
       // recibido por
       const latestResult =
