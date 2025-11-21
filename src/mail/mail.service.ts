@@ -298,7 +298,7 @@ export class MailService {
 
   /*** Correos de DEX03 - Reporte */
   async sendHighPriorityShipmentWithStatus03(
-    subsidiaryName: string,
+    subsidiary: Subsidiary,
     shipments: ShipmentStatusForReportDto[]
   ) {
     const today = new Date()
@@ -322,7 +322,7 @@ export class MailService {
     const htmlContent = `
         <div style="font-family: Arial, sans-serif; color: #2c3e50; max-width: 800px; margin: auto;">
           <h2 style="border-bottom: 3px solid #e74c3c; padding-bottom: 8px;">
-            Reporte de Paquetes con DEX03
+            Reporte de Paquetes con DEX03 de la sucursal ${subsidiary.name.toUpperCase()}
           </h2>
           <p>
             Se han detectado los siguientes envíos con el status DEX03
@@ -373,10 +373,10 @@ export class MailService {
 
     try {
       return await this.mailerService.sendMail({
-        to: 'javier.rappaz@gmail.com',
-        //to: 'paqueteriaymensajeriadelyaqui@hotmail.com',
-        //cc: 'edgardolugo@paqueteriaymensajeriadelyaqui.com, gerardorobles@paqueteriaymensajeriadelyaqui.com, sistemas@paqueteriaymensajeriadelyaqui.com, bodegacsl@paqueteriaymensajeriadelyaqui.com',
-        subject: `🚨🚥 Paquetes con status DEX03 de ${subsidiaryName}`,
+        //to: 'javier.rappaz@gmail.com',
+        to: 'paqueteriaymensajeriadelyaqui@hotmail.com',
+        cc: `edgardolugo@paqueteriaymensajeriadelyaqui.com, gerardorobles@paqueteriaymensajeriadelyaqui.com, sistemas@paqueteriaymensajeriadelyaqui.com, ${subsidiary.officeEmail}, ${subsidiary.officeEmailToCopy}`,
+        subject: `🚨🚥 Paquetes con status DEX03 de ${subsidiary.name.toUpperCase()}`,
         html: htmlContent,
         headers: {
           'X-Priority': '1',

@@ -5184,7 +5184,7 @@ export class ShipmentsService {
 
       if (shipments.length > 0) {
         const sendEmail = await this.mailService.sendHighPriorityShipmentWithStatus03(
-          subsidiary.name,
+          subsidiary,
           shipments,
         );
         console.log("🚀 ~ ShipmentsService ~ getShipmentsWithStatus03 ~ sendEmail:", sendEmail);
