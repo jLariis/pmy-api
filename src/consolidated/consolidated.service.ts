@@ -2,7 +2,7 @@ import { forwardRef, Inject, Injectable, Logger } from '@nestjs/common';
 import { CreateConsolidatedDto } from './dto/create-consolidated.dto';
 import { UpdateConsolidatedDto } from './dto/update-consolidated.dto';
 import { In, Repository } from 'typeorm';
-import { ChargeShipment, Consolidated, Shipment } from 'src/entities';
+import { ChargeShipment, Consolidated, Shipment, ShipmentStatus } from 'src/entities';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ShipmentConsolidatedDto } from './dto/shipment.dto';
 import { ConsolidatedDto } from './dto/consolidated.dto';
@@ -21,7 +21,9 @@ export class ConsolidatedService {
     @InjectRepository(ChargeShipment)
     private readonly chargeShipmentRepository: Repository<ChargeShipment>,
     @Inject(forwardRef(() => ShipmentsService))
-    private readonly shipmentService: ShipmentsService
+    private readonly shipmentService: ShipmentsService,
+    @InjectRepository(ShipmentStatus)
+    private readonly shipmentStatusRepository: Repository<ShipmentStatus>
   ){}
 
   async create(createConsolidatedDto: CreateConsolidatedDto) {
@@ -341,10 +343,41 @@ export class ConsolidatedService {
       return [];
     }
 
-    const mapShipment = (shipment: any, isCharge: boolean) => {
+    // ========= 🔥 Helper: calcular días en bodega =========
+    const calcDaysInWarehouse = (createdAt: Date, status: string) => {
+      //if (status !== 'entre') return "N/A";
+      const today = new Date();
+      const created = new Date(createdAt);
+      const diff = Math.floor((today.getTime() - created.getTime()) / (1000 * 60 * 60 * 24));
+      return diff;
+    };
+
+    // ========= 🔥 Helper: obtener dexCode =========
+    const getDexCode = async (shipmentId: string, status: string) => {
+      if (status !== 'no_entregado') return null;
+
+      const row = await this.shipmentStatusRepository
+        .createQueryBuilder('ss')
+        .select('ss.exceptionCode', 'exceptionCode')
+        .where('ss.shipmentId = :shipmentId', { shipmentId })
+        .orderBy('ss.createdAt', 'DESC')
+        .limit(1)
+        .getRawOne();
+
+      return row?.exceptionCode ?? null;
+    };
+
+    // ========= 🔥 MAPEO FINAL =========
+    const mapShipment = async (shipment: any, isCharge: boolean) => {
       const dispatch = shipment.packageDispatch;
       const driverName = dispatch?.drivers?.length ? dispatch.drivers[0].name : null;
       const ubication = dispatch ? 'EN RUTA' : 'EN BODEGA';
+
+      // 👉 Days in warehouse
+      const daysInWarehouse = calcDaysInWarehouse(shipment.createdAt, shipment.status);
+
+      // 👉 dexCode solo si está no_entregado
+      const dexCode = await getDexCode(shipment.id, shipment.status);
 
       return {
         shipmentData: {
@@ -352,8 +385,8 @@ export class ConsolidatedService {
           trackingNumber: shipment.trackingNumber,
           shipmentStatus: shipment.status,
           commitDateTime: shipment.commitDateTime,
-          warehouse: shipment.subsidiary.name,
           ubication,
+          warehouse: shipment.subsidiary.name,
           unloading: shipment.unloading
             ? {
                 trackingNumber: shipment.unloading.trackingNumber,
@@ -365,11 +398,21 @@ export class ConsolidatedService {
             date: consolidated.createdAt,
           },
           destination: shipment.recipientCity || null,
-          payment: shipment.payment ? {
-            type: shipment.payment.type,
-            amount: +shipment.payment.amount
-          } : null,
+          payment: shipment.payment
+            ? {
+                type: shipment.payment.type,
+                amount: +shipment.payment.amount,
+              }
+            : null,
           createdDate: shipment.createdAt,
+          recipientName: shipment.recipientName,
+          recipientAddress: shipment.recipientAddress,
+          recipientPhone: shipment.recipientPhone,
+          recipientZip: shipment.recipientZip,
+
+          shipmentType: shipment.shipmentType,
+          daysInWarehouse,
+          dexCode,
           isCharge,
         },
         packageDispatch: dispatch
@@ -396,13 +439,15 @@ export class ConsolidatedService {
       };
     };
 
-    const normalShipments = shipments.map(s => mapShipment(s, false));
-    const chargeShipmentsMapped = chargeShipments.map(s => mapShipment(s, true));
+    const mappedNormal = await Promise.all(shipments.map(s => mapShipment(s, false)));
+    const mappedCharge = await Promise.all(chargeShipments.map(s => mapShipment(s, true)));
 
-    const result = [...normalShipments, ...chargeShipmentsMapped];
+    const result = [...mappedNormal, ...mappedCharge];
+
     console.log("✅ Resultado final:", result.length);
     return result;
   }
+
 
   async updateFedexDataBySucursalAndDate(
     subsidiaryId?: string,
@@ -554,113 +599,154 @@ export class ConsolidatedService {
   }
 
   async updateFedexDataByConsolidatedId(consolidatedId: string) {
-    // Validar que se proporcione el ID del consolidado
+    this.logger.log(`🚀 Iniciando actualización FedEx para consolidatedId: ${consolidatedId}`);
+
     if (!consolidatedId) {
       throw new Error('El ID del consolidado es requerido');
     }
 
-    // 1. Buscar el consolidado específico por ID
+    // ==============================
+    // 1. Buscar el Consolidado
+    // ==============================
     const consolidated = await this.consolidatedRepository.findOne({
       where: { id: consolidatedId },
       select: ['id', 'consNumber']
     });
 
     if (!consolidated) {
-      console.warn(`No se encontró el consolidado con ID: ${consolidatedId}`);
+      this.logger.warn(`❌ No se encontró el consolidado con ID: ${consolidatedId}`);
       return [];
     }
 
-    console.log(`🔍 Procesando consolidado: ${consolidated.consNumber}`);
+    this.logger.log(`🔍 Procesando consolidado #${consolidated.consNumber} (${consolidated.id})`);
 
-    // 2. Obtener solo IDs y tracking numbers de shipments
-    const shipmentsForFedex = [];
-    const shipmentsTrackingNumbers = [];
-    const chargeShipmentsTrackingNumbers = [];
+    // ==============================
+    // 2. Obtener shipments que SÍ requieren revisión FedEx
+    // ==============================
 
-    // Obtener solo ID y trackingNumber de shipments normales
-    const shipments = await this.shipmentRepository.find({
-      where: { 
-        consolidatedId: consolidated.id,
-        status: In([ShipmentStatusType.EN_RUTA, ShipmentStatusType.DESCONOCIDO, ShipmentStatusType.PENDIENTE, ShipmentStatusType.NO_ENTREGADO]) 
-      },
-      select: ['id', 'trackingNumber']
-    });
-
-    // Obtener solo ID y trackingNumber de chargeShipments
-    const chargeShipments = await this.chargeShipmentRepository.find({
-      where: { 
-        consolidatedId: consolidated.id,
-        status: In([ShipmentStatusType.EN_RUTA, ShipmentStatusType.DESCONOCIDO, ShipmentStatusType.PENDIENTE, ShipmentStatusType.NO_ENTREGADO]) 
-      },
-      select: ['id', 'trackingNumber']
-    });
-
-    console.log(`📦 Shipments: ${shipments.length}, ChargeShipments: ${chargeShipments.length}`);
-
-    if (shipments.length === 0 && chargeShipments.length === 0) {
-      console.warn(`⚠️ No se encontraron shipments para consolidado ${consolidated.consNumber}`);
-      return [];
-    }
-
-    // Combinar y mapear solo los datos necesarios
-    const allShipments = [
-      ...shipments.map(s => ({
-        id: s.id,
-        trackingNumber: s.trackingNumber,
-        isCharge: false
-      })),
-      ...chargeShipments.map(s => ({
-        id: s.id,
-        trackingNumber: s.trackingNumber,
-        isCharge: true
-      }))
+    const statusesForFedex = [
+      ShipmentStatusType.EN_RUTA,
+      ShipmentStatusType.DESCONOCIDO,
+      ShipmentStatusType.PENDIENTE,
+      ShipmentStatusType.NO_ENTREGADO
     ];
 
-    shipmentsTrackingNumbers.push(...shipments.map(s => s.trackingNumber));
-    chargeShipmentsTrackingNumbers.push(...chargeShipments.map(s => s.trackingNumber));
-    shipmentsForFedex.push(...allShipments);
+    this.logger.log(`📌 Status que SÍ se revisarán en FedEx: ${statusesForFedex.join(', ')}`);
+    this.logger.log(`📌 EXCLUYENDO status ENTREGADO`);
 
-    console.log(`✅ Consolidado ${consolidated.consNumber}: ${allShipments.length} shipments listos para FedEx`);
+    const shipments = await this.shipmentRepository.find({
+      where: {
+        consolidatedId: consolidated.id,
+        status: In(statusesForFedex)
+      },
+      select: ['id', 'trackingNumber', 'status']
+    });
 
-    // 3. Procesar con FedEx
+    const chargeShipments = await this.chargeShipmentRepository.find({
+      where: {
+        consolidatedId: consolidated.id,
+        status: In(statusesForFedex)
+      },
+      select: ['id', 'trackingNumber', 'status']
+    });
+
+    this.logger.log(`📦 Shipments candidatos a revisión: ${shipments.length}`);
+    this.logger.log(`⚡ ChargeShipments candidatos a revisión: ${chargeShipments.length}`);
+
+    if (shipments.length === 0 && chargeShipments.length === 0) {
+      this.logger.warn(
+        `⚠️ No hay envíos pendientes de revisión FedEx en el consolidado ${consolidated.consNumber}`
+      );
+      return [];
+    }
+
+    // ==============================
+    // 3. Combinar datos necesarios
+    // ==============================
+
+    const shipmentsForFedex = [
+      ...shipments.map(s => ({ id: s.id, trackingNumber: s.trackingNumber, status: s.status, isCharge: false })),
+      ...chargeShipments.map(cs => ({ id: cs.id, trackingNumber: cs.trackingNumber, status: cs.status, isCharge: true }))
+    ];
+
+    const shipmentsTrackingNumbers = shipments.map(s => s.trackingNumber);
+    const chargeTrackingNumbers = chargeShipments.map(cs => cs.trackingNumber);
+
+    this.logger.log(`🔢 Total general a revisar: ${shipmentsForFedex.length}`);
+    this.logger.log(`📝 Listado de tracking normales:\n${JSON.stringify(shipmentsTrackingNumbers, null, 2)}`);
+    this.logger.log(`📝 Listado de tracking F2:\n${JSON.stringify(chargeTrackingNumbers, null, 2)}`);
+
+    // ==============================
+    // 4. Enviar a FedEx
+    // ==============================
+
+    let fedexResult = null;
+    let fedexChargeResult = null;
+
     try {
-      const result = await this.shipmentService.checkStatusOnFedexBySubsidiaryRulesTesting(shipmentsTrackingNumbers, true);
-      const resultChargShipments = await this.shipmentService.checkStatusOnFedexChargeShipment(chargeShipmentsTrackingNumbers);
-
-      // Registrar resultados para auditoría
-      this.logger.log(
-        `✅ Resultado para consolidado ${consolidated.consNumber}: ` +
-        `${result.updatedShipments.length} envíos actualizados, ` +
-        `${resultChargShipments.updatedChargeShipments.length} envíos F2 actualizados, ` +
-        `${result.shipmentsWithError.length} errores, ` +
-        `${resultChargShipments.chargeShipmentsWithError.length} errores de F2, ` +
-        `${result.unusualCodes.length} códigos inusuales, ` +
-        `${result.shipmentsWithOD.length} excepciones OD o fallos de validación`
+      fedexResult = await this.shipmentService.checkStatusOnFedexBySubsidiaryRulesTesting(
+        shipmentsTrackingNumbers,
+        true
       );
 
-      // Registrar detalles de errores, códigos inusuales y excepciones OD si los hay
-      if (result.shipmentsWithError.length) {
-        this.logger.warn(`⚠️ Errores detectados: ${JSON.stringify(result.shipmentsWithError, null, 2)}`);
+      fedexChargeResult = await this.shipmentService.checkStatusOnFedexChargeShipment(
+        chargeTrackingNumbers
+      );
+
+      // Logs de actualizaciones
+      this.logger.log(
+        `✅ FedEx completado para consolidated #${consolidated.consNumber}\n` +
+        `- Shipments actualizados: ${fedexResult.updatedShipments.length}\n` +
+        `- ChargeShipments actualizados: ${fedexChargeResult.updatedChargeShipments.length}\n` +
+        `- Errores normales: ${fedexResult.shipmentsWithError.length}\n` +
+        `- Errores F2: ${fedexChargeResult.chargeShipmentsWithError.length}\n` +
+        `- Códigos inusuales: ${fedexResult.unusualCodes.length}\n` +
+        `- Excepciones OD: ${fedexResult.shipmentsWithOD.length}`
+      );
+
+      // Logs detallados
+      if (fedexResult.shipmentsWithError.length) {
+        this.logger.warn(`⚠️ Errores normales:\n${JSON.stringify(fedexResult.shipmentsWithError, null, 2)}`);
       }
 
-      if (resultChargShipments.chargeShipmentsWithError.length) {
-        this.logger.warn(`⚠️ Errores detectados en F2: ${JSON.stringify(resultChargShipments.chargeShipmentsWithError, null, 2)}`);
+      if (fedexChargeResult.chargeShipmentsWithError.length) {
+        this.logger.warn(`⚠️ Errores F2:\n${JSON.stringify(fedexChargeResult.chargeShipmentsWithError, null, 2)}`);
       }
 
-      if (result.unusualCodes.length) {
-        this.logger.warn(`⚠️ Códigos inusuales: ${JSON.stringify(result.unusualCodes, null, 2)}`);
+      if (fedexResult.unusualCodes.length) {
+        this.logger.warn(`⚠️ Códigos inusuales detectados:\n${JSON.stringify(fedexResult.unusualCodes, null, 2)}`);
       }
-      
-      if (result.shipmentsWithOD.length) {
-        this.logger.warn(`⚠️ Excepciones OD o fallos de validación: ${JSON.stringify(result.shipmentsWithOD, null, 2)}`);
+
+      if (fedexResult.shipmentsWithOD.length) {
+        this.logger.warn(`⚠️ Excepciones OD:\n${JSON.stringify(fedexResult.shipmentsWithOD, null, 2)}`);
       }
 
     } catch (err) {
-      this.logger.error(`❌ Error al actualizar FedEx para consolidado ${consolidated.consNumber}: ${err.message}`);
-      // Opcional: Guardar el error en un log persistente o enviar una notificación
+      this.logger.error(`❌ Error al consultar FedEx: ${err.message}`);
     }
+
+    // ==============================
+    // 5. Resumen Final
+    // ==============================
+
+    const statusCount = shipmentsForFedex.reduce((acc, s) => {
+      acc[s.status] = (acc[s.status] || 0) + 1;
+      return acc;
+    }, {} as Record<string, number>);
+
+    this.logger.log(
+      "📊 RESUMEN FINAL:\n" +
+      `- Consolidado: ${consolidated.consNumber}\n` +
+      `- Revisados totales: ${shipmentsForFedex.length}\n` +
+      `- Breakdown por status:\n${JSON.stringify(statusCount, null, 2)}\n` +
+      `- Normal: ${shipments.length}\n` +
+      `- ChargeShipment: ${chargeShipments.length}`
+    );
+
+    this.logger.log("🟢 Proceso FedEx finalizado.");
 
     return shipmentsForFedex;
   }
+
 
 }
