@@ -4,7 +4,7 @@ import { UpdatePackageDispatchDto } from './dto/update-package-dispatch.dto';
 import { InjectRepository } from '@nestjs/typeorm';
 import { PackageDispatch } from 'src/entities/package-dispatch.entity';
 import { In, Not, Repository } from 'typeorm';
-import { Shipment, ChargeShipment, Consolidated } from 'src/entities';
+import { Shipment, ChargeShipment, Consolidated, ShipmentStatus } from 'src/entities';
 import { ValidatedPackageDispatchDto } from './dto/validated-package-dispatch.dto';
 import { Devolution } from 'src/entities/devolution.entity';
 import { MailService } from 'src/mail/mail.service';
@@ -33,7 +33,9 @@ export class PackageDispatchService {
     private readonly mailService: MailService,
     private readonly fedexService: FedexService,
     @Inject(forwardRef(() => ShipmentsService))
-    private readonly shipmentService: ShipmentsService
+    private readonly shipmentService: ShipmentsService,
+    @InjectRepository(ShipmentStatus)
+    private readonly shipmentStatusRepository: Repository<ShipmentStatus>
 
   ){
 
@@ -290,25 +292,23 @@ export class PackageDispatchService {
   async findShipmentsByDispatchId(dispatchId: string) {
     console.log(`\nBuscando envíos para dispatchId: ${dispatchId}`);
 
-    // === 1. BUSCAR SHIPMENTS DIRECTAMENTE ===
+    // === 1. BUSCAR SHIPMENTS ===
     const shipments = await this.shipmentRepository.find({
-          where: { packageDispatch: {id: dispatchId} },
-          relations: [
-              'packageDispatch',
-              'packageDispatch.drivers',
-              'packageDispatch.vehicle',
-              'packageDispatch.subsidiary',
-              'unloading',
-              'unloading.subsidiary',
-              'payment',
-              'subsidiary'
-          ],
-          order: { commitDateTime: 'DESC' }
-      });
+      where: { packageDispatch: { id: dispatchId }},
+      relations: [
+        'packageDispatch',
+        'packageDispatch.drivers',
+        'packageDispatch.vehicle',
+        'packageDispatch.subsidiary',
+        'unloading',
+        'unloading.subsidiary',
+        'payment',
+        'subsidiary'
+      ],
+      order: { commitDateTime: 'DESC' }
+    });
 
-    console.log("🚀 ~ PackageDispatchService ~ findShipmentsByDispatchId ~ shipments:", shipments)
-
-    // === 2. BUSCAR CHARGE SHIPMENTS DIRECTAMENTE ===
+    // === 2. BUSCAR CHARGE SHIPMENTS ===
     const chargeShipments = await this.chargeShipmentRepository
       .createQueryBuilder('chargeShipment')
       .leftJoinAndSelect('chargeShipment.payment', 'payment')
@@ -320,19 +320,7 @@ export class PackageDispatchService {
       .where('packageDispatch.id = :dispatchId', { dispatchId })
       .getMany();
 
-    console.log(`Shipments encontrados: ${shipments.length}`);
-    console.log(`ChargeShipments encontrados: ${chargeShipments.length}`);
-
-    // === DEBUG: Ver si payment está cargado ===
-    shipments.forEach((s, i) => {
-      console.log(`[Shipment ${i + 1}] ${s.trackingNumber} → Payment: ${!!s.payment ? 'SÍ' : 'NO'} ${s.payment ? `(ID: ${s.payment.id})` : ''}`);
-    });
-
-    chargeShipments.forEach((cs, i) => {
-      console.log(`[Charge ${i + 1}] ${cs.trackingNumber} → Payment: ${!!cs.payment ? 'SÍ' : 'NO'} ${cs.payment ? `(ID: ${cs.payment.id})` : ''}`);
-    });
-
-    // === 3. CONSOLIDATED por consolidatedId ===
+    // === CONSOLIDADOS ===
     const allConsolidatedIds = Array.from(
       new Set([
         ...shipments.map(s => s.consolidatedId).filter(Boolean),
@@ -346,43 +334,105 @@ export class PackageDispatchService {
         where: { id: In(allConsolidatedIds) },
         select: ['id', 'consNumber', 'createdAt'],
       });
-      list.forEach(c => consolidatedMap.set(c.id, { consNumber: c.consNumber, date: c.createdAt }));
+      list.forEach(c =>
+        consolidatedMap.set(c.id, { consNumber: c.consNumber, date: c.createdAt })
+      );
     }
 
-    // === 4. UNIFICAR DATOS (packageDispatch es el mismo) ===
-    const packageDispatch = shipments[0]?.packageDispatch || chargeShipments[0]?.packageDispatch;
-    if (!packageDispatch) {
-      console.log('No se encontró packageDispatch');
-      return [];
-    }
+    // === UNIFICAR DISPATCH ===
+    const packageDispatch =
+      shipments[0]?.packageDispatch || chargeShipments[0]?.packageDispatch;
+
+    if (!packageDispatch) return [];
 
     const driverName = packageDispatch.drivers?.[0]?.name ?? null;
 
-    // === 5. MAPEO FINAL ===
-    const mapShipment = (shipment: any, isCharge: boolean) => {
+
+    // ================================
+    // FUNCIONES NUEVAS
+    // ================================
+
+    // 1. DaysInWarehouse (solo EN_RUTA)
+     const calcDaysInWarehouse = (createdAt: Date, status: string) => {
+      //if (status !== 'entre') return "N/A";
+      const today = new Date();
+      const created = new Date(createdAt);
+      const diff = Math.floor((today.getTime() - created.getTime()) / (1000 * 60 * 60 * 24));
+      return diff;
+    };
+
+    // ========= 🔥 Helper: obtener dexCode =========
+    const getDexCode = async (shipmentId: string, status: string) => {
+      if (status !== 'no_entregado') return null;
+
+      const row = await this.shipmentStatusRepository
+        .createQueryBuilder('ss')
+        .select('ss.exceptionCode', 'exceptionCode')
+        .where('ss.shipmentId = :shipmentId', { shipmentId })
+        .orderBy('ss.createdAt', 'DESC')
+        .limit(1)
+        .getRawOne();
+
+      return row?.exceptionCode ?? null;
+    };
+
+
+
+    // ================================
+    // MAPEO
+    // ================================
+    const mapShipment = async (shipment: any, isCharge: boolean) => {
+
       const consolidated = shipment.consolidatedId
         ? consolidatedMap.get(shipment.consolidatedId) || null
         : null;
+
+      const daysInWarehouse = calcDaysInWarehouse(
+        shipment.createdAt,
+        shipment.status
+      );
+
+      const dexCode = await getDexCode(shipment.id, shipment.status);
 
       return {
         shipmentData: {
           id: shipment.id,
           trackingNumber: shipment.trackingNumber,
           shipmentStatus: shipment.status,
+
           commitDateTime: shipment.commitDateTime,
           ubication: 'EN RUTA',
+
           unloading: shipment.unloading
             ? {
                 trackingNumber: shipment.unloading.trackingNumber,
                 date: shipment.unloading.date,
               }
             : null,
+
           consolidated,
+
           destination: shipment.recipientCity || null,
           createdDate: shipment.createdAt,
-          payment: shipment.payment ? { amount: +shipment.payment.amount, type: shipment.payment.type } : null,
+
+          recipientName: shipment.recipientName,
+          recipientAddress: shipment.recipientAddress,
+          recipientPhone: shipment.recipientPhone,
+          recipientZip: shipment.recipientZip,
+
+          shipmentType: shipment.shipmentType,
+
+          // NUEVO:
+          daysInWareHouse: daysInWarehouse,
+          dexCode, // <<< NUEVO
+
+          payment: shipment.payment
+            ? { amount: +shipment.payment.amount, type: shipment.payment.type }
+            : null,
+
           isCharge,
         },
+
         packageDispatch: {
           id: packageDispatch.id,
           trackingNumber: packageDispatch.trackingNumber,
@@ -406,15 +456,13 @@ export class PackageDispatchService {
     };
 
     const result = [
-      ...shipments.map(s => mapShipment(s, false)),
-      ...chargeShipments.map(cs => mapShipment(cs, true)),
+      ...(await Promise.all(shipments.map(s => mapShipment(s, false)))),
+      ...(await Promise.all(chargeShipments.map(cs => mapShipment(cs, true)))),
     ];
-
-    console.log(`\nTotal envíos mapeados: ${result.length}`);
-    console.log(`Con payment: ${result.filter(r => !!r.shipmentData.payment).length}\n`);
 
     return result;
   }
+
 
   findOne(id: string) {
     return `This action returns a #${id} packageDispatch`;
@@ -478,7 +526,10 @@ export class PackageDispatchService {
 
     // Obtener solo ID y trackingNumber de chargeShipments
     const chargeShipments = await this.chargeShipmentRepository.find({
-      where: { packageDispatch: {id: packageDispatch.id }},
+      where: { 
+        packageDispatch: {id: packageDispatch.id },
+        status: In([ShipmentStatusType.EN_RUTA, ShipmentStatusType.DESCONOCIDO, ShipmentStatusType.PENDIENTE, ShipmentStatusType.NO_ENTREGADO])
+      },
       select: ['id', 'trackingNumber']
     });
 

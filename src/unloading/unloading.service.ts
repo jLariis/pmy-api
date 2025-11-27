@@ -4,7 +4,7 @@ import { UpdateUnloadingDto } from './dto/update-unloading.dto';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Unloading } from 'src/entities/unloading.entity';
 import { Between, In, Not, Repository } from 'typeorm';
-import { Charge, ChargeShipment, Consolidated, Shipment } from 'src/entities';
+import { Charge, ChargeShipment, Consolidated, Shipment, ShipmentStatus } from 'src/entities';
 import { ValidatedPackageDispatchDto } from 'src/package-dispatch/dto/validated-package-dispatch.dto';
 import { ValidatedUnloadingDto } from './dto/validate-package-unloading.dto';
 import { MailService } from 'src/mail/mail.service';
@@ -32,7 +32,9 @@ export class UnloadingService {
     private readonly chargeRepository: Repository<Charge>,
     private readonly mailService: MailService,
     @Inject(forwardRef(() => ShipmentsService))
-    private readonly shipmentService: ShipmentsService
+    private readonly shipmentService: ShipmentsService,
+    @InjectRepository(ShipmentStatus)
+    private readonly shipmentStatusRepository: Repository<ShipmentStatus>
   ) {}
 
   async getConsolidateToStartUnloading(subdiaryId: string): Promise<ConsolidatedsDto> {
@@ -1782,7 +1784,7 @@ export class UnloadingService {
       throw new Error(`No se encontró ningún Unloading con id: ${id}`);
     }
 
-    // Buscar Shipments y ChargeShipments relacionados directamente con el Unloading
+    // Buscar Shipments y ChargeShipments
     const [shipments, chargeShipments] = await Promise.all([
       this.shipmentRepository.find({
         where: { unloading: { id } },
@@ -1822,22 +1824,72 @@ export class UnloadingService {
       return [];
     }
 
+    // ===================================================
+    // 🔥 NUEVA FUNCIONES REUSABLES
+    // ===================================================
+
+    // 1. DaysInWarehouse
+    const calcDaysInWarehouse = (createdAt: Date, status: string) => {
+      //if (status !== 'entre') return "N/A";
+      const today = new Date();
+      const created = new Date(createdAt);
+      const diff = Math.floor((today.getTime() - created.getTime()) / (1000 * 60 * 60 * 24));
+      return diff;
+    };
+
+    // ========= 🔥 Helper: obtener dexCode =========
+    const getDexCode = async (shipmentId: string, status: string) => {
+      if (status !== 'no_entregado') return null;
+
+      const row = await this.shipmentStatusRepository
+        .createQueryBuilder('ss')
+        .select('ss.exceptionCode', 'exceptionCode')
+        .where('ss.shipmentId = :shipmentId', { shipmentId })
+        .orderBy('ss.createdAt', 'DESC')
+        .limit(1)
+        .getRawOne();
+
+      return row?.exceptionCode ?? null;
+    };
+
+
+
+    // ===================================================
+    // MAPEO
+    // ===================================================
+
     const mapShipment = async (shipment: any, isCharge: boolean) => {
       const dispatch = shipment.packageDispatch;
+
       const inWarehouse = !dispatch;
       const ubication = inWarehouse ? 'EN BODEGA' : 'EN RUTA';
+
       const driverName =
         dispatch?.drivers?.length && dispatch.drivers[0]
           ? dispatch.drivers[0].name
           : null;
 
-      // 🔍 Buscar el Consolidated manualmente por consNumber
+      // Consolidated manual por consNumber
       let consolidated = null;
       if (shipment.consNumber) {
         consolidated = await this.consolidatedReporsitory.findOne({
           where: { consNumber: shipment.consNumber },
         });
       }
+
+      // =============================
+      // NUEVO: Calculamos valores
+      // =============================
+      const daysInWarehouse = calcDaysInWarehouse(
+        shipment.createdAt,
+        shipment.status
+      );
+
+      const dexCode = await getDexCode(
+        shipment.id,
+        shipment.status
+      );
+
 
       return {
         shipmentData: {
@@ -1847,6 +1899,7 @@ export class UnloadingService {
           commitDateTime: shipment.commitDateTime,
           ubication,
           warehouse: shipment.subsidiary.name,
+
           unloading: shipment.unloading
             ? {
                 trackingNumber: shipment.unloading.trackingNumber,
@@ -1856,20 +1909,39 @@ export class UnloadingService {
                   : null,
               }
             : null,
+
           consolidated: consolidated
             ? {
                 consNumber: consolidated.consNumber,
                 date: consolidated.createdAt,
               }
             : null,
+
           destination: shipment.recipientCity || null,
-          payment: shipment.payment ? {
-            type: shipment.payment.type,
-            amount: +shipment.payment.amount
-          } : null,
+
+          payment: shipment.payment
+            ? {
+                type: shipment.payment.type,
+                amount: +shipment.payment.amount
+              }
+            : null,
+
           createdDate: shipment.createdAt,
+
+          recipientName: shipment.recipientName,
+          recipientAddress: shipment.recipientAddress,
+          recipientPhone: shipment.recipientPhone,
+          recipientZip: shipment.recipientZip,
+
+          shipmentType: shipment.shipmentType,
+
+          // NUEVO 👇👇👇
+          daysInWareHouse: daysInWarehouse,
+          dexCode,
+
           isCharge,
         },
+
         packageDispatch: dispatch
           ? {
               id: dispatch.id,
@@ -1905,7 +1977,7 @@ export class UnloadingService {
       };
     };
 
-    // Esperar todos los map async
+    // Ejecutar mapeo async
     const normalShipments = await Promise.all(
       shipments.map((s) => mapShipment(s, false)),
     );
@@ -1915,6 +1987,7 @@ export class UnloadingService {
 
     return [...normalShipments, ...chargeShipmentsMapped];
   }
+
 
   async updateFedexDataByUnloadingId(unloadingId: string) {
     // Validar que se proporcione el ID del unloading

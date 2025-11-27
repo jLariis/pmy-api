@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { forwardRef, Inject, Injectable, Logger } from '@nestjs/common';
 import { CreateDevolutionDto } from './dto/create-devolution.dto';
 import { Repository } from 'typeorm';
 import { Devolution } from 'src/entities/devolution.entity';
@@ -7,6 +7,7 @@ import { ChargeShipment, Income, Shipment, Subsidiary } from 'src/entities';
 import { ShipmentStatusType } from 'src/common/enums/shipment-status-type.enum';
 import { ValidateShipmentDto } from './dto/valiation-devolution.dto';
 import { MailService } from 'src/mail/mail.service';
+import { ShipmentsService } from 'src/shipments/shipments.service';
 
 @Injectable()
 export class DevolutionsService {
@@ -23,7 +24,9 @@ export class DevolutionsService {
     private readonly chargeShipmentRepository: Repository<ChargeShipment>,
     @InjectRepository(Subsidiary)
     private readonly subsidiaryRepository: Repository<Subsidiary>,
-    private readonly mailService: MailService
+    private readonly mailService: MailService,
+    @Inject(forwardRef(() => ShipmentsService))
+    private readonly shipmentService: ShipmentsService,
   ) {}
 
   async create(devolutions: CreateDevolutionDto[]): Promise<{
@@ -148,8 +151,27 @@ export class DevolutionsService {
     });
   }
 
-  async validateOnShipment(trackingNumber: string): Promise<ValidateShipmentDto | null> {
-    // 1. Buscar todos los Shipments con el trackingNumber
+  async validateOnShipment(
+    trackingNumber: string,
+  ): Promise<ValidateShipmentDto | null> {
+
+    // ---------------------------------------------------------------
+    // 🚀 1. VALIDACIÓN EN FEDEX ANTES DE TODO LO DEMÁS
+    // ---------------------------------------------------------------
+
+    try {
+      await this.shipmentService.checkStatusOnFedexBySubsidiaryRulesTesting(
+        [trackingNumber],
+        true,
+      );
+    } catch (error) {
+      console.error(`❌ Error al validar tracking ${trackingNumber} en FedEx`, error);
+    }
+
+    // ---------------------------------------------------------------
+    // 2. Buscar todos los Shipments con el trackingNumber
+    // ---------------------------------------------------------------
+
     const shipments = await this.shipmentRepository.find({
       where: { trackingNumber },
       relations: ['subsidiary', 'statusHistory'],
@@ -173,7 +195,10 @@ export class DevolutionsService {
       },
     });
 
-    // Si no hay Shipments, buscar en ChargeShipment
+    // ---------------------------------------------------------------
+    // 3. Si no hay Shipments, buscar en ChargeShipment
+    // ---------------------------------------------------------------
+
     if (!shipments || shipments.length === 0) {
       const chargeShipment = await this.chargeShipmentRepository.findOne({
         where: { trackingNumber },
@@ -198,7 +223,6 @@ export class DevolutionsService {
         where: { trackingNumber },
       });
 
-      // Verificar condición en chargeShipment
       const isProblematic =
         chargeShipment.status === ShipmentStatusType.NO_ENTREGADO &&
         ['03', '07', '08', '17'].includes(chargeShipment.exceptionCode || '');
@@ -218,7 +242,9 @@ export class DevolutionsService {
         hasIncome: incomeExists,
         isCharge: true,
         hasError: isProblematic ? true : false,
-        errorMessage: isProblematic ? 'No tiene un dex registrado se debe revisar' : '',
+        errorMessage: isProblematic
+          ? 'No tiene un dex registrado se debe revisar'
+          : '',
         lastStatus: {
           type: chargeShipment.status || null,
           exceptionCode: chargeShipment.exceptionCode || null,
@@ -227,19 +253,30 @@ export class DevolutionsService {
       };
     }
 
-    // 2. Tomar el shipment más reciente según createdAt
+    // ---------------------------------------------------------------
+    // 4. Tomar el shipment más reciente según createdAt
+    // ---------------------------------------------------------------
+
     const latestShipment = shipments.sort(
-      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+      (a, b) =>
+        new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
     )[0];
 
-    // 3. Ordenar su statusHistory por timestamp
+    // ---------------------------------------------------------------
+    // 5. Ordenar su statusHistory por timestamp
+    // ---------------------------------------------------------------
+
     const orderedHistory = (latestShipment.statusHistory || []).sort(
-      (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime(),
+      (a, b) =>
+        new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime(),
     );
 
     const lastStatus = orderedHistory[orderedHistory.length - 1];
 
-    // 4. Verificar condición de NO_ENTREGADO con exceptionCode 03, 07, 08 o 17
+    // ---------------------------------------------------------------
+    // 6. Validar estatus problemático
+    // ---------------------------------------------------------------
+
     const isProblematic =
       lastStatus &&
       lastStatus.status === ShipmentStatusType.NO_ENTREGADO &&
@@ -255,6 +292,10 @@ export class DevolutionsService {
       where: { trackingNumber },
     });
 
+    // ---------------------------------------------------------------
+    // 7. Resolver respuesta final
+    // ---------------------------------------------------------------
+
     return {
       id: latestShipment.id,
       trackingNumber: latestShipment.trackingNumber,
@@ -264,7 +305,9 @@ export class DevolutionsService {
       hasIncome: incomeExists,
       isCharge: false,
       hasError: isProblematic ? true : false,
-      errorMessage: isProblematic ? 'No tiene un dex registrado se debe revisar' : '',
+      errorMessage: isProblematic
+        ? 'No tiene un dex registrado se debe revisar'
+        : '',
       lastStatus: lastStatus
         ? {
             type: lastStatus.status,
@@ -274,7 +317,6 @@ export class DevolutionsService {
         : null,
     };
   }
-
 
   async sendByEmail(pdfFile: Express.Multer.File, excelfile: Express.Multer.File, subsidiaryName: string) {
     const subsidiary = await this.subsidiaryRepository.findOneBy({name: subsidiaryName});
