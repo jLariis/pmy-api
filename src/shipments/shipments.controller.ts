@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Param,UseGuards, UseInterceptors, UploadedFile, BadRequestException, InternalServerErrorException, Request, UploadedFiles, Query, Body, Logger } from '@nestjs/common';
+import { Controller, Get, Post, Param,UseGuards, UseInterceptors, UploadedFile, BadRequestException, InternalServerErrorException, Request, UploadedFiles, Query, Body, Logger, Res, HttpStatus } from '@nestjs/common';
 import { ShipmentsService } from './shipments.service';
 import { ApiBearerAuth, ApiBody, ApiConsumes, ApiOperation, ApiProperty, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from 'src/auth/guards/jwt-auth.guard';
@@ -338,10 +338,40 @@ export class ShipmentsController {
       );
     }
 
-
     @Get('validate-shipment-ontheway/:subsidiaryId')
     async checkShipmentOnTheWayBySubsidiary(@Param('subsidiaryId') subsidiaryId: string) {
       return await this.shipmentsService.checkStatus67OnShipments(subsidiaryId);
+    }
+
+    @Get('report-no67/:subsidiaryId')
+    async getNo67Report(@Param('subsidiaryId') subsidiaryId: string, @Res() res: any) {
+      try {
+        // Usa el nuevo nombre del método
+        const result = await this.shipmentsService.validateCode67BySubsidiary(subsidiaryId);
+        
+        // Verificar que result existe y tiene details
+        if (!result || !result.details) {
+          return res.status(404).json({
+            message: 'No se encontraron datos para exportar',
+          });
+        }
+        
+        // Verificar que hay datos
+        if (result.details.length === 0) {
+          return res.status(404).json({
+            message: 'No hay shipments sin código 67 para exportar',
+          });
+        }
+        
+        // Generar el Excel
+        await this.shipmentsService.exportNo67Shipments(result.details, res);
+        
+      } catch (error) {
+        return res.status(500).json({
+          message: 'Error generando reporte',
+          error: error.message
+        });
+      }
     }
 
     @Get('test-get-status03/:subsidiaryId')

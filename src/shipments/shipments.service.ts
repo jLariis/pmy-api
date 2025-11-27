@@ -42,6 +42,9 @@ import { PaymentTypeEnum } from 'src/common/enums/payment-type.enum';
 import { ShipmentStatusForReportDto } from 'src/mail/dtos/shipment.dto';
 import { SearchShipmentDto } from './dto/search-package.dto';
 import { ShipmentToSaveDto } from './dto/shipment-to-save.dto';
+import * as ExcelJS from 'exceljs';
+import { Response } from 'express';
+
 
 @Injectable()
 export class ShipmentsService {
@@ -5080,6 +5083,7 @@ export class ShipmentsService {
       return savedForPickup;
     }
 
+    /**** Obtener los paquetes que no tienen 67 */
     async checkStatus67OnShipments(subsidiaryId: string) {
       const today = new Date();
 
@@ -5094,50 +5098,122 @@ export class ShipmentsService {
       const results = [];
 
       for (const shipment of shipments) {
-        const history = shipment.statusHistory.sort(
-          (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
-        );
+        try {
+          // VALIDACIÓN CRÍTICA: Verificar que statusHistory existe y tiene elementos
+          if (!shipment.statusHistory || shipment.statusHistory.length === 0) {
+            results.push({
+              trackingNumber: shipment.trackingNumber,
+              lastStatus: null,
+              daysWithoutEnRuta: null,
+              comment: 'Sin historial de estados',
+            });
+            continue;
+          }
 
-        const lastStatus = history[history.length - 1];
-        const firstOnTheWay = history.find(h => h.status === ShipmentStatusType.EN_RUTA);
+          // Ordenar el historial por fecha
+          const history = shipment.statusHistory.sort(
+            (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+          );
 
-        if (!firstOnTheWay) {
-          // Si nunca tuvo estado EN_RUTA, lo saltamos o agregamos con null
+          // VALIDACIÓN: Último estado seguro
+          const lastStatus = history[history.length - 1];
+          if (!lastStatus) {
+            results.push({
+              trackingNumber: shipment.trackingNumber,
+              lastStatus: null,
+              daysWithoutEnRuta: null,
+              comment: 'No se pudo obtener último estado',
+            });
+            continue;
+          }
+
+          // Buscar primer estado EN_RUTA
+          const firstOnTheWay = history.find(h => h.status === ShipmentStatusType.EN_RUTA);
+
+          if (!firstOnTheWay) {
+            results.push({
+              trackingNumber: shipment.trackingNumber,
+              lastStatus: lastStatus.status,
+              daysWithoutEnRuta: null,
+              comment: 'Nunca tuvo EN_RUTA',
+            });
+            continue;
+          }
+
+          // VALIDACIÓN: timestamp del primer EN_RUTA
+          if (!firstOnTheWay.timestamp) {
+            results.push({
+              trackingNumber: shipment.trackingNumber,
+              lastStatus: lastStatus.status,
+              daysWithoutEnRuta: null,
+              comment: 'Fecha de primer EN_RUTA inválida',
+            });
+            continue;
+          }
+
+          const fromDate = new Date(firstOnTheWay.timestamp);
+          
+          // VALIDACIÓN: Fecha válida
+          if (isNaN(fromDate.getTime())) {
+            results.push({
+              trackingNumber: shipment.trackingNumber,
+              lastStatus: lastStatus.status,
+              daysWithoutEnRuta: null,
+              comment: 'Fecha de primer EN_RUTA inválida',
+            });
+            continue;
+          }
+
+          const totalDays = differenceInDays(today, fromDate);
+
+          // Si totalDays es negativo (fecha futura), manejarlo
+          if (totalDays < 0) {
+            results.push({
+              trackingNumber: shipment.trackingNumber,
+              lastStatus: lastStatus.status,
+              daysWithoutEnRuta: 0,
+              comment: 'Primer EN_RUTA en fecha futura',
+              firstEnRutaDate: fromDate,
+              totalStatusUpdates: history.length,
+            });
+            continue;
+          }
+
+          let daysWithoutEnRuta = 0;
+
+          for (let i = 0; i <= totalDays; i++) {
+            const currentDay = addDays(fromDate, i);
+
+            const hasEnRutaThatDay = history.some(
+              (h) =>
+                h.status === ShipmentStatusType.EN_RUTA &&
+                h.timestamp && // Validar que timestamp existe
+                isSameDay(new Date(h.timestamp), currentDay)
+            );
+
+            if (!hasEnRutaThatDay) {
+              daysWithoutEnRuta++;
+            }
+          }
+
           results.push({
             trackingNumber: shipment.trackingNumber,
             lastStatus: lastStatus.status,
-            daysWithoutEnRuta: null,
-            comment: 'Nunca tuvo EN_RUTA',
+            daysWithoutEnRuta,
+            firstEnRutaDate: fromDate,
+            totalStatusUpdates: history.length,
           });
-          continue;
+
+        } catch (error) {
+          // Manejo de errores para cada shipment individual
+          console.error(`Error procesando shipment ${shipment.trackingNumber}:`, error);
+          results.push({
+            trackingNumber: shipment.trackingNumber,
+            lastStatus: null,
+            daysWithoutEnRuta: null,
+            comment: `Error: ${error.message}`,
+          });
         }
-
-        const fromDate = new Date(firstOnTheWay.timestamp);
-        const totalDays = differenceInDays(today, fromDate);
-
-        let daysWithoutEnRuta = 0;
-
-        for (let i = 0; i <= totalDays; i++) {
-          const currentDay = addDays(fromDate, i);
-
-          const hasEnRutaThatDay = history.some(
-            (h) =>
-              h.status === ShipmentStatusType.EN_RUTA &&
-              isSameDay(new Date(h.timestamp), currentDay)
-          );
-
-          if (!hasEnRutaThatDay) {
-            daysWithoutEnRuta++;
-          }
-        }
-
-        results.push({
-          trackingNumber: shipment.trackingNumber,
-          lastStatus: lastStatus.status,
-          daysWithoutEnRuta,
-          firstEnRutaDate: fromDate,
-          totalStatusUpdates: history.length,
-        });
       }
 
       return results;
@@ -5348,6 +5424,7 @@ export class ShipmentsService {
           const lastStatus = track.latestStatusDetail
             ? {
                 code: track.latestStatusDetail.code,
+                exceptionCode: track.latestStatusDetail.ancillaryDetails,
                 description: track.latestStatusDetail.description,
                 city: track.latestStatusDetail.scanLocation?.city || null,
                 state: track.latestStatusDetail.scanLocation?.stateOrProvinceCode || null,
@@ -5361,6 +5438,8 @@ export class ShipmentsService {
             track.scanEvents?.map((event: any) => ({
               date: event.date,
               eventType: event.eventType,
+              exceptionCode: event.exceptionCode,
+              derivedStatusCode: event.derivedStatusCode,
               description: event.eventDescription,
               city: event.scanLocation?.city || null,
               state: event.scanLocation?.stateOrProvinceCode || null,
@@ -5384,7 +5463,532 @@ export class ShipmentsService {
       };
     }
 
+    /*** Validate Status Code 67 by Subsidiary */
+    async validateCode67BySubsidiary(subsidiaryId: string) {
+      const shipments = await this.shipmentRepository.find({
+        where: {
+          subsidiary: { id: subsidiaryId },
+          status: ShipmentStatusType.EN_RUTA,
+        },
+        relations: ['statusHistory'],
+      });
 
+      const shipmentsWithout67 = [];
+
+      for (const shipment of shipments) {
+        try {
+          if (!shipment.statusHistory || shipment.statusHistory.length === 0) {
+            shipmentsWithout67.push({
+              trackingNumber: shipment.trackingNumber,
+              currentStatus: shipment.status,
+              statusHistoryCount: 0,
+              exceptionCodes: [],
+              firstStatusDate: null,
+              lastStatusDate: null,
+              comment: 'Sin historial de estados',
+            });
+            continue;
+          }
+
+          const sortedHistory = shipment.statusHistory.sort(
+            (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+          );
+
+          const hasExceptionCode67 = sortedHistory.some(status => 
+            status.exceptionCode === '67'
+          );
+
+          if (!hasExceptionCode67) {
+            const firstStatus = sortedHistory[0];
+            const lastStatus = sortedHistory[sortedHistory.length - 1];
+
+            const exceptionCodes = sortedHistory
+              .map(h => h.exceptionCode)
+              .filter(code => code !== null && code !== undefined);
+
+            shipmentsWithout67.push({
+              trackingNumber: shipment.trackingNumber,
+              currentStatus: shipment.status,
+              statusHistoryCount: sortedHistory.length,
+              exceptionCodes: [...new Set(exceptionCodes)],
+              firstStatusDate: firstStatus?.timestamp,
+              lastStatusDate: lastStatus?.timestamp,
+              comment: 'No tiene exceptionCode 67',
+            });
+          }
+
+        } catch (error) {
+          shipmentsWithout67.push({
+            trackingNumber: shipment.trackingNumber,
+            currentStatus: shipment.status,
+            statusHistoryCount: 0,
+            exceptionCodes: [],
+            firstStatusDate: null,
+            lastStatusDate: null,
+            comment: `Error: ${error.message}`,
+          });
+        }
+      }
+
+      // ⚠️ FALTABA ESTE RETURN - Agrégalo al final
+      return {
+        summary: {
+          totalShipments: shipments.length,
+          withoutCode67: shipmentsWithout67.length,
+          withCode67: shipments.length - shipmentsWithout67.length,
+        },
+        details: shipmentsWithout67
+      };
+    }
+
+    async exportNo67Shipments(shipments: any[], res: any) {
+      const workbook = new ExcelJS.Workbook();
+      const sheet = workbook.addWorksheet("Shipments Sin Código 67");
+      const currentDate = new Date();
+
+      // === ENCABEZADO GENERAL ===
+      const titleRow = sheet.addRow(["🚨 REPORTE: SHIPMENTS SIN CÓDIGO 67"]);
+      sheet.mergeCells(`A${titleRow.number}:I${titleRow.number}`);
+      titleRow.font = { size: 16, bold: true, color: { argb: "FFFFFF" } };
+      titleRow.alignment = { vertical: "middle", horizontal: "center" };
+
+      for (let col = 1; col <= 9; col++) {
+        sheet.getCell(titleRow.number, col).fill = {
+          type: "pattern",
+          pattern: "solid",
+          fgColor: { argb: "FF6B6B" },
+        };
+      }
+
+      sheet.addRow([]);
+      sheet.addRow([`Fecha de generación: ${currentDate.toLocaleDateString('es-ES')}`]);
+      sheet.addRow([`Hora de generación: ${currentDate.toLocaleTimeString('es-ES')}`]);
+      sheet.addRow([`Total de shipments sin código 67: ${shipments.length}`]);
+      sheet.addRow([]);
+
+      // === ENCABEZADO DE COLUMNAS ===
+      const headerRow = sheet.addRow([
+        "No.",
+        "Número de Tracking",
+        "Estado Actual",
+        "Cantidad de Estados",
+        "Códigos de Excepción",
+        "Fecha Primer Estado",
+        "Fecha Último Estado",
+        "Días Sin Código 67",
+        "Observaciones"
+      ]);
+
+      headerRow.font = { bold: true, color: { argb: "FFFFFF" } };
+      headerRow.alignment = { vertical: "middle", horizontal: "center" };
+
+      for (let col = 1; col <= 9; col++) {
+        sheet.getCell(headerRow.number, col).fill = {
+          type: "pattern",
+          pattern: "solid",
+          fgColor: { argb: "8C5E4E" },
+        };
+        sheet.getCell(headerRow.number, col).border = {
+          top: { style: "thin" },
+          left: { style: "thin" },
+          bottom: { style: "thin" },
+          right: { style: "thin" },
+        };
+      }
+
+      // === DATOS ===
+      shipments.forEach((shipment, index) => {
+        const diasSin67 = this.calculateDaysWithout67(shipment);
+        const esCritico = diasSin67 > 3;
+        
+        const row = sheet.addRow([
+          index + 1,
+          shipment.trackingNumber || "N/A",
+          this.formatStatus(shipment.currentStatus) || "N/A",
+          shipment.statusHistoryCount || 0,
+          shipment.exceptionCodes?.join(", ") || "Ninguno",
+          this.formatExcelDate(shipment.firstStatusDate),
+          this.formatExcelDate(shipment.lastStatusDate),
+          diasSin67 > 0 ? diasSin67.toString() : "N/A",
+          shipment.comment || "Sin observaciones"
+        ]);
+
+        // Filas alternadas en gris (solo si no es crítico)
+        if (index % 2 === 0 && !esCritico) {
+          for (let col = 1; col <= 9; col++) {
+            sheet.getCell(row.number, col).fill = {
+              type: "pattern",
+              pattern: "solid",
+              fgColor: { argb: "F2F2F2" },
+            };
+          }
+        }
+
+        // Bordes y alineación
+        row.eachCell((cell, colNumber) => {
+          cell.border = {
+            top: { style: "thin" },
+            left: { style: "thin" },
+            bottom: { style: "thin" },
+            right: { style: "thin" },
+          };
+          
+          // Centrar columnas específicas
+          if ([1, 3, 4, 7, 8].includes(colNumber)) {
+            cell.alignment = { vertical: "middle", horizontal: "center", wrapText: true };
+          } else {
+            cell.alignment = { vertical: "middle", horizontal: "left", wrapText: true };
+          }
+
+          // OPCIÓN 3: Gradientes de color según severidad
+          if (esCritico) {
+            const esMuyCritico = diasSin67 > 7;
+            const esCriticoModerado = diasSin67 > 3 && diasSin67 <= 7;
+            
+            if (esMuyCritico) {
+              cell.fill = {
+                type: "pattern",
+                pattern: "solid",
+                fgColor: { argb: "FFE6E6" } // Rojo más intenso para muy crítico
+              };
+              cell.font = { 
+                color: { argb: "990000" },
+                bold: true 
+              };
+            } else if (esCriticoModerado) {
+              cell.fill = {
+                type: "pattern",
+                pattern: "solid",
+                fgColor: { argb: "FFF0F0" } // Rojo más suave para crítico moderado
+              };
+              cell.font = { 
+                color: { argb: "CC0000" },
+                bold: true 
+              };
+            }
+          } else {
+            // Colores condicionales para estado actual
+            if (colNumber === 3) {
+              const status = cell.value?.toString().toLowerCase();
+              if (status === "en ruta") {
+                cell.fill = {
+                  type: "pattern",
+                  pattern: "solid",
+                  fgColor: { argb: "FFF2CC" }
+                };
+                cell.font = { color: { argb: "7F6000" }, bold: true };
+              } else if (status === "entregado") {
+                cell.fill = {
+                  type: "pattern",
+                  pattern: "solid",
+                  fgColor: { argb: "E2F0D9" }
+                };
+                cell.font = { color: { argb: "385723" }, bold: true };
+              } else if (status === "en bodega") {
+                cell.fill = {
+                  type: "pattern",
+                  pattern: "solid",
+                  fgColor: { argb: "DEEBF7" }
+                };
+                cell.font = { color: { argb: "2F5597" }, bold: true };
+              } else if (status === "devuelto" || status === "devuelto a fedex") {
+                cell.fill = {
+                  type: "pattern",
+                  pattern: "solid",
+                  fgColor: { argb: "F2F2F2" }
+                };
+                cell.font = { color: { argb: "666666" }, bold: true };
+              }
+            }
+
+            // Color para días sin código 67
+            if (colNumber === 8 && diasSin67 > 0) {
+              if (diasSin67 > 5) {
+                cell.fill = {
+                  type: "pattern",
+                  pattern: "solid",
+                  fgColor: { argb: "FFE6E6" }
+                };
+                cell.font = { 
+                  color: { argb: "CC0000" },
+                  bold: true 
+                };
+              } else if (diasSin67 > 2) {
+                cell.fill = {
+                  type: "pattern",
+                  pattern: "solid",
+                  fgColor: { argb: "FFEB9C" }
+                };
+                cell.font = { 
+                  color: { argb: "9C6500" },
+                  bold: true 
+                };
+              }
+            }
+          }
+        });
+      });
+
+      // === HOJA DE RESUMEN ===
+      const summarySheet = workbook.addWorksheet("Resumen");
+
+      // Título del resumen
+      const summaryTitle = summarySheet.addRow(["📊 RESUMEN: SHIPMENTS SIN CÓDIGO 67"]);
+      summarySheet.mergeCells(`A${summaryTitle.number}:B${summaryTitle.number}`);
+      summaryTitle.font = { size: 14, bold: true, color: { argb: "FFFFFF" } };
+      summaryTitle.alignment = { vertical: "middle", horizontal: "center" };
+
+      for (let col = 1; col <= 2; col++) {
+        summarySheet.getCell(summaryTitle.number, col).fill = {
+          type: "pattern",
+          pattern: "solid",
+          fgColor: { argb: "FF6B6B" },
+        };
+      }
+
+      summarySheet.addRow([]);
+
+      // ESTADÍSTICAS GENERALES
+      const statsTitle = summarySheet.addRow(["ESTADÍSTICAS GENERALES"]);
+      summarySheet.mergeCells(`A${statsTitle.number}:B${statsTitle.number}`);
+      statsTitle.font = { bold: true, color: { argb: "FFFFFF" } };
+      statsTitle.alignment = { vertical: "middle", horizontal: "left" };
+
+      for (let col = 1; col <= 2; col++) {
+        summarySheet.getCell(statsTitle.number, col).fill = {
+          type: "pattern",
+          pattern: "solid",
+          fgColor: { argb: "8C5E4E" },
+        };
+      }
+
+      const enBodega = shipments.filter(s => 
+        s.currentStatus?.toLowerCase().includes('bodega') || 
+        s.currentStatus?.toLowerCase().includes('pending')
+      ).length;
+      
+      const enRuta = shipments.filter(s => 
+        s.currentStatus?.toLowerCase().includes('ruta') || 
+        s.currentStatus?.toLowerCase().includes('en_ruta')
+      ).length;
+      
+      const entregados = shipments.filter(s => 
+        s.currentStatus?.toLowerCase().includes('entregado') || 
+        s.currentStatus?.toLowerCase().includes('delivered')
+      ).length;
+      
+      const devueltos = shipments.filter(s => 
+        s.currentStatus?.toLowerCase().includes('devuelto')
+      ).length;
+
+      // Cálculo de días sin código 67
+      const shipmentsCriticos = shipments.filter(s => this.calculateDaysWithout67(s) > 3).length;
+      const shipmentsAlerta = shipments.filter(s => {
+        const dias = this.calculateDaysWithout67(s);
+        return dias > 1 && dias <= 3;
+      }).length;
+      const shipmentsNormales = shipments.filter(s => this.calculateDaysWithout67(s) <= 1).length;
+
+      // Promedio de días sin código 67
+      const totalDiasSin67 = shipments.reduce((sum, s) => sum + this.calculateDaysWithout67(s), 0);
+      const promedioDiasSin67 = shipments.length > 0 
+        ? (totalDiasSin67 / shipments.length).toFixed(1)
+        : "0";
+
+      summarySheet.addRow(["Total de shipments sin código 67:", shipments.length]);
+      summarySheet.addRow(["En bodega:", enBodega]);
+      summarySheet.addRow(["En ruta:", enRuta]);
+      summarySheet.addRow(["Entregados:", entregados]);
+      summarySheet.addRow(["Devueltos:", devueltos]);
+      summarySheet.addRow(["Promedio de días sin código 67:", promedioDiasSin67]);
+      summarySheet.addRow([]);
+
+      // ALERTAS POR TIEMPO - Encabezado más suave
+      const alertasTitle = summarySheet.addRow(["🚨 ALERTAS POR TIEMPO SIN CÓDIGO 67"]);
+      summarySheet.mergeCells(`A${alertasTitle.number}:B${alertasTitle.number}`);
+      alertasTitle.font = { bold: true, color: { argb: "B30000" } }; // Texto rojo oscuro
+      alertasTitle.alignment = { vertical: "middle", horizontal: "left" };
+
+      for (let col = 1; col <= 2; col++) {
+        summarySheet.getCell(alertasTitle.number, col).fill = {
+          type: "pattern",
+          pattern: "solid",
+          fgColor: { argb: "FFF0F0" }, // Fondo rojo muy suave
+        };
+      }
+
+      summarySheet.addRow(["Críticos (>3 días):", shipmentsCriticos]);
+      summarySheet.addRow(["En alerta (2-3 días):", shipmentsAlerta]);
+      summarySheet.addRow(["Normales (0-1 día):", shipmentsNormales]);
+      summarySheet.addRow([]);
+
+      // DISTRIBUCIÓN POR CÓDIGOS DE EXCEPCIÓN
+      const codigosTitle = summarySheet.addRow(["CÓDIGOS DE EXCEPCIÓN ENCONTRADOS"]);
+      summarySheet.mergeCells(`A${codigosTitle.number}:B${codigosTitle.number}`);
+      codigosTitle.font = { bold: true, color: { argb: "FFFFFF" } };
+      codigosTitle.alignment = { vertical: "middle", horizontal: "left" };
+
+      for (let col = 1; col <= 2; col++) {
+        summarySheet.getCell(codigosTitle.number, col).fill = {
+          type: "pattern",
+          pattern: "solid",
+          fgColor: { argb: "8C5E4E" },
+        };
+      }
+
+      // Contar frecuencia de códigos de excepción
+      const codigosFrecuencia = new Map<string, number>();
+      shipments.forEach(shipment => {
+        if (shipment.exceptionCodes && shipment.exceptionCodes.length > 0) {
+          shipment.exceptionCodes.forEach((codigo: string) => {
+            codigosFrecuencia.set(codigo, (codigosFrecuencia.get(codigo) || 0) + 1);
+          });
+        }
+      });
+
+      // Ordenar por frecuencia descendente
+      const codigosOrdenados = Array.from(codigosFrecuencia.entries())
+        .sort((a, b) => b[1] - a[1]);
+
+      if (codigosOrdenados.length > 0) {
+        codigosOrdenados.forEach(([codigo, count]) => {
+          summarySheet.addRow([codigo, count]);
+        });
+      } else {
+        summarySheet.addRow(["No se encontraron códigos de excepción", "-"]);
+      }
+
+      summarySheet.addRow([]);
+
+      // SHIPMENTS MÁS ANTIGUOS SIN CÓDIGO 67
+      const antiguosTitle = summarySheet.addRow(["SHIPMENTS MÁS ANTIGUOS SIN CÓDIGO 67"]);
+      summarySheet.mergeCells(`A${antiguosTitle.number}:B${antiguosTitle.number}`);
+      antiguosTitle.font = { bold: true, color: { argb: "FFFFFF" } };
+      antiguosTitle.alignment = { vertical: "middle", horizontal: "left" };
+
+      for (let col = 1; col <= 2; col++) {
+        summarySheet.getCell(antiguosTitle.number, col).fill = {
+          type: "pattern",
+          pattern: "solid",
+          fgColor: { argb: "8C5E4E" },
+        };
+      }
+
+      // Top 5 más antiguos
+      const shipmentsAntiguos = [...shipments]
+        .sort((a, b) => this.calculateDaysWithout67(b) - this.calculateDaysWithout67(a))
+        .slice(0, 5);
+
+      shipmentsAntiguos.forEach((shipment, index) => {
+        summarySheet.addRow([
+          `${index + 1}. ${shipment.trackingNumber}`,
+          `${this.calculateDaysWithout67(shipment)} días`
+        ]);
+      });
+
+      // === AJUSTE DE COLUMNAS ===
+      // Hoja principal
+      sheet.getColumn(1).width = 5;   // No.
+      sheet.getColumn(2).width = 22;  // Número de Tracking
+      sheet.getColumn(3).width = 15;  // Estado Actual
+      sheet.getColumn(4).width = 12;  // Cantidad de Estados
+      sheet.getColumn(5).width = 25;  // Códigos de Excepción
+      sheet.getColumn(6).width = 18;  // Fecha Primer Estado
+      sheet.getColumn(7).width = 18;  // Fecha Último Estado
+      sheet.getColumn(8).width = 15;  // Días Sin Código 67
+      sheet.getColumn(9).width = 25;  // Observaciones
+
+      // Hoja de resumen
+      summarySheet.getColumn(1).width = 35;
+      summarySheet.getColumn(2).width = 15;
+
+      // Aplicar bordes a la hoja de resumen
+      for (let i = 1; i <= summarySheet.rowCount; i++) {
+        for (let j = 1; j <= 2; j++) {
+          const cell = summarySheet.getCell(i, j);
+          if (cell.value) {
+            cell.border = {
+              top: { style: "thin" },
+              left: { style: "thin" },
+              bottom: { style: "thin" },
+              right: { style: "thin" },
+            };
+          }
+        }
+      }
+
+      // Centrar valores en la hoja de resumen
+      for (let i = 5; i <= summarySheet.rowCount; i++) {
+        const cell = summarySheet.getCell(i, 2);
+        if (cell.value) {
+          cell.alignment = { vertical: "middle", horizontal: "center" };
+        }
+      }
+
+      // === CONFIGURAR RESPONSE Y ENVIAR ===
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      res.setHeader('Content-Disposition', `attachment; filename="shipments_sin_codigo_67_${this.formatDateForFilename(currentDate)}.xlsx"`);
+
+      await workbook.xlsx.write(res);
+      
+      return res;
+    }
+
+    private calculateDaysWithout67(shipment: any): number {
+      if (!shipment.firstStatusDate) {
+        return 0;
+      }
+
+      try {
+        const firstStatusDate = new Date(shipment.firstStatusDate);
+        const today = new Date();
+        
+        const diffTime = today.getTime() - firstStatusDate.getTime();
+        const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+
+        return Math.max(0, diffDays);
+      } catch (error) {
+        return 0;
+      }
+    }
+
+    private formatExcelDate(dateString: string): string {
+      if (!dateString) return 'N/A';
+      
+      try {
+        const date = new Date(dateString);
+        return date.toLocaleDateString('es-ES', {
+          year: 'numeric',
+          month: '2-digit',
+          day: '2-digit'
+        });
+      } catch {
+        return 'Fecha inválida';
+      }
+    }
+
+    private formatStatus(status: string): string {
+      if (!status) return 'N/A';
+      
+      const statusMap: { [key: string]: string } = {
+        'en_ruta': 'En Ruta',
+        'en_bodega': 'En Bodega',
+        'entregado': 'Entregado',
+        'devuelto_a_fedex': 'Devuelto a FedEx',
+        'devuelto': 'Devuelto',
+        'pending': 'Pendiente',
+        'delivered': 'Entregado',
+        'no_entregado': 'No Entregado'
+      };
+      
+      return statusMap[status.toLowerCase()] || status;
+    }
+
+    private formatDateForFilename(date: Date): string {
+      return date.toISOString()
+        .replace(/[:.]/g, '-')
+        .split('T')[0];
+    }
 
     /************************************************* */
 
