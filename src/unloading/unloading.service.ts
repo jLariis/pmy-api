@@ -79,12 +79,7 @@ export class UnloadingService {
       },
     });
 
-    const f2Consolidated = await this.chargeRepository.find({
-      where: {
-        chargeDate: Between(startDate, endDate),
-        subsidiary: { id: subdiaryId },
-      },
-    });
+    const f2Consolidated = []
 
     const consolidateds: ConsolidatedsDto = {
       airConsolidated: consolidatedT
@@ -325,15 +320,22 @@ export class UnloadingService {
       if (!validated.isValid) continue;
 
       if (validated.isCharge) {
-        // Para carga (F2)
-        const f2 = consolidatedsToValidate.f2Consolidated[0];
-        if (!f2) continue;
-        
-        f2.added.push({
+        // Para cargas: asignar al consolidated indicado por consolidatedId en el charge_shipment
+        const mostRecentCharge = chargeMap.get(validated.trackingNumber);
+        if (!mostRecentCharge) continue;
+
+        const consolidatedId = (mostRecentCharge as any).consolidatedId;
+        if (!consolidatedId) continue; // no consolidatedId -> omitimos (no validar contra charge)
+
+        const consolidated = allConsolidateds.find(c => c.id === consolidatedId);
+        if (!consolidated) continue;
+
+        consolidated.added.push({
           trackingNumber: validated.trackingNumber,
           recipientName: validated.recipientName,
           recipientAddress: validated.recipientAddress,
-          recipientPhone: validated.recipientPhone
+          recipientPhone: validated.recipientPhone,
+          recipientZip: validated.recipientZip,
         });
       } else {
         // Para shipments normales
@@ -347,7 +349,8 @@ export class UnloadingService {
           trackingNumber: validated.trackingNumber,
           recipientName: validated.recipientName,
           recipientAddress: validated.recipientAddress,
-          recipientPhone: validated.recipientPhone
+          recipientPhone: validated.recipientPhone,
+          recipientZip: validated.recipientZip,
         });
       }
     }
@@ -369,19 +372,29 @@ export class UnloadingService {
           consolidatedId: consolidated.id,
           status: Not(ShipmentStatusType.DEVUELTO_A_FEDEX)
         },
-        select: ['trackingNumber', 'recipientName', 'recipientAddress', 'recipientPhone'],
+        select: ['trackingNumber', 'recipientName', 'recipientAddress', 'recipientPhone', 'recipientZip','createdAt'],
       });
 
-      // Tomar solo el más reciente por tracking number para los notFound también
-      const uniqueRelatedShipments = getMostRecentByTrackingNumber(relatedShipments);
+      const relatedChargeShipments = await this.chargeShipmentRepository.find({
+        where: {
+          consolidatedId: consolidated.id,
+          status: Not(ShipmentStatusType.DEVUELTO_A_FEDEX)
+        },
+        select: ['trackingNumber', 'recipientName', 'recipientAddress', 'recipientPhone', 'recipientZip', 'createdAt'],
+      });
 
-      consolidated.notFound = Array.from(uniqueRelatedShipments.values())
-        .filter(s => !consolidated.added.some(a => a.trackingNumber === s.trackingNumber))
+      // Combinar y tomar solo el más reciente por tracking number
+      const combined = [...relatedShipments, ...relatedChargeShipments];
+      const uniqueRelated = getMostRecentByTrackingNumber(combined as any);
+
+      consolidated.notFound = Array.from(uniqueRelated.values())
+        .filter(s => !consolidated.added.some(a => a.trackingNumber === (s as any).trackingNumber))
         .map(s => ({
-          trackingNumber: s.trackingNumber,
-          recipientName: s.recipientName,
-          recipientAddress: s.recipientAddress,
-          recipientPhone: s.recipientPhone,
+          trackingNumber: (s as any).trackingNumber,
+          recipientName: (s as any).recipientName,
+          recipientAddress: (s as any).recipientAddress,
+          recipientPhone: (s as any).recipientPhone,
+          recipientZip: (s as any).recipientZip,
         }));
     }
 
@@ -393,7 +406,7 @@ export class UnloadingService {
           charge: { id: f2.id },
           status: Not(ShipmentStatusType.DEVUELTO_A_FEDEX)
         },
-        select: ['trackingNumber', 'recipientName', 'recipientAddress', 'recipientPhone'],
+        select: ['trackingNumber', 'recipientName', 'recipientAddress', 'recipientPhone', 'recipientZip'],
         relations: ['charge'],
       });
 
@@ -407,6 +420,7 @@ export class UnloadingService {
           recipientName: cs.recipientName,
           recipientAddress: cs.recipientAddress,
           recipientPhone: cs.recipientPhone,
+          recipientZip: cs.recipientZip,
         }));
     }
 
@@ -441,6 +455,20 @@ export class UnloadingService {
 
     const validatedShipments: (ValidatedUnloadingDto & { isCharge?: boolean })[] = [];
 
+    // Reutilidad local: tomar el más reciente por trackingNumber
+    const getMostRecentByTrackingNumber = <T extends { trackingNumber: string; createdAt: Date }>(
+      items: T[]
+    ): Map<string, T> => {
+      const map = new Map<string, T>();
+      for (const item of items) {
+        const existing = map.get(item.trackingNumber);
+        if (!existing || new Date(item.createdAt) > new Date(existing.createdAt)) {
+          map.set(item.trackingNumber, item);
+        }
+      }
+      return map;
+    };
+
     // 2️⃣ Validar el trackingNumber recibido
     if (shipment) {
       const validated = await this.validatePackage({ ...shipment, isValid: false }, subsidiaryId);
@@ -471,15 +499,18 @@ export class UnloadingService {
     const validated = validatedShipments[0]; // Solo hay uno
     if (validated && validated.isValid !== false) { // Solo agregar si es válido (asumiendo que validatePackage lo marca como true si pasa)
       if (validated.isCharge) {
-        // Solo agregar a F2
-        const f2 = consolidatedsToValidate.f2Consolidated[0]; // usualmente hay 1
-        if (f2) {
-          f2.added.push({
-            trackingNumber: validated.trackingNumber,
-            recipientName: validated.recipientName,
-            recipientAddress: validated.recipientAddress,
-            recipientPhone: validated.recipientPhone
-          });
+        // Para cargas: asignar al consolidated indicado por consolidatedId del charge_shipment
+        const mostRecentCharge = chargeShipment; // ya obtuvimos el chargeShipment al inicio
+        if (mostRecentCharge && (mostRecentCharge as any).consolidatedId) {
+          const consolidated = allConsolidateds.find(c => c.id === (mostRecentCharge as any).consolidatedId);
+          if (consolidated) {
+            consolidated.added.push({
+              trackingNumber: validated.trackingNumber,
+              recipientName: validated.recipientName,
+              recipientAddress: validated.recipientAddress,
+              recipientPhone: validated.recipientPhone
+            });
+          }
         }
       } else {
         // AER/TER según shipment normal
@@ -505,16 +536,24 @@ export class UnloadingService {
     for (const consolidated of allConsolidateds.filter(c => c.typeCode !== 'F2')) {
       const relatedShipments = await this.shipmentRepository.find({
         where: { consolidatedId: consolidated.id },
-        select: ['trackingNumber', 'recipientName', 'recipientAddress', 'recipientPhone'],
+        select: ['trackingNumber', 'recipientName', 'recipientAddress', 'recipientPhone', 'createdAt'],
       });
 
-      consolidated.notFound = relatedShipments
-        .filter(s => !consolidated.added.some(a => a.trackingNumber === s.trackingNumber))
+      const relatedChargeShipments = await this.chargeShipmentRepository.find({
+        where: { consolidatedId: consolidated.id },
+        select: ['trackingNumber', 'recipientName', 'recipientAddress', 'recipientPhone', 'createdAt'],
+      });
+
+      const combined = [...relatedShipments, ...relatedChargeShipments];
+      const unique = getMostRecentByTrackingNumber(combined as any);
+
+      consolidated.notFound = Array.from(unique.values())
+        .filter(s => !consolidated.added.some(a => a.trackingNumber === (s as any).trackingNumber))
         .map(s => ({
-          trackingNumber: s.trackingNumber,
-          recipientName: s.recipientName,
-          recipientAddress: s.recipientAddress,
-          recipientPhone: s.recipientPhone,
+          trackingNumber: (s as any).trackingNumber,
+          recipientName: (s as any).recipientName,
+          recipientAddress: (s as any).recipientAddress,
+          recipientPhone: (s as any).recipientPhone,
         }));
     }
 
@@ -1935,7 +1974,6 @@ export class UnloadingService {
 
           shipmentType: shipment.shipmentType,
 
-          // NUEVO 👇👇👇
           daysInWareHouse: daysInWarehouse,
           dexCode,
 

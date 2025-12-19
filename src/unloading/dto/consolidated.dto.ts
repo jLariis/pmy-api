@@ -14,6 +14,7 @@ export class ShortShipmentInfo {
   recipientName?: string;
   recipientAddress?: string;
   recipientPhone?: string;
+  recipientZip?: string;
 }
 
 export class ConsolidatedsDto {
