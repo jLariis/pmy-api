@@ -287,8 +287,7 @@ export class ConsolidatedService {
       .createQueryBuilder('consolidated')
       .leftJoinAndSelect('consolidated.subsidiary', 'subsidiary')
       .where('subsidiary.id = :subsidiaryId', { subsidiaryId })
-      //.andWhere('consolidated.date >= :start', { start: todayUTC })
-      //.andWhere('consolidated.date < :end', { end: tomorrowUTC })
+      .andWhere('consolidated.type IN (:...types)', { types: ['ordinario', 'aereo'] })
       .getMany();
 
     console.log("🚀 ~ ConsolidatedService ~ lastConsolidatedBySucursal ~ consolidated:", consolidated);

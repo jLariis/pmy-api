@@ -192,8 +192,9 @@ export class MailService {
 
     try {
       await this.mailerService.sendMail({
-        to: unloading.subsidiary.officeEmail,
-        cc: `${unloading.subsidiary.officeEmailToCopy}, sistemas@paqueteriaymensajeriadelyaqui.com`,
+        to: 'javier.rappaz@gmail.com',
+        //to: unloading.subsidiary.officeEmail,
+        //cc: `${unloading.subsidiary.officeEmailToCopy}, sistemas@paqueteriaymensajeriadelyaqui.com`,
         subject: `🚚 Desembarque ${formattedDate} de ${subsidiaryName}`,
         html: htmlContent,
         headers: {
@@ -207,7 +208,7 @@ export class MailService {
     }
   }
 
-  /** Enviar correo de prioridades dentro de Descarga */
+  /** Enviar correo de prioridades dentro de Desembarque */
   async sendHighPriorityUnloadingPriorityPackages(options: { to: string | string[], cc?: string | string[], htmlContent: string }) {
     const { to, cc, htmlContent } = options;
     
