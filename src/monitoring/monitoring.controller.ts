@@ -53,4 +53,19 @@ export class MonitoringController {
     return this.monitoringService.updateFedexFromConsolidated(consolidatedId);
   }
 
+  @Get('consolidated/no-67/:consolidatedId')
+  getNo67ShipmentsByConsolidated(@Param('consolidatedId') consolidatedId: string) {
+    return this.monitoringService.getShipmentsWithout67(consolidatedId);
+  }
+
+  @Get('unloading/no-67/:unloadingId')
+  getNo67ShipmentsByUnloading(@Param('unloadingId') unloadingId: string) {
+    return this.monitoringService.getShipmentsWithout67ByUnloading(unloadingId);
+  }
+
+  @Get('package-dispatch/no-67/:packageDispatchId')
+  getNo67ShipmentsByPackageDispatch(@Param('packageDispatchId') packageDispatchId: string) {
+    return this.monitoringService.getShipmentsWithout67ByPackageDispatch(packageDispatchId);
+  }
+
 }
