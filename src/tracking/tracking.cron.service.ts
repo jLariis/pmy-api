@@ -19,7 +19,7 @@ export class TrackingCronService {
     await this.shipmentService.checkStatusOnFedex();
   }*/
 
-  //@Cron(CronExpression.EVERY_HOUR)
+  @Cron(CronExpression.EVERY_HOUR)
   async handleCron() {
     this.logger.log('🕐 Ejecutando verificación de envíos...');
 

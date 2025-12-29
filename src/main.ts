@@ -81,6 +81,7 @@ async function bootstrap() {
       if (
         origin.includes('localhost') ||
         origin.startsWith('file://') ||
+        origin.includes('187.137.167.95') ||
         origin.startsWith('app://') ||
         origin.startsWith('capacitor://')
       ) {
