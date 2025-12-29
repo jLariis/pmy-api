@@ -13,4 +13,6 @@ export interface SubsidiaryRules {
   allowException16?: boolean; // Allow income for exceptionCode 16
   allowExceptionOD?: boolean; // Allow income for exceptionCode OD
   allowIncomeFor07?: boolean; // Allow income for exceptionCode 07,
+  allowIncomeFor67?: boolean;
+  alwaysProcess67?: boolean,
 }

@@ -64,7 +64,20 @@ export class MonitoringService {
     return updatedPackages;
   }
 
+  async getShipmentsWithout67(consolidatedId: string){
+    const shipments = await this.consolidatedService.getShipmentsWithout67ByConsolidated(consolidatedId);
+    return shipments;
+  }
 
+  async getShipmentsWithout67ByUnloading(unloadingId: string){
+    const shipments = await this.unloadingService.getShipmentsWithout67ByUnloading(unloadingId);
+    return shipments;
+  }
+
+  async getShipmentsWithout67ByPackageDispatch(packageDispatchId: string){
+    const shipments = await this.packageDispatchService.getShipmentsWithout67ByPackageDispatch(packageDispatchId);
+    return shipments;
+  }
 
 
 }

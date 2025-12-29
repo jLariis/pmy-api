@@ -2136,7 +2136,95 @@ export class UnloadingService {
     return shipmentsForFedex;
   }
 
+  async getShipmentsWithout67ByUnloading(id: string){
+    const shipmentsWithout67 = [];
 
+    const shipments = await this.shipmentRepository.find({
+      where: { unloading: { id } },
+      relations: [
+        'statusHistory',
+
+      ],
+    });
+
+    console.log("📦 Shipments encontrados:", shipments.length);
+
+    const chargeShipments = await this.chargeShipmentRepository.find({
+      where: { unloading: { id } },
+      relations: [
+        'statusHistory',
+      ],
+    });
+
+    console.log("⚡ ChargeShipments encontrados:", chargeShipments.length);
+
+    const allShipments = [...shipments, chargeShipments]
+
+    for (const shipment of shipments) {
+        try {
+          if (!shipment.statusHistory || shipment.statusHistory.length === 0) {
+            shipmentsWithout67.push({
+              trackingNumber: shipment.trackingNumber,
+              currentStatus: shipment.status,
+              statusHistoryCount: 0,
+              exceptionCodes: [],
+              firstStatusDate: null,
+              lastStatusDate: null,
+              comment: 'Sin historial de estados',
+            });
+            continue;
+          }
+
+          const sortedHistory = shipment.statusHistory.sort(
+            (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+          );
+
+          const hasExceptionCode67 = sortedHistory.some(status => 
+            status.exceptionCode === '67'
+          );
+
+          if (!hasExceptionCode67) {
+            const firstStatus = sortedHistory[0];
+            const lastStatus = sortedHistory[sortedHistory.length - 1];
+
+            const exceptionCodes = sortedHistory
+              .map(h => h.exceptionCode)
+              .filter(code => code !== null && code !== undefined);
+
+            shipmentsWithout67.push({
+              trackingNumber: shipment.trackingNumber,
+              recipientAddress: shipment.recipientAddress,
+              recipientName: shipment.recipientName,
+              recipientCity: shipment.recipientCity,
+              recipientZip: shipment.recipientZip,
+              currentStatus: shipment.status,
+              statusHistoryCount: sortedHistory.length,
+              exceptionCodes: [...new Set(exceptionCodes)],
+              firstStatusDate: firstStatus?.timestamp,
+              lastStatusDate: lastStatus?.timestamp,
+              comment: 'No tiene exceptionCode 67',
+            });
+          }
+
+        } catch (error) {
+          shipmentsWithout67.push({
+            trackingNumber: shipment.trackingNumber,
+            currentStatus: shipment.status,
+            statusHistoryCount: 0,
+            exceptionCodes: [],
+            firstStatusDate: null,
+            lastStatusDate: null,
+            comment: `Error: ${error.message}`,
+          });
+        }
+      }
+
+    return { 
+      count: shipmentsWithout67.length,
+      shipments: shipmentsWithout67
+    };
+
+  }
 
 
 }

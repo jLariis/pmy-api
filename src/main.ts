@@ -10,8 +10,12 @@ import { ValidationPipe } from '@nestjs/common';
 async function bootstrap() {
   process.env.TZ = 'UTC';
 
+  const isDevelopment = process.env.NODE_ENV === 'develop';
+  const logLevel = isDevelopment ? 'debug' : 'info';
+
   const app = await NestFactory.create(AppModule, {
     logger: WinstonModule.createLogger({
+      level: logLevel,
       transports: [
         new transports.DailyRotateFile({
           filename: `logs/%DATE%-error.log`,
