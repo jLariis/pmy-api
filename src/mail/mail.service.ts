@@ -192,9 +192,8 @@ export class MailService {
 
     try {
       await this.mailerService.sendMail({
-        to: 'javier.rappaz@gmail.com',
-        //to: unloading.subsidiary.officeEmail,
-        //cc: `${unloading.subsidiary.officeEmailToCopy}, sistemas@paqueteriaymensajeriadelyaqui.com`,
+        to: unloading.subsidiary.officeEmail,
+        cc: `${unloading.subsidiary.officeEmailToCopy}, sistemas@paqueteriaymensajeriadelyaqui.com`,
         subject: `🚚 Desembarque ${formattedDate} de ${subsidiaryName}`,
         html: htmlContent,
         headers: {
