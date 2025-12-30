@@ -191,7 +191,7 @@ export class UnloadingService {
     };
   }
 
-  async validateTrackingNumbers(
+  async validateTrackingNumbersResp(
     trackingNumbers: string[],
     subsidiaryId?: string
   ): Promise<{
@@ -427,6 +427,664 @@ export class UnloadingService {
     return { validatedShipments, consolidateds: consolidatedsToValidate };
   }
 
+  async validateTrackingNumbersNew(
+    trackingNumbers: string[],
+    subsidiaryId?: string
+  ): Promise<{
+    validatedShipments: (ValidatedUnloadingDto & { isCharge?: boolean })[];
+    consolidateds: ConsolidatedsDto;
+  }> {
+    // 1️⃣ Optimización: Un solo query por tabla con select específico
+    const [shipments, chargeShipments] = await Promise.all([
+      this.shipmentRepository.find({
+        where: { 
+          trackingNumber: In(trackingNumbers), 
+          status: Not(ShipmentStatusType.DEVUELTO_A_FEDEX) 
+        },
+        select: [
+          'id', 'trackingNumber', 'commitDateTime', 'subsidiary', 
+          'consolidatedId', 'status', 'recipientName', 
+          'recipientAddress', 'recipientPhone', 'recipientZip'
+        ],
+        relations: ['subsidiary', 'payment'],
+        order: { createdAt: 'DESC' },
+      }),
+      this.chargeShipmentRepository.find({
+        where: { 
+          trackingNumber: In(trackingNumbers),
+          status: Not(ShipmentStatusType.DEVUELTO_A_FEDEX)
+        },
+        select: [
+          'id', 'trackingNumber', 'commitDateTime', 'subsidiary', 
+          'consolidatedId', 'status', 'recipientName', 
+          'recipientAddress', 'recipientPhone', 'recipientZip'
+        ],
+        relations: ['subsidiary'],
+        order: { createdAt: 'DESC' },
+      })
+    ]);
+
+    // 2️⃣ Optimización: Función mejorada para manejar duplicados
+    const getMostRecentMap = <T extends { trackingNumber: string; createdAt: Date }>(
+      items: T[]
+    ): Map<string, T> => {
+      const map = new Map<string, T>();
+      
+      // Orden inverso ya que items ya viene ordenado DESC por createdAt
+      for (let i = items.length - 1; i >= 0; i--) {
+        const item = items[i];
+        map.set(item.trackingNumber, item); // El primero encontrado es el más reciente
+      }
+      
+      return map;
+    };
+
+    // Crear mapas con los registros más recientes
+    const shipmentsMap = getMostRecentMap(shipments);
+    const chargeMap = getMostRecentMap(chargeShipments);
+
+    // 3️⃣ DEBUG solo en desarrollo
+    if (process.env.NODE_ENV === 'development') {
+      console.log('=== DEBUG DUPLICADOS ===');
+      console.log('Total shipments:', shipments.length);
+      console.log('Total chargeShipments:', chargeShipments.length);
+      console.log('Shipments únicos:', shipmentsMap.size);
+      console.log('ChargeShipments únicos:', chargeMap.size);
+    }
+
+    // 4️⃣ Obtener consolidados en paralelo con la validación
+    const [consolidatedsToValidate, validatedShipments] = await Promise.all([
+      this.getConsolidateToStartUnloading(subsidiaryId),
+      (async () => {
+        const validated: (ValidatedUnloadingDto & { isCharge?: boolean })[] = [];
+        const validationPromises: Promise<void>[] = [];
+
+        // Preprocesar tracking numbers únicos para evitar validaciones duplicadas
+        const uniqueTNs = [...new Set(trackingNumbers)];
+        const processedTNs = new Set<string>();
+
+        for (const tn of uniqueTNs) {
+          // Verificar si ya procesamos este TN
+          if (processedTNs.has(tn)) continue;
+          processedTNs.add(tn);
+
+          // Determinar el registro más reciente
+          const shipment = shipmentsMap.get(tn);
+          const charge = chargeMap.get(tn);
+          let recordToValidate: any = null;
+          let isCharge = false;
+
+          if (shipment && charge) {
+            // Comparar fechas directamente (ya vienen ordenadas)
+            isCharge = new Date(charge.createdAt) > new Date(shipment.createdAt);
+            recordToValidate = isCharge ? charge : shipment;
+            
+            if (process.env.NODE_ENV === 'development') {
+              console.log(`⚠️ TN ${tn} duplicado. Usando: ${isCharge ? 'CHARGE' : 'SHIPMENT'}`);
+            }
+          } else if (shipment) {
+            recordToValidate = shipment;
+            isCharge = false;
+          } else if (charge) {
+            recordToValidate = charge;
+            isCharge = true;
+          }
+
+          if (recordToValidate) {
+            // Validar en paralelo
+            validationPromises.push(
+              this.validatePackage({ ...recordToValidate, isValid: false }, subsidiaryId)
+                .then(validatedResult => {
+                  validated.push({ ...validatedResult, isCharge });
+                })
+            );
+          } else {
+            validated.push({
+              trackingNumber: tn,
+              isValid: false,
+              reason: 'No se encontraron datos para el tracking number en la base de datos',
+              subsidiary: null,
+              status: null,
+              isCharge: false,
+            });
+          }
+        }
+
+        await Promise.all(validationPromises);
+        return validated;
+      })()
+    ]);
+
+    const allConsolidateds: ConsolidatedItemDto[] = Object.values(consolidatedsToValidate).flat();
+
+    // 5️⃣ Inicializar arrays added/notFound
+    allConsolidateds.forEach(consolidated => {
+      consolidated.added = [];
+      consolidated.notFound = [];
+    });
+
+    // 6️⃣ Optimización: Crear índices para búsqueda rápida
+    const consolidatedById = new Map<string, ConsolidatedItemDto>(
+      allConsolidateds.map(c => [c.id, c])
+    );
+
+    // 7️⃣ Asignar válidos a added (solo los que existen en los mapas)
+    const validShipments = validatedShipments.filter(v => v.isValid);
+    
+    for (const validated of validShipments) {
+      const tn = validated.trackingNumber;
+      let consolidated: ConsolidatedItemDto | undefined;
+      let consolidatedId: string | undefined;
+
+      // Determinar consolidatedId según tipo
+      if (validated.isCharge) {
+        const chargeRecord = chargeMap.get(tn);
+        consolidatedId = chargeRecord?.consolidatedId || (chargeRecord as any)?.charge?.id;
+      } else {
+        const shipmentRecord = shipmentsMap.get(tn);
+        consolidatedId = shipmentRecord?.consolidatedId;
+      }
+
+      if (consolidatedId) {
+        consolidated = consolidatedById.get(consolidatedId);
+      }
+
+      if (consolidated) {
+        consolidated.added.push({
+          trackingNumber: validated.trackingNumber,
+          recipientName: validated.recipientName,
+          recipientAddress: validated.recipientAddress,
+          recipientPhone: validated.recipientPhone,
+          recipientZip: validated.recipientZip,
+        });
+      }
+    }
+
+    // 8️⃣ Optimización: Procesar notFound en paralelo por tipo de consolidado
+    const notFoundPromises = allConsolidateds.map(async (consolidated) => {
+      if (consolidated.typeCode === 'F2') {
+        // Caso especial F2
+        const f2ChargeShipments = await this.chargeShipmentRepository.find({
+          where: { 
+            charge: { id: consolidated.id },
+            status: Not(ShipmentStatusType.DEVUELTO_A_FEDEX)
+          },
+          select: [
+            'trackingNumber', 'createdAt', 'recipientName', 
+            'recipientAddress', 'recipientPhone', 'recipientZip'
+          ],
+          relations: ['charge'],
+          order: { createdAt: 'DESC' },
+        });
+
+        const uniqueF2Shipments = getMostRecentMap(f2ChargeShipments);
+        
+        consolidated.notFound = Array.from(uniqueF2Shipments.values())
+          .filter(cs => !consolidated.added.some(a => a.trackingNumber === cs.trackingNumber))
+          .map(cs => ({
+            trackingNumber: cs.trackingNumber,
+            recipientName: cs.recipientName,
+            recipientAddress: cs.recipientAddress,
+            recipientPhone: cs.recipientPhone,
+            recipientZip: cs.recipientZip,
+          }));
+      } else {
+        // Para AÉREO / TERRESTRE
+        const [relatedShipments, relatedChargeShipments] = await Promise.all([
+          this.shipmentRepository.find({
+            where: { 
+              consolidatedId: consolidated.id,
+              status: Not(ShipmentStatusType.DEVUELTO_A_FEDEX)
+            },
+            select: [
+              'trackingNumber', 'createdAt', 'recipientName', 
+              'recipientAddress', 'recipientPhone', 'recipientZip'
+            ],
+            order: { createdAt: 'DESC' },
+          }),
+          this.chargeShipmentRepository.find({
+            where: {
+              consolidatedId: consolidated.id,
+              status: Not(ShipmentStatusType.DEVUELTO_A_FEDEX)
+            },
+            select: [
+              'trackingNumber', 'createdAt', 'recipientName', 
+              'recipientAddress', 'recipientPhone', 'recipientZip'
+            ],
+            order: { createdAt: 'DESC' },
+          })
+        ]);
+
+        const combined = [...relatedShipments, ...relatedChargeShipments];
+        const uniqueRelated = getMostRecentMap(combined);
+        
+        consolidated.notFound = Array.from(uniqueRelated.values())
+          .filter(s => !consolidated.added.some(a => a.trackingNumber === s.trackingNumber))
+          .map(s => ({
+            trackingNumber: s.trackingNumber,
+            recipientName: s.recipientName,
+            recipientAddress: s.recipientAddress,
+            recipientPhone: s.recipientPhone,
+            recipientZip: s.recipientZip,
+          }));
+      }
+    });
+
+    await Promise.all(notFoundPromises);
+
+    // 9️⃣ DEBUG solo en desarrollo
+    if (process.env.NODE_ENV === 'development') {
+      console.log('=== DEBUG ASIGNACIÓN ===');
+      console.log('Total validados:', validatedShipments.length);
+      console.log('Válidos:', validShipments.length);
+      
+      allConsolidateds.forEach(consolidated => {
+        console.log(`Consolidado ${consolidated.id} (${consolidated.typeCode}): ${consolidated.added.length} added, ${consolidated.notFound.length} notFound`);
+      });
+      console.log('=== FIN DEBUG ===');
+    }
+
+    return { validatedShipments, consolidateds: consolidatedsToValidate };
+  }
+
+  async validateTrackingNumbers(
+    trackingNumbers: string[],
+    subsidiaryId?: string
+  ): Promise<{
+    validatedShipments: (ValidatedUnloadingDto & { isCharge?: boolean })[];
+    consolidateds: ConsolidatedsDto;
+  }> {
+    // 0️⃣ Limpiar y normalizar tracking numbers
+    const cleanTrackingNumbers = trackingNumbers
+      .map(tn => tn.trim().toUpperCase())
+      .filter(tn => tn.length > 0);
+    
+    if (cleanTrackingNumbers.length === 0) {
+      const emptyConsolidateds = await this.getConsolidateToStartUnloading(subsidiaryId);
+      return { validatedShipments: [], consolidateds: emptyConsolidateds };
+    }
+
+    const uniqueTNs = [...new Set(cleanTrackingNumbers)];
+    const tnCount = uniqueTNs.length;
+
+    // 1️⃣ Estrategia según volumen
+    const useBatches = tnCount > 50;
+    const batchSize = tnCount > 200 ? 50 : 25;
+
+    // 2️⃣ Obtener datos en paralelo
+    const [shipments, chargeShipments, consolidatedsToValidate] = await Promise.all([
+      this.shipmentRepository.find({
+        where: { 
+          trackingNumber: In(uniqueTNs), 
+          status: Not(ShipmentStatusType.DEVUELTO_A_FEDEX) 
+        },
+        select: [
+          'id', 'trackingNumber', 'commitDateTime', 'createdAt',
+          'consolidatedId', 'status', 'recipientName', 
+          'recipientAddress', 'recipientPhone', 'recipientZip'
+        ],
+        relations: ['subsidiary'],
+        order: { createdAt: 'DESC' },
+        take: Math.min(uniqueTNs.length * 2, 5000),
+      }),
+      this.chargeShipmentRepository.find({
+        where: { 
+          trackingNumber: In(uniqueTNs),
+          status: Not(ShipmentStatusType.DEVUELTO_A_FEDEX)
+        },
+        select: [
+          'id', 'trackingNumber', 'commitDateTime','createdAt',
+          'consolidatedId', 'status', 'recipientName', 
+          'recipientAddress', 'recipientPhone', 'recipientZip'
+        ],
+        relations: ['subsidiary'],
+        order: { createdAt: 'DESC' },
+        take: Math.min(uniqueTNs.length * 2, 5000),
+      }),
+      this.getConsolidateToStartUnloading(subsidiaryId)
+    ]);
+
+    // 3️⃣ Crear mapas con los registros más recientes
+    const shipmentsMap = this.createMostRecentMap(shipments);
+    const chargeMap = this.createMostRecentMap(chargeShipments);
+
+    // 4️⃣ Validación optimizada
+    const validatedShipments = useBatches 
+      ? await this.validateInBatches(uniqueTNs, shipmentsMap, chargeMap, subsidiaryId, batchSize)
+      : await this.validateSequentially(uniqueTNs, shipmentsMap, chargeMap, subsidiaryId);
+
+    const allConsolidateds: ConsolidatedItemDto[] = Object.values(consolidatedsToValidate).flat();
+
+    // 5️⃣ Inicializar arrays
+    allConsolidateds.forEach(consolidated => {
+      consolidated.added = [];
+      consolidated.notFound = [];
+    });
+
+    // 6️⃣ Crear índice de consolidados
+    const consolidatedById = new Map<string, ConsolidatedItemDto>(
+      allConsolidateds.map(c => [c.id, c])
+    );
+
+    // 7️⃣ Asignar válidos a added
+    const validShipments = validatedShipments.filter(v => v.isValid);
+    
+    for (const validated of validShipments) {
+      const tn = validated.trackingNumber;
+      let consolidatedId: string | undefined;
+
+      if (validated.isCharge) {
+        const chargeRecord = chargeMap.get(tn);
+        consolidatedId = chargeRecord?.consolidatedId;
+      } else {
+        const shipmentRecord = shipmentsMap.get(tn);
+        consolidatedId = shipmentRecord?.consolidatedId;
+      }
+
+      if (consolidatedId) {
+        const consolidated = consolidatedById.get(consolidatedId);
+        if (consolidated) {
+          consolidated.added.push({
+            trackingNumber: validated.trackingNumber,
+            recipientName: validated.recipientName,
+            recipientAddress: validated.recipientAddress,
+            recipientPhone: validated.recipientPhone,
+            recipientZip: validated.recipientZip,
+          });
+        }
+      }
+    }
+
+    // 8️⃣ Calcular notFound DIRECTAMENTE desde consolidados
+    await this.calculateNotFoundFromConsolidates(
+      allConsolidateds,
+      validatedShipments.filter(v => v.isValid)
+    );
+
+    // 9️⃣ Logs opcionales
+    if (process.env.NODE_ENV === 'development') {
+      console.log(`📊 Validados: ${validatedShipments.length}, Válidos: ${validShipments.length}`);
+      allConsolidateds.forEach(c => {
+        console.log(`🏷️ ${c.typeCode} ${c.id}: ${c.added.length} added, ${c.notFound.length} notFound`);
+      });
+    }
+
+    return { validatedShipments, consolidateds: consolidatedsToValidate };
+  }
+
+  // ============ MÉTODOS HELPER ============
+
+  private createMostRecentMap<T extends { trackingNumber: string; createdAt: Date }>(
+    items: T[]
+  ): Map<string, T> {
+    const map = new Map<string, T>();
+    
+    for (const item of items) {
+      if (!map.has(item.trackingNumber)) {
+        map.set(item.trackingNumber, item);
+      }
+    }
+    
+    return map;
+  }
+
+  private async validateSequentially(
+    trackingNumbers: string[],
+    shipmentsMap: Map<string, any>,
+    chargeMap: Map<string, any>,
+    subsidiaryId?: string
+  ): Promise<(ValidatedUnloadingDto & { isCharge?: boolean })[]> {
+    const results: (ValidatedUnloadingDto & { isCharge?: boolean })[] = [];
+
+    for (const tn of trackingNumbers) {
+      const shipment = shipmentsMap.get(tn);
+      const charge = chargeMap.get(tn);
+      
+      let recordToValidate: any = null;
+      let isCharge = false;
+
+      if (shipment && charge) {
+        const shipmentDate = shipment.updatedAt || shipment.createdAt;
+        const chargeDate = charge.updatedAt || charge.createdAt;
+        isCharge = new Date(chargeDate) > new Date(shipmentDate);
+        recordToValidate = isCharge ? charge : shipment;
+      } else if (shipment) {
+        recordToValidate = shipment;
+      } else if (charge) {
+        recordToValidate = charge;
+        isCharge = true;
+      }
+
+      if (recordToValidate) {
+        try {
+          const validated = await this.validatePackage(
+            { ...recordToValidate, isValid: false },
+            subsidiaryId
+          );
+          results.push({ ...validated, isCharge });
+        } catch (error) {
+          results.push({
+            trackingNumber: tn,
+            isValid: false,
+            reason: `Error: ${error instanceof Error ? error.message : 'Desconocido'}`,
+            subsidiary: null,
+            status: null,
+            isCharge: false,
+          });
+        }
+      } else {
+        results.push({
+          trackingNumber: tn,
+          isValid: false,
+          reason: 'No se encontraron datos para el tracking number',
+          subsidiary: null,
+          status: null,
+          isCharge: false,
+        });
+      }
+    }
+
+    return results;
+  }
+
+  private async validateInBatches(
+    trackingNumbers: string[],
+    shipmentsMap: Map<string, any>,
+    chargeMap: Map<string, any>,
+    subsidiaryId?: string,
+    batchSize: number = 25
+  ): Promise<(ValidatedUnloadingDto & { isCharge?: boolean })[]> {
+    const results: (ValidatedUnloadingDto & { isCharge?: boolean })[] = [];
+    const batches = this.chunkArray(trackingNumbers, batchSize);
+
+    for (const batch of batches) {
+      const batchPromises = batch.map(async (tn) => {
+        const shipment = shipmentsMap.get(tn);
+        const charge = chargeMap.get(tn);
+        
+        let recordToValidate: any = null;
+        let isCharge = false;
+
+        if (shipment && charge) {
+          const shipmentDate = shipment.createdAt;
+          const chargeDate = charge.createdAt;
+          isCharge = new Date(chargeDate) > new Date(shipmentDate);
+          recordToValidate = isCharge ? charge : shipment;
+        } else if (shipment) {
+          recordToValidate = shipment;
+        } else if (charge) {
+          recordToValidate = charge;
+          isCharge = true;
+        }
+
+        if (recordToValidate) {
+          try {
+            const validated = await this.validatePackage(
+              { ...recordToValidate, isValid: false },
+              subsidiaryId
+            );
+            return { ...validated, isCharge };
+          } catch (error) {
+            return {
+              trackingNumber: tn,
+              isValid: false,
+              reason: `Error: ${error instanceof Error ? error.message : 'Desconocido'}`,
+              subsidiary: null,
+              status: null,
+              isCharge: false,
+            };
+          }
+        }
+        
+        return {
+          trackingNumber: tn,
+          isValid: false,
+          reason: 'No encontrado',
+          subsidiary: null,
+          status: null,
+          isCharge: false,
+        };
+      });
+
+      const batchResults = await Promise.all(batchPromises);
+      results.push(...batchResults);
+    }
+
+    return results;
+  }
+
+  private chunkArray<T>(array: T[], size: number): T[][] {
+    const chunks: T[][] = [];
+    for (let i = 0; i < array.length; i += size) {
+      chunks.push(array.slice(i, i + size));
+    }
+    return chunks;
+  }
+
+  private async calculateNotFoundFromConsolidates(
+    allConsolidateds: ConsolidatedItemDto[],
+    validShipments: ValidatedUnloadingDto[]
+  ): Promise<void> {
+    const validTNs = new Set(validShipments.map(v => v.trackingNumber));
+    
+    const f2Consolidateds = allConsolidateds.filter(c => c.typeCode === 'F2');
+    const nonF2Consolidateds = allConsolidateds.filter(c => c.typeCode !== 'F2');
+
+    const processPromises: Promise<void>[] = [];
+
+    if (nonF2Consolidateds.length > 0) {
+      const nonF2Ids = nonF2Consolidateds.map(c => c.id);
+      
+      const [allShipments, allChargeShipments] = await Promise.all([
+        this.shipmentRepository.find({
+          where: {
+            consolidatedId: In(nonF2Ids),
+            status: Not(ShipmentStatusType.DEVUELTO_A_FEDEX)
+          },
+          select: ['trackingNumber', 'consolidatedId', 'recipientName', 'recipientAddress', 'recipientPhone', 'recipientZip'],
+        }),
+        this.chargeShipmentRepository.find({
+          where: {
+            consolidatedId: In(nonF2Ids),
+            status: Not(ShipmentStatusType.DEVUELTO_A_FEDEX)
+          },
+          select: ['trackingNumber', 'consolidatedId', 'recipientName', 'recipientAddress', 'recipientPhone', 'recipientZip'],
+        })
+      ]);
+
+      const shipmentsByConsolidated = this.groupByConsolidatedId(allShipments);
+      const chargesByConsolidated = this.groupByConsolidatedId(allChargeShipments);
+
+      nonF2Consolidateds.forEach(consolidated => {
+        const shipments = shipmentsByConsolidated.get(consolidated.id) || [];
+        const charges = chargesByConsolidated.get(consolidated.id) || [];
+        
+        const allItems = [...shipments, ...charges];
+        const uniqueItems = this.removeDuplicateTNs(allItems);
+        
+        consolidated.notFound = uniqueItems
+          .filter(item => !validTNs.has(item.trackingNumber))
+          .map(item => ({
+            trackingNumber: item.trackingNumber,
+            recipientName: item.recipientName,
+            recipientAddress: item.recipientAddress,
+            recipientPhone: item.recipientPhone,
+            recipientZip: item.recipientZip,
+          }));
+      });
+    }
+
+    /*if (f2Consolidateds.length > 0) {
+      const f2Ids = f2Consolidateds.map(c => c.id);
+      
+      const f2ChargeShipments = await this.chargeShipmentRepository.find({
+        where: {
+          chargeId: In(f2Ids),
+          status: Not(ShipmentStatusType.DEVUELTO_A_FEDEX)
+        },
+        select: ['trackingNumber', 'chargeId', 'recipientName', 'recipientAddress', 'recipientPhone', 'recipientZip'],
+      });
+
+      const chargesByF2Id = this.groupByChargeId(f2ChargeShipments);
+
+      f2Consolidateds.forEach(consolidated => {
+        const charges = chargesByF2Id.get(consolidated.id) || [];
+        const uniqueItems = this.removeDuplicateTNs(charges);
+        
+        consolidated.notFound = uniqueItems
+          .filter(item => !validTNs.has(item.trackingNumber))
+          .map(item => ({
+            trackingNumber: item.trackingNumber,
+            recipientName: item.recipientName,
+            recipientAddress: item.recipientAddress,
+            recipientPhone: item.recipientPhone,
+            recipientZip: item.recipientZip,
+          }));
+      });
+    }*/
+
+    await Promise.all(processPromises);
+  }
+
+  private groupByConsolidatedId(items: any[]): Map<string, any[]> {
+    const map = new Map<string, any[]>();
+    items.forEach(item => {
+      if (item.consolidatedId) {
+        if (!map.has(item.consolidatedId)) {
+          map.set(item.consolidatedId, []);
+        }
+        map.get(item.consolidatedId)!.push(item);
+      }
+    });
+    return map;
+  }
+
+  private groupByChargeId(items: any[]): Map<string, any[]> {
+    const map = new Map<string, any[]>();
+    items.forEach(item => {
+      if (item.chargeId) {
+        if (!map.has(item.chargeId)) {
+          map.set(item.chargeId, []);
+        }
+        map.get(item.chargeId)!.push(item);
+      }
+    });
+    return map;
+  }
+
+  private removeDuplicateTNs(items: any[]): any[] {
+    const uniqueMap = new Map<string, any>();
+    
+    for (let i = items.length - 1; i >= 0; i--) {
+      const item = items[i];
+      if (!uniqueMap.has(item.trackingNumber)) {
+        uniqueMap.set(item.trackingNumber, item);
+      }
+    }
+    
+    return Array.from(uniqueMap.values());
+  }
+
   async validateTrackingNumber(
     trackingNumber: string,
     subsidiaryId?: string
@@ -641,7 +1299,7 @@ export class UnloadingService {
   async findAllBySubsidiary(subsidiaryId: string) {
     const response = await this.unloadingRepository.find({
       where: { subsidiary: { id: subsidiaryId } },
-      relations: ['shipments', 'chargeShipments','vehicle', 'subsidiary'],
+      relations: ['vehicle', 'subsidiary'],
       order: {
         createdAt: 'DESC'
       }
@@ -1421,16 +2079,6 @@ export class UnloadingService {
   </html>`;
   }
 
-  // NUEVO MÉTODO para generar el asunto del correo
-  private generateEmailSubject(shipmentsWithRoute: any[], shipmentsWithoutRoute: any[], startDate?: Date, endDate?: Date): string {
-      const total = shipmentsWithRoute.length + shipmentsWithoutRoute.length;
-      const period = startDate && endDate 
-          ? `${startDate.toLocaleDateString('es-MX')} a ${endDate.toLocaleDateString('es-MX')}`
-          : 'del día';
-      
-      return `📦 Reporte Descargas: ${total} paquetes (${shipmentsWithRoute.length} con ruta, ${shipmentsWithoutRoute.length} sin ruta) - ${period}`;
-  }
-
   // MÉTODO MEJORADO para sección sin ruta
   private generateNoRouteSection(shipments: any[], title: string): string {
       if (shipments.length === 0) {
@@ -2025,7 +2673,6 @@ export class UnloadingService {
 
     return [...normalShipments, ...chargeShipmentsMapped];
   }
-
 
   async updateFedexDataByUnloadingId(unloadingId: string) {
     // Validar que se proporcione el ID del unloading
