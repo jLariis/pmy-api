@@ -1,4 +1,4 @@
-import { BadRequestException, forwardRef, Inject, Injectable, InternalServerErrorException, Logger } from '@nestjs/common';
+import { BadRequestException, ConsoleLogger, forwardRef, Inject, Injectable, InternalServerErrorException, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Between, Brackets, EntityManager, In, Repository } from 'typeorm';
 import { Shipment } from 'src/entities/shipment.entity';
@@ -6915,6 +6915,215 @@ export class ShipmentsService {
       }
 
     /******************************************************************* */
+
+
+    /****** REPORTE DE PENDIENTE X SUCURSAL */
+    private formatToHermosillo(date: Date | string | null): string {
+      if (!date) return '';
+
+      return new Intl.DateTimeFormat('es-MX', {
+        timeZone: 'America/Hermosillo',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+      }).format(new Date(date));
+    }
+
+    async generatePendingShipmentsExcel(
+      shipments: Shipment[]
+    ): Promise<Buffer> {
+
+      const workbook = new ExcelJS.Workbook();
+      const worksheet = workbook.addWorksheet('Pendientes');
+
+      /* ===================== Columnas ===================== */
+
+      worksheet.columns = [
+        { header: 'Tracking', key: 'trackingNumber', width: 18 },
+        { header: 'Estado', key: 'status', width: 14 },
+        { header: 'Prioridad', key: 'priority', width: 12 },
+        { header: 'Fecha compromiso', key: 'commitDateTime', width: 22 },
+        { header: 'Destinatario', key: 'recipientName', width: 26 },
+        { header: 'Dirección', key: 'recipientAddress', width: 30 },
+        { header: 'Ciudad', key: 'recipientCity', width: 18 },
+        { header: 'CP', key: 'recipientZip', width: 10 },
+        { header: 'Teléfono', key: 'recipientPhone', width: 16 },
+        { header: 'Recibido por', key: 'receivedByName', width: 22 },
+        { header: 'Consolidado', key: 'consolidatedId', width: 36 },
+        { header: 'Alto valor', key: 'isHighValue', width: 12 },
+        { header: 'Creado', key: 'createdAt', width: 22 }
+      ];
+
+      /* ===================== Header elegante ===================== */
+
+      worksheet.getRow(1).eachCell(cell => {
+        cell.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+        cell.fill = {
+          type: 'pattern',
+          pattern: 'solid',
+          fgColor: { argb: 'FF1E293B' } // slate-800
+        };
+        cell.alignment = { vertical: 'middle', horizontal: 'center' };
+        cell.border = {
+          top: { style: 'thin' },
+          left: { style: 'thin' },
+          bottom: { style: 'thin' },
+          right: { style: 'thin' }
+        };
+      });
+
+      /* ===================== Data ===================== */
+
+      shipments.forEach(s => {
+        worksheet.addRow({
+          trackingNumber: s.trackingNumber,
+          status: s.status,
+          priority: s.priority,
+          commitDateTime: this.formatToHermosillo(s.commitDateTime),
+          recipientName: s.recipientName,
+          recipientAddress: s.recipientAddress,
+          recipientCity: s.recipientCity,
+          recipientZip: s.recipientZip,
+          recipientPhone: s.recipientPhone,
+          receivedByName: s.receivedByName,
+          consolidatedId: s.consolidatedId,
+          isHighValue: s.isHighValue ? 'Sí' : 'No',
+          createdAt: this.formatToHermosillo(s.createdAt),
+        });
+      });
+
+      /* ===================== Estilo filas ===================== */
+
+      worksheet.eachRow((row, rowNumber) => {
+        if (rowNumber === 1) return;
+        row.eachCell(cell => {
+          cell.border = {
+            top: { style: 'hair' },
+            left: { style: 'hair' },
+            bottom: { style: 'hair' },
+            right: { style: 'hair' }
+          };
+          cell.alignment = { vertical: 'middle' };
+        });
+      });
+
+      worksheet.views = [{ state: 'frozen', ySplit: 1 }];
+
+      const arrayBuffer = await workbook.xlsx.writeBuffer();
+      return Buffer.from(arrayBuffer);  
+    }
+
+
+    async getPendingShipmentsBySubsidiaryResp(subsidiaryId: string, startDate: string, endDate: string): Promise<{ count: number, shipments: Shipment[] }> {
+      const start = new Date(startDate);
+      const end = new Date(endDate);
+      end.setHours(23, 59, 59, 999); // Incluir todo el día final
+
+      const shipments = await this.shipmentRepository.find({
+        where: {
+          subsidiary: { id: subsidiaryId },  
+          status: In([ShipmentStatusType.EN_RUTA, ShipmentStatusType.PENDIENTE, ShipmentStatusType.DESCONOCIDO]),
+          createdAt: Between(start, end),
+        },
+      }); 
+
+      console.log(`🔍 Envíos pendientes encontrados para sucursal ${subsidiaryId} entre ${this.formatDate(start)} y ${this.formatDate(end)}: ${shipments.length}`);
+
+      return { 
+        count: shipments.length,  
+        shipments 
+      };
+    }
+
+    async getPendingShipmentsBySubsidiary(
+      subsidiaryId: string, 
+      startDate: string, 
+      endDate: string
+    ): Promise<{ count: number, shipments: Shipment[] }> {
+      const start = new Date(startDate);
+      const end = new Date(endDate);
+      end.setHours(23, 59, 59, 999);
+
+      // SUBCONSULTA: Obtener el ID más reciente por tracking number
+      const subQuery = this.shipmentRepository
+        .createQueryBuilder('s2')
+        .select('MAX(s2.id)', 'max_id') // Usar ID máximo como proxy de más reciente
+        .addSelect('s2.trackingNumber', 'tracking_number')
+        .where('s2.subsidiaryId = :subsidiaryId', { subsidiaryId })
+        .andWhere('s2.createdAt BETWEEN :start AND :end', { start, end })
+        .groupBy('s2.trackingNumber')
+        .getQuery();
+
+      // SUBCONSULTA: Tracking numbers que tienen entregados (para excluir)
+      const deliveredSubQuery = this.shipmentRepository
+        .createQueryBuilder('s3')
+        .select('DISTINCT s3.trackingNumber', 'tracking_number')
+        .where('s3.subsidiaryId = :subsidiaryId', { subsidiaryId })
+        .andWhere('s3.createdAt BETWEEN :start AND :end', { start, end })
+        .andWhere('s3.status IN (:...deliveredStatuses)', {
+          deliveredStatuses: ['ENTREGADO', 'ENTREGADA']
+        })
+        .getQuery();
+
+      // QUERY PRINCIPAL
+      const shipments = await this.shipmentRepository
+        .createQueryBuilder('s')
+        .innerJoin(
+          `(${subQuery})`,
+          'latest',
+          's.trackingNumber = latest.tracking_number AND s.id = latest.max_id'
+        )
+        .where('s.subsidiaryId = :subsidiaryId', { subsidiaryId })
+        .andWhere('s.createdAt BETWEEN :start AND :end', { start, end })
+        .andWhere(`s.trackingNumber NOT IN (${deliveredSubQuery})`)
+        .andWhere('s.status IN (:...pendingStatuses)', {
+          pendingStatuses: [
+            'EN_RUTA',
+            'PENDIENTE', 
+            'DESCONOCIDO',
+            /*'EN_BODEGA',
+            'RECHAZADO',
+            'NO_ENTREGADO'*/
+          ]
+        })
+        .setParameters({
+          subsidiaryId,
+          start,
+          end,
+          deliveredStatuses: ['ENTREGADO', 'ENTREGADA'],
+          pendingStatuses: ['EN_RUTA', 'PENDIENTE', 'DESCONOCIDO', 'EN_BODEGA'/*, 'RECHAZADO', 'NO_ENTREGADO'*/]
+        })
+        .orderBy('s.createdAt', 'DESC')
+        .getMany();
+
+      console.log(`📊 Envíos pendientes únicos: ${shipments.length}`);
+
+      return {
+        count: shipments.length,
+        shipments
+      };
+    }
+
+    async getPendingShipmentsExcel(
+      subsidiaryId: string,
+      startDate: string,
+      endDate: string
+    ): Promise<Buffer> {
+
+      const { shipments } =
+        await this.getPendingShipmentsBySubsidiary(
+          subsidiaryId,
+          startDate,
+          endDate
+        );
+
+      return this.generatePendingShipmentsExcel(shipments);
+    }
+
+
+    /************************************** */
 }
 
 

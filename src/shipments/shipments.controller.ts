@@ -1,6 +1,6 @@
-import { Controller, Get, Post, Param,UseGuards, UseInterceptors, UploadedFile, BadRequestException, InternalServerErrorException, Request, UploadedFiles, Query, Body, Logger, Res, HttpStatus } from '@nestjs/common';
+import { Controller, Get, Post, Param, UseGuards, UseInterceptors, UploadedFile, BadRequestException, InternalServerErrorException, Request, UploadedFiles, Query, Body, Logger, Res, HttpStatus } from '@nestjs/common';
 import { ShipmentsService } from './shipments.service';
-import { ApiBearerAuth, ApiBody, ApiConsumes, ApiOperation, ApiProperty, ApiResponse, ApiTags } from '@nestjs/swagger';
+import { ApiBadRequestResponse, ApiBearerAuth, ApiBody, ApiConsumes, ApiOkResponse, ApiOperation, ApiProduces, ApiProperty, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from 'src/auth/guards/jwt-auth.guard';
 import { FileFieldsInterceptor, FileInterceptor } from '@nestjs/platform-express';
 import { FedexService } from './fedex.service';
@@ -10,6 +10,7 @@ import { CheckFedexStatusDto } from './dto/check-status-fedex-test';
 import { ForPickUpDto } from './dto/for-pick-up.dto';
 import { ParsedShipmentDto } from './dto/parsed-shipment.dto';
 import { ShipmentToSaveDto } from './dto/shipment-to-save.dto';
+import { PendingShipmentsQueryDto } from './dto/pendending-shipments.dto';
 
 @ApiTags('shipments')
 @ApiBearerAuth()
@@ -21,6 +22,56 @@ export class ShipmentsController {
     private readonly shipmentsService: ShipmentsService,
     private readonly fedexService: FedexService
   ) {}
+
+  @Get('pendings')
+  @ApiOperation({
+    summary: 'Obtener envíos pendientes',
+    description: `
+      Devuelve la lista de envíos pendientes.
+      Puede filtrarse por sucursal y rango de fechas.
+      `
+  })
+  @ApiOkResponse({
+    description: 'Lista de envíos pendientes obtenida correctamente'
+  })
+  @ApiBadRequestResponse({
+    description: 'Parámetros inválidos'
+  })
+  async getPendingShipments(
+    @Query() query: PendingShipmentsQueryDto
+  ) {
+    return this.shipmentsService.getPendingShipmentsBySubsidiary(
+      query.subsidiaryId,
+      query.startDate,
+      query.endDate
+    );
+  }
+
+  @Get('pendings/excel')
+  async downloadPendingShipmentsExcel(
+    @Query() query: PendingShipmentsQueryDto,
+    @Res() res: any
+  ) {
+    const buffer = await this.shipmentsService.getPendingShipmentsExcel(
+      query.subsidiaryId,
+      query.startDate,
+      query.endDate
+    );
+
+    const fileName = `envios_pendientes_${Date.now()}.xlsx`;
+
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    );
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="${fileName}"`
+    );
+
+    res.end(buffer);
+  }
+
 
   @Get(':subsidiaryId')
   @ApiOperation({ summary: 'Consultar todos los envios' })
@@ -400,5 +451,7 @@ export class ShipmentsController {
   async addSingleShipment(@Body() dto: ShipmentToSaveDto) {
     return this.shipmentsService.addShipment(dto);
   }  
+
+
 
 }
