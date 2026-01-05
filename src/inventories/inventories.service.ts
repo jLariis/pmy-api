@@ -7,6 +7,30 @@ import { ChargeShipment, Consolidated, Shipment, Subsidiary } from 'src/entities
 import { ValidatedPackageDispatchDto } from 'src/package-dispatch/dto/validated-package-dispatch.dto';
 import { MailService } from 'src/mail/mail.service';
 import { ShipmentStatusType } from 'src/common/enums/shipment-status-type.enum';
+import * as ExcelJS from 'exceljs';
+
+export interface ShipmentWithout67 {
+  trackingNumber: string;
+  currentStatus: string;
+  statusHistoryCount: number;
+  exceptionCodes: string[];
+  firstStatusDate: Date | null;
+  lastStatusDate: Date | null;
+  daysInSystem: number | null;
+  comment: string;
+}
+
+export interface Inventory67Response {
+  summary: {
+    totalShipments: number;
+    withoutCode67: number;
+    withCode67: number;
+    inventoryDate?: Date;
+    percentageWithout67: number;
+    inventoryId?: string;
+  };
+  details: ShipmentWithout67[];
+}
 
 @Injectable()
 export class InventoriesService {
@@ -403,4 +427,655 @@ export class InventoriesService {
       throw err;
     }
   }
+
+  async checkInventory67BySubsidiaryResp(subsidiaryId: string) {
+
+    const inventory = await this.inventoryRepository.findOne({
+      where: {
+        subsidiary: { id: subsidiaryId }
+      },
+      order: {
+        inventoryDate: 'DESC'
+      },
+      select: ['id', 'inventoryDate'],
+      relations: {
+        shipments: {
+          statusHistory: true
+        }
+      }
+    });  
+
+    console.log('Último inventario encontrado:', inventory);
+
+    if (!inventory) {
+      this.logger.warn(`No se encontró inventario para la sucursal con id: ${subsidiaryId}`);
+      return [];
+    }
+
+    const shipmentsWithout67 = [];
+
+    for (const shipment of inventory.shipments) {
+        try {
+          if (!shipment.statusHistory || shipment.statusHistory.length === 0) {
+            shipmentsWithout67.push({
+              trackingNumber: shipment.trackingNumber,
+              currentStatus: shipment.status,
+              statusHistoryCount: 0,
+              exceptionCodes: [],
+              firstStatusDate: null,
+              lastStatusDate: null,
+              comment: 'Sin historial de estados',
+            });
+            continue;
+          }
+
+          const sortedHistory = shipment.statusHistory.sort(
+            (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+          );
+
+          const hasExceptionCode67 = sortedHistory.some(status => 
+            status.exceptionCode === '67'
+          );
+
+          if (!hasExceptionCode67) {
+            const firstStatus = sortedHistory[0];
+            const lastStatus = sortedHistory[sortedHistory.length - 1];
+
+            const exceptionCodes = sortedHistory
+              .map(h => h.exceptionCode)
+              .filter(code => code !== null && code !== undefined);
+
+            shipmentsWithout67.push({
+              trackingNumber: shipment.trackingNumber,
+              currentStatus: shipment.status,
+              statusHistoryCount: sortedHistory.length,
+              exceptionCodes: [...new Set(exceptionCodes)],
+              firstStatusDate: firstStatus?.timestamp,
+              lastStatusDate: lastStatus?.timestamp,
+              comment: 'No tiene exceptionCode 67',
+            });
+          }
+
+        } catch (error) {
+          shipmentsWithout67.push({
+            trackingNumber: shipment.trackingNumber,
+            currentStatus: shipment.status,
+            statusHistoryCount: 0,
+            exceptionCodes: [],
+            firstStatusDate: null,
+            lastStatusDate: null,
+            comment: `Error: ${error.message}`,
+          });
+        }
+      }
+
+      // ⚠️ FALTABA ESTE RETURN - Agrégalo al final
+      return {
+        summary: {
+          totalShipments: inventory.shipments.length,
+          withoutCode67: shipmentsWithout67.length,
+          withCode67: inventory.shipments.length - shipmentsWithout67.length,
+        },
+        details: shipmentsWithout67
+      };
+
+
+    /*return { 
+      inventory: inventory,
+      shipments: inventory.shipments
+    };*/
+
+  }
+
+  /**
+   * MÉTODO PRINCIPAL - Corregido para relación Inventory -> shipments (array)
+   */
+  async checkInventory67BySubsidiary(subsidiaryId: string): Promise<{
+    summary: {
+      totalShipments: number;
+      withoutCode67: number;
+      withCode67: number;
+      inventoryDate?: Date;
+      percentageWithout67: number;
+      inventoryId?: string;
+    };
+    details: ShipmentWithout67[];
+  }> {
+    const startTime = Date.now();
+    
+    try {
+      // 1️⃣ OBTENER INVENTARIO MÁS RECIENTE CON SHIPMENTS
+      const latestInventory = await this.getLatestInventoryWithShipments(subsidiaryId);
+      
+      if (!latestInventory) {
+        this.logger.log(`⏱️ ${Date.now() - startTime}ms - Sin inventario`);
+        return this.getEmptyResult();
+      }
+
+      console.log(`📦 Inventario ID: ${latestInventory.id}, Shipments: ${latestInventory.shipments?.length || 0}`);
+
+      // 2️⃣ PROCESAR SHIPMENTS DEL INVENTARIO
+      const { shipmentsWithout67, totalShipments } = 
+        await this.processInventoryShipments(latestInventory);
+      
+      const withoutCode67 = shipmentsWithout67.length;
+      const withCode67 = Math.max(0, totalShipments - withoutCode67);
+      const percentageWithout67 = totalShipments > 0 
+        ? Math.round((withoutCode67 / totalShipments) * 100 * 10) / 10 
+        : 0;
+
+      this.logger.log(`⏱️ ${Date.now() - startTime}ms - ${withoutCode67}/${totalShipments} sin código 67`);
+
+      return {
+        summary: {
+          totalShipments,
+          withoutCode67,
+          withCode67,
+          inventoryDate: latestInventory.inventoryDate,
+          percentageWithout67,
+          inventoryId: latestInventory.id,
+        },
+        details: shipmentsWithout67
+      };
+
+    } catch (error) {
+      this.logger.error(`❌ Error: ${error.message}`, error.stack);
+      throw error;
+    }
+  }
+
+  // ============ MÉTODOS HELPER CORREGIDOS ============
+
+  /**
+   * Obtiene el inventario más reciente CON SUS SHIPMENTS
+   */
+  private async getLatestInventoryWithShipments(subsidiaryId: string): Promise<Inventory | null> {
+    return await this.inventoryRepository.findOne({
+      where: { subsidiary: { id: subsidiaryId } },
+      relations: [
+        'shipments',
+        'shipments.statusHistory' // Cargar historial de cada shipment
+      ],
+      select: {
+        id: true,
+        inventoryDate: true,
+        shipments: {
+          id: true,
+          trackingNumber: true,
+          status: true,
+          createdAt: true,
+          statusHistory: {
+            id: true,
+            exceptionCode: true,
+            timestamp: true,
+          }
+        }
+      },
+      order: { inventoryDate: 'DESC' },
+    });
+  }
+
+  /**
+   * Procesa los shipments del inventario
+   */
+  private async processInventoryShipments(inventory: Inventory): Promise<{
+    shipmentsWithout67: ShipmentWithout67[];
+    totalShipments: number;
+  }> {
+    if (!inventory.shipments || inventory.shipments.length === 0) {
+      return { shipmentsWithout67: [], totalShipments: 0 };
+    }
+
+    const shipmentsWithout67: ShipmentWithout67[] = [];
+    const totalShipments = inventory.shipments.length;
+
+    // Procesar en batches para mejor rendimiento
+    const BATCH_SIZE = 100;
+    
+    for (let i = 0; i < totalShipments; i += BATCH_SIZE) {
+      const batch = inventory.shipments.slice(i, Math.min(i + BATCH_SIZE, totalShipments));
+      
+      for (const shipment of batch) {
+        try {
+          const result = this.processSingleShipment(shipment);
+          if (result) {
+            shipmentsWithout67.push(result);
+          }
+        } catch (error) {
+          // Si falla un shipment, continuar con los demás
+          shipmentsWithout67.push({
+            trackingNumber: shipment.trackingNumber,
+            currentStatus: shipment.status,
+            statusHistoryCount: 0,
+            exceptionCodes: [],
+            firstStatusDate: null,
+            lastStatusDate: null,
+            daysInSystem: null,
+            comment: `Error: ${error.message}`,
+          });
+        }
+      }
+    }
+
+    return { shipmentsWithout67, totalShipments };
+  }
+
+  /**
+   * Procesa un solo shipment del inventario
+   */
+  private processSingleShipment(shipment: any): ShipmentWithout67 | null {
+    const statusHistory = shipment.statusHistory || [];
+    const historyCount = statusHistory.length;
+
+    // Verificar si tiene código 67 en su historial
+    let hasCode67 = false;
+    let firstStatusDate: Date | null = null;
+    let lastStatusDate: Date | null = null;
+    const exceptionCodes = new Set<string>();
+
+    // Procesar historial en un solo loop
+    if (historyCount > 0) {
+      let minDate: Date | null = null;
+      let maxDate: Date | null = null;
+      
+      for (const status of statusHistory) {
+        // Verificar código 67
+        if (status.exceptionCode === '67') {
+          hasCode67 = true;
+          break; // Salir temprano si encontramos código 67
+        }
+        
+        // Recoger exception codes únicos (excluyendo null/empty)
+        if (status.exceptionCode && status.exceptionCode.trim() !== '') {
+          exceptionCodes.add(status.exceptionCode);
+        }
+        
+        // Encontrar fechas mínimas y máximas
+        const statusDate = new Date(status.timestamp);
+        if (!minDate || statusDate < minDate) {
+          minDate = statusDate;
+        }
+        if (!maxDate || statusDate > maxDate) {
+          maxDate = statusDate;
+        }
+      }
+      
+      firstStatusDate = minDate;
+      lastStatusDate = maxDate;
+    }
+
+    // Si tiene código 67, NO incluirlo
+    if (hasCode67) {
+      return null;
+    }
+
+    // Calcular días en sistema
+    let daysInSystem: number | null = null;
+    if (firstStatusDate) {
+      const today = new Date();
+      const diffTime = Math.abs(today.getTime() - firstStatusDate.getTime());
+      daysInSystem = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+    }
+
+    return {
+      trackingNumber: shipment.trackingNumber,
+      currentStatus: shipment.status,
+      statusHistoryCount: historyCount,
+      exceptionCodes: Array.from(exceptionCodes),
+      firstStatusDate,
+      lastStatusDate,
+      daysInSystem,
+      comment: historyCount === 0 
+        ? 'Sin historial de estados' 
+        : 'No tiene exceptionCode 67',
+    };
+  }
+
+  /**
+   * Resultado vacío
+   */
+  private getEmptyResult() {
+    return {
+      summary: {
+        totalShipments: 0,
+        withoutCode67: 0,
+        withCode67: 0,
+        percentageWithout67: 0,
+      },
+      details: []
+    };
+  }
+
+  // ============ GENERADOR DE EXCEL CORREGIDO ============
+
+  /**
+   * Genera reporte Excel optimizado
+   */
+  async generateExcelReport(subsidiaryId: string): Promise<Buffer> {
+    const startTime = Date.now();
+    
+    try {
+      // 1. Obtener datos
+      const inventoryData = await this.checkInventory67BySubsidiary(subsidiaryId);
+      
+      // 2. Crear workbook
+      const workbook = new ExcelJS.Workbook();
+      workbook.creator = 'Sistema de Inventario';
+      workbook.created = new Date();
+      
+      // 3. Agregar hojas
+      this.addSummarySheet(workbook, inventoryData);
+      this.addDetailsSheet(workbook, inventoryData.details);
+      this.addStatisticsSheet(workbook, inventoryData);
+      
+      // 4. Generar buffer
+      this.logger.log(`📊 Excel generado en: ${Date.now() - startTime}ms`);
+      const arrayBuffer = await workbook.xlsx.writeBuffer();
+      return Buffer.from(arrayBuffer);  
+            
+    } catch (error) {
+      this.logger.error(`❌ Error generando Excel: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Agrega hoja de resumen
+   */
+  private addSummarySheet(workbook: ExcelJS.Workbook, data: any): void {
+    const worksheet = workbook.addWorksheet('Resumen');
+    
+    // Título
+    worksheet.mergeCells('A1:G1');
+    const titleCell = worksheet.getCell('A1');
+    titleCell.value = 'REPORTE - SHIPMENTS SIN CÓDIGO 67';
+    titleCell.font = { bold: true, size: 16, color: { argb: 'FFFFFF' } };
+    titleCell.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: '2E75B6' }
+    };
+    titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
+    
+    // Información del inventario
+    const infoRows = [
+      ['Fecha de generación:', new Date()],
+      ['Fecha de inventario:', data.summary.inventoryDate || 'N/A'],
+      ['ID Inventario:', data.summary.inventoryId || 'N/A'],
+      ['Total Shipments:', data.summary.totalShipments],
+      ['Sin código 67:', data.summary.withoutCode67],
+      ['Con código 67:', data.summary.withCode67],
+      ['Porcentaje sin 67:', `${data.summary.percentageWithout67}%`],
+    ];
+    
+    infoRows.forEach(([label, value], index) => {
+      const row = 3 + index;
+      worksheet.getCell(`A${row}`).value = label;
+      worksheet.getCell(`B${row}`).value = value;
+      
+      if (value instanceof Date) {
+        worksheet.getCell(`B${row}`).numFmt = 'dd/mm/yyyy hh:mm';
+      }
+      
+      if (typeof value === 'number' && index >= 3) {
+        worksheet.getCell(`B${row}`).font = { bold: true, color: { argb: 'E46C0A' } };
+      }
+    });
+    
+    // Formato
+    worksheet.columns = [
+      { width: 25 },
+      { width: 25 },
+    ];
+    
+    // Ajustar alturas
+    for (let i = 1; i <= 10; i++) {
+      worksheet.getRow(i).height = 25;
+    }
+  }
+
+  /**
+   * Agrega hoja de detalles
+   */
+  private addDetailsSheet(workbook: ExcelJS.Workbook, details: ShipmentWithout67[]): void {
+    const worksheet = workbook.addWorksheet('Detalles');
+    
+    // Encabezados
+    const headers = [
+      { header: 'No.', key: 'index', width: 8 },
+      { header: 'Tracking Number', key: 'trackingNumber', width: 25 },
+      { header: 'Estado', key: 'currentStatus', width: 20 },
+      { header: 'Historial', key: 'statusHistoryCount', width: 12 },
+      { header: 'Códigos', key: 'exceptionCodes', width: 25 },
+      { header: 'Primera Fecha', key: 'firstStatusDate', width: 22 },
+      { header: 'Última Fecha', key: 'lastStatusDate', width: 22 },
+      { header: 'Días', key: 'daysInSystem', width: 10 },
+      { header: 'Comentario', key: 'comment', width: 30 },
+    ];
+    
+    worksheet.columns = headers.map(h => ({
+      header: h.header,
+      key: h.key,
+      width: h.width
+    }));
+    
+    // Estilo encabezados
+    const headerRow = worksheet.getRow(1);
+    headerRow.font = { bold: true, color: { argb: 'FFFFFF' } };
+    headerRow.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: '5B9BD5' }
+    };
+    headerRow.alignment = { horizontal: 'center', vertical: 'middle' };
+    headerRow.height = 30;
+    
+    // Agregar datos
+    details.forEach((item, index) => {
+      const rowNumber = index + 2;
+      const row = worksheet.getRow(rowNumber);
+      
+      // Datos
+      row.getCell('index').value = index + 1;
+      row.getCell('trackingNumber').value = item.trackingNumber;
+      row.getCell('currentStatus').value = item.currentStatus;
+      row.getCell('statusHistoryCount').value = item.statusHistoryCount;
+      row.getCell('exceptionCodes').value = item.exceptionCodes.join(', ');
+      
+      // Fechas formateadas
+      if (item.firstStatusDate) {
+        const date = new Date(item.firstStatusDate);
+        row.getCell('firstStatusDate').value = date;
+        row.getCell('firstStatusDate').numFmt = 'dd/mm/yyyy hh:mm';
+      }
+      
+      if (item.lastStatusDate) {
+        const date = new Date(item.lastStatusDate);
+        row.getCell('lastStatusDate').value = date;
+        row.getCell('lastStatusDate').numFmt = 'dd/mm/yyyy hh:mm';
+      }
+      
+      // Días
+      if (item.daysInSystem !== null) {
+        row.getCell('daysInSystem').value = item.daysInSystem;
+        row.getCell('daysInSystem').numFmt = '0';
+      }
+      
+      // Comentario
+      row.getCell('comment').value = item.comment;
+      
+      // Color alternado
+      if (rowNumber % 2 === 0) {
+        row.fill = {
+          type: 'pattern',
+          pattern: 'solid',
+          fgColor: { argb: 'F2F2F2' }
+        };
+      }
+      
+      // Bordes
+      headers.forEach((_, colIndex) => {
+        row.getCell(colIndex + 1).border = {
+          top: { style: 'thin' },
+          left: { style: 'thin' },
+          bottom: { style: 'thin' },
+          right: { style: 'thin' }
+        };
+      });
+    });
+    
+    // Congelar encabezados y auto-filtro
+    worksheet.views = [{ state: 'frozen', xSplit: 0, ySplit: 1 }];
+    worksheet.autoFilter = 'A1:I1';
+  }
+
+  /**
+   * Agrega hoja de estadísticas
+   */
+  private addStatisticsSheet(workbook: ExcelJS.Workbook, data: any): void {
+    const worksheet = workbook.addWorksheet('Estadísticas');
+    
+    // Título
+    worksheet.mergeCells('A1:C1');
+    worksheet.getCell('A1').value = 'ESTADÍSTICAS';
+    worksheet.getCell('A1').font = { bold: true, size: 14 };
+    worksheet.getCell('A1').alignment = { horizontal: 'center' };
+    
+    // Distribución por estado
+    const statusStats = this.calculateStatusStats(data.details);
+    
+    worksheet.getCell('A3').value = 'Distribución por Estado';
+    worksheet.getCell('A3').font = { bold: true };
+    
+    worksheet.getCell('A4').value = 'Estado';
+    worksheet.getCell('B4').value = 'Cantidad';
+    worksheet.getCell('C4').value = 'Porcentaje';
+    
+    let row = 5;
+    statusStats.forEach(stat => {
+      worksheet.getCell(`A${row}`).value = stat.status;
+      worksheet.getCell(`B${row}`).value = stat.count;
+      worksheet.getCell(`C${row}`).value = `${stat.percentage}%`;
+      row++;
+    });
+    
+    // Distribución por días
+    const dayStats = this.calculateDayStats(data.details);
+    
+    worksheet.getCell('A' + (row + 2)).value = 'Distribución por Días en Sistema';
+    worksheet.getCell('A' + (row + 2)).font = { bold: true };
+    
+    worksheet.getCell('A' + (row + 3)).value = 'Rango';
+    worksheet.getCell('B' + (row + 3)).value = 'Cantidad';
+    
+    let dayRow = row + 4;
+    dayStats.forEach(stat => {
+      worksheet.getCell(`A${dayRow}`).value = stat.range;
+      worksheet.getCell(`B${dayRow}`).value = stat.count;
+      dayRow++;
+    });
+    
+    // Formato
+    worksheet.columns = [
+      { width: 25 },
+      { width: 15 },
+      { width: 15 },
+    ];
+  }
+
+  /**
+   * Calcula estadísticas por estado
+   */
+  private calculateStatusStats(details: ShipmentWithout67[]): Array<{
+    status: string;
+    count: number;
+    percentage: number;
+  }> {
+    const statusMap = new Map<string, number>();
+    
+    details.forEach(item => {
+      const count = statusMap.get(item.currentStatus) || 0;
+      statusMap.set(item.currentStatus, count + 1);
+    });
+    
+    const total = details.length;
+    return Array.from(statusMap.entries())
+      .map(([status, count]) => ({
+        status,
+        count,
+        percentage: total > 0 ? Math.round((count / total) * 100 * 10) / 10 : 0
+      }))
+      .sort((a, b) => b.count - a.count);
+  }
+
+  /**
+   * Calcula estadísticas por días
+   */
+  private calculateDayStats(details: ShipmentWithout67[]): Array<{
+    range: string;
+    count: number;
+  }> {
+    const ranges = [
+      { range: '0-7 días', min: 0, max: 7 },
+      { range: '8-30 días', min: 8, max: 30 },
+      { range: '31-90 días', min: 31, max: 90 },
+      { range: '91-180 días', min: 91, max: 180 },
+      { range: 'Más de 180 días', min: 181, max: Infinity },
+      { range: 'Sin fecha', min: -1, max: -1 },
+    ];
+    
+    const counts = new Array(ranges.length).fill(0);
+    
+    details.forEach(item => {
+      const days = item.daysInSystem;
+      
+      if (days === null || days === undefined) {
+        counts[5]++; // Sin fecha
+      } else {
+        for (let i = 0; i < ranges.length - 1; i++) {
+          if (days >= ranges[i].min && days <= ranges[i].max) {
+            counts[i]++;
+            break;
+          }
+        }
+      }
+    });
+    
+    return ranges.map((range, index) => ({
+      range: range.range,
+      count: counts[index]
+    }));
+  }
+
+  // ============ MÉTODO DE DESCARGA ============
+
+  /**
+   * Genera y prepara archivo para descarga
+   */
+  async downloadExcelReport(
+    subsidiaryId: string, 
+    subsidiaryName?: string
+  ): Promise<{ buffer: Buffer; fileName: string; mimeType: string }> {
+    
+    const buffer = await this.generateExcelReport(subsidiaryId);
+    
+    // Generar nombre de archivo
+    const timestamp = new Date()
+      .toISOString()
+      .replace(/[:\-T.]/g, '')
+      .slice(0, 14);
+    
+    const namePart = subsidiaryName 
+      ? subsidiaryName.replace(/[^a-z0-9]/gi, '_').slice(0, 30)
+      : `sucursal_${subsidiaryId.slice(0, 8)}`;
+    
+    const fileName = `sin_codigo_67_${namePart}_${timestamp}.xlsx`;
+    
+    return {
+      buffer,
+      fileName,
+      mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    };
+  }
+
 }

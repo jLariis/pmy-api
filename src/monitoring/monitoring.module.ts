@@ -15,9 +15,12 @@ import { DHLService } from 'src/shipments/dto/dhl.service';
 import { SubsidiariesService } from 'src/subsidiaries/subsidiaries.service';
 import { UnloadingService } from 'src/unloading/unloading.service';
 import { Unloading } from 'src/entities/unloading.entity';
+import { InventoriesService } from 'src/inventories/inventories.service';
+import { Inventory } from 'src/entities/inventory.entity';
+
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Shipment, ChargeShipment, Consolidated, Subsidiary, PackageDispatch, Devolution, RouteClosure, Income, Charge, ShipmentStatus, ForPickUp, Unloading])],
+  imports: [TypeOrmModule.forFeature([Shipment, ChargeShipment, Consolidated, Subsidiary, PackageDispatch, Devolution, RouteClosure, Income, Charge, ShipmentStatus, ForPickUp, Unloading, Inventory])],
   controllers: [MonitoringController],
   providers: [
     MonitoringService, 
@@ -28,7 +31,8 @@ import { Unloading } from 'src/entities/unloading.entity';
     PackageDispatchService, 
     ShipmentsService, 
     ConsolidatedService,
-    UnloadingService
+    UnloadingService,
+    InventoriesService
   ],
 })
 export class MonitoringModule {}

@@ -41,9 +41,7 @@ export class ShipmentsController {
     @Query() query: PendingShipmentsQueryDto
   ) {
     return this.shipmentsService.getPendingShipmentsBySubsidiary(
-      query.subsidiaryId,
-      query.startDate,
-      query.endDate
+      query.subsidiaryId
     );
   }
 
@@ -53,9 +51,7 @@ export class ShipmentsController {
     @Res() res: any
   ) {
     const buffer = await this.shipmentsService.getPendingShipmentsExcel(
-      query.subsidiaryId,
-      query.startDate,
-      query.endDate
+      query.subsidiaryId
     );
 
     const fileName = `envios_pendientes_${Date.now()}.xlsx`;

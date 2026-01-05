@@ -7039,12 +7039,12 @@ export class ShipmentsService {
 
     async getPendingShipmentsBySubsidiary(
       subsidiaryId: string, 
-      startDate: string, 
-      endDate: string
+      /*startDate: string, 
+      endDate: string*/
     ): Promise<{ count: number, shipments: Shipment[] }> {
-      const start = new Date(startDate);
+      /*const start = new Date(startDate);
       const end = new Date(endDate);
-      end.setHours(23, 59, 59, 999);
+      end.setHours(23, 59, 59, 999);*/
 
       // SUBCONSULTA: Obtener el ID más reciente por tracking number
       const subQuery = this.shipmentRepository
@@ -7052,7 +7052,7 @@ export class ShipmentsService {
         .select('MAX(s2.id)', 'max_id') // Usar ID máximo como proxy de más reciente
         .addSelect('s2.trackingNumber', 'tracking_number')
         .where('s2.subsidiaryId = :subsidiaryId', { subsidiaryId })
-        .andWhere('s2.createdAt BETWEEN :start AND :end', { start, end })
+        //.andWhere('s2.createdAt BETWEEN :start AND :end', { start, end })
         .groupBy('s2.trackingNumber')
         .getQuery();
 
@@ -7061,7 +7061,7 @@ export class ShipmentsService {
         .createQueryBuilder('s3')
         .select('DISTINCT s3.trackingNumber', 'tracking_number')
         .where('s3.subsidiaryId = :subsidiaryId', { subsidiaryId })
-        .andWhere('s3.createdAt BETWEEN :start AND :end', { start, end })
+        //.andWhere('s3.createdAt BETWEEN :start AND :end', { start, end })
         .andWhere('s3.status IN (:...deliveredStatuses)', {
           deliveredStatuses: ['ENTREGADO', 'ENTREGADA']
         })
@@ -7076,7 +7076,7 @@ export class ShipmentsService {
           's.trackingNumber = latest.tracking_number AND s.id = latest.max_id'
         )
         .where('s.subsidiaryId = :subsidiaryId', { subsidiaryId })
-        .andWhere('s.createdAt BETWEEN :start AND :end', { start, end })
+        //.andWhere('s.createdAt BETWEEN :start AND :end', { start, end })
         .andWhere(`s.trackingNumber NOT IN (${deliveredSubQuery})`)
         .andWhere('s.status IN (:...pendingStatuses)', {
           pendingStatuses: [
@@ -7090,12 +7090,12 @@ export class ShipmentsService {
         })
         .setParameters({
           subsidiaryId,
-          start,
-          end,
+          /*start,
+          end,*/
           deliveredStatuses: ['ENTREGADO', 'ENTREGADA'],
           pendingStatuses: ['EN_RUTA', 'PENDIENTE', 'DESCONOCIDO', 'EN_BODEGA'/*, 'RECHAZADO', 'NO_ENTREGADO'*/]
         })
-        .orderBy('s.createdAt', 'DESC')
+        .orderBy('s.recipientZip', 'ASC')
         .getMany();
 
       console.log(`📊 Envíos pendientes únicos: ${shipments.length}`);
@@ -7108,15 +7108,15 @@ export class ShipmentsService {
 
     async getPendingShipmentsExcel(
       subsidiaryId: string,
-      startDate: string,
-      endDate: string
+      /*startDate: string,
+      endDate: string*/
     ): Promise<Buffer> {
 
       const { shipments } =
         await this.getPendingShipmentsBySubsidiary(
           subsidiaryId,
-          startDate,
-          endDate
+          /*startDate,
+          endDate*/
         );
 
       return this.generatePendingShipmentsExcel(shipments);

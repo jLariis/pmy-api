@@ -9,20 +9,4 @@ export class PendingShipmentsQueryDto {
   @IsOptional()
   @IsString()
   subsidiaryId?: string;
-
-  @ApiPropertyOptional({
-    description: 'Fecha inicio (YYYY-MM-DD)',
-    example: '2024-12-01'
-  })
-  @IsOptional()
-  @IsDateString()
-  startDate?: string;
-
-  @ApiPropertyOptional({
-    description: 'Fecha fin (YYYY-MM-DD)',
-    example: '2024-12-31'
-  })
-  @IsOptional()
-  @IsDateString()
-  endDate?: string;
 }
