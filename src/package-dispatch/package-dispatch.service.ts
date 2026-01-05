@@ -227,7 +227,7 @@ export class PackageDispatchService {
     return `This action returns all packageDispatch`;
   }
 
-  async findBySubsidiary(subsidiaryId: string) {
+  async findBySubsidiaryResp(subsidiaryId: string) {
     const qb = this.packageDispatchRepository
       .createQueryBuilder('dispatch')
       .leftJoinAndSelect('dispatch.subsidiary', 'subsidiary')
@@ -237,6 +237,52 @@ export class PackageDispatchService {
       .leftJoinAndSelect('dispatch.shipments', 'shipments')
       .leftJoinAndSelect('dispatch.chargeShipments', 'chargeShipments')
       .where('subsidiary.id = :subsidiaryId', { subsidiaryId })
+      .orderBy('dispatch.createdAt', 'DESC');
+
+    const dispatches = await qb.getMany();
+
+    // Transformamos los datos según lo que necesitas
+    return dispatches.map((dispatch) => ({
+      id: dispatch.id,
+      trackingNumber: dispatch.trackingNumber,
+      createdAt: dispatch.createdAt,
+      status: dispatch.status,
+      vehicle: dispatch.vehicle
+        ? {
+            name: dispatch.vehicle.name,
+            plateNumber: dispatch.vehicle.plateNumber,
+          }
+        : null,
+      subsidiary: dispatch.subsidiary
+        ? {
+            id: dispatch.subsidiary.id,
+            name: dispatch.subsidiary.name,
+          }
+        : null,
+      driver: dispatch.drivers?.length ? dispatch.drivers[0].name : null, // 👈 primer conductor
+      route: dispatch.routes?.length ? dispatch.routes[0].name : null, // 👈 primera ruta
+      normalPackages: dispatch.shipments?.length || 0, // 👈 Shipments
+      f2Packages: dispatch.chargeShipments?.length || 0, // 👈 ChargeShipments
+    }));
+  }
+
+  async findBySubsidiary(subsidiaryId: string) {
+    // Calcular la fecha límite (5 días antes de hoy)
+    const fiveDaysAgo = new Date();
+    fiveDaysAgo.setDate(fiveDaysAgo.getDate() - 5);
+    // Opcional: establecer a medianoche para incluir todo el día
+    fiveDaysAgo.setHours(0, 0, 0, 0);
+
+    const qb = this.packageDispatchRepository
+      .createQueryBuilder('dispatch')
+      .leftJoinAndSelect('dispatch.subsidiary', 'subsidiary')
+      .leftJoinAndSelect('dispatch.vehicle', 'vehicle')
+      .leftJoinAndSelect('dispatch.drivers', 'drivers')
+      .leftJoinAndSelect('dispatch.routes', 'routes')
+      .leftJoinAndSelect('dispatch.shipments', 'shipments')
+      .leftJoinAndSelect('dispatch.chargeShipments', 'chargeShipments')
+      .where('subsidiary.id = :subsidiaryId', { subsidiaryId })
+      .andWhere('dispatch.createdAt >= :fiveDaysAgo', { fiveDaysAgo })
       .orderBy('dispatch.createdAt', 'DESC');
 
     const dispatches = await qb.getMany();

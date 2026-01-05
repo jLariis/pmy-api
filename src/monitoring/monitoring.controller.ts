@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete } from '@nestjs/common';
+import { Controller, Get, Post, Body, Patch, Param, Delete, Header, Query, Res } from '@nestjs/common';
 import { MonitoringService } from './monitoring.service';
 import { ApiTags } from '@nestjs/swagger';
 
@@ -66,6 +66,42 @@ export class MonitoringController {
   @Get('package-dispatch/no-67/:packageDispatchId')
   getNo67ShipmentsByPackageDispatch(@Param('packageDispatchId') packageDispatchId: string) {
     return this.monitoringService.getShipmentsWithout67ByPackageDispatch(packageDispatchId);
+  }
+
+  @Get('inventory/67/:subsidiaryId')
+  checkInventory67(@Param('subsidiaryId') subsidiaryId: string) {
+    return this.monitoringService.checkInventory67(subsidiaryId);
+  }
+
+  /**
+   * Endpoint para descargar Excel directamente
+   */
+  @Get('inventory-67/:subsidiaryId/excel')
+  @Header('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+  async downloadInventory67Excel(
+    @Param('subsidiaryId') subsidiaryId: string,
+    @Query('nombre') subsidiaryName: string,
+    @Res() res: any
+  ): Promise<void> {
+    try {
+      const excelResult = await this.monitoringService.generateInventory67Excel(
+        subsidiaryId, 
+        subsidiaryName
+      );
+      
+      // Configurar headers para descarga
+      res.setHeader('Content-Disposition', `attachment; filename="${excelResult.fileName}"`);
+      res.setHeader('Content-Length', excelResult.buffer.length);
+      
+      // Enviar el archivo
+      res.send(excelResult.buffer);
+      
+    } catch (error) {
+      res.status(500).json({
+        error: 'Error generando Excel',
+        message: error.message
+      });
+    }
   }
 
 }

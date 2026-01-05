@@ -1,7 +1,7 @@
 import { forwardRef, Inject, Injectable, Logger } from '@nestjs/common';
 import { CreateConsolidatedDto } from './dto/create-consolidated.dto';
 import { UpdateConsolidatedDto } from './dto/update-consolidated.dto';
-import { In, Repository } from 'typeorm';
+import { In, MoreThanOrEqual, Repository } from 'typeorm';
 import { ChargeShipment, Consolidated, Shipment, ShipmentStatus } from 'src/entities';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ShipmentConsolidatedDto } from './dto/shipment.dto';
@@ -36,7 +36,7 @@ export class ConsolidatedService {
     return Math.floor(diffTime / (1000 * 60 * 60 * 24));
   }
 
-  async findBySubsidiary(subdiaryId: string): Promise<{
+  async findBySubsidiaryResp(subdiaryId: string): Promise<{
     id: string, 
     type: string, 
     date: Date,
@@ -67,6 +67,53 @@ export class ConsolidatedService {
       relations: [
         'subsidiary'
       ], order: {
+        date: 'DESC'
+      }
+    });
+
+    return result;
+  }
+
+  /**** Nuevo para solo obtener 5 días atras */
+  async findBySubsidiary(subsidiaryId: string): Promise<{
+    id: string, 
+    type: string, 
+    date: Date,
+    consNumber: string,
+    numberOfPackages: number,
+    subsidiary: {
+      id: string,
+      name: string
+    }
+  }[]> {
+    // Calcular la fecha límite (5 días antes de hoy)
+    const fiveDaysAgo = new Date();
+    fiveDaysAgo.setDate(fiveDaysAgo.getDate() - 5);
+    // Opcional: establecer a medianoche para incluir todo el día
+    fiveDaysAgo.setHours(0, 0, 0, 0);
+    
+    const result = await this.consolidatedRepository.find({
+      select: {
+        id: true,
+        type: true,
+        date: true,
+        consNumber: true,
+        numberOfPackages: true,
+        subsidiary: {
+          id: true,
+          name: true,
+        }
+      },
+      where: {
+        subsidiary: {
+          id: subsidiaryId
+        },
+        date: MoreThanOrEqual(fiveDaysAgo)
+      },
+      relations: [
+        'subsidiary'
+      ], 
+      order: {
         date: 'DESC'
       }
     });

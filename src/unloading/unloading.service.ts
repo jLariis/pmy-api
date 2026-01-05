@@ -3,7 +3,7 @@ import { CreateUnloadingDto } from './dto/create-unloading.dto';
 import { UpdateUnloadingDto } from './dto/update-unloading.dto';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Unloading } from 'src/entities/unloading.entity';
-import { Between, In, Not, Repository } from 'typeorm';
+import { Between, In, MoreThanOrEqual, Not, Repository } from 'typeorm';
 import { Charge, ChargeShipment, Consolidated, Shipment, ShipmentStatus } from 'src/entities';
 import { ValidatedPackageDispatchDto } from 'src/package-dispatch/dto/validated-package-dispatch.dto';
 import { ValidatedUnloadingDto } from './dto/validate-package-unloading.dto';
@@ -1243,10 +1243,73 @@ export class UnloadingService {
   }
 
   /** For combo box on monitoring*/
-  async findBySubsidiaryId(subsidiaryId: string) {
+  async findBySubsidiaryIdResp(subsidiaryId: string) {
     // Traer unloadings con la relación directa a vehicle
     const unloadings = await this.unloadingRepository.find({
       where: { subsidiary: { id: subsidiaryId } },
+      select: {
+        id: true,
+        trackingNumber: true,
+        date: true,
+        vehicle: {
+          id: true,
+          plateNumber: true,
+          name: true,
+        },
+        subsidiary: {
+          id: true,
+          name: true,
+        },
+      },
+      relations: ['subsidiary', 'vehicle'],
+      order: { createdAt: 'DESC' },
+    });
+
+    if (!unloadings.length) return [];
+
+    const results = await Promise.all(
+      unloadings.map(async (unloading) => {
+        // Buscar Shipments y ChargeShipments ligados al unloading
+        const [shipments, chargeShipments] = await Promise.all([
+          this.shipmentRepository.find({
+            where: { unloading: { id: unloading.id } },
+          }),
+          this.chargeShipmentRepository.find({
+            where: { unloading: { id: unloading.id } },
+          }),
+        ]);
+
+        // Calcular número total de paquetes
+        const numberOfPackages = shipments.length + chargeShipments.length;
+
+        return {
+          id: unloading.id,
+          trackingNumber: unloading.trackingNumber,
+          date: unloading.date,
+          subsidiary: unloading.subsidiary,
+          vehicle: unloading.vehicle,
+          numberOfPackages,
+        };
+      }),
+    );
+
+    return results;
+  }
+
+  async findBySubsidiaryId(subsidiaryId: string) {
+    // Calcular la fecha límite (5 días antes de hoy)
+    const fiveDaysAgo = new Date();
+    fiveDaysAgo.setDate(fiveDaysAgo.getDate() - 5);
+    // Opcional: establecer a medianoche para incluir todo el día
+    fiveDaysAgo.setHours(0, 0, 0, 0);
+
+
+    // Traer unloadings con la relación directa a vehicle
+    const unloadings = await this.unloadingRepository.find({
+      where: { 
+        subsidiary: { id: subsidiaryId },
+        date: MoreThanOrEqual(fiveDaysAgo)
+      },
       select: {
         id: true,
         trackingNumber: true,

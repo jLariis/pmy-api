@@ -5,6 +5,7 @@ import { ShipmentsService } from 'src/shipments/shipments.service';
 import { ConsolidatedService } from 'src/consolidated/consolidated.service';
 import { PackageDispatchService } from 'src/package-dispatch/package-dispatch.service';
 import { UnloadingService } from 'src/unloading/unloading.service';
+import { InventoriesService } from 'src/inventories/inventories.service';
 
 @Injectable()
 export class MonitoringService {
@@ -16,7 +17,8 @@ export class MonitoringService {
     private readonly shipmentService: ShipmentsService,
     private readonly packageDispatchService: PackageDispatchService,
     private readonly consolidatedService: ConsolidatedService,
-    private readonly unloadingService: UnloadingService
+    private readonly unloadingService: UnloadingService,
+    private readonly inventoryService: InventoriesService,
   ) {}
 
   async getConsolidatedsBySubsidiary(subdiaryId: string) {
@@ -77,6 +79,15 @@ export class MonitoringService {
   async getShipmentsWithout67ByPackageDispatch(packageDispatchId: string){
     const shipments = await this.packageDispatchService.getShipmentsWithout67ByPackageDispatch(packageDispatchId);
     return shipments;
+  }
+
+  async checkInventory67(subsidiaryId: string){
+    const shipments = await this.inventoryService.checkInventory67BySubsidiary(subsidiaryId);
+    return shipments;
+  }
+
+  async generateInventory67Excel(subsidiaryId: string, subsidiaryName?: string){
+    return this.inventoryService.downloadExcelReport(subsidiaryId, subsidiaryName);
   }
 
 
