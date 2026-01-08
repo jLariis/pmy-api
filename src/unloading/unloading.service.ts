@@ -1299,7 +1299,7 @@ export class UnloadingService {
   async findBySubsidiaryId(subsidiaryId: string) {
     // Calcular la fecha límite (5 días antes de hoy)
     const fiveDaysAgo = new Date();
-    fiveDaysAgo.setDate(fiveDaysAgo.getDate() - 5);
+    fiveDaysAgo.setDate(fiveDaysAgo.getDate() - 15);
     // Opcional: establecer a medianoche para incluir todo el día
     fiveDaysAgo.setHours(0, 0, 0, 0);
 
