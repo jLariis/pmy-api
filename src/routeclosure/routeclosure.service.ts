@@ -22,26 +22,54 @@ export class RouteclosureService {
   ) {}
 
   async create(createRouteclosureDto: CreateRouteclosureDto) {
-    const packageDispatch = await this.packageDispatchRepository.findOne(
-      { 
-        where: {
-          id: createRouteclosureDto.packageDispatch.id
-        },
-        relations: ['subsidiary']
+    console.log('🟡 [RouteClosure] DTO recibido:', createRouteclosureDto);
+
+    const packageDispatch = await this.packageDispatchRepository.findOne({
+      where: {
+        id: createRouteclosureDto.packageDispatch.id,
+      },
+      relations: ['subsidiary'],
     });
 
+    if (!packageDispatch) {
+      console.error('🔴 PackageDispatch NO encontrado:', createRouteclosureDto.packageDispatch.id);
+      throw new Error('PackageDispatch no encontrado');
+    }
+
+    console.log('🟢 PackageDispatch encontrado:', {
+      id: packageDispatch.id,
+      statusAntes: packageDispatch.status,
+    });
+
+    // Actualizar estado
     packageDispatch.status = DispatchStatus.COMPLETADA;
     packageDispatch.closedAt = new Date();
 
-    /* Actualizar la salida a ruta como completada */
-    await this.packageDispatchRepository.save(packageDispatch);
+    console.log('🟡 Actualizando PackageDispatch:', {
+      statusNuevo: packageDispatch.status,
+      closedAt: packageDispatch.closedAt,
+    });
+
+    const savedDispatch = await this.packageDispatchRepository.save(packageDispatch);
+
+    console.log('🟢 PackageDispatch guardado:', {
+      id: savedDispatch.id,
+      statusDespues: savedDispatch.status,
+      closedAt: savedDispatch.closedAt,
+    });
 
     const newRouteClosure = this.routeClouseRepository.create({
       ...createRouteclosureDto,
-      subsidiary: packageDispatch.subsidiary
+      subsidiary: packageDispatch.subsidiary,
     });
-    
-    return await this.routeClouseRepository.save(newRouteClosure);
+
+    console.log('🟡 Creando RouteClosure:', newRouteClosure);
+
+    const savedClosure = await this.routeClouseRepository.save(newRouteClosure);
+
+    console.log('🟢 RouteClosure guardado correctamente:', savedClosure.id);
+
+    return savedClosure;
   }
 
   async findAll(subsidiaryId: string) {

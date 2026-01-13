@@ -267,7 +267,7 @@ export class PackageDispatchService {
   }
 
   async findBySubsidiary(subsidiaryId: string) {
-    // Calcular la fecha límite (5 días antes de hoy)
+    // Calcular la fecha límite (15 días antes de hoy)
     const fiveDaysAgo = new Date();
     fiveDaysAgo.setDate(fiveDaysAgo.getDate() - 15);
     // Opcional: establecer a medianoche para incluir todo el día
@@ -313,28 +313,65 @@ export class PackageDispatchService {
   }
 
   async findAllBySubsidiary(subsidiaryId: string) {
-   /* const response = await this.packageDispatchRepository.find({
-      where: { subsidiary: { id: subsidiaryId } },
-      relations: ['shipments', 'chargeShipments', 'routes', 'drivers', 'vehicle', 'subsidiary'],
-      order: {
-        createdAt: 'DESC'
-      }
-    });*/
-
     const qb = this.packageDispatchRepository
-    .createQueryBuilder('pd')
-    .leftJoinAndSelect('pd.subsidiary', 'subsidiary')
-    .leftJoinAndSelect('pd.routes', 'routes')
-    .leftJoinAndSelect('pd.drivers', 'drivers')
-    .leftJoinAndSelect('pd.vehicle', 'vehicle')
-    .leftJoinAndSelect('pd.shipments', 'shipments')
-    .leftJoinAndSelect('pd.chargeShipments', 'chargeShipments')
-    .where('subsidiary.id = :subsidiaryId', { subsidiaryId })
-    .orderBy('pd.createdAt', 'DESC');
+      .createQueryBuilder('pd')
+      .leftJoin('pd.subsidiary', 'subsidiary')
+      .leftJoin('pd.routes', 'routes')
+      .leftJoin('pd.vehicle', 'vehicle')
 
-    return qb.getMany();
+      // 👇 joins SOLO para conteo
+      .leftJoin('pd.shipments', 'shipments')
+      .leftJoin('pd.chargeShipments', 'chargeShipments')
+
+      .where('subsidiary.id = :subsidiaryId', { subsidiaryId })
+
+      .select([
+        'pd.id',
+        'pd.trackingNumber',
+        'pd.status',
+        'pd.createdAt',
+        'pd.closedAt',
+
+        'subsidiary.id',
+        'subsidiary.name',
+
+        'routes.id',
+        'vehicle.id',
+      ])
+
+      // 👇 traer SOLO un driver (el primero)
+      .addSelect(subQuery => {
+        return subQuery
+          .select('driver.name')
+          .from('package_dispatch_drivers', 'pdd')
+          .innerJoin('driver', 'driver', 'driver.id = pdd.driverId')
+          .where('pdd.dispatchId = pd.id')
+          .limit(1);
+      }, 'driverName')
+
+      // 👇 contadores
+      .addSelect('COUNT(DISTINCT shipments.id)', 'shipmentsCount')
+      .addSelect('COUNT(DISTINCT chargeShipments.id)', 'chargeShipmentsCount')
+
+      .groupBy('pd.id')
+      .addGroupBy('subsidiary.id')
+      .addGroupBy('routes.id')
+      .addGroupBy('vehicle.id')
+
+      .orderBy('pd.createdAt', 'DESC');
+
+    const { entities, raw } = await qb.getRawAndEntities();
+
+    return entities.map((pd, index) => ({
+      ...pd,
+      driverName: raw[index].driverName ?? null,
+      totalPackages:
+        Number(raw[index].shipmentsCount) +
+        Number(raw[index].chargeShipmentsCount),
+    }));
   }
 
+  /** Para monitoreo */
   async findShipmentsByDispatchId(dispatchId: string) {
     console.log(`\nBuscando envíos para dispatchId: ${dispatchId}`);
 
@@ -646,7 +683,6 @@ export class PackageDispatchService {
     return shipmentsForFedex;
   }
 
-
   async getShipmentsWithout67ByPackageDispatch(id: string){
     const shipmentsWithout67 = [];
 
@@ -735,5 +771,29 @@ export class PackageDispatchService {
       shipments: shipmentsWithout67
     };
 
+  }
+
+  async getShipmentsByPackageDispatchId(packageDispatchId: string) {
+    await this.updateFedexDataByPackageDispatchId(packageDispatchId);
+
+    const packageDispatch = await this.packageDispatchRepository.findOne({
+      where: { id: packageDispatchId },
+      relations: [
+        'shipments',
+        'shipments.payment',
+        'shipments.statusHistory',
+        'chargeShipments',
+        'drivers',
+        'vehicle',
+        'subsidiary',
+        'routes',
+      ],
+    });
+
+    if (!packageDispatch) {
+      throw new Error('Package dispatch not found');
+    }
+
+    return packageDispatch;
   }
 }
