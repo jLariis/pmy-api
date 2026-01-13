@@ -96,4 +96,9 @@ export class PackageDispatchController {
         }
     return this.packageDispatchService.sendByEmail(pdfFile, excelFile, subsidiaryName, packageDispatchId)
   }
+
+  @Get('info/:packageDispatchId')
+  getShipmentsByPackageDispatchId(@Param('packageDispatchId') packageDispatchId: string) {
+    return this.packageDispatchService.getShipmentsByPackageDispatchId(packageDispatchId);
+  }
 }

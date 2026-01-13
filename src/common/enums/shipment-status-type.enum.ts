@@ -1,13 +1,27 @@
 export enum ShipmentStatusType {
   RECOLECCION = 'recoleccion',
+  RECIBIDO_EN_BODEGA = 'recibido_en_bodega',
   PENDIENTE = 'pendiente',
-  EN_RUTA = 'en_ruta',
+  EN_RUTA = 'en_ruta', //
+  EN_TRANSITO = 'en_transito', // SALIDA A RUTA
   ENTREGADO = 'entregado',
-  NO_ENTREGADO = 'no_entregado',
+  NO_ENTREGADO = 'no_entregado', //PUEDE QUE SE ELIMINE
   DESCONOCIDO = 'desconocido',
   RECHAZADO = 'rechazado', // DEX07
-  DEVUELTO_A_FEDEX = 'devuelto_a_fedex',
-  ES_OCURRE = 'es_ocurre'
+  DEVUELTO_A_FEDEX = 'devuelto_a_fedex', // DEVOLUCION A FEDEX
+  ES_OCURRE = 'es_ocurre', //HP - 015A
+  EN_BODEGA = 'en_bodega', // DESEMBARQUE - 67
+  RETENIDO_POR_FEDEX = 'retenido_por_fedex', //STAT14
+  ESTACION_FEDEX = 'estacion_fedex', //STAT41
+  LLEGADO_DESPUES = 'llegado_despues',//STAT31
+  DIRECCION_INCORRECTA = 'direccion_incorrecta', //DEX03
+  CLIENTE_NO_DISPONIBLE = 'cliente_no_disponible', //DEX08
+  //17 - 17 - A request was made to change this delivery date.
+  //84
+  //14
+  //15
+  //16 - Pago recibido por Fedex
+  //A12 - 
 }
 
 export enum ShipmentFedexStatusType {
