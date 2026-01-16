@@ -1,9 +1,10 @@
-import { BeforeInsert, Column, Entity, JoinColumn, JoinTable, ManyToMany, ManyToOne, PrimaryGeneratedColumn } from "typeorm";
+import { BeforeInsert, Column, Entity, In, JoinColumn, JoinTable, ManyToMany, ManyToOne, PrimaryGeneratedColumn } from "typeorm";
 import { Shipment } from "./shipment.entity";
 import { ChargeShipment } from "./charge-shipment.entity";
 import { Subsidiary } from "./subsidiary.entity";
+import { InventoryType } from "src/common/enums/inventory-type.enum";
 
-@Entity('invetory')
+@Entity('inventory')
 export class Inventory {
     @PrimaryGeneratedColumn('uuid')
     id: string;
@@ -36,6 +37,9 @@ export class Inventory {
 
     @Column({ type: 'timestamp', default: () => 'CURRENT_TIMESTAMP' })
     createdAt: Date;
+
+    @Column({ type: 'enum', enum: InventoryType, nullable: true , default: InventoryType.INITIAL})
+    type: InventoryType | null;
 
     @BeforeInsert()
     setDefaults() {

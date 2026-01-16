@@ -1,3 +1,4 @@
+import { InventoryType } from "src/common/enums/inventory-type.enum";
 import { ChargeShipment, Shipment, Subsidiary } from "src/entities";
 
 export class CreateInventoryDto {
@@ -5,4 +6,5 @@ export class CreateInventoryDto {
     shipments: string[];
     chargeShipments: string[];
     subsidiary: Subsidiary;
+    type: InventoryType;
 }
