@@ -730,10 +730,12 @@ export class ConsolidatedService {
     let fedexChargeResult = null;
 
     try {
-      fedexResult = await this.shipmentService.checkStatusOnFedexBySubsidiaryRulesTesting(
+      fedexResult = await this.shipmentService.processMasterFedexUpdate(shipmentsTrackingNumbers)
+      // Old Method
+      /*fedexResult = await this.shipmentService.checkStatusOnFedexBySubsidiaryRulesTesting(
         shipmentsTrackingNumbers,
         true
-      );
+      );*/
 
       fedexChargeResult = await this.shipmentService.checkStatusOnFedexChargeShipment(
         chargeTrackingNumbers

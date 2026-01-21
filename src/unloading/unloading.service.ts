@@ -2808,9 +2808,14 @@ export class UnloadingService {
 
     // 3. Procesar con FedEx
     try {
-      const result = await this.shipmentService.checkStatusOnFedexBySubsidiaryRulesTesting(shipmentsTrackingNumbers, true);
+      // New Method
+      const result = await this.shipmentService.processMasterFedexUpdate(shipmentsTrackingNumbers);
+
+      // Old method
+      //const result = await this.shipmentService.checkStatusOnFedexBySubsidiaryRulesTesting(shipmentsTrackingNumbers, true);
       const resultChargShipments = await this.shipmentService.checkStatusOnFedexChargeShipment(chargeShipmentsTrackingNumbers);
 
+      /*
       // Registrar resultados para auditoría
       this.logger.log(
         `✅ Resultado para unloading ${unloading.trackingNumber}: ` +
@@ -2837,7 +2842,7 @@ export class UnloadingService {
       
       if (result.shipmentsWithOD.length) {
         this.logger.warn(`⚠️ Excepciones OD o fallos de validación: ${JSON.stringify(result.shipmentsWithOD, null, 2)}`);
-      }
+      }*/
 
     } catch (err) {
       this.logger.error(`❌ Error al actualizar FedEx para unloading ${unloading.trackingNumber}: ${err.message}`);

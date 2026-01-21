@@ -13,67 +13,60 @@ export class TrackingCronService {
     private readonly unloadingService: UnloadingService
   ) {}
 
-  /*@Cron(CronExpression.EVERY_HOUR)
-  async handleCron() {
-    this.logger.log('🕐 Ejecutando verificación de envíos...');
-    await this.shipmentService.checkStatusOnFedex();
-  }*/
-
   @Cron(CronExpression.EVERY_HOUR)
   async handleCron() {
-    this.logger.log('🕐 Ejecutando verificación de envíos...');
-
-    // Obtener los envíos a validar usando getShipmentsToValidate
-    const shipments = await this.shipmentService.getShipmentsToValidate();
-    const chargeShipments = await this.shipmentService.getSimpleChargeShipments();
-
-    const trackingNumbers = shipments.map(shipment => shipment.trackingNumber);
-    const trackingNumbersChargeShipments = chargeShipments.map(shipment => shipment.trackingNumber);
-
-    if (!trackingNumbersChargeShipments.length) {
-      this.logger.log('📪 No hay envíos F2 para procesar');
-    }
-
-    if (!trackingNumbers.length) {
-      this.logger.log('📪 No hay envíos para procesar');
-      return;
-    }
-
-    this.logger.log(`📦 Procesando ${trackingNumbers.length} trackingNumbers: ${JSON.stringify(trackingNumbers)}, trackingNumbesF2: ${JSON.stringify(trackingNumbersChargeShipments)}`);
-
-    // Llamar al Método 2 con shouldPersist = true para emular el comportamiento del Método 1
+    const globalStart = Date.now();    
+    this.logger.log('🕐 Iniciando verificación de envíos (Normales y F2)...');
+    
     try {
-      const result = await this.shipmentService.checkStatusOnFedexBySubsidiaryRulesTesting(trackingNumbers, true);
-      const resultChargShipments = await this.shipmentService.checkStatusOnFedexChargeShipment(trackingNumbersChargeShipments);
+      // 1. Obtención de datos en paralelo
+      const [shipments, chargeShipments] = await Promise.all([
+        this.shipmentService.getShipmentsToValidate(),
+        this.shipmentService.getSimpleChargeShipments()
+      ]);
 
-      // Registrar resultados para auditoría
-      this.logger.log(
-        `✅ Resultado: ${result.updatedShipments.length} envíos actualizados, ` +
-        `${resultChargShipments.updatedChargeShipments.length} envíos F2 actualizados, ` +
-        `${result.shipmentsWithError.length} errores, ` +
-        `${resultChargShipments.chargeShipmentsWithError.length} errores de F2, ` +
-        `${result.unusualCodes.length} códigos inusuales, ` +
-        `${result.shipmentsWithOD.length} excepciones OD o fallos de validación`
-      );
+      const trackingNumbers = [...new Set(shipments.map(s => s.trackingNumber))];
+      const trackingNumbersF2 = [...new Set(chargeShipments.map(s => s.trackingNumber))];
 
-      // Registrar detalles de errores, códigos inusuales y excepciones OD si los hay
-      if (result.shipmentsWithError.length) {
-        this.logger.warn(`⚠️ Errores detectados: ${JSON.stringify(result.shipmentsWithError, null, 2)}`);
+      if (trackingNumbers.length === 0 && trackingNumbersF2.length === 0) {
+        this.logger.log('📪 No hay envíos ni F2 para procesar.');
+        return;
       }
 
-      if (resultChargShipments.chargeShipmentsWithError.length) {
-        this.logger.warn(`⚠️ Errores detectados en F2: ${JSON.stringify(resultChargShipments.chargeShipmentsWithError, null, 2)}`);
+      this.logger.log(`📊 Total a procesar: ${trackingNumbers.length} normales y ${trackingNumbersF2.length} F2`);
+
+      // 2. FASE 1: Envíos Normales
+      if (trackingNumbers.length > 0) {
+        const startF1 = Date.now();
+        this.logger.log('🚀 [FASE 1] Iniciando actualización de Envíos Normales...');
+        
+        await this.shipmentService.processMasterFedexUpdate(trackingNumbers);
+        
+        const durationF1 = ((Date.now() - startF1) / 1000 / 60).toFixed(2);
+        this.logger.log(`✅ [FASE 1] Finalizada en ${durationF1} minutos.`);
       }
 
-      if (result.unusualCodes.length) {
-        this.logger.warn(`⚠️ Códigos inusuales: ${JSON.stringify(result.unusualCodes, null, 2)}`);
+      // 3. FASE 2: ChargeShipments (F2)
+      if (trackingNumbersF2.length > 0) {
+        const startF2 = Date.now();
+        this.logger.log('🚀 [FASE 2] Iniciando actualización de ChargeShipments (F2)...');
+        this.logger.log(`📝 Nota: Se generará historial en shipment_status para ${trackingNumbersF2.length} cargos.`);
+        
+        await this.shipmentService.processChargeFedexUpdate(trackingNumbersF2); 
+        
+        const durationF2 = ((Date.now() - startF2) / 1000 / 60).toFixed(2);
+        this.logger.log(`✅ [FASE 2] Finalizada en ${durationF2} minutos.`);
       }
-      if (result.shipmentsWithOD.length) {
-        this.logger.warn(`⚠️ Excepciones OD o fallos de validación: ${JSON.stringify(result.shipmentsWithOD, null, 2)}`);
-      }
+
+      // Resumen Final
+      const totalDurationMin = ((Date.now() - globalStart) / 1000 / 60).toFixed(2);
+      const totalCount = trackingNumbers.length + trackingNumbersF2.length;
+      
+      this.logger.log(`🏁 Sincronización TOTAL finalizada con éxito.`);
+      this.logger.log(`✅ Detalle final: ${totalCount} trackings procesados en ${totalDurationMin} minutos.`);
+
     } catch (err) {
-      this.logger.error(`❌ Error en handleCron: ${err.message}`);
-      // Opcional: Guardar el error en un log persistente o enviar una notificación
+      this.logger.error(`❌ Error fatal en handleCron: ${err.message}`);
     }
   }
 
@@ -90,9 +83,9 @@ export class TrackingCronService {
   }
 
   
-  /*@Cron('0 0 8-22/2 * * 1-6', {
+  @Cron('0 0 8-22/2 * * 1-6', {
     timeZone: 'America/Hermosillo'
-  })*/
+  })
   async handleSendShipmentWithStatus03(){
     /** Por ahora solo cabos */
     this.logger.log('🕐 Ejecutando el envio de correo con Enviós DEX03...');
