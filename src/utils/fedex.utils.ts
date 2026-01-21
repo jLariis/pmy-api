@@ -8,7 +8,7 @@ function isValidFedexStatus(status: string): status is ShipmentFedexStatusType {
   return Object.values(ShipmentFedexStatusType).includes(status as ShipmentFedexStatusType);
 }
 
-export function mapFedexStatusToLocalStatus(derivedStatusCode: string, exceptionCode?: string): ShipmentStatusType {
+export function mapFedexStatusToLocalStatusResp(derivedStatusCode: string, exceptionCode?: string): ShipmentStatusType {
   console.log("🚀 ~ mapFedexStatusToLocalStatus ~ derivedStatusCode:", derivedStatusCode)
   
   const statusMap: { [key: string]: ShipmentStatusType } = {
@@ -38,4 +38,54 @@ export function mapFedexStatusToLocalStatus(derivedStatusCode: string, exception
     console.warn(`Unmapped derivedStatusCode: ${derivedStatusCode}, exceptionCode: ${exceptionCode}`);
   }
   return status;
+}
+
+export function mapFedexStatusToLocalStatus(derivedStatusCode: string, exceptionCode?: string): ShipmentStatusType {
+  const excCode = exceptionCode?.trim().toUpperCase();
+  const code = derivedStatusCode?.trim().toUpperCase();
+
+  // --- PRIORIDAD: EXCEPTION CODES ---
+  if (excCode) {
+    switch (excCode) {
+      case '07': return ShipmentStatusType.RECHAZADO;
+      case '08': return ShipmentStatusType.CLIENTE_NO_DISPONIBLE;
+      case '67': return ShipmentStatusType.EN_BODEGA;
+      case '03':
+      case 'A12':
+      case 'A13': return ShipmentStatusType.DIRECCION_INCORRECTA;
+      case '41': 
+      case '11': 
+      case 'DF': return ShipmentStatusType.EN_RUTA; 
+      case '14':
+      case '15':
+      case '64': return ShipmentStatusType.ESTACION_FEDEX;
+      case '086C': return ShipmentStatusType.RETENIDO_POR_FEDEX;
+      case '84': 
+      case '17': 
+      case '20': 
+      case '79':
+      case '79A': return ShipmentStatusType.PENDIENTE;
+      case '08D': return ShipmentStatusType.NO_ENTREGADO;
+      case '71':
+      case '72': return ShipmentStatusType.CLIENTE_NO_DISPONIBLE;
+    }
+  }
+
+  // --- MAPEO POR DERIVED STATUS (Respaldo) ---
+  const statusMap: { [key: string]: ShipmentStatusType } = {
+    'DL': ShipmentStatusType.ENTREGADO,
+    'PU': ShipmentStatusType.RECOLECCION,
+    'OC': ShipmentStatusType.RECOLECCION,
+    'FD': ShipmentStatusType.EN_RUTA,
+    'IT': ShipmentStatusType.EN_RUTA,
+    'OW': ShipmentStatusType.EN_RUTA,
+    'HL': ShipmentStatusType.PENDIENTE,
+    'DE': ShipmentStatusType.NO_ENTREGADO,
+    'TA': ShipmentStatusType.NO_ENTREGADO, // <--- AGREGAR: TA es común en Excepciones (Tried Attempt)
+    'SE': ShipmentStatusType.NO_ENTREGADO, // <--- AGREGAR: SE es Shipment Exception
+    'RF': ShipmentStatusType.RECHAZADO,
+    'IN': ShipmentStatusType.PENDIENTE,    // <--- AGREGAR: IN es In-Transit (Label Created)
+  };
+
+  return statusMap[code] || ShipmentStatusType.DESCONOCIDO;
 }

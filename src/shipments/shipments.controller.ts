@@ -23,6 +23,69 @@ export class ShipmentsController {
     private readonly fedexService: FedexService
   ) {}
 
+  @Get('test-new-cron')
+  async testNewCronJob() {
+    const globalStart = Date.now();
+    this.logger.log('🚀 [TEST] Iniciando verificación manual de envíos (Normales y F2)...');
+
+    try {
+      // 1. Obtención de datos en paralelo
+      const [shipments, chargeShipments] = await Promise.all([
+        this.shipmentsService.getShipmentsToValidate(),
+        this.shipmentsService.getSimpleChargeShipments()
+      ]);
+
+      const trackingNumbers = [...new Set(shipments.map(s => s.trackingNumber))];
+      const trackingNumbersF2 = [...new Set(chargeShipments.map(s => s.trackingNumber))];
+
+      if (trackingNumbers.length === 0 && trackingNumbersF2.length === 0) {
+        this.logger.log('📪 No hay envíos ni F2 para procesar.');
+        return { message: 'No hay datos para procesar' };
+      }
+
+      this.logger.log(`📊 Datos encontrados: ${trackingNumbers.length} normales y ${trackingNumbersF2.length} F2`);
+
+      // --- FASE 1: Envíos Normales ---
+      if (trackingNumbers.length > 0) {
+        const startF1 = Date.now();
+        this.logger.log('🔎 [FASE 1] Actualizando Envíos Normales...');
+        
+        await this.shipmentsService.processMasterFedexUpdate(trackingNumbers);
+        
+        const durationF1 = ((Date.now() - startF1) / 1000 / 60).toFixed(2);
+        this.logger.log(`✅ [FASE 1] ${trackingNumbers.length} procesados en ${durationF1} min.`);
+      }
+
+      // --- FASE 2: ChargeShipments (F2) ---
+      if (trackingNumbersF2.length > 0) {
+        const startF2 = Date.now();
+        this.logger.log('🔎 [FASE 2] Actualizando ChargeShipments (Cargos F2)...');
+        
+        await this.shipmentsService.processChargeFedexUpdate(trackingNumbersF2); 
+        
+        const durationF2 = ((Date.now() - startF2) / 1000 / 60).toFixed(2);
+        this.logger.log(`✅ [FASE 2] ${trackingNumbersF2.length} procesados en ${durationF2} min.`);
+      }
+
+      const totalDuration = ((Date.now() - globalStart) / 1000 / 60).toFixed(2);
+      const totalCount = trackingNumbers.length + trackingNumbersF2.length;
+      
+      this.logger.log(`🏁 [TEST] Sincronización TOTAL finalizada: ${totalCount} trackings en ${totalDuration} minutos.`);
+
+      return {
+        status: 'success',
+        processedMaster: trackingNumbers.length,
+        processedF2: trackingNumbersF2.length,
+        totalDurationMinutes: totalDuration
+      };
+
+    } catch (err) {
+      this.logger.error(`❌ Error fatal en testNewCronJob: ${err.message}`);
+      return { status: 'error', message: err.message };
+    }
+  }
+
+
   @Get('pendings')
   @ApiOperation({
     summary: 'Obtener envíos pendientes',
@@ -278,6 +341,7 @@ export class ShipmentsController {
     }
   }
 
+  
   @Get('kpis')
   async getKPIs(
     @Query('date') date: string,
@@ -308,28 +372,7 @@ export class ShipmentsController {
       //return this.shipmentsService.checkStatusOnFedex();
       return this.fedexService.trackPackage(trackingNumber);
     }
-
-  @Get('test-cron')
-  async testCronJob() {
-    const chargeShipments = await this.shipmentsService.getSimpleChargeShipments();
-
-    const trackingNumbers = chargeShipments.map(shipment => shipment.trackingNumber);
-
-    if (!trackingNumbers.length) {
-      this.logger.log('📪 No hay envíos para procesar');
-      return;
-    }
-
-    this.logger.log(`📦 Procesando ${trackingNumbers.length} trackingNumbers: ${JSON.stringify(trackingNumbers)}`);
-
-    try {
-      const result = await this.shipmentsService.checkStatusOnFedexChargeShipment(trackingNumbers);
-      return result;
-    } catch (err) {
-      this.logger.error(`❌ Error en handleCron: ${err.message}`);
-    }
-  }
-
+  
   @Get(':trackingNumber')
   async getShipmentById(@Param('trackingNumber') trackingNumber: string) {
     return this.shipmentsService.findByTrackingNumber(trackingNumber);
@@ -437,8 +480,9 @@ export class ShipmentsController {
     }
 
     @Get('history/:id')
-    async getHistoryById(@Param('id') id: string) {
-      return await this.shipmentsService.getShipmentHistoryFromFedex(id);
+    async getHistoryById(@Param('id') id: string, @Query('isCharge') isCharge?: string) {
+      const isChargeBool = isCharge === 'true';
+      return this.shipmentsService.getShipmentHistoryFromFedex(id, isChargeBool);
     }
 
   /**************************************************************************************************************** */
@@ -447,7 +491,5 @@ export class ShipmentsController {
   async addSingleShipment(@Body() dto: ShipmentToSaveDto) {
     return this.shipmentsService.addShipment(dto);
   }  
-
-
 
 }

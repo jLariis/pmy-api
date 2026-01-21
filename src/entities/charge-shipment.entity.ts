@@ -73,7 +73,7 @@ export class ChargeShipment {
       })
       payment: Payment;
     
-      @OneToMany(() => ShipmentStatus, status => status.shipment, { cascade: true })
+      @OneToMany(() => ShipmentStatus, status => status.chargeShipment, { cascade: true })
       statusHistory: ShipmentStatus[];
     
       @Column({ nullable: true })

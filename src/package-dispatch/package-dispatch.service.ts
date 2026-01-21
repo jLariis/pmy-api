@@ -645,9 +645,14 @@ export class PackageDispatchService {
 
     // 3. Procesar con FedEx
     try {
-      const result = await this.shipmentService.checkStatusOnFedexBySubsidiaryRulesTesting(shipmentsTrackingNumbers, true);
+      // New method
+      const result = await this.shipmentService.processMasterFedexUpdate(shipmentsTrackingNumbers);
+
+      // Old method
+      //const result = await this.shipmentService.checkStatusOnFedexBySubsidiaryRulesTesting(shipmentsTrackingNumbers, true);
       const resultChargShipments = await this.shipmentService.checkStatusOnFedexChargeShipment(chargeShipmentsTrackingNumbers);
 
+      /*
       // Registrar resultados para auditoría
       this.logger.log(
         `✅ Resultado para package dispatch ${packageDispatch.trackingNumber}: ` +
@@ -674,7 +679,7 @@ export class PackageDispatchService {
       
       if (result.shipmentsWithOD.length) {
         this.logger.warn(`⚠️ Excepciones OD o fallos de validación: ${JSON.stringify(result.shipmentsWithOD, null, 2)}`);
-      }
+      }*/
 
     } catch (err) {
       this.logger.error(`❌ Error al actualizar FedEx para package dispatch ${packageDispatch.trackingNumber}: ${err.message}`);

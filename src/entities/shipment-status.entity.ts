@@ -9,18 +9,26 @@ import {
 } from 'typeorm';
 import { Shipment } from './shipment.entity';
 import { ShipmentStatusType } from '../common/enums/shipment-status-type.enum';
+import { ChargeShipment } from './charge-shipment.entity';
 
 @Entity('shipment_status')
 export class ShipmentStatus {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
-  @Index()
   @ManyToOne(() => Shipment, (shipment) => shipment.statusHistory, {
     onDelete: 'CASCADE',
+    nullable: true,
   })
-  @JoinColumn({ name: 'shipmentId'})
-  shipment: Shipment;
+  @JoinColumn({ name: 'shipmentId' })
+  shipment?: Shipment;
+
+  @ManyToOne(() => ChargeShipment, (chargeShipment) => chargeShipment.statusHistory, {
+    onDelete: 'CASCADE',
+    nullable: true,
+  })
+  @JoinColumn({ name: 'chargeShipmentId' })
+  chargeShipment?: ChargeShipment;
 
   @Column({
     type: 'enum',
