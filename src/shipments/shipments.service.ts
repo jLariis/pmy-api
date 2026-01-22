@@ -7335,23 +7335,25 @@ export class ShipmentsService {
 
               if (!latestStatusDetail) continue;
 
-              // --- EXTRACCIÓN DE CÓDIGOS (Prioridad Ancillary para 67) ---
+              // --- EXTRACCIÓN DE CÓDIGOS ---
+              // Priorizamos ancillaryReason para capturar 17 (cambio fecha) y 08 (no disponible)
               const ancillaryReason = latestStatusDetail?.ancillaryDetails?.[0]?.reason || '';
-              const exceptionCode = ancillaryReason === '67' ? '67' : (lastEvent?.exceptionCode || '');
+              const exceptionCode = ancillaryReason !== '' ? ancillaryReason : (lastEvent?.exceptionCode || '');
               const derivedStatusCode = latestStatusDetail.derivedCode || latestStatusDetail.code || '';
               
               const mappedStatus = mapFedexStatusToLocalStatus(derivedStatusCode, exceptionCode);
               const currentStatus = chargeList[0].status;
 
-              // 2. Prioridad: No retroceder si ya está ENTREGADO
+              // 2. Bloqueo de retroceso: Si ya está ENTREGADO, ignoramos actualizaciones menores
               if (currentStatus === ShipmentStatusType.ENTREGADO && mappedStatus !== ShipmentStatusType.ENTREGADO) {
                 continue; 
               }
 
-              let eventDate = new Date(lastEvent?.date || trackResult?.dateAndTimes?.[0]?.dateTime || new Date());
+              // 3. Fecha del evento
+              let eventDate = new Date(lastEvent?.date || trackResult?.dateAndTimes?.find(d => d.type === 'ACTUAL_TENDER')?.dateTime || new Date());
               if (isNaN(eventDate.getTime())) eventDate = new Date();
 
-              // 3. VALIDACIÓN DE HISTORIAL (Usando chargeShipmentId)
+              // 4. VALIDACIÓN DE HISTORIAL
               const lastHistory = await queryRunner.manager.query(
                 `SELECT status, exceptionCode, timestamp FROM shipment_status 
                 WHERE chargeShipmentId = ? ORDER BY timestamp DESC LIMIT 1`,
@@ -7359,51 +7361,53 @@ export class ShipmentsService {
               );
 
               let shouldUpdate = false;
-              let reason = "";
+              let updateReason = "";
 
               if (!lastHistory.length) {
                 shouldUpdate = true;
-                reason = "Primer registro historial";
+                updateReason = "Primer registro en F2";
               } else {
                 const lastSt = lastHistory[0].status;
-                const lastEx = String(lastHistory[0].exceptionCode || '');
-                const currentEx = String(exceptionCode);
+                const lastEx = String(lastHistory[0].exceptionCode || '').trim();
+                const currentEx = String(exceptionCode).trim();
                 const lastTs = new Date(lastHistory[0].timestamp);
 
                 const isDifferentStatus = lastSt !== mappedStatus;
                 const isDifferentException = lastEx !== currentEx;
                 const isDifferentDay = eventDate.toDateString() !== lastTs.toDateString();
 
-                // REGLA UNIFICADA: Si el código o status cambian (ej: 41 -> 67), o si es 67 en día nuevo
+                // REGLA DE ACTUALIZACIÓN UNIFICADA (08, 17, 67, etc.)
                 if (isDifferentStatus || isDifferentException) {
                   shouldUpdate = true;
-                  reason = "Cambio de status o código";
-                } else if (exceptionCode === '67' && isDifferentDay) {
+                  updateReason = `Cambio operativo: ${lastEx} -> ${currentEx}`;
+                } 
+                // Si es la misma excepción (ej: sigue siendo 08 o 17) pero es otro día, registramos el nuevo intento/evento
+                else if (currentEx !== '' && isDifferentDay) {
                   shouldUpdate = true;
-                  reason = "Seguimiento diario código 67";
+                  updateReason = `Seguimiento diario de excepción: ${currentEx}`;
                 }
               }
 
               if (shouldUpdate) {
-                this.logger.log(`[F2 - ${tn}] Actualizando: ${reason}`);
+                this.logger.log(`[F2 - ${tn}] Aplicando cambio: ${updateReason}`);
 
                 for (const charge of chargeList) {
-                  // A. INSERTAR HISTORIAL (Usando .save con objeto para asegurar mapeo)
+                  // A. INSERTAR HISTORIAL
                   const historyEntry = queryRunner.manager.create('ShipmentStatus', {
                     status: mappedStatus,
                     exceptionCode: exceptionCode,
                     timestamp: eventDate,
-                    chargeShipment: charge, // <--- Vinculamos el objeto completo para que el mapeo no falle
+                    chargeShipment: charge,
                     createdAt: new Date(),
-                    notes: (exceptionCode === '67' ? latestStatusDetail?.ancillaryDetails?.[0]?.reasonDescription : null) 
+                    notes: (ancillaryReason !== '' ? latestStatusDetail?.ancillaryDetails?.[0]?.reasonDescription : null) 
                           || lastEvent?.eventDescription 
                           || latestStatusDetail.description 
-                          || 'Actualización automática F2'
+                          || 'Actualización F2'
                   });
 
                   await queryRunner.manager.save(historyEntry);
 
-                  // B. ACTUALIZAR MAESTRO (ChargeShipment)
+                  // B. ACTUALIZAR CARGO
                   await queryRunner.manager.update(ChargeShipment, charge.id, { 
                     status: mappedStatus as any,
                     receivedByName: trackResult.deliveryDetails?.receivedByName || '' 
@@ -7414,7 +7418,7 @@ export class ShipmentsService {
             await queryRunner.commitTransaction();
           } catch (error) {
             if (queryRunner.isTransactionActive) await queryRunner.rollbackTransaction();
-            this.logger.error(`❌ Error Actualización Charge Tracking ${tn}: ${error.message}`);
+            this.logger.error(`❌ Error F2 Tracking ${tn}: ${error.message}`);
           } finally {
             await queryRunner.release();
           }
