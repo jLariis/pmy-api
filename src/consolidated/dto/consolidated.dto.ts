@@ -1,4 +1,3 @@
-
 export interface ConsolidatedDto {
   id: string;
   date: Date;
@@ -9,14 +8,17 @@ export interface ConsolidatedDto {
   subsidiary: {
     id: string;
     name: string;
-  }; // o el tipo que corresponda
+  };
   isConsolidatedComplete: boolean;
   shipmentCounts: {
     total: number;
     en_ruta: number;
+    en_bodega: number;      // Nuevo: Paquetes recibidos pero no despachados
     entregado: number;
-    no_entregado: number; // Cambiado de 'dex' a 'no_entregado'
-    other: number;
+    dex03: number;          // Dirección incorrecta
+    dex07: number;          // Rechazado
+    dex08: number;          // Cliente no disponible
+    other: number;          // Otros estados (ej. Devueltos, Dañados, etc.)
   };
   shipments: any[];
 }

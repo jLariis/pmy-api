@@ -593,15 +593,13 @@ export class PackageDispatchService {
   }
 
   async updateFedexDataByPackageDispatchId(packageDispatchId: string) {
-    // Validar que se proporcione el ID del package dispatch
     if (!packageDispatchId) {
       throw new Error('El ID del package dispatch es requerido');
     }
 
-    // 1. Buscar el package dispatch específico por ID
     const packageDispatch = await this.packageDispatchRepository.findOne({
       where: { id: packageDispatchId },
-      select: ['id', 'trackingNumber'] // Ajusta según el nombre del campo en tu entidad
+      select: ['id', 'trackingNumber']
     });
 
     if (!packageDispatch) {
@@ -609,103 +607,59 @@ export class PackageDispatchService {
       return [];
     }
 
-    console.log(`🔍 Procesando package dispatch: ${packageDispatch.trackingNumber}`);
+    // Estatus que queremos seguir rastreando en FedEx hasta que sean ENTREGADO o RECHAZADO
+    const statusToTrack = [
+      ShipmentStatusType.EN_RUTA, 
+      ShipmentStatusType.DESCONOCIDO, 
+      ShipmentStatusType.PENDIENTE, 
+      ShipmentStatusType.NO_ENTREGADO,
+      ShipmentStatusType.CAMBIO_FECHA_SOLICITADO, // <--- INDISPENSABLE
+      ShipmentStatusType.CLIENTE_NO_DISPONIBLE,    // <--- INDISPENSABLE para el 08
+      ShipmentStatusType.ESTACION_FEDEX,
+      ShipmentStatusType.EN_BODEGA
+    ];
 
-    // 2. Obtener solo IDs y tracking numbers de shipments
-    const shipmentsForFedex = [];
-    const shipmentsTrackingNumbers = [];
-    const chargeShipmentsTrackingNumbers = [];
-
-    // Obtener solo ID y trackingNumber de shipments normales
+    // 1. Obtener Shipments Normales
     const shipments = await this.shipmentRepository.find({
       where: { 
-        packageDispatch: {
-          id: packageDispatch.id 
-        },
-        status: In([ShipmentStatusType.EN_RUTA, ShipmentStatusType.DESCONOCIDO, ShipmentStatusType.PENDIENTE, ShipmentStatusType.NO_ENTREGADO])
+        packageDispatch: { id: packageDispatch.id },
+        status: In(statusToTrack)
       },
       select: ['id', 'trackingNumber']
     });
 
-    // Obtener solo ID y trackingNumber de chargeShipments
+    // 2. Obtener ChargeShipments
     const chargeShipments = await this.chargeShipmentRepository.find({
       where: { 
-        packageDispatch: {id: packageDispatch.id },
-        status: In([ShipmentStatusType.EN_RUTA, ShipmentStatusType.DESCONOCIDO, ShipmentStatusType.PENDIENTE, ShipmentStatusType.NO_ENTREGADO])
+        packageDispatch: { id: packageDispatch.id },
+        status: In(statusToTrack)
       },
       select: ['id', 'trackingNumber']
     });
 
-    console.log(`📦 Shipments: ${shipments.length}, ChargeShipments: ${chargeShipments.length}`);
-
     if (shipments.length === 0 && chargeShipments.length === 0) {
-      console.warn(`⚠️ No se encontraron shipments para package dispatch ${packageDispatch.trackingNumber}`);
+      console.warn(`⚠️ No hay envíos pendientes de actualización en despacho ${packageDispatch.trackingNumber}`);
       return [];
     }
 
-    // Combinar y mapear solo los datos necesarios
-    const allShipments = [
-      ...shipments.map(s => ({
-        id: s.id,
-        trackingNumber: s.trackingNumber,
-        isCharge: false
-      })),
-      ...chargeShipments.map(s => ({
-        id: s.id,
-        trackingNumber: s.trackingNumber,
-        isCharge: true
-      }))
-    ];
+    const shipmentsTrackingNumbers = shipments.map(s => s.trackingNumber);
+    const chargeShipmentsTrackingNumbers = chargeShipments.map(s => s.trackingNumber);
 
-    shipmentsTrackingNumbers.push(...shipments.map(s => s.trackingNumber));
-    chargeShipmentsTrackingNumbers.push(...chargeShipments.map(s => s.trackingNumber));
-    shipmentsForFedex.push(...allShipments);
-
-    console.log(`✅ Package Dispatch ${packageDispatch.trackingNumber}: ${allShipments.length} shipments listos para FedEx`);
-
-    // 3. Procesar con FedEx
     try {
-      // New method
-      const result = await this.shipmentService.processMasterFedexUpdate(shipmentsTrackingNumbers);
+      // 3. Procesar actualizaciones (Ahora sí incluirán las guías con excepciones)
+      await this.shipmentService.processMasterFedexUpdate(shipmentsTrackingNumbers);
+      await this.shipmentService.processChargeFedexUpdate(chargeShipmentsTrackingNumbers);
 
-      // Old method
-      //const result = await this.shipmentService.checkStatusOnFedexBySubsidiaryRulesTesting(shipmentsTrackingNumbers, true);
-      const resultChargShipments = await this.shipmentService.processChargeFedexUpdate(chargeShipmentsTrackingNumbers);
-
-      /*
-      // Registrar resultados para auditoría
-      this.logger.log(
-        `✅ Resultado para package dispatch ${packageDispatch.trackingNumber}: ` +
-        `${result.updatedShipments.length} envíos actualizados, ` +
-        `${resultChargShipments.updatedChargeShipments.length} envíos F2 actualizados, ` +
-        `${result.shipmentsWithError.length} errores, ` +
-        `${resultChargShipments.chargeShipmentsWithError.length} errores de F2, ` +
-        `${result.unusualCodes.length} códigos inusuales, ` +
-        `${result.shipmentsWithOD.length} excepciones OD o fallos de validación`
-      );
-
-      // Registrar detalles de errores, códigos inusuales y excepciones OD si los hay
-      if (result.shipmentsWithError.length) {
-        this.logger.warn(`⚠️ Errores detectados: ${JSON.stringify(result.shipmentsWithError, null, 2)}`);
-      }
-
-      if (resultChargShipments.chargeShipmentsWithError.length) {
-        this.logger.warn(`⚠️ Errores detectados en F2: ${JSON.stringify(resultChargShipments.chargeShipmentsWithError, null, 2)}`);
-      }
-
-      if (result.unusualCodes.length) {
-        this.logger.warn(`⚠️ Códigos inusuales: ${JSON.stringify(result.unusualCodes, null, 2)}`);
-      }
-      
-      if (result.shipmentsWithOD.length) {
-        this.logger.warn(`⚠️ Excepciones OD o fallos de validación: ${JSON.stringify(result.shipmentsWithOD, null, 2)}`);
-      }*/
-
+      this.logger.log(`✅ Despacho ${packageDispatch.trackingNumber} procesado exitosamente.`);
     } catch (err) {
       this.logger.error(`❌ Error al actualizar FedEx para package dispatch ${packageDispatch.trackingNumber}: ${err.message}`);
     }
 
-    return shipmentsForFedex;
+    // Devolvemos la lista combinada para información del front/caller
+    return [
+      ...shipments.map(s => ({ id: s.id, trackingNumber: s.trackingNumber, isCharge: false })),
+      ...chargeShipments.map(s => ({ id: s.id, trackingNumber: s.trackingNumber, isCharge: true }))
+    ];
   }
 
   async getShipmentsWithout67ByPackageDispatch(id: string){

@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Param, UseGuards, UseInterceptors, UploadedFile, BadRequestException, InternalServerErrorException, Request, UploadedFiles, Query, Body, Logger, Res, HttpStatus } from '@nestjs/common';
+import { Controller, Get, Post, Param, UseGuards, UseInterceptors, UploadedFile, BadRequestException, InternalServerErrorException, Request, UploadedFiles, Query, Body, Logger, Res, HttpStatus, HttpCode } from '@nestjs/common';
 import { ShipmentsService } from './shipments.service';
 import { ApiBadRequestResponse, ApiBearerAuth, ApiBody, ApiConsumes, ApiOkResponse, ApiOperation, ApiProduces, ApiProperty, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from 'src/auth/guards/jwt-auth.guard';
@@ -514,4 +514,31 @@ export class ShipmentsController {
     return this.shipmentsService.addShipment(dto);
   }  
 
+  @Post('dispatch/sync-status/:trackingNumber')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ 
+    summary: 'Sincroniza estatus de shipments según historial',
+    description: 'Busca una salida a ruta por su tracking, obtiene sus paquetes y corrige el estatus del maestro si no coincide con el último registro de su historial.' 
+  })
+  @ApiResponse({ status: 200, description: 'Sincronización completada exitosamente.' })
+  @ApiResponse({ status: 404, description: 'No se encontró el despacho.' })
+  async syncDispatchStatus(@Param('trackingNumber') trackingNumber: string) {
+    if (!trackingNumber) {
+      throw new BadRequestException('El número de rastreo del despacho es requerido');
+    }
+
+    try {
+      await this.shipmentsService.syncShipmentsStatusByDispatchTracking(trackingNumber);
+      
+      return {
+        message: 'Proceso de sincronización finalizado',
+        dispatchTracking: trackingNumber,
+        timestamp: new Date().toISOString()
+      };
+    } catch (error) {
+      // El error ya viene con mensaje desde el service
+      throw new BadRequestException(error.message);
+    }
+  }
 }
+
