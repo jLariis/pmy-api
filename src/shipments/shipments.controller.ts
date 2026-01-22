@@ -86,6 +86,28 @@ export class ShipmentsController {
   }
 
 
+  @Post('update-package-statuses')
+  @ApiBody({
+    description: 'Array de números de tracking a actualizar',
+    schema: {
+      type: 'object',
+      properties: {
+        trackingNumbers: {
+          type: 'array',
+          items: {
+            type: 'string'
+          },
+          description: 'Números de tracking a actualizar',
+          example: ['TRK001', 'TRK002', 'TRK003']
+        }
+      },
+      required: ['trackingNumbers']
+    }
+  })
+  async updatePackageStatuses(@Body() body: { trackingNumbers: string[] }) {
+    return this.shipmentsService.processMasterFedexUpdate(body.trackingNumbers);
+  }
+
   @Get('pendings')
   @ApiOperation({
     summary: 'Obtener envíos pendientes',
