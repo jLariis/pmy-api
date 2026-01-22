@@ -670,7 +670,7 @@ export class PackageDispatchService {
 
       // Old method
       //const result = await this.shipmentService.checkStatusOnFedexBySubsidiaryRulesTesting(shipmentsTrackingNumbers, true);
-      const resultChargShipments = await this.shipmentService.checkStatusOnFedexChargeShipment(chargeShipmentsTrackingNumbers);
+      const resultChargShipments = await this.shipmentService.processChargeFedexUpdate(chargeShipmentsTrackingNumbers);
 
       /*
       // Registrar resultados para auditoría

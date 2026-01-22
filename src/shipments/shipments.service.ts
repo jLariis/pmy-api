@@ -3278,55 +3278,58 @@ export class ShipmentsService {
     exceptionCode: string | undefined,
     transactionalEntityManager: EntityManager
   ): Promise<void> {
-    this.logger.log(`🧾 Generando income para ${shipment.trackingNumber}`);
+    this.logger.log(`🧾 Evaluando generación de income para ${shipment.trackingNumber} (Estatus actual: ${shipment.status})`);
     const incomeStartTime = Date.now();
 
-    // Validate required fields with defaults
-    if (!shipment.trackingNumber) {
-      this.logger.error(`🚀 Tracking number faltante para generar income`);
-      throw new Error(`Datos incompletos: trackingNumber es requerido`);
-    }
-    if (!timestamp) {
-      this.logger.warn(`🚀 Timestamp faltante para ${shipment.trackingNumber}, usando fecha actual`);
-      timestamp = new Date();
-    }
-    if (!shipment.subsidiary) {
-      this.logger.error(`🚀 Subsidiary faltante para ${shipment.trackingNumber}`);
-      throw new Error(`Datos incompletos: subsidiary es requerido`);
-    }
-    if (!shipment.id) {
-      this.logger.error(`🚀 Shipment ID faltante para ${shipment.trackingNumber}`);
-      throw new Error(`Datos incompletos: shipment.id es requerido`);
-    }
-    if (!shipment.subsidiary.id) {
-      this.logger.error(`🚀 Subsidiary ID faltante para ${shipment.trackingNumber}`);
-      throw new Error(`Datos incompletos: subsidiary.id es requerido`);
+    // Validaciones de seguridad
+    if (!shipment.trackingNumber || !shipment.id || !shipment.subsidiary?.id) {
+      throw new Error(`Datos incompletos para generar income en guía ${shipment.trackingNumber}`);
     }
 
     let incomeType: IncomeStatus;
-    let incomeSubType = '';
+    let incomeSubType = exceptionCode ?? '';
 
     switch (shipment.status) {
       case ShipmentStatusType.ENTREGADO:
         incomeType = IncomeStatus.ENTREGADO;
         break;
+
       case ShipmentStatusType.RECHAZADO:
+      case ShipmentStatusType.DIRECCION_INCORRECTA:
         incomeType = IncomeStatus.RECHAZADO;
-        incomeSubType = exceptionCode ?? '';
         break;
+
       case ShipmentStatusType.CLIENTE_NO_DISPONIBLE:
-        if (exceptionCode === '08') {
-          incomeType = IncomeStatus.CLIENTE_NO_DISPONIBLE_3RA_VISITA
-          incomeSubType = exceptionCode ?? '';
-        }
+        // Si llegamos aquí es porque processMaster ya validó que es la 3ra visita
+        incomeType = IncomeStatus.CLIENTE_NO_DISPONIBLE_3RA_VISITA;
         break;
+
+      // --- CASOS OPERATIVOS (NO GENERAN INCOME) ---
+      case ShipmentStatusType.EN_BODEGA:
+      case ShipmentStatusType.EN_RUTA:
+      case ShipmentStatusType.PENDIENTE:
+        this.logger.log(`ℹ️ Estatus operativo ${shipment.status} detectado. No se requiere registro financiero.`);
+        return; 
+
       default:
-        const reason = `Unhandled shipment status: ${shipment.status}`;
-        this.logger.error(`❌ ${reason}`);
-        throw new Error(reason);
+        // En lugar de lanzar error y romper la transacción, logueamos y salimos
+        this.logger.warn(`⚠️ Estatus no mapeado para income: ${shipment.status}. Se omite la creación de registro contable.`);
+        return;
     }
 
     try {
+      const exists = await transactionalEntityManager.getRepository(Income).findOne({
+        where: { 
+          shipment: { id: shipment.id }, 
+          incomeType: incomeType 
+        }
+      });
+
+      if (exists) {
+        this.logger.log(`⏭️ Income de tipo ${incomeType} ya existe para ${shipment.trackingNumber}.`);
+        return;
+      }
+
       const newIncome = this.incomeRepository.create({
         trackingNumber: shipment.trackingNumber,
         shipment: { id: shipment.id },
@@ -3337,17 +3340,17 @@ export class ShipmentsService {
         nonDeliveryStatus: incomeSubType,
         isGrouped: false,
         sourceType: IncomeSourceType.SHIPMENT,
-        date: timestamp,
+        date: timestamp || new Date(),
         createdAt: new Date(),
       });
 
       await transactionalEntityManager.save(newIncome);
-      const incomeDuration = ((Date.now() - incomeStartTime) / 1000).toFixed(2);
-      this.logger.log(`✅ Income guardado para ${shipment.trackingNumber} en ${incomeDuration}s`);
+      
+      const duration = ((Date.now() - incomeStartTime) / 1000).toFixed(2);
+      this.logger.log(`✅ Income [${incomeType}] guardado para ${shipment.trackingNumber} (${duration}s)`);
     } catch (err) {
-      const reason = `Fallo al guardar income para ${shipment.trackingNumber}: ${err.message}`;
-      this.logger.error(`❌ ${reason}`);
-      throw new Error(reason);
+      this.logger.error(`❌ Fallo crítico al guardar income para ${shipment.trackingNumber}: ${err.message}`);
+      throw err; // Re-lanzamos para que el rollback de processMaster actúe
     }
   }
 
@@ -7170,7 +7173,7 @@ export class ShipmentsService {
     /************************************** */
 
 
-    /************ NUEVO METODO PARA CHECK STATUS ON FEDEX 20-01-2026*/
+    /************ (ACTIVO) NUEVO METODO PARA CHECK STATUS ON FEDEX 20-01-2026*/
       async processMasterFedexUpdate(trackingNumbers: string[]) {
         const limit = pLimit(5);
 
@@ -7180,7 +7183,6 @@ export class ShipmentsService {
           await queryRunner.startTransaction();
 
           try {
-            // 1. Cargamos el shipment
             const shipmentList = await queryRunner.manager.find(Shipment, {
               where: { trackingNumber: tn },
               relations: ['subsidiary', 'payment'], 
@@ -7203,11 +7205,10 @@ export class ShipmentsService {
               if (!latestStatusDetail) continue;
 
               const ancillaryReason = latestStatusDetail?.ancillaryDetails?.[0]?.reason || '';
-              const exceptionCode = ancillaryReason === '67' ? '67' : (lastEvent?.exceptionCode || '');
+              const exceptionCode = ancillaryReason !== '' ? ancillaryReason : (lastEvent?.exceptionCode || '');
               const derivedStatusCode = latestStatusDetail.derivedCode || latestStatusDetail.code || '';
               const mappedStatus = mapFedexStatusToLocalStatus(derivedStatusCode, exceptionCode);
               
-              // VALIDACIÓN DE HISTORIAL (Query directo para mayor velocidad)
               const lastHistory = await queryRunner.manager.query(
                 `SELECT status, exceptionCode, timestamp FROM shipment_status WHERE shipmentId = ? ORDER BY timestamp DESC LIMIT 1`,
                 [shipmentList[0].id]
@@ -7218,42 +7219,38 @@ export class ShipmentsService {
                 shouldUpdate = true;
               } else {
                 const lastSt = lastHistory[0].status;
-                const lastEx = String(lastHistory[0].exceptionCode || '');
+                const lastEx = String(lastHistory[0].exceptionCode || '').trim();
+                const currentEx = String(exceptionCode || '').trim();
                 const isDifferentStatus = lastSt !== mappedStatus;
-                const isDifferentException = lastEx !== String(exceptionCode);
+                const isDifferentException = lastEx !== currentEx;
                 const isDifferentDay = new Date().toDateString() !== new Date(lastHistory[0].timestamp).toDateString();
 
-                if (isDifferentStatus || isDifferentException || (exceptionCode === '67' && isDifferentDay)) {
+                if (isDifferentStatus || isDifferentException || ((currentEx === '67' || currentEx === '08') && isDifferentDay)) {
                   shouldUpdate = true;
                 }
               }
 
               if (shouldUpdate) {
                 for (const shipment of shipmentList) {
-                  // --- SOLUCIÓN AL MAPEO ---
-                  // Creamos el historial vinculando el OBJETO shipment, no solo el ID
                   const historyEntry = queryRunner.manager.create(ShipmentStatus, {
                     status: mappedStatus,
                     exceptionCode: exceptionCode,
                     timestamp: new Date(),
-                    shipment: shipment, // <--- AQUÍ se hace el mapeo correcto a la relación
+                    shipment: shipment, 
                     createdAt: new Date(),
-                    notes: (exceptionCode === '67' ? latestStatusDetail?.ancillaryDetails?.[0]?.reasonDescription : null) 
-                          || lastEvent?.eventDescription 
-                          || latestStatusDetail.description 
-                          || 'Actualización automática FedEx'
+                    notes: (ancillaryReason !== '' ? latestStatusDetail?.ancillaryDetails?.[0]?.reasonDescription : null) 
+                        || lastEvent?.eventDescription 
+                        || latestStatusDetail.description 
+                        || 'Actualización automática FedEx'
                   });
-
                   await queryRunner.manager.save(historyEntry);
-                  this.logger.log(`[${tn}] Historial vinculado correctamente al shipment ${shipment.id}`);
 
-                  // Actualizamos el status en el maestro
                   await queryRunner.manager.update(Shipment, shipment.id, { 
                     status: mappedStatus as any,
                     receivedByName: trackResult.deliveryDetails?.receivedByName || '' 
                   });
 
-                  // LÓGICA DE INGRESOS (REVISADA PARA ENTREGADO / NO ENTREGADO)
+                  // 6. LÓGICA DE INGRESOS (REVISADA)
                   const isDelivered = (mappedStatus === ShipmentStatusType.ENTREGADO);
                   const isRejected07 = (exceptionCode === '07');
                   let isThirdVisit08 = false;
@@ -7267,21 +7264,18 @@ export class ShipmentsService {
                   }
 
                   if ((isDelivered || isRejected07 || isThirdVisit08) && shipment.id === shipmentList[0].id) {
-                    const targetIncomeType = isDelivered ? IncomeStatus.ENTREGADO : IncomeStatus.NO_ENTREGADO;
+                    const targetIncomeStatus = isDelivered ? ShipmentStatusType.ENTREGADO : ShipmentStatusType.RECHAZADO;
 
-                    const exists = await queryRunner.manager.getRepository(Income).findOne({
-                      where: { shipment: {id: shipment.id}, incomeType: targetIncomeType }
-                    });
+                    // Clonamos o preparamos el objeto temporalmente para el income
+                    // para que el switch de generateIncomes no explote con estados como 'en_bodega'
+                    const shipmentForIncome = { ...shipment, status: targetIncomeStatus };
 
-                    if (!exists) {
-                      shipment.status = targetIncomeType as any; 
-                      await this.generateIncomes(shipment, new Date(), exceptionCode, queryRunner.manager);
-                    }
+                    await this.generateIncomes(shipmentForIncome as Shipment, new Date(), exceptionCode, queryRunner.manager);
                   }
                 }
+                this.logger.log(`[${tn}] Actualizado: ${mappedStatus} | Ex: ${exceptionCode}`);
               }
             }
-            
             await queryRunner.commitTransaction();
           } catch (error) {
             this.logger.error(`[${tn}] 💥 Error: ${error.message}`);
