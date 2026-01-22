@@ -3306,8 +3306,10 @@ export class ShipmentsService {
 
       // --- CASOS OPERATIVOS (NO GENERAN INCOME) ---
       case ShipmentStatusType.EN_BODEGA:
+      case ShipmentStatusType.CAMBIO_FECHA_SOLICITADO:
       case ShipmentStatusType.EN_RUTA:
       case ShipmentStatusType.PENDIENTE:
+      case ShipmentStatusType.ESTACION_FEDEX:
         this.logger.log(`ℹ️ Estatus operativo ${shipment.status} detectado. No se requiere registro financiero.`);
         return; 
 
@@ -7183,6 +7185,7 @@ export class ShipmentsService {
           await queryRunner.startTransaction();
 
           try {
+            // 1. Cargamos el shipment maestro y sus relaciones
             const shipmentList = await queryRunner.manager.find(Shipment, {
               where: { trackingNumber: tn },
               relations: ['subsidiary', 'payment'], 
@@ -7194,6 +7197,7 @@ export class ShipmentsService {
               return;
             }
 
+            // 2. Obtener info de FedEx
             const fedexInfo = await this.fedexService.trackPackage(tn);
             const allTrackResults = fedexInfo?.output?.completeTrackResults?.[0]?.trackResults || [];
 
@@ -7204,11 +7208,15 @@ export class ShipmentsService {
 
               if (!latestStatusDetail) continue;
 
+              // --- LÓGICA DE EXCEPCIÓN ---
               const ancillaryReason = latestStatusDetail?.ancillaryDetails?.[0]?.reason || '';
               const exceptionCode = ancillaryReason !== '' ? ancillaryReason : (lastEvent?.exceptionCode || '');
               const derivedStatusCode = latestStatusDetail.derivedCode || latestStatusDetail.code || '';
+              
+              // Mapeo a estatus local (Aquí el 17 se convierte en CAMBIO_FECHA_SOLICITADO)
               const mappedStatus = mapFedexStatusToLocalStatus(derivedStatusCode, exceptionCode);
               
+              // 3. VALIDACIÓN DE HISTORIAL
               const lastHistory = await queryRunner.manager.query(
                 `SELECT status, exceptionCode, timestamp FROM shipment_status WHERE shipmentId = ? ORDER BY timestamp DESC LIMIT 1`,
                 [shipmentList[0].id]
@@ -7221,17 +7229,23 @@ export class ShipmentsService {
                 const lastSt = lastHistory[0].status;
                 const lastEx = String(lastHistory[0].exceptionCode || '').trim();
                 const currentEx = String(exceptionCode || '').trim();
+                
                 const isDifferentStatus = lastSt !== mappedStatus;
                 const isDifferentException = lastEx !== currentEx;
                 const isDifferentDay = new Date().toDateString() !== new Date(lastHistory[0].timestamp).toDateString();
 
-                if (isDifferentStatus || isDifferentException || ((currentEx === '67' || currentEx === '08') && isDifferentDay)) {
+                // REGLA DE ACTUALIZACIÓN:
+                // Actualizamos si cambia el estatus, la excepción o si es un día nuevo con la misma excepción activa
+                if (isDifferentStatus || isDifferentException) {
+                  shouldUpdate = true;
+                } else if (currentEx !== '' && isDifferentDay) {
                   shouldUpdate = true;
                 }
               }
 
               if (shouldUpdate) {
                 for (const shipment of shipmentList) {
+                  // 4. Crear entrada de historial
                   const historyEntry = queryRunner.manager.create(ShipmentStatus, {
                     status: mappedStatus,
                     exceptionCode: exceptionCode,
@@ -7245,12 +7259,13 @@ export class ShipmentsService {
                   });
                   await queryRunner.manager.save(historyEntry);
 
+                  // 5. Actualizar Shipment Maestro
                   await queryRunner.manager.update(Shipment, shipment.id, { 
                     status: mappedStatus as any,
                     receivedByName: trackResult.deliveryDetails?.receivedByName || '' 
                   });
 
-                  // 6. LÓGICA DE INGRESOS (REVISADA)
+                  // 6. LÓGICA DE INGRESOS (SOLO PARA ENTREGADO O RECHAZOS DEFINITIVOS)
                   const isDelivered = (mappedStatus === ShipmentStatusType.ENTREGADO);
                   const isRejected07 = (exceptionCode === '07');
                   let isThirdVisit08 = false;
@@ -7263,12 +7278,15 @@ export class ShipmentsService {
                     if (parseInt(countRes[0]?.total || 0) >= 3) isThirdVisit08 = true;
                   }
 
+                  // Llamamos a generateIncomes solo si se cumplen las condiciones de facturación
                   if ((isDelivered || isRejected07 || isThirdVisit08) && shipment.id === shipmentList[0].id) {
-                    const targetIncomeStatus = isDelivered ? ShipmentStatusType.ENTREGADO : ShipmentStatusType.RECHAZADO;
+                    // Determinamos el estatus que el generateIncomes espera procesar
+                    const targetStatusForIncome = isDelivered 
+                      ? ShipmentStatusType.ENTREGADO 
+                      : (isThirdVisit08 ? ShipmentStatusType.CLIENTE_NO_DISPONIBLE : ShipmentStatusType.RECHAZADO);
 
-                    // Clonamos o preparamos el objeto temporalmente para el income
-                    // para que el switch de generateIncomes no explote con estados como 'en_bodega'
-                    const shipmentForIncome = { ...shipment, status: targetIncomeStatus };
+                    // Usamos un clon para no afectar el estatus operativo del objeto original si fuera necesario
+                    const shipmentForIncome = { ...shipment, status: targetStatusForIncome };
 
                     await this.generateIncomes(shipmentForIncome as Shipment, new Date(), exceptionCode, queryRunner.manager);
                   }
