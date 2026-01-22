@@ -723,7 +723,7 @@ export class UnloadingService {
           'consolidatedId', 'status', 'recipientName', 
           'recipientAddress', 'recipientPhone', 'recipientZip'
         ],
-        relations: ['subsidiary'],
+        relations: ['subsidiary', 'payment'],
         order: { createdAt: 'DESC' },
         take: Math.min(uniqueTNs.length * 2, 5000),
       }),
@@ -737,7 +737,7 @@ export class UnloadingService {
           'consolidatedId', 'status', 'recipientName', 
           'recipientAddress', 'recipientPhone', 'recipientZip'
         ],
-        relations: ['subsidiary'],
+        relations: ['subsidiary', 'payment'],
         order: { createdAt: 'DESC' },
         take: Math.min(uniqueTNs.length * 2, 5000),
       }),
