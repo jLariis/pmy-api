@@ -44,7 +44,7 @@ export class PackageDispatchService {
   async create(dto: CreatePackageDispatchDto): Promise<PackageDispatch> {
     const allShipmentIds = dto.shipments;
 
-    // Buscar en shipmentRepository
+    // 1. Buscar en shipmentRepository
     const shipments = await this.shipmentRepository.find({
       where: { id: In(allShipmentIds) },
     });
@@ -52,7 +52,7 @@ export class PackageDispatchService {
     const foundShipmentIds = shipments.map(s => s.id);
     const missingIds = allShipmentIds.filter(id => !foundShipmentIds.includes(id));
 
-    // Buscar los faltantes en chargeShipmentRepository
+    // 2. Buscar los faltantes en chargeShipmentRepository
     const chargeShipments = await this.chargeShipmentRepository.find({
       where: { id: In(missingIds) },
     });
@@ -61,9 +61,10 @@ export class PackageDispatchService {
     const stillMissing = missingIds.filter(id => !foundChargeShipmentIds.includes(id));
 
     if (stillMissing.length > 0) {
-      throw new Error(`Some shipment IDs were not found: ${stillMissing.join(', ')}`);
+      throw new Error(`Algunos IDs de envíos no fueron encontrados: ${stillMissing.join(', ')}`);
     }
 
+    // 3. Crear el despacho
     const newPackageDispatch = this.packageDispatchRepository.create({
       routes: dto.routes || [],
       drivers: dto.drivers || [],
@@ -74,21 +75,40 @@ export class PackageDispatchService {
 
     const savedDispatch = await this.packageDispatchRepository.save(newPackageDispatch);
 
-    // Relacionar los encontrados de shipment y chargeShipment
+    // 4. Relacionar y ACTUALIZAR ESTATUS (Shipments)
     if (shipments.length > 0) {
-      await this.shipmentRepository
-        .createQueryBuilder()
-        .relation(PackageDispatch, 'shipments')
-        .of(savedDispatch)
-        .add(shipments);
+      await Promise.all([
+        // Relación
+        this.shipmentRepository
+          .createQueryBuilder()
+          .relation(PackageDispatch, 'shipments')
+          .of(savedDispatch)
+          .add(shipments),
+        
+        // Actualización de Estatus Masiva
+        this.shipmentRepository.update(
+          { id: In(foundShipmentIds) },
+          { status: ShipmentStatusType.EN_RUTA } // Asegúrate de tener este Enum importado
+        )
+      ]);
     }
 
+    // 5. Relacionar y ACTUALIZAR ESTATUS (ChargeShipments)
     if (chargeShipments.length > 0) {
-      await this.chargeShipmentRepository
-        .createQueryBuilder()
-        .relation(PackageDispatch, 'chargeShipments')
-        .of(savedDispatch)
-        .add(chargeShipments);
+      await Promise.all([
+        // Relación
+        this.chargeShipmentRepository
+          .createQueryBuilder()
+          .relation(PackageDispatch, 'chargeShipments')
+          .of(savedDispatch)
+          .add(chargeShipments),
+
+        // Actualización de Estatus Masiva
+        this.chargeShipmentRepository.update(
+          { id: In(foundChargeShipmentIds) },
+          { status: ShipmentStatusType.EN_RUTA }
+        )
+      ]);
     }
 
     return savedDispatch;
@@ -710,9 +730,9 @@ export class PackageDispatchService {
 
     console.log("⚡ ChargeShipments encontrados:", chargeShipments.length);
 
-    const allShipments = [...shipments, chargeShipments]
+    const allShipments = [...shipments, ...chargeShipments]
 
-    for (const shipment of shipments) {
+    for (const shipment of allShipments) {
         try {
           if (!shipment.statusHistory || shipment.statusHistory.length === 0) {
             shipmentsWithout67.push({
