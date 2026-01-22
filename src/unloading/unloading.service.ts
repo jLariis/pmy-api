@@ -2993,9 +2993,9 @@ export class UnloadingService {
 
     console.log("⚡ ChargeShipments encontrados:", chargeShipments.length);
 
-    const allShipments = [...shipments, chargeShipments]
+    const allShipments = [...shipments, ...chargeShipments]
 
-    for (const shipment of shipments) {
+    for (const shipment of allShipments) {
         try {
           if (!shipment.statusHistory || shipment.statusHistory.length === 0) {
             shipmentsWithout67.push({
