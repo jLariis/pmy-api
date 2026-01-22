@@ -126,118 +126,99 @@ export class ConsolidatedService {
     fromDate?: Date,
     toDate?: Date,
   ): Promise<ConsolidatedDto[]> {
-    // 1. Validación y ajuste de fechas UTC
     let utcFromDate: Date | undefined;
     let utcToDate: Date | undefined;
 
     if (fromDate && toDate) {
-      if (fromDate > toDate) {
-        throw new Error('La fecha fromDate no puede ser mayor que toDate');
-      }
-
-      utcFromDate = new Date(Date.UTC(
-        fromDate.getUTCFullYear(),
-        fromDate.getUTCMonth(),
-        fromDate.getUTCDate(),
-        0, 0, 0
-      ));
-
-      utcToDate = new Date(Date.UTC(
-        toDate.getUTCFullYear(),
-        toDate.getUTCMonth(),
-        toDate.getUTCDate(),
-        23, 59, 59
-      ));
-    } else if (fromDate || toDate) {
-      throw new Error('Debe proporcionar ambas fechas (fromDate y toDate) para usar rangos');
+      utcFromDate = new Date(Date.UTC(fromDate.getUTCFullYear(), fromDate.getUTCMonth(), fromDate.getUTCDate(), 0, 0, 0));
+      utcToDate = new Date(Date.UTC(toDate.getUTCFullYear(), toDate.getUTCMonth(), toDate.getUTCDate(), 23, 59, 59));
     }
 
-    // 2. Construir consulta única optimizada
     const queryBuilder = this.consolidatedRepository
       .createQueryBuilder('consolidated')
       .leftJoinAndSelect('consolidated.subsidiary', 'subsidiary')
-      .leftJoin(
-        'shipment',
-        'shipment',
-        'shipment.consolidatedId = consolidated.id AND shipment.consolidatedId IS NOT NULL'
-      )
+      .leftJoin('shipment', 'shipment', 'shipment.consolidatedId = consolidated.id')
+      // Unimos con el historial para rescatar códigos de paquetes viejos ('no_entregado')
+      .leftJoin('shipment_status', 'status_history', 
+        'status_history.id = (SELECT id FROM shipment_status WHERE shipmentId = shipment.id ORDER BY timestamp DESC LIMIT 1)')
       .select([
         'consolidated.id AS id',
         'consolidated.date AS date',
         'consolidated.numberOfPackages AS numberOfPackages',
         'consolidated.consNumber AS consNumber',
         'consolidated.type AS type',
-        // Solo necesitamos id y name de subsidiary
         'subsidiary.id AS subsidiary_id',
         'subsidiary.name AS subsidiary_name'
       ])
-      .addSelect('COUNT(shipment.id)', 'totalShipments')
+      .addSelect('COUNT(shipment.id)', 'total')
       .addSelect(`SUM(CASE WHEN shipment.status = 'en_ruta' THEN 1 ELSE 0 END)`, 'en_ruta')
+      .addSelect(`SUM(CASE WHEN shipment.status = 'en_bodega' THEN 1 ELSE 0 END)`, 'en_bodega')
       .addSelect(`SUM(CASE WHEN shipment.status = 'entregado' THEN 1 ELSE 0 END)`, 'entregado')
-      .addSelect(`SUM(CASE WHEN shipment.status = 'no_entregado' THEN 1 ELSE 0 END)`, 'no_entregado')
-      .addSelect(`SUM(CASE WHEN shipment.status NOT IN ('en_ruta', 'entregado', 'no_entregado') AND shipment.status IS NOT NULL THEN 1 ELSE 0 END)`, 'other')
+      
+      // Lógica Híbrida para DEX:
+      // Cuenta si el status ya es el nuevo O si es 'no_entregado' pero el historial dice el código correspondiente
+      .addSelect(`SUM(CASE 
+          WHEN shipment.status = 'direccion_incorrecta' THEN 1 
+          WHEN shipment.status = 'no_entregado' AND status_history.exceptionCode = '03' THEN 1 
+          ELSE 0 END)`, 'dex03')
+      
+      .addSelect(`SUM(CASE 
+          WHEN shipment.status = 'rechazado' THEN 1 
+          WHEN shipment.status = 'no_entregado' AND status_history.exceptionCode = '07' THEN 1 
+          ELSE 0 END)`, 'dex07')
+      
+      .addSelect(`SUM(CASE 
+          WHEN shipment.status = 'cliente_no_disponible' THEN 1 
+          WHEN shipment.status = 'no_entregado' AND status_history.exceptionCode = '08' THEN 1 
+          ELSE 0 END)`, 'dex08')
+      
+      // Otros: Ajustamos el NOT IN para incluir el caso genérico de no_entregado que no mapeó a ningún DEX anterior
+      .addSelect(`SUM(CASE 
+          WHEN shipment.status NOT IN ('en_ruta', 'en_bodega', 'entregado', 'direccion_incorrecta', 'rechazado', 'cliente_no_disponible') 
+              AND (shipment.status != 'no_entregado' OR (status_history.exceptionCode NOT IN ('03','07','08') OR status_history.exceptionCode IS NULL))
+              AND shipment.status IS NOT NULL THEN 1 
+          ELSE 0 END)`, 'other')
       .groupBy('consolidated.id, subsidiary.id, subsidiary.name')
       .orderBy('consolidated.date', 'DESC');
 
-    // 3. Aplicar filtros
-    if (subsidiaryId) {
-      queryBuilder.andWhere('consolidated.subsidiaryId = :subsidiaryId', { subsidiaryId });
-    }
-
+    if (subsidiaryId) queryBuilder.andWhere('consolidated.subsidiaryId = :subsidiaryId', { subsidiaryId });
     if (utcFromDate && utcToDate) {
-      queryBuilder.andWhere('consolidated.date BETWEEN :fromDate AND :toDate', {
-        fromDate: utcFromDate,
-        toDate: utcToDate
-      });
-      
-      console.log('Buscando consolidados entre:', utcFromDate, 'y', utcToDate);
+      queryBuilder.andWhere('consolidated.date BETWEEN :fromDate AND :toDate', { fromDate: utcFromDate, toDate: utcToDate });
     }
 
-    // 4. Ejecutar consulta
     const results = await queryBuilder.getRawMany();
 
-    if (results.length === 0) {
-      console.warn('No se encontraron consolidados con los filtros aplicados');
-      return [];
-    }
-
-    // 5. Mapear resultados
-    return results.map(result => {
-      const total = parseInt(result.totalShipments, 10) || 0;
-      const en_ruta = parseInt(result.en_ruta, 10) || 0;
-      const entregado = parseInt(result.entregado, 10) || 0;
-      const no_entregado = parseInt(result.no_entregado, 10) || 0;
-      const other = parseInt(result.other, 10) || 0;
-
-      // Validar que la suma de conteos sea igual al total
-      const calculatedTotal = en_ruta + entregado + no_entregado + other;
-      if (total !== calculatedTotal) {
-        console.warn(`Discrepancia en conteos para consolidado ${result.consNumber}: total=${total}, calculado=${calculatedTotal}`);
-      }
-
-      const isComplete = total > 0 && en_ruta === 0;
+    return results.map(res => {
+      const total = parseInt(res.total, 10) || 0;
+      const counts = {
+        total,
+        en_ruta: parseInt(res.en_ruta, 10) || 0,
+        en_bodega: parseInt(res.en_bodega, 10) || 0,
+        entregado: parseInt(res.entregado, 10) || 0,
+        dex03: parseInt(res.dex03, 10) || 0,
+        dex07: parseInt(res.dex07, 10) || 0,
+        dex08: parseInt(res.dex08, 10) || 0,
+        other: parseInt(res.other, 10) || 0,
+      };
 
       return {
-        id: result.id,
-        date: result.date,
-        consolidatedDate: result.date,
-        numberOfPackages: result.numberOfPackages,
-        consNumber: result.consNumber,
-        type: result.type,
-        subsidiary: {
-          id: result.subsidiary_id,
-          name: result.subsidiary_name
-        },
-        isConsolidatedComplete: isComplete,
-        shipmentCounts: {
-          total,
-          en_ruta,
-          entregado,
-          no_entregado,
-          other
-        },
+        id: res.id,
+        date: res.date,
+        consolidatedDate: res.date,
+        numberOfPackages: res.numberOfPackages,
+        consNumber: res.consNumber,
+        type: res.type,
+        subsidiary: { id: res.subsidiary_id, name: res.subsidiary_name },
+        isConsolidatedComplete: total > 0 && counts.en_ruta === 0 && counts.en_bodega === 0,
+        shipmentCounts: counts,
         shipments: []
       };
+    });
+  }
+
+  async findByConsNumber(consNumber: string): Promise<Consolidated | null> {
+    return await this.consolidatedRepository.findOne({
+      where: { consNumber }
     });
   }
 

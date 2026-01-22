@@ -113,6 +113,21 @@ export class ChargeShipment {
       @Column({default: ''})
       exceptionCode: string;
 
+      /**
+       * Identificador único global de FedEx para evitar colisiones 
+       * con números de guía reciclados.
+       */
+      @Index() // Esto crea el índice en la base de datos automáticamente
+      @Column({ type: 'varchar', length: 255, nullable: true})
+      fedexUniqueId: string;
+
+      /**
+       * Código del transportista (ej: FDXE para Express, FDXG para Ground).
+       * Ayuda a que la API de FedEx responda más rápido al no tener que buscar en todas sus redes.
+       */
+      @Column({ type: 'varchar', length: 50, nullable: true})
+      carrierCode: string;
+
       @BeforeInsert()
       setDefaults() {
         this.createdAt = new Date(); // Fecha en UTC (asegúrate de que el servidor esté en UTC)

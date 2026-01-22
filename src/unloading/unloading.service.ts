@@ -3,7 +3,7 @@ import { CreateUnloadingDto } from './dto/create-unloading.dto';
 import { UpdateUnloadingDto } from './dto/update-unloading.dto';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Unloading } from 'src/entities/unloading.entity';
-import { Between, In, MoreThanOrEqual, Not, Repository } from 'typeorm';
+import { Between, DataSource, In, MoreThanOrEqual, Not, Repository } from 'typeorm';
 import { Charge, ChargeShipment, Consolidated, Shipment, ShipmentStatus } from 'src/entities';
 import { ValidatedPackageDispatchDto } from 'src/package-dispatch/dto/validated-package-dispatch.dto';
 import { ValidatedUnloadingDto } from './dto/validate-package-unloading.dto';
@@ -34,7 +34,8 @@ export class UnloadingService {
     @Inject(forwardRef(() => ShipmentsService))
     private readonly shipmentService: ShipmentsService,
     @InjectRepository(ShipmentStatus)
-    private readonly shipmentStatusRepository: Repository<ShipmentStatus>
+    private readonly shipmentStatusRepository: Repository<ShipmentStatus>,
+    private readonly dataSource: DataSource,
   ) {}
 
   async getConsolidateToStartUnloading(subdiaryId: string): Promise<ConsolidatedsDto> {
@@ -118,18 +119,22 @@ export class UnloadingService {
   }
 
   async create(createUnloadingDto: CreateUnloadingDto) {
-    const allShipmentIds = createUnloadingDto.shipments;
+  const allShipmentIds = createUnloadingDto.shipments;
+  const queryRunner = this.dataSource.createQueryRunner();
+  await queryRunner.connect();
+  await queryRunner.startTransaction();
 
-    // Buscar en shipmentRepository
-    const shipments = await this.shipmentRepository.find({
+  try {
+    // 1. Buscar en shipmentRepository
+    const shipments = await queryRunner.manager.find(Shipment, {
       where: { id: In(allShipmentIds) },
     });
 
     const foundShipmentIds = shipments.map(s => s.id);
     const missingIds = allShipmentIds.filter(id => !foundShipmentIds.includes(id));
 
-    // Buscar los faltantes en chargeShipmentRepository
-    const chargeShipments = await this.chargeShipmentRepository.find({
+    // 2. Buscar los faltantes en chargeShipmentRepository
+    const chargeShipments = await queryRunner.manager.find(ChargeShipment, {
       where: { id: In(missingIds) },
     });
 
@@ -137,11 +142,11 @@ export class UnloadingService {
     const stillMissing = missingIds.filter(id => !foundChargeShipmentIds.includes(id));
 
     if (stillMissing.length > 0) {
-      throw new Error(`Some shipment IDs were not found: ${stillMissing.join(', ')}`);
+      throw new Error(`Los siguientes IDs no existen: ${stillMissing.join(', ')}`);
     }
 
-    // Guardar el Desembarque
-    const newUnloading = this.unloadingRepository.create({
+    // 3. Crear y Guardar el Desembarque (Unloading)
+    const newUnloading = queryRunner.manager.create(Unloading, {
       vehicle: createUnloadingDto.vehicle,
       subsidiary: createUnloadingDto.subsidiary,
       missingTrackings: createUnloadingDto.missingTrackings,
@@ -149,21 +154,58 @@ export class UnloadingService {
       date: new Date(),
     });
 
-    const savedUnloading = await this.unloadingRepository.save(newUnloading);
+    const savedUnloading = await queryRunner.manager.save(newUnloading);
 
-    // ✅ En lugar de .relation().add(), asignar directamente unloading
-    for (const shipment of shipments) {
-      shipment.unloading = savedUnloading;
+    // 4. Actualizar Shipments + Historial
+    if (shipments.length > 0) {
+      for (const shipment of shipments) {
+        shipment.unloading = savedUnloading;
+        shipment.status = ShipmentStatusType.EN_BODEGA;
+
+        // IMPORTANTE: Registrar el movimiento en el historial
+        const history = queryRunner.manager.create(ShipmentStatus, {
+          status: ShipmentStatusType.EN_BODEGA,
+          shipment: shipment,
+          timestamp: new Date(),
+          notes: 'Ingreso a bodega mediante desembarque',
+          createdAt: new Date()
+        });
+        await queryRunner.manager.save(history);
+      }
+      await queryRunner.manager.save(shipments);
     }
-    await this.shipmentRepository.save(shipments);
 
-    for (const chargeShipment of chargeShipments) {
-      chargeShipment.unloading = savedUnloading;
+    // 5. Actualizar ChargeShipments (F2) + Historial
+    if (chargeShipments.length > 0) {
+      for (const charge of chargeShipments) {
+        charge.unloading = savedUnloading;
+        charge.status = ShipmentStatusType.EN_BODEGA;
+
+        const history = queryRunner.manager.create(ShipmentStatus, {
+          status: ShipmentStatusType.EN_BODEGA,
+          chargeShipment: charge,
+          timestamp: new Date(),
+          notes: 'Ingreso a bodega mediante desembarque (F2)',
+          createdAt: new Date()
+        });
+        await queryRunner.manager.save(history);
+      }
+      await queryRunner.manager.save(chargeShipments);
     }
-    await this.chargeShipmentRepository.save(chargeShipments);
 
+    // 6. Confirmar todo
+    await queryRunner.commitTransaction();
     return savedUnloading;
+
+  } catch (error) {
+    // Si algo falla, se deshace todo (incluyendo el Unloading guardado)
+    await queryRunner.rollbackTransaction();
+    this.logger.error(`Error en Create Unloading: ${error.message}`);
+    throw error;
+  } finally {
+    await queryRunner.release();
   }
+}
 
   async validatePackageResp(
     packageToValidate: ValidatedPackageDispatchDto,
