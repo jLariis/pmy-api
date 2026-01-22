@@ -4856,79 +4856,87 @@ export class ShipmentsService {
 
     /*** Validate Status Code 67 by Subsidiary **************************/
     async validateCode67BySubsidiary(subsidiaryId: string) {
-      const shipments = await this.shipmentRepository.find({
-        where: {
-          subsidiary: { id: subsidiaryId },
-          status: ShipmentStatusType.EN_RUTA,
-        },
-        relations: ['statusHistory'],
-      });
+      // 1. Definimos estrictamente los estados operativos de interés
+      const targetStatuses = [
+        ShipmentStatusType.PENDIENTE, 
+        ShipmentStatusType.EN_BODEGA
+      ];
 
+      // 2. Buscamos en ambos repositorios filtrando por subsidiaria y estados
+      const [shipments, chargeShipments] = await Promise.all([
+        this.shipmentRepository.find({
+          where: { 
+            subsidiary: { id: subsidiaryId },
+            status: In(targetStatuses) 
+          },
+          relations: ['statusHistory'],
+        }),
+        this.chargeShipmentRepository.find({
+          where: { 
+            subsidiary: { id: subsidiaryId },
+            status: In(targetStatuses) 
+          },
+          relations: ['statusHistory'],
+        }),
+      ]);
+
+      const allShipments = [...shipments, ...chargeShipments];
       const shipmentsWithout67 = [];
 
-      for (const shipment of shipments) {
+      // 3. Procesamos la lista unificada
+      for (const shipment of allShipments) {
         try {
+          // Si no tiene historial, por lógica no tiene el código 67
           if (!shipment.statusHistory || shipment.statusHistory.length === 0) {
-            shipmentsWithout67.push({
-              trackingNumber: shipment.trackingNumber,
-              currentStatus: shipment.status,
-              statusHistoryCount: 0,
-              exceptionCodes: [],
-              firstStatusDate: null,
-              lastStatusDate: null,
-              comment: 'Sin historial de estados',
-            });
+            shipmentsWithout67.push(this.mapMissing67Data(shipment, 'Sin historial de estados'));
             continue;
           }
 
-          const sortedHistory = shipment.statusHistory.sort(
-            (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
-          );
-
-          const hasExceptionCode67 = sortedHistory.some(status => 
-            status.exceptionCode === '67'
+          // Verificamos la existencia del código 67
+          const hasExceptionCode67 = shipment.statusHistory.some(
+            status => status.exceptionCode === '67'
           );
 
           if (!hasExceptionCode67) {
-            const firstStatus = sortedHistory[0];
-            const lastStatus = sortedHistory[sortedHistory.length - 1];
+            const sortedHistory = shipment.statusHistory.sort(
+              (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+            );
 
-            const exceptionCodes = sortedHistory
-              .map(h => h.exceptionCode)
-              .filter(code => code !== null && code !== undefined);
-
-            shipmentsWithout67.push({
-              trackingNumber: shipment.trackingNumber,
-              currentStatus: shipment.status,
-              statusHistoryCount: sortedHistory.length,
-              exceptionCodes: [...new Set(exceptionCodes)],
-              firstStatusDate: firstStatus?.timestamp,
-              lastStatusDate: lastStatus?.timestamp,
-              comment: 'No tiene exceptionCode 67',
-            });
+            shipmentsWithout67.push(
+              this.mapMissing67Data(shipment, 'No tiene exceptionCode 67', sortedHistory)
+            );
           }
-
         } catch (error) {
-          shipmentsWithout67.push({
-            trackingNumber: shipment.trackingNumber,
-            currentStatus: shipment.status,
-            statusHistoryCount: 0,
-            exceptionCodes: [],
-            firstStatusDate: null,
-            lastStatusDate: null,
-            comment: `Error: ${error.message}`,
-          });
+          shipmentsWithout67.push(this.mapMissing67Data(shipment, `Error: ${error.message}`));
         }
       }
 
-      // ⚠️ FALTABA ESTE RETURN - Agrégalo al final
       return {
         summary: {
-          totalShipments: shipments.length,
+          totalInWarehouseOrPending: allShipments.length,
           withoutCode67: shipmentsWithout67.length,
-          withCode67: shipments.length - shipmentsWithout67.length,
+          withCode67: allShipments.length - shipmentsWithout67.length,
         },
-        details: shipmentsWithout67
+        details: shipmentsWithout67,
+      };
+    }
+
+    // Función auxiliar para no repetir código de mapeo
+    private mapMissing67Data(shipment: any, comment: string, sortedHistory: any[] = []) {
+      const exceptionCodes = sortedHistory
+        .map(h => h.exceptionCode)
+        .filter(code => code != null);
+
+      return {
+        trackingNumber: shipment.trackingNumber,
+        currentStatus: shipment.status,
+        statusHistoryCount: sortedHistory.length,
+        exceptionCodes: [...new Set(exceptionCodes)],
+        firstStatusDate: sortedHistory[0]?.timestamp || null,
+        lastStatusDate: sortedHistory[sortedHistory.length - 1]?.timestamp || null,
+        comment: comment,
+        // Detectamos si es un ChargeShipment o Shipment normal para el reporte
+        type: shipment.constructor.name 
       };
     }
 
@@ -7172,6 +7180,7 @@ export class ShipmentsService {
           await queryRunner.startTransaction();
 
           try {
+            // 1. Cargamos el shipment
             const shipmentList = await queryRunner.manager.find(Shipment, {
               where: { trackingNumber: tn },
               relations: ['subsidiary', 'payment'], 
@@ -7193,75 +7202,58 @@ export class ShipmentsService {
 
               if (!latestStatusDetail) continue;
 
-              // 1. Extraer fecha del evento de FedEx
-              let eventDate = new Date(lastEvent?.date || trackResult?.dateAndTimes?.[0]?.dateTime || new Date());
-              if (isNaN(eventDate.getTime())) eventDate = new Date();
-
-              // 2. Extraer códigos (Soporte profundo para ancillaryDetails)
-              const exceptionCode = lastEvent?.exceptionCode || latestStatusDetail?.ancillaryDetails?.[0]?.reason || '';
+              const ancillaryReason = latestStatusDetail?.ancillaryDetails?.[0]?.reason || '';
+              const exceptionCode = ancillaryReason === '67' ? '67' : (lastEvent?.exceptionCode || '');
               const derivedStatusCode = latestStatusDetail.derivedCode || latestStatusDetail.code || '';
-              
-              // --- MAPEO (Importante: mapFedexStatusToLocalStatus debe reconocer 'OW') ---
               const mappedStatus = mapFedexStatusToLocalStatus(derivedStatusCode, exceptionCode);
-              const currentStatus = shipmentList[0].status;
-
-              // 3. REGLA DE PRIORIDAD: No retroceder si ya está ENTREGADO
-              if (currentStatus === ShipmentStatusType.ENTREGADO && mappedStatus !== ShipmentStatusType.ENTREGADO) {
-                continue; 
-              }
-
-              // 4. VALIDACIÓN DE HISTORIAL EXISTENTE
+              
+              // VALIDACIÓN DE HISTORIAL (Query directo para mayor velocidad)
               const lastHistory = await queryRunner.manager.query(
                 `SELECT status, exceptionCode, timestamp FROM shipment_status WHERE shipmentId = ? ORDER BY timestamp DESC LIMIT 1`,
                 [shipmentList[0].id]
               );
 
               let shouldUpdate = false;
-
               if (!lastHistory.length) {
                 shouldUpdate = true;
               } else {
                 const lastSt = lastHistory[0].status;
-                const lastEx = lastHistory[0].exceptionCode;
-                const lastTs = new Date(lastHistory[0].timestamp);
-
+                const lastEx = String(lastHistory[0].exceptionCode || '');
                 const isDifferentStatus = lastSt !== mappedStatus;
-                const isDifferentException = lastEx !== exceptionCode;
-                const isDifferentDay = eventDate.toDateString() !== lastTs.toDateString();
+                const isDifferentException = lastEx !== String(exceptionCode);
+                const isDifferentDay = new Date().toDateString() !== new Date(lastHistory[0].timestamp).toDateString();
 
-                // REGLA: El 67 se rige por día diferente. 
-                // El resto (incluyendo 03, 07, 08) se rige por cambio de excepción o status.
-                if (exceptionCode === '67') {
-                  if (isDifferentStatus || isDifferentDay) shouldUpdate = true;
-                } else {
-                  // Esto asegura que si llega un 03 (dirección incorrecta), se registre aunque sea el mismo día
-                  if (isDifferentStatus || isDifferentException) shouldUpdate = true;
+                if (isDifferentStatus || isDifferentException || (exceptionCode === '67' && isDifferentDay)) {
+                  shouldUpdate = true;
                 }
               }
 
               if (shouldUpdate) {
                 for (const shipment of shipmentList) {
-                  // A. INSERTAR HISTORIAL
-                  await queryRunner.manager.createQueryBuilder()
-                    .insert()
-                    .into('shipment_status') 
-                    .values({
-                      status: mappedStatus,
-                      exceptionCode: exceptionCode,
-                      timestamp: eventDate,
-                      shipmentId: shipment.id,
-                      createdAt: new Date(),
-                      notes: lastEvent?.eventDescription || latestStatusDetail.description || ''
-                    })
-                    .execute();
+                  // --- SOLUCIÓN AL MAPEO ---
+                  // Creamos el historial vinculando el OBJETO shipment, no solo el ID
+                  const historyEntry = queryRunner.manager.create(ShipmentStatus, {
+                    status: mappedStatus,
+                    exceptionCode: exceptionCode,
+                    timestamp: new Date(),
+                    shipment: shipment, // <--- AQUÍ se hace el mapeo correcto a la relación
+                    createdAt: new Date(),
+                    notes: (exceptionCode === '67' ? latestStatusDetail?.ancillaryDetails?.[0]?.reasonDescription : null) 
+                          || lastEvent?.eventDescription 
+                          || latestStatusDetail.description 
+                          || 'Actualización automática FedEx'
+                  });
 
-                  // B. ACTUALIZAR SHIPMENT
+                  await queryRunner.manager.save(historyEntry);
+                  this.logger.log(`[${tn}] Historial vinculado correctamente al shipment ${shipment.id}`);
+
+                  // Actualizamos el status en el maestro
                   await queryRunner.manager.update(Shipment, shipment.id, { 
                     status: mappedStatus as any,
                     receivedByName: trackResult.deliveryDetails?.receivedByName || '' 
                   });
 
-                  // C. LÓGICA DE INGRESOS (Solo casos facturables)
+                  // LÓGICA DE INGRESOS (REVISADA PARA ENTREGADO / NO ENTREGADO)
                   const isDelivered = (mappedStatus === ShipmentStatusType.ENTREGADO);
                   const isRejected07 = (exceptionCode === '07');
                   let isThirdVisit08 = false;
@@ -7271,32 +7263,29 @@ export class ShipmentsService {
                       `SELECT COUNT(*) as total FROM shipment_status WHERE shipmentId = ? AND exceptionCode = '08'`,
                       [shipment.id]
                     );
-                    // +1 porque acabamos de insertar el actual arriba
                     if (parseInt(countRes[0]?.total || 0) >= 3) isThirdVisit08 = true;
                   }
 
                   if ((isDelivered || isRejected07 || isThirdVisit08) && shipment.id === shipmentList[0].id) {
-                    const exists = await queryRunner.manager.createQueryBuilder(Income, 'inc')
-                      .where('inc.shipmentId = :sId', { sId: shipment.id })
-                      .andWhere('inc.incomeType = :type', { type: mappedStatus })
-                      .getOne();
+                    const targetIncomeType = isDelivered ? IncomeStatus.ENTREGADO : IncomeStatus.NO_ENTREGADO;
+
+                    const exists = await queryRunner.manager.getRepository(Income).findOne({
+                      where: { shipment: {id: shipment.id}, incomeType: targetIncomeType }
+                    });
 
                     if (!exists) {
-                      try {
-                        shipment.status = mappedStatus;
-                        await this.generateIncomes(shipment, eventDate, exceptionCode, queryRunner.manager);
-                      } catch (e) {
-                        this.logger.error(`Error Income ${tn}: ${e.message}`);
-                      }
+                      shipment.status = targetIncomeType as any; 
+                      await this.generateIncomes(shipment, new Date(), exceptionCode, queryRunner.manager);
                     }
                   }
                 }
               }
             }
+            
             await queryRunner.commitTransaction();
           } catch (error) {
+            this.logger.error(`[${tn}] 💥 Error: ${error.message}`);
             if (queryRunner.isTransactionActive) await queryRunner.rollbackTransaction();
-            this.logger.error(`❌ Error en Tracking ${tn}: ${error.message}`);
           } finally {
             await queryRunner.release();
           }
@@ -7313,7 +7302,7 @@ export class ShipmentsService {
           await queryRunner.startTransaction();
 
           try {
-            // 1. Buscar en ChargeShipment
+            // 1. Buscar en ChargeShipment (F2)
             const chargeList = await queryRunner.manager.find(ChargeShipment, {
               where: { trackingNumber: tn },
               lock: { mode: 'pessimistic_write' }
@@ -7334,10 +7323,9 @@ export class ShipmentsService {
 
               if (!latestStatusDetail) continue;
 
-              let eventDate = new Date(lastEvent?.date || trackResult?.dateAndTimes?.[0]?.dateTime || new Date());
-              if (isNaN(eventDate.getTime())) eventDate = new Date();
-
-              const exceptionCode = lastEvent?.exceptionCode || latestStatusDetail?.ancillaryDetails?.[0]?.reason || '';
+              // --- EXTRACCIÓN DE CÓDIGOS (Prioridad Ancillary para 67) ---
+              const ancillaryReason = latestStatusDetail?.ancillaryDetails?.[0]?.reason || '';
+              const exceptionCode = ancillaryReason === '67' ? '67' : (lastEvent?.exceptionCode || '');
               const derivedStatusCode = latestStatusDetail.derivedCode || latestStatusDetail.code || '';
               
               const mappedStatus = mapFedexStatusToLocalStatus(derivedStatusCode, exceptionCode);
@@ -7348,7 +7336,10 @@ export class ShipmentsService {
                 continue; 
               }
 
-              // 3. Validación de Historial (Usando chargeShipmentId)
+              let eventDate = new Date(lastEvent?.date || trackResult?.dateAndTimes?.[0]?.dateTime || new Date());
+              if (isNaN(eventDate.getTime())) eventDate = new Date();
+
+              // 3. VALIDACIÓN DE HISTORIAL (Usando chargeShipmentId)
               const lastHistory = await queryRunner.manager.query(
                 `SELECT status, exceptionCode, timestamp FROM shipment_status 
                 WHERE chargeShipmentId = ? ORDER BY timestamp DESC LIMIT 1`,
@@ -7356,42 +7347,51 @@ export class ShipmentsService {
               );
 
               let shouldUpdate = false;
+              let reason = "";
 
               if (!lastHistory.length) {
                 shouldUpdate = true;
+                reason = "Primer registro historial";
               } else {
-                const lastEx = lastHistory[0].exceptionCode;
+                const lastSt = lastHistory[0].status;
+                const lastEx = String(lastHistory[0].exceptionCode || '');
+                const currentEx = String(exceptionCode);
                 const lastTs = new Date(lastHistory[0].timestamp);
 
-                const isDifferentStatus = lastHistory[0].status !== mappedStatus;
-                const isDifferentException = lastEx !== exceptionCode;
+                const isDifferentStatus = lastSt !== mappedStatus;
+                const isDifferentException = lastEx !== currentEx;
                 const isDifferentDay = eventDate.toDateString() !== lastTs.toDateString();
 
-                // REGLA: El 67 por día diferente, DEX (03, 07, 08) por cambio de código
-                if (exceptionCode === '67') {
-                  if (isDifferentStatus || isDifferentDay) shouldUpdate = true;
-                } else {
-                  if (isDifferentStatus || isDifferentException) shouldUpdate = true;
+                // REGLA UNIFICADA: Si el código o status cambian (ej: 41 -> 67), o si es 67 en día nuevo
+                if (isDifferentStatus || isDifferentException) {
+                  shouldUpdate = true;
+                  reason = "Cambio de status o código";
+                } else if (exceptionCode === '67' && isDifferentDay) {
+                  shouldUpdate = true;
+                  reason = "Seguimiento diario código 67";
                 }
               }
 
               if (shouldUpdate) {
-                for (const charge of chargeList) {
-                  // A. Insertar en shipment_status vinculando a chargeShipmentId
-                  await queryRunner.manager.createQueryBuilder()
-                    .insert()
-                    .into('shipment_status') 
-                    .values({
-                      status: mappedStatus,
-                      exceptionCode: exceptionCode,
-                      timestamp: eventDate,
-                      chargeShipmentId: charge.id, // <--- Relación correcta
-                      createdAt: new Date(),
-                      notes: lastEvent?.eventDescription || latestStatusDetail.description || ''
-                    })
-                    .execute();
+                this.logger.log(`[F2 - ${tn}] Actualizando: ${reason}`);
 
-                  // B. Actualizar ChargeShipment maestro
+                for (const charge of chargeList) {
+                  // A. INSERTAR HISTORIAL (Usando .save con objeto para asegurar mapeo)
+                  const historyEntry = queryRunner.manager.create('ShipmentStatus', {
+                    status: mappedStatus,
+                    exceptionCode: exceptionCode,
+                    timestamp: eventDate,
+                    chargeShipment: charge, // <--- Vinculamos el objeto completo para que el mapeo no falle
+                    createdAt: new Date(),
+                    notes: (exceptionCode === '67' ? latestStatusDetail?.ancillaryDetails?.[0]?.reasonDescription : null) 
+                          || lastEvent?.eventDescription 
+                          || latestStatusDetail.description 
+                          || 'Actualización automática F2'
+                  });
+
+                  await queryRunner.manager.save(historyEntry);
+
+                  // B. ACTUALIZAR MAESTRO (ChargeShipment)
                   await queryRunner.manager.update(ChargeShipment, charge.id, { 
                     status: mappedStatus as any,
                     receivedByName: trackResult.deliveryDetails?.receivedByName || '' 

@@ -400,7 +400,16 @@ export class ConsolidatedService {
 
     // ========= 🔥 Helper: obtener dexCode =========
     const getDexCode = async (shipmentId: string, status: string) => {
-      if (status !== 'no_entregado') return null;
+      const rejectedStatuses = [
+        'rechazado',
+        'no_entregado',
+        'direccion_incorrecta',
+        'cliente_no_encontrado',
+      ];
+
+      if (!rejectedStatuses.includes(status)) {
+        return null;
+      }
 
       const row = await this.shipmentStatusRepository
         .createQueryBuilder('ss')
@@ -672,9 +681,12 @@ export class ConsolidatedService {
 
     const statusesForFedex = [
       ShipmentStatusType.EN_RUTA,
+      ShipmentStatusType.EN_BODEGA,
       ShipmentStatusType.DESCONOCIDO,
       ShipmentStatusType.PENDIENTE,
-      ShipmentStatusType.NO_ENTREGADO
+      ShipmentStatusType.NO_ENTREGADO,
+      ShipmentStatusType.DIRECCION_INCORRECTA,
+      ShipmentStatusType.CLIENTE_NO_DISPONIBLE,
     ];
 
     this.logger.log(`📌 Status que SÍ se revisarán en FedEx: ${statusesForFedex.join(', ')}`);
@@ -737,7 +749,7 @@ export class ConsolidatedService {
         true
       );*/
 
-      fedexChargeResult = await this.shipmentService.checkStatusOnFedexChargeShipment(
+      fedexChargeResult = await this.shipmentService.processChargeFedexUpdate(
         chargeTrackingNumbers
       );
 
@@ -803,7 +815,6 @@ export class ConsolidatedService {
       where: { consolidatedId: id },
       relations: [
         'statusHistory',
-
       ],
     });
 
