@@ -193,56 +193,64 @@ export class InventoriesService {
   }
 
   async validateTrackingNumbers(
-      trackingNumbers: string[],
-      subsidiaryId?: string
-    ): Promise<{
-      validatedShipments: (ValidatedPackageDispatchDto & { isCharge?: boolean })[];
-    }> {
-      // 1️⃣ Traer shipments y chargeShipments en batch
-      const shipments = await this.shipmentRepository.find({
-        where: { trackingNumber: In(trackingNumbers),  status: Not(ShipmentStatusType.DEVUELTO_A_FEDEX) },
+    trackingNumbers: string[],
+    subsidiaryId?: string
+  ): Promise<{
+    validatedShipments: (ValidatedPackageDispatchDto & { isCharge?: boolean })[];
+  }> {
+    // 1. Consultas iniciales en paralelo
+    const [shipments, chargeShipments] = await Promise.all([
+      this.shipmentRepository.find({
+        where: { trackingNumber: In(trackingNumbers), status: Not(ShipmentStatusType.DEVUELTO_A_FEDEX) },
         relations: ['subsidiary', 'statusHistory', 'payment', 'packageDispatch'],
         order: { createdAt: 'DESC' },
-      });
-  
-      const chargeShipments = await this.chargeShipmentRepository.find({
-        where: { trackingNumber: In(trackingNumbers),  status: Not(ShipmentStatusType.DEVUELTO_A_FEDEX) },
+      }),
+      this.chargeShipmentRepository.find({
+        where: { trackingNumber: In(trackingNumbers), status: Not(ShipmentStatusType.DEVUELTO_A_FEDEX) },
         relations: ['subsidiary', 'charge', 'packageDispatch', 'payment'],
-      });
-  
-      // Mapas para acceso rápido por trackingNumber
-      const shipmentsMap = new Map(shipments.map(s => [s.trackingNumber, s]));
-      const chargeMap = new Map(chargeShipments.map(c => [c.trackingNumber, c]));
-  
-      const validatedShipments: (ValidatedPackageDispatchDto & { isCharge?: boolean })[] = [];
-  
-      // 2️⃣ Validar todos los trackingNumbers recibidos
-      for (const tn of trackingNumbers) {
+      }),
+    ]);
+
+    const shipmentsMap = new Map(shipments.map(s => [s.trackingNumber, s]));
+    const chargeMap = new Map(chargeShipments.map(c => [c.trackingNumber, c]));
+
+    const validatedShipments: (ValidatedPackageDispatchDto & { isCharge?: boolean })[] = [];
+    
+    // --- CONFIGURACIÓN DE CONCURRENCIA ---
+    const CHUNK_SIZE = 20; // Procesa 20 paquetes a la vez
+    for (let i = 0; i < trackingNumbers.length; i += CHUNK_SIZE) {
+      const chunk = trackingNumbers.slice(i, i + CHUNK_SIZE);
+      
+      // Creamos las promesas para el lote actual
+      const chunkPromises = chunk.map(async (tn) => {
         const shipment = shipmentsMap.get(tn);
         if (shipment) {
           const validated = await this.validatePackage({ ...shipment, isValid: false }, subsidiaryId);
-          validatedShipments.push({...validated, isCharge: false});
-          continue;
+          return { ...validated, isCharge: false };
         }
-  
+
         const chargeShipment = chargeMap.get(tn);
         if (chargeShipment) {
           const validatedCharge = await this.validatePackage({ ...chargeShipment, isValid: false }, subsidiaryId);
-          validatedShipments.push({ ...validatedCharge, isCharge: true });
-          continue;
+          return { ...validatedCharge, isCharge: true };
         }
-  
-        validatedShipments.push({
+
+        return {
           trackingNumber: tn,
           isValid: false,
           reason: 'No se encontraron datos para el tracking number en la base de datos',
           subsidiary: null,
           status: null,
-        });
-      }
-  
-      return { validatedShipments };
+        };
+      });
+
+      // Esperamos a que el lote de 20 termine antes de seguir con el siguiente
+      const results = await Promise.all(chunkPromises);
+      validatedShipments.push(...results);
     }
+
+    return { validatedShipments };
+  }
 
   async findAll(subsidiaryId: string) {
     return await this.inventoryRepository.find({

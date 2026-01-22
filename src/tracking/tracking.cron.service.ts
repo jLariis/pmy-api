@@ -83,7 +83,7 @@ export class TrackingCronService {
   }
 
   
-  @Cron('0 0 8-22/2 * * 1-6', {
+  @Cron('0 0 8,10,12,14,16,18,20,22 * * 1-6', {
     timeZone: 'America/Hermosillo'
   })
   async handleSendShipmentWithStatus03(){

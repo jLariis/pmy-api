@@ -165,7 +165,7 @@ export class UnloadingService {
     return savedUnloading;
   }
 
-  async validatePackage(
+  async validatePackageResp(
     packageToValidate: ValidatedPackageDispatchDto,
     subsidiaryId: string
   ): Promise<ValidatedPackageDispatchDto> {
@@ -292,7 +292,7 @@ export class UnloadingService {
       }
 
       if (recordToValidate) {
-        const validated = await this.validatePackage({ ...recordToValidate, isValid: false }, subsidiaryId);
+        const validated = await this.validatePackageResp({ ...recordToValidate, isValid: false }, subsidiaryId);
         validatedShipments.push({ ...validated, isCharge });
       } else {
         validatedShipments.push({
@@ -533,7 +533,7 @@ export class UnloadingService {
           if (recordToValidate) {
             // Validar en paralelo
             validationPromises.push(
-              this.validatePackage({ ...recordToValidate, isValid: false }, subsidiaryId)
+              this.validatePackageResp({ ...recordToValidate, isValid: false }, subsidiaryId)
                 .then(validatedResult => {
                   validated.push({ ...validatedResult, isCharge });
                 })
@@ -687,7 +687,7 @@ export class UnloadingService {
     return { validatedShipments, consolidateds: consolidatedsToValidate };
   }
 
-  async validateTrackingNumbers(
+  async validateTrackingNumbersResp21012026(
     trackingNumbers: string[],
     subsidiaryId?: string
   ): Promise<{
@@ -812,6 +812,124 @@ export class UnloadingService {
     return { validatedShipments, consolidateds: consolidatedsToValidate };
   }
 
+  async validateTrackingNumbers(
+    trackingNumbers: string[],
+    subsidiaryId?: string
+  ): Promise<{
+    validatedShipments: (ValidatedUnloadingDto & { isCharge?: boolean })[];
+    consolidateds: ConsolidatedsDto;
+  }> {
+    // 0️⃣ Normalización
+    const uniqueTNs = [...new Set(trackingNumbers.map(tn => tn.trim().toUpperCase()).filter(Boolean))];
+    
+    // 1️⃣ Obtener Consolidados PRIMERO para saber qué IDs buscar después
+    const consolidatedsToValidate = await this.getConsolidateToStartUnloading(subsidiaryId);
+    const allConsolidateds: ConsolidatedItemDto[] = Object.values(consolidatedsToValidate).flat();
+    const nonF2Ids = allConsolidateds.filter(c => c.typeCode !== 'F2').map(c => c.id);
+
+    // 2️⃣ LA GRAN CONSULTA (Traemos todo en un solo viaje a la BD)
+    // Traemos los que el usuario escaneó Y los que pertenecen a los consolidados (para el notFound)
+    const [shipments, chargeShipments] = await Promise.all([
+      this.shipmentRepository.find({
+        where: [
+          { trackingNumber: In(uniqueTNs), status: Not(ShipmentStatusType.DEVUELTO_A_FEDEX) },
+          { consolidatedId: In(nonF2Ids), status: Not(ShipmentStatusType.DEVUELTO_A_FEDEX) }
+        ],
+        select: ['id', 'trackingNumber', 'consolidatedId', 'status', 'recipientName', 'recipientAddress', 'recipientPhone', 'recipientZip', 'createdAt'],
+        relations: ['subsidiary'],
+        order: { createdAt: 'DESC' }
+      }),
+      this.chargeShipmentRepository.find({
+        where: [
+          { trackingNumber: In(uniqueTNs), status: Not(ShipmentStatusType.DEVUELTO_A_FEDEX) },
+          { consolidatedId: In(nonF2Ids), status: Not(ShipmentStatusType.DEVUELTO_A_FEDEX) }
+        ],
+        select: ['id', 'trackingNumber', 'consolidatedId', 'status', 'recipientName', 'recipientAddress', 'recipientPhone', 'recipientZip', 'createdAt'],
+        relations: ['subsidiary'],
+        order: { createdAt: 'DESC' }
+      })
+    ]);
+
+    // 3️⃣ Mapas de acceso instantáneo
+    // Filtramos solo los que el usuario envió para el proceso de validación
+    const shipmentsMap = this.createMostRecentMap(shipments.filter(s => uniqueTNs.includes(s.trackingNumber)));
+    const chargeMap = this.createMostRecentMap(chargeShipments.filter(c => uniqueTNs.includes(c.trackingNumber)));
+
+    // 4️⃣ Validación en paralelo (Concurrencia controlada)
+    const validatedShipments: (ValidatedUnloadingDto & { isCharge?: boolean })[] = [];
+    const CONCURRENCY_LIMIT = 30;
+
+    for (let i = 0; i < uniqueTNs.length; i += CONCURRENCY_LIMIT) {
+      const chunk = uniqueTNs.slice(i, i + CONCURRENCY_LIMIT);
+      const results = await Promise.all(chunk.map(async (tn) => {
+        const record = shipmentsMap.get(tn) || chargeMap.get(tn);
+        if (record) {
+          const validated = await this.validatePackageSync({ ...record, isValid: false }, subsidiaryId);
+          return { ...validated, isCharge: !!chargeMap.get(tn), consolidatedId: record.consolidatedId };
+        }
+        return { trackingNumber: tn, isValid: false, reason: 'No encontrado' };
+      }));
+      validatedShipments.push(...results);
+    }
+
+    // 5️⃣ Procesar Consolidados (Added y NotFound) en Memoria
+    const validTNsSet = new Set(validatedShipments.filter(v => v.isValid).map(v => v.trackingNumber));
+    const consolidatedById = new Map(allConsolidateds.map(c => {
+      c.added = [];
+      c.notFound = [];
+      return [c.id, c];
+    }));
+
+    // Lógica de NotFound integrada (Sin volver a la BD)
+    allConsolidateds.forEach(consolidated => {
+      // 1. Llenar los escaneados (Added)
+      consolidated.added = validatedShipments
+        .filter(v => v.isValid && (v as any).consolidatedId === consolidated.id)
+        .map(v => ({ trackingNumber: v.trackingNumber, recipientName: v.recipientName, recipientAddress: v.recipientAddress, recipientPhone: v.recipientPhone, recipientZip: v.recipientZip }));
+
+      // 2. Llenar los faltantes (NotFound) buscando en la data que ya trajimos
+      const expectedFromShipments = shipments.filter(s => s.consolidatedId === consolidated.id);
+      const expectedFromCharges = chargeShipments.filter(c => c.consolidatedId === consolidated.id);
+      
+      const uniqueExpected = this.removeDuplicateTNs([...expectedFromShipments, ...expectedFromCharges]);
+
+      consolidated.notFound = uniqueExpected
+        .filter(item => !validTNsSet.has(item.trackingNumber))
+        .map(item => ({
+          trackingNumber: item.trackingNumber,
+          recipientName: item.recipientName,
+          recipientAddress: item.recipientAddress,
+          recipientPhone: item.recipientPhone,
+          recipientZip: item.recipientZip,
+        }));
+    });
+
+    return { validatedShipments, consolidateds: consolidatedsToValidate };
+  }
+
+  /**
+   * Versión Síncrona de tu validador para máxima velocidad
+   */
+  private validatePackageSync(
+    packageToValidate: any, 
+    subsidiaryId: string
+  ): ValidatedPackageDispatchDto {
+    let isValid = true;
+    let reason = '';
+
+    // Validación de subsidiaria (Ya traemos el objeto por relations)
+    if (packageToValidate.subsidiary?.id !== subsidiaryId) {
+      isValid = false;
+      reason = 'El paquete no pertenece a la sucursal actual';
+    }
+
+    return {
+      ...packageToValidate,
+      isValid,
+      reason
+    };
+  }
+
   // ============ MÉTODOS HELPER ============
 
   private createMostRecentMap<T extends { trackingNumber: string; createdAt: Date }>(
@@ -820,7 +938,9 @@ export class UnloadingService {
     const map = new Map<string, T>();
     
     for (const item of items) {
-      if (!map.has(item.trackingNumber)) {
+      const existing = map.get(item.trackingNumber);
+      // Si no existe O el que estamos procesando es más nuevo que el guardado
+      if (!existing || new Date(item.createdAt) > new Date(existing.createdAt)) {
         map.set(item.trackingNumber, item);
       }
     }
@@ -857,7 +977,7 @@ export class UnloadingService {
 
       if (recordToValidate) {
         try {
-          const validated = await this.validatePackage(
+          const validated = await this.validatePackageResp(
             { ...recordToValidate, isValid: false },
             subsidiaryId
           );
@@ -919,7 +1039,7 @@ export class UnloadingService {
 
         if (recordToValidate) {
           try {
-            const validated = await this.validatePackage(
+            const validated = await this.validatePackageResp(
               { ...recordToValidate, isValid: false },
               subsidiaryId
             );
@@ -1129,10 +1249,10 @@ export class UnloadingService {
 
     // 2️⃣ Validar el trackingNumber recibido
     if (shipment) {
-      const validated = await this.validatePackage({ ...shipment, isValid: false }, subsidiaryId);
+      const validated = await this.validatePackageResp({ ...shipment, isValid: false }, subsidiaryId);
       validatedShipments.push(validated);
     } else if (chargeShipment) {
-      const validatedCharge = await this.validatePackage({ ...chargeShipment, isValid: false }, subsidiaryId);
+      const validatedCharge = await this.validatePackageResp({ ...chargeShipment, isValid: false }, subsidiaryId);
       validatedShipments.push({ ...validatedCharge, isCharge: true });
     } else {
       validatedShipments.push({
