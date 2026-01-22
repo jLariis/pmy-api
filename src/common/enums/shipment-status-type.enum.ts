@@ -16,6 +16,7 @@ export enum ShipmentStatusType {
   LLEGADO_DESPUES = 'llegado_despues',//STAT31
   DIRECCION_INCORRECTA = 'direccion_incorrecta', //DEX03
   CLIENTE_NO_DISPONIBLE = 'cliente_no_disponible', //DEX08
+  CAMBIO_FECHA_SOLICITADO = 'cambio_fecha_solicitado', //STAT17
   //17 - 17 - A request was made to change this delivery date.
   //84
   //14

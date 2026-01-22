@@ -1,36 +1,4 @@
-import {  ShipmentStatusType } from "src/common/enums/shipment-status-type.enum";
-
-export function mapFedexStatusToLocalStatusResp(derivedStatusCode: string, exceptionCode?: string): ShipmentStatusType {
-  console.log("🚀 ~ mapFedexStatusToLocalStatus ~ derivedStatusCode:", derivedStatusCode)
-  
-  const statusMap: { [key: string]: ShipmentStatusType } = {
-    'DL': ShipmentStatusType.ENTREGADO,
-    'PU': ShipmentStatusType.RECOLECCION,
-    '67': ShipmentStatusType.EN_RUTA,
-    'OW': ShipmentStatusType.EN_RUTA,
-    'IT': ShipmentStatusType.EN_RUTA,
-    'AR': ShipmentStatusType.EN_RUTA,
-    'AF': ShipmentStatusType.EN_RUTA,
-    'DP': ShipmentStatusType.EN_RUTA,
-    'CP': ShipmentStatusType.EN_RUTA,
-    'CC': ShipmentStatusType.EN_RUTA,
-    'DY': ShipmentStatusType.EN_RUTA, //podría ser pendiente 
-    'DE': ShipmentStatusType.NO_ENTREGADO,
-    'DU': ShipmentStatusType.NO_ENTREGADO,
-    'RF': ShipmentStatusType.NO_ENTREGADO,
-    'TA': ShipmentStatusType.PENDIENTE,
-    'TD': ShipmentStatusType.NO_ENTREGADO,
-    'HL': ShipmentStatusType.PENDIENTE,
-    'OC': ShipmentStatusType.EN_RUTA,
-  };
-  
-  const status = statusMap[derivedStatusCode] || ShipmentStatusType.DESCONOCIDO;
-
-  if (status === ShipmentStatusType.DESCONOCIDO) {
-    console.warn(`Unmapped derivedStatusCode: ${derivedStatusCode}, exceptionCode: ${exceptionCode}`);
-  }
-  return status;
-}
+import { ShipmentStatusType } from "src/common/enums/shipment-status-type.enum";
 
 export function mapFedexStatusToLocalStatus(derivedStatusCode: string, exceptionCode?: string): ShipmentStatusType {
   const excCode = exceptionCode?.trim().toUpperCase();
@@ -53,7 +21,7 @@ export function mapFedexStatusToLocalStatus(derivedStatusCode: string, exception
       case '64': return ShipmentStatusType.ESTACION_FEDEX;
       case '086C': return ShipmentStatusType.RETENIDO_POR_FEDEX;
       case '84': 
-      case '17': 
+      case '17': return ShipmentStatusType.CAMBIO_FECHA_SOLICITADO;
       case '20': 
       case '79':
       case '79A': return ShipmentStatusType.PENDIENTE;
@@ -73,10 +41,11 @@ export function mapFedexStatusToLocalStatus(derivedStatusCode: string, exception
     'OW': ShipmentStatusType.PENDIENTE,
     'HL': ShipmentStatusType.PENDIENTE,
     'DE': ShipmentStatusType.NO_ENTREGADO,
-    'TA': ShipmentStatusType.NO_ENTREGADO, // <--- AGREGAR: TA es común en Excepciones (Tried Attempt)
-    'SE': ShipmentStatusType.NO_ENTREGADO, // <--- AGREGAR: SE es Shipment Exception
+    'DU': ShipmentStatusType.PENDIENTE,     
+    'TA': ShipmentStatusType.NO_ENTREGADO, 
+    'SE': ShipmentStatusType.NO_ENTREGADO, 
     'RF': ShipmentStatusType.RECHAZADO,
-    'IN': ShipmentStatusType.PENDIENTE,    // <--- AGREGAR: IN es In-Transit (Label Created)
+    'IN': ShipmentStatusType.PENDIENTE,
   };
 
   return statusMap[code] || ShipmentStatusType.DESCONOCIDO;
