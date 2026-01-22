@@ -1,12 +1,4 @@
-import { ShipmentFedexStatusType, ShipmentStatusType } from "src/common/enums/shipment-status-type.enum";
-import fs from 'fs';
-import path from 'path';
-
-const unmappedStatuses = new Set<string>();
-
-function isValidFedexStatus(status: string): status is ShipmentFedexStatusType {
-  return Object.values(ShipmentFedexStatusType).includes(status as ShipmentFedexStatusType);
-}
+import {  ShipmentStatusType } from "src/common/enums/shipment-status-type.enum";
 
 export function mapFedexStatusToLocalStatusResp(derivedStatusCode: string, exceptionCode?: string): ShipmentStatusType {
   console.log("🚀 ~ mapFedexStatusToLocalStatus ~ derivedStatusCode:", derivedStatusCode)
@@ -55,7 +47,7 @@ export function mapFedexStatusToLocalStatus(derivedStatusCode: string, exception
       case 'A13': return ShipmentStatusType.DIRECCION_INCORRECTA;
       case '41': 
       case '11': 
-      case 'DF': return ShipmentStatusType.EN_RUTA; 
+      case 'DF': return ShipmentStatusType.PENDIENTE; 
       case '14':
       case '15':
       case '64': return ShipmentStatusType.ESTACION_FEDEX;
@@ -76,9 +68,9 @@ export function mapFedexStatusToLocalStatus(derivedStatusCode: string, exception
     'DL': ShipmentStatusType.ENTREGADO,
     'PU': ShipmentStatusType.RECOLECCION,
     'OC': ShipmentStatusType.RECOLECCION,
-    'FD': ShipmentStatusType.EN_RUTA,
-    'IT': ShipmentStatusType.EN_RUTA,
-    'OW': ShipmentStatusType.EN_RUTA,
+    'FD': ShipmentStatusType.PENDIENTE,
+    'IT': ShipmentStatusType.PENDIENTE,
+    'OW': ShipmentStatusType.PENDIENTE,
     'HL': ShipmentStatusType.PENDIENTE,
     'DE': ShipmentStatusType.NO_ENTREGADO,
     'TA': ShipmentStatusType.NO_ENTREGADO, // <--- AGREGAR: TA es común en Excepciones (Tried Attempt)

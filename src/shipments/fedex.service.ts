@@ -1,6 +1,8 @@
 import { Injectable, Logger } from '@nestjs/common';
 import axios from 'axios';
 import * as qs from 'qs';
+import * as fs from 'fs';
+import * as path from 'path';
 import { FEDEX_AUTH_HEADERS, FEDEX_AUTHENTICATION_ENDPOINT, FEDEX_HEADERS, FEDEX_TRACKING_ENDPOINT } from 'src/common/constants';
 import { FedExTrackingResponseDto } from './dto/fedex/fedex-tracking-response.dto';
 import { FedexTrackingResponse } from './dto/FedexTrackingCompleteInfo.dto';
@@ -12,23 +14,23 @@ import { ShipmentType } from 'src/common/enums/shipment-type.enum';
 @Injectable()
 export class FedexService {
   private readonly logger = new Logger(FedexService.name);
-
-  // Unificamos las variables de caché
-  private cachedToken: string | null = null;
-  private tokenExpiresAt: number = 0;
+  
+  // Ruta del archivo en la raíz del proyecto
+  private readonly tokenPath = path.join(process.cwd(), 'fedex-token.json');
 
   /**
-   * Obtiene el token de acceso. Si el token en memoria es válido, lo reutiliza.
-   * Evita el error 429 al no saturar el endpoint de autenticación de FedEx.
+   * Obtiene el token desde el archivo local o desde la API de FedEx si expiró.
    */
   private async getSmartToken(): Promise<string> {
     const now = Date.now();
-    
-    // Si tenemos token y le quedan más de 2 minutos de vida, lo usamos
-    if (this.cachedToken && now < (this.tokenExpiresAt - 120000)) {
-      return this.cachedToken;
+    let cachedData = this.readTokenFromFile();
+
+    // Validamos si el token existe en el archivo y si aún es válido (margen de 5 min)
+    if (cachedData && cachedData.token && now < (cachedData.expiresAt - 300000)) {
+      return cachedData.token;
     }
 
+    // Si no hay token válido, procedemos a solicitar uno nuevo
     const { FEDEX_CLIENT_ID, FEDEX_CLIENT_SECRET, FEDEX_API_URL } = process.env;
 
     if (!FEDEX_CLIENT_ID || !FEDEX_CLIENT_SECRET || !FEDEX_API_URL) {
@@ -42,7 +44,7 @@ export class FedexService {
     });
 
     try {
-      this.logger.log('🔑 Solicitando nuevo token a FedEx...');
+      this.logger.log('🔑 El token local no es válido o va a expirar. Solicitando nuevo token a FedEx...');
       const response = await axios.post(
         `${FEDEX_API_URL}${FEDEX_AUTHENTICATION_ENDPOINT}`,
         data,
@@ -50,24 +52,57 @@ export class FedexService {
       );
 
       const { access_token, expires_in } = response.data;
+      const expiresAt = Date.now() + (expires_in * 1000);
 
-      // Guardamos en caché
-      this.cachedToken = access_token;
-      // expires_in viene en segundos, convertimos a timestamp
-      this.tokenExpiresAt = Date.now() + (expires_in * 1000);
+      // Guardamos y/o creamos el archivo
+      this.saveTokenToFile(access_token, expiresAt);
 
-      this.logger.log('✅ Token de FedEx renovado exitosamente');
-      return this.cachedToken!;
+      return access_token;
     } catch (error) {
       this.logger.error('❌ Error al obtener token de FedEx', error.response?.data || error.message);
       throw error;
     }
   }
 
+  // --- MÉTODOS DE PERSISTENCIA ---
+
+  private saveTokenToFile(token: string, expiresAt: number) {
+    try {
+      const data = JSON.stringify({ token, expiresAt }, null, 2);
+      // writeFileSync crea el archivo si no existe
+      fs.writeFileSync(this.tokenPath, data, 'utf8');
+      this.logger.log('💾 Token persistido en fedex-token.json');
+    } catch (error) {
+      this.logger.error('❌ No se pudo escribir el archivo de token', error);
+    }
+  }
+
+  private readTokenFromFile(): { token: string; expiresAt: number } | null {
+    try {
+      if (!fs.existsSync(this.tokenPath)) {
+        this.logger.warn('📄 Archivo de token no encontrado. Se creará uno nuevo al solicitarlo.');
+        return null;
+      }
+      const data = fs.readFileSync(this.tokenPath, 'utf8');
+      return JSON.parse(data);
+    } catch (error) {
+      this.logger.error('❌ Error al leer o parsear el archivo de token', error);
+      return null;
+    }
+  }
+
+  private deleteTokenFile() {
+    if (fs.existsSync(this.tokenPath)) {
+      fs.unlinkSync(this.tokenPath);
+      this.logger.warn('🗑️ Token local eliminado por invalidez.');
+    }
+  }
+
+  // --- MÉTODOS DE RASTREO ---
+
   async trackPackage(trackingNumber: string): Promise<FedExTrackingResponseDto> {
     this.logger.log(`Rastreando guía: ${trackingNumber}`);
     
-    // Usamos el token inteligente
     const token = await this.getSmartToken();
     const url = `${process.env.FEDEX_API_URL}${FEDEX_TRACKING_ENDPOINT}`;
 
@@ -82,6 +117,11 @@ export class FedexService {
       });
       return response.data;
     } catch (error) {
+      // VALIDACIÓN EXTRA: Si el error es 401 (No autorizado), borramos el token local 
+      // para forzar uno nuevo en la siguiente vuelta.
+      if (error.response?.status === 401) {
+        this.deleteTokenFile();
+      }
       this.logger.error(`❌ Error trackPackage [${trackingNumber}]:`, error.response?.data || error.message);
       throw error;
     }
@@ -104,12 +144,13 @@ export class FedexService {
       });
       return this.mapFedexToValidatedDto(response.data);
     } catch (error) {
+      if (error.response?.status === 401) this.deleteTokenFile();
       this.logger.error(`❌ Error completePackageInfo [${trackingNumber}]:`, error.response?.data || error.message);
       throw error;
     }
   }
 
-  // --- MÉTODOS DE MAPEO (Se mantienen igual pero limpios) ---
+  // --- MÉTODOS DE MAPEO ---
 
   mapFedexStatusToEnum(fedexCode?: string): ShipmentStatusType | undefined {
     if (!fedexCode) return undefined;
