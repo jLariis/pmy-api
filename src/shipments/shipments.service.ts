@@ -1,4 +1,4 @@
-import { BadRequestException, ConsoleLogger, forwardRef, Inject, Injectable, InternalServerErrorException, Logger } from '@nestjs/common';
+import { BadRequestException, forwardRef, Inject, Injectable, InternalServerErrorException, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Between, Brackets, EntityManager, In, Repository } from 'typeorm';
 import { Shipment } from 'src/entities/shipment.entity';
@@ -46,6 +46,7 @@ import * as ExcelJS from 'exceljs';
 import { DataSource } from 'typeorm';
 import pLimit from 'p-limit';
 import { PackageDispatch } from 'src/entities/package-dispatch.entity';
+import { startOfWeek, getWeek } from 'date-fns';
 
 @Injectable()
 export class ShipmentsService {
@@ -7447,7 +7448,7 @@ export class ShipmentsService {
           try {
             const shipmentList = await queryRunner.manager.find(Shipment, {
               where: { trackingNumber: tn },
-              relations: ['subsidiary', 'payment'], 
+              relations: ['subsidiary', 'payment'],
               lock: { mode: 'pessimistic_write' }
             });
 
@@ -7456,6 +7457,7 @@ export class ShipmentsService {
               return;
             }
 
+            // 1. Consulta a FedEx (usando los nuevos parámetros opcionales si estuvieran en el objeto)
             const fedexInfo = await this.fedexService.trackPackage(tn);
             const allTrackResults = fedexInfo?.output?.completeTrackResults?.[0]?.trackResults || [];
 
@@ -7465,13 +7467,14 @@ export class ShipmentsService {
 
               const scanEvents = trackResult?.scanEvents || [];
               const lastEvent = scanEventsFilter(scanEvents) as any;
-              
+
               const ancillaryReason = latestStatusDetail?.ancillaryDetails?.[0]?.reason || '';
               const exceptionCode = ancillaryReason !== '' ? ancillaryReason : (lastEvent?.exceptionCode || '');
               const derivedStatusCode = latestStatusDetail.derivedCode || latestStatusDetail.code || '';
-              
+
               const mappedStatus = mapFedexStatusToLocalStatus(derivedStatusCode, exceptionCode);
 
+              // 2. Obtener último historial para decidir si actualizar
               const lastHistory = await queryRunner.manager.query(
                 `SELECT status, exceptionCode, timestamp FROM shipment_status WHERE shipmentId = ? ORDER BY timestamp DESC LIMIT 1`,
                 [shipmentList[0].id]
@@ -7484,7 +7487,7 @@ export class ShipmentsService {
                 const lastSt = lastHistory[0].status;
                 const lastEx = String(lastHistory[0].exceptionCode || '').trim();
                 const currentEx = String(exceptionCode || '').trim();
-                
+
                 if (lastSt !== mappedStatus || lastEx !== currentEx) {
                   shouldUpdate = true;
                 } else if (currentEx !== '' && new Date().toDateString() !== new Date(lastHistory[0].timestamp).toDateString()) {
@@ -7494,35 +7497,32 @@ export class ShipmentsService {
 
               if (shouldUpdate) {
                 for (const shipment of shipmentList) {
-                  // 4. Crear entrada de historial
+                  // 3. Crear entrada de historial
                   const historyEntry = queryRunner.manager.create(ShipmentStatus, {
                     status: mappedStatus,
                     exceptionCode: exceptionCode,
                     timestamp: new Date(),
-                    shipment: shipment, 
+                    shipment: shipment,
                     createdAt: new Date(),
-                    notes: (ancillaryReason !== '' ? latestStatusDetail?.ancillaryDetails?.[0]?.reasonDescription : null) 
-                        || lastEvent?.eventDescription 
-                        || latestStatusDetail.description 
-                        || 'Actualización automática FedEx'
+                    notes: (ancillaryReason !== '' ? latestStatusDetail?.ancillaryDetails?.[0]?.reasonDescription : null)
+                      || lastEvent?.eventDescription
+                      || latestStatusDetail.description
+                      || 'Actualización automática FedEx'
                   });
                   await queryRunner.manager.save(historyEntry);
 
-                  // 5. Actualizar Shipment Maestro
+                  // 4. Actualizar Shipment Maestro
                   const receivedBy = trackResult.deliveryDetails?.receivedByName;
-                  
-                  // ACTUALIZACIÓN CRÍTICA: Actualizamos el objeto en memoria
-                  shipment.status = mappedStatus as any; 
+                  shipment.status = mappedStatus as any;
                   if (receivedBy) shipment.receivedByName = receivedBy;
 
-                  // Guardamos el objeto completo para asegurar que los cambios persistan
                   await queryRunner.manager.save(Shipment, shipment);
 
-                  // 6. LÓGICA DE INGRESOS
+                  // 5. LÓGICA DE INGRESOS (INCOME)
                   const isDelivered = (mappedStatus === ShipmentStatusType.ENTREGADO);
                   const isRejected07 = (exceptionCode === '07');
                   let isThirdVisit08 = false;
-                  
+
                   if (exceptionCode === '08') {
                     const countRes = await queryRunner.manager.query(
                       `SELECT COUNT(*) as total FROM shipment_status WHERE shipmentId = ? AND exceptionCode = '08'`,
@@ -7531,15 +7531,48 @@ export class ShipmentsService {
                     if (parseInt(countRes[0]?.total || 0) >= 3) isThirdVisit08 = true;
                   }
 
+                  // --- NUEVA REGLA PARA RECHAZADOS (07) EN DIFERENTE SEMANA ---
                   if ((isDelivered || isRejected07 || isThirdVisit08) && shipment.id === shipmentList[0].id) {
-                    // Ahora 'shipment' ya tiene el estatus actualizado, pero usamos tu lógica de target
-                    const targetStatusForIncome = isDelivered 
+                    
+                    let forceNewIncome = false;
+
+                    if (isRejected07) {
+                      // Buscamos si ya existe un ingreso para este tracking
+                      const existingIncomes = await queryRunner.manager.find(Income, {
+                        where: { trackingNumber: shipment.trackingNumber },
+                        order: { date: 'DESC' }
+                      });
+
+                      if (existingIncomes.length > 0) {
+                        const lastIncomeDate = new Date(existingIncomes[0].date);
+                        const now = new Date();
+
+                        // Comparamos las semanas del año
+                        const weekOfLastIncome = getWeek(lastIncomeDate);
+                        const weekOfNow = getWeek(now);
+                        const yearOfLastIncome = lastIncomeDate.getFullYear();
+                        const yearOfNow = now.getFullYear();
+
+                        if (weekOfNow !== weekOfLastIncome || yearOfNow !== yearOfLastIncome) {
+                          this.logger.log(`[${tn}] 07 detectado en semana diferente. Forzando nuevo income.`);
+                          forceNewIncome = true;
+                        }
+                      } else {
+                        // Si no hay ingresos previos, se genera normalmente
+                        forceNewIncome = true;
+                      }
+                    }
+
+                    const targetStatusForIncome = isDelivered
                       ? IncomeStatus.ENTREGADO
                       : (isThirdVisit08 ? ShipmentStatusType.CLIENTE_NO_DISPONIBLE : ShipmentStatusType.RECHAZADO);
 
                     const shipmentForIncome = { ...shipment, status: targetStatusForIncome };
 
-                    await this.generateIncomes(shipmentForIncome as Shipment, new Date(), exceptionCode, queryRunner.manager);
+                    // Si es 07 y cumple la regla de semana, o si son los otros estados normales
+                    if (forceNewIncome || isDelivered || isThirdVisit08) {
+                      await this.generateIncomes(shipmentForIncome as Shipment, new Date(), exceptionCode, queryRunner.manager);
+                    }
                   }
                 }
                 this.logger.log(`[${tn}] Actualizado: ${mappedStatus} | Ex: ${exceptionCode}`);
