@@ -11,6 +11,20 @@ import { FilesInterceptor } from '@nestjs/platform-express';
 export class PackageDispatchController {
   constructor(private readonly packageDispatchService: PackageDispatchService) {}
 
+  @Get('info/:packageDispatchId')
+  async getShipmentsByPackageDispatchId(@Param('packageDispatchId') packageDispatchId: string) {
+    // 1. Limpia cualquier posible rastro de caché del navegador enviando headers
+    // (Opcional: puedes inyectar @Res() para esto, pero Nest lo hace con interceptores)
+    
+    console.log("=> PETICIÓN RECIBIDA ID:", packageDispatchId);
+    
+    const result = await this.packageDispatchService.getShipmentsByPackageDispatchId(packageDispatchId);
+    
+    console.log("=> ENVIANDO RESPUESTA PARA ID:", result?.id);
+    
+    return result;
+  }
+
   @Post()
   create(@Body() createPackageDispatchDto: CreatePackageDispatchDto) {
     console.log("🚀 ~ PackageDispatchController ~ create ~ createPackageDispatchDto:", createPackageDispatchDto)
@@ -22,7 +36,7 @@ export class PackageDispatchController {
     return this.packageDispatchService.findAll();
   }
 
-  @Get(':subsidiaryId')
+  @Get('subsidiary/:subsidiaryId')
   findBySubsidiary(@Param('subsidiaryId') subsidiaryId: string) {
     return this.packageDispatchService.findAllBySubsidiary(subsidiaryId);
   }
@@ -95,11 +109,5 @@ export class PackageDispatchController {
           throw new BadRequestException('Se requiere un archivo PDF y un archivo Excel.');
         }
     return this.packageDispatchService.sendByEmail(pdfFile, excelFile, subsidiaryName, packageDispatchId)
-  }
-
-  @Get('info/:packageDispatchId')
-  getShipmentsByPackageDispatchId(@Param('packageDispatchId') packageDispatchId: string) {
-    console.log("🚀 ~ PackageDispatchController ~ getShipmentsByPackageDispatchId ~ packageDispatchId:", packageDispatchId)
-    return this.packageDispatchService.getShipmentsByPackageDispatchId(packageDispatchId);
   }
 }
