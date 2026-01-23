@@ -753,7 +753,7 @@ export class PackageDispatchService {
   }
 
   async getShipmentsByPackageDispatchId(packageDispatchId: string) {
-    await this.updateFedexDataByPackageDispatchId(packageDispatchId);
+    //await this.updateFedexDataByPackageDispatchId(packageDispatchId);
 
     const packageDispatch = await this.packageDispatchRepository.findOne({
       where: { id: packageDispatchId },
@@ -768,6 +768,8 @@ export class PackageDispatchService {
         'routes',
       ],
     });
+    
+    console.log("🚀 ~ PackageDispatchService ~ getShipmentsByPackageDispatchId ~ packageDispatch:", packageDispatch)
 
     if (!packageDispatch) {
       throw new Error('Package dispatch not found');

@@ -99,6 +99,7 @@ export class PackageDispatchController {
 
   @Get('info/:packageDispatchId')
   getShipmentsByPackageDispatchId(@Param('packageDispatchId') packageDispatchId: string) {
+    console.log("🚀 ~ PackageDispatchController ~ getShipmentsByPackageDispatchId ~ packageDispatchId:", packageDispatchId)
     return this.packageDispatchService.getShipmentsByPackageDispatchId(packageDispatchId);
   }
 }
