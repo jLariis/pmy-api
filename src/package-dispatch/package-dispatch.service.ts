@@ -1,4 +1,4 @@
-import { forwardRef, Inject, Injectable, Logger } from '@nestjs/common';
+import { forwardRef, Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { CreatePackageDispatchDto } from './dto/create-package-dispatch.dto';
 import { UpdatePackageDispatchDto } from './dto/update-package-dispatch.dto';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -338,28 +338,20 @@ export class PackageDispatchService {
       .leftJoin('pd.subsidiary', 'subsidiary')
       .leftJoin('pd.routes', 'routes')
       .leftJoin('pd.vehicle', 'vehicle')
-
-      // 👇 joins SOLO para conteo
       .leftJoin('pd.shipments', 'shipments')
       .leftJoin('pd.chargeShipments', 'chargeShipments')
-
       .where('subsidiary.id = :subsidiaryId', { subsidiaryId })
-
       .select([
         'pd.id',
         'pd.trackingNumber',
         'pd.status',
         'pd.createdAt',
         'pd.closedAt',
-
         'subsidiary.id',
         'subsidiary.name',
-
         'routes.id',
         'vehicle.id',
       ])
-
-      // 👇 traer SOLO un driver (el primero)
       .addSelect(subQuery => {
         return subQuery
           .select('driver.name')
@@ -368,27 +360,30 @@ export class PackageDispatchService {
           .where('pdd.dispatchId = pd.id')
           .limit(1);
       }, 'driverName')
-
-      // 👇 contadores
       .addSelect('COUNT(DISTINCT shipments.id)', 'shipmentsCount')
       .addSelect('COUNT(DISTINCT chargeShipments.id)', 'chargeShipmentsCount')
-
       .groupBy('pd.id')
       .addGroupBy('subsidiary.id')
       .addGroupBy('routes.id')
       .addGroupBy('vehicle.id')
-
       .orderBy('pd.createdAt', 'DESC');
 
     const { entities, raw } = await qb.getRawAndEntities();
 
-    return entities.map((pd, index) => ({
-      ...pd,
-      driverName: raw[index].driverName ?? null,
-      totalPackages:
-        Number(raw[index].shipmentsCount) +
-        Number(raw[index].chargeShipmentsCount),
-    }));
+    // --- CAMBIO AQUÍ ---
+    return entities.map((pd) => {
+      // Buscamos en el array 'raw' la fila que tenga el ID de este despacho
+      // TypeORM suele nombrar el ID en raw como 'pd_id' (por el alias pd)
+      const rawData = raw.find(r => r.pd_id === pd.id);
+
+      return {
+        ...pd,
+        driverName: rawData?.driverName ?? null,
+        totalPackages: rawData 
+          ? Number(rawData.shipmentsCount) + Number(rawData.chargeShipmentsCount) 
+          : 0,
+      };
+    });
   }
 
   /** Para monitoreo */
@@ -753,6 +748,36 @@ export class PackageDispatchService {
   }
 
   async getShipmentsByPackageDispatchId(packageDispatchId: string) {
+    // 1. Intentar actualizar (con un try/catch para que si FedEx falla, la app siga)
+    try {
+      await this.updateFedexDataByPackageDispatchId(packageDispatchId);
+    } catch (error) {
+      console.error("⚠️ Error actualizando FedEx, pero mostraré lo que hay en DB:", error);
+    }
+
+    // 2. Buscar en tu base de datos (lo que ya tenías)
+    const packageDispatch = await this.packageDispatchRepository.findOne({
+      where: { id: packageDispatchId },
+      relations: [
+        'shipments',
+        'shipments.payment',
+        'shipments.statusHistory',
+        'chargeShipments',
+        'drivers',
+        'vehicle',
+        'subsidiary',
+        'routes',
+      ],
+    });
+
+    if (!packageDispatch) {
+      throw new NotFoundException('Package dispatch not found'); // Mejor usar la excepción de Nest
+    }
+
+    return packageDispatch;
+  }
+
+  async getShipmentsByPackageDispatchIdResp(packageDispatchId: string) {
     //await this.updateFedexDataByPackageDispatchId(packageDispatchId);
 
     const packageDispatch = await this.packageDispatchRepository.findOne({
