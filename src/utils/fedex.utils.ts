@@ -16,10 +16,10 @@ export function mapFedexStatusToLocalStatus(derivedStatusCode: string, exception
       case '41': 
       case '11': 
       case 'DF': return ShipmentStatusType.PENDIENTE; 
-      case '14':
       case '15':
       case '64': return ShipmentStatusType.ESTACION_FEDEX;
-      case '086C': return ShipmentStatusType.RETENIDO_POR_FEDEX;
+      case '14':
+      case '086C': return ShipmentStatusType.RETORNO_ABANDONO_FEDEX;
       case '84': 
       case '17': return ShipmentStatusType.CAMBIO_FECHA_SOLICITADO;
       case '20': 
@@ -42,7 +42,8 @@ export function mapFedexStatusToLocalStatus(derivedStatusCode: string, exception
     'HL': ShipmentStatusType.PENDIENTE,
     'DE': ShipmentStatusType.NO_ENTREGADO,
     'DU': ShipmentStatusType.PENDIENTE,     
-    'TA': ShipmentStatusType.NO_ENTREGADO, 
+    'TA': ShipmentStatusType.NO_ENTREGADO,
+    'OD': ShipmentStatusType.ACARGO_DE_FEDEX, 
     'SE': ShipmentStatusType.NO_ENTREGADO, 
     'RF': ShipmentStatusType.RECHAZADO,
     'IN': ShipmentStatusType.PENDIENTE,

@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Param, UseGuards, UseInterceptors, UploadedFile, BadRequestException, InternalServerErrorException, Request, UploadedFiles, Query, Body, Logger, Res, HttpStatus, HttpCode } from '@nestjs/common';
+import { Controller, Get, Post, Param, UseGuards, UseInterceptors, UploadedFile, BadRequestException, InternalServerErrorException, Request, UploadedFiles, Query, Body, Logger, Res, HttpStatus, HttpCode, HttpException } from '@nestjs/common';
 import { ShipmentsService } from './shipments.service';
 import { ApiBadRequestResponse, ApiBearerAuth, ApiBody, ApiConsumes, ApiOkResponse, ApiOperation, ApiProduces, ApiProperty, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from 'src/auth/guards/jwt-auth.guard';
@@ -8,9 +8,10 @@ import { FedExTrackingResponseDto } from './dto/fedex/fedex-tracking-response.dt
 import { GetShipmentKpisDto } from './dto/get-shipment-kpis.dto';
 import { CheckFedexStatusDto } from './dto/check-status-fedex-test';
 import { ForPickUpDto } from './dto/for-pick-up.dto';
-import { ParsedShipmentDto } from './dto/parsed-shipment.dto';
 import { ShipmentToSaveDto } from './dto/shipment-to-save.dto';
 import { PendingShipmentsQueryDto } from './dto/pendending-shipments.dto';
+import { UploadShipmentDto } from './dto/upload-shipment.dto';
+import { Response } from 'express';
 
 @ApiTags('shipments')
 @ApiBearerAuth()
@@ -179,25 +180,52 @@ export class ShipmentsController {
       },
     },
   })
-  uploadFile(
+  async uploadFile(
     @UploadedFile() file: Express.Multer.File, 
-    @Body('subsidiaryId') subsidiaryId: string,
-    @Body('consNumber') consNumber: string,
-    @Body('consDate') consDate?: string,
-    @Body('isAereo') isAereo?: string
+    @Body() dto: UploadShipmentDto, // <-- Usamos el DTO completo
+    @Res() res: Response
   ) {
+    try {
+      const isAereoBoolean = String(dto.isAereo).toLowerCase() === 'true';
+      let dateForCons = dto.consDate ? new Date(dto.consDate) : null;
 
-    const isAereoBoolean = typeof isAereo === 'string' 
-      ? isAereo.toLowerCase() === 'true' 
-      : Boolean(isAereo);
+      // Llamamos al servicio normalmente
+      const result = await this.shipmentsService.addConsMasterBySubsidiary(
+        file, 
+        dto.subsidiaryId, 
+        dto.consNumber || '', 
+        dateForCons, 
+        isAereoBoolean
+      );
 
-    let dateForCons = null;
+      return res.status(HttpStatus.OK).json(result);
 
-    if(consDate) {
-      dateForCons = new Date(consDate);
+  } catch (error) {
+      // Extraemos el estatus (400, 500, etc.)
+      const status = error instanceof HttpException 
+        ? error.getStatus() 
+        : HttpStatus.INTERNAL_SERVER_ERROR;
+
+      const responseError = error instanceof HttpException 
+        ? error.getResponse() 
+        : null;
+
+      // Buscamos el mensaje real: "El número de consolidado ya existe..."
+      let realMessage = error.message;
+      if (responseError && typeof responseError === 'object') {
+        realMessage = responseError['apiMessage'] || responseError['message'] || realMessage;
+      }
+
+      // IMPORTANTE: Al usar res.status().json() aquí, 
+      // el "Global Exception Filter" (el de la "E") es ignorado por completo.
+      return res.status(status).json({
+        domain: "generic",
+        message: realMessage, // Aquí mandamos el texto completo
+        status: status,
+        id: "m-" + Date.now(),
+        timestamp: new Date().toISOString()
+      });
     }
-
-    return this.shipmentsService.addConsMasterBySubsidiary(file, subsidiaryId, consNumber, dateForCons, isAereoBoolean);
   }
 
   @Post('upload-charge')

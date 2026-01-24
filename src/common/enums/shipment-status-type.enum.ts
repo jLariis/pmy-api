@@ -11,12 +11,14 @@ export enum ShipmentStatusType {
   DEVUELTO_A_FEDEX = 'devuelto_a_fedex', // DEVOLUCION A FEDEX
   ES_OCURRE = 'es_ocurre', //HP - 015A
   EN_BODEGA = 'en_bodega', // DESEMBARQUE - 67
-  RETENIDO_POR_FEDEX = 'retenido_por_fedex', //STAT14
+  RETORNO_ABANDONO_FEDEX = 'retorno_abandono_fedex', //STAT14
   ESTACION_FEDEX = 'estacion_fedex', //STAT41
   LLEGADO_DESPUES = 'llegado_despues',//STAT31
   DIRECCION_INCORRECTA = 'direccion_incorrecta', //DEX03
   CLIENTE_NO_DISPONIBLE = 'cliente_no_disponible', //DEX08
   CAMBIO_FECHA_SOLICITADO = 'cambio_fecha_solicitado', //STAT17
+  ACARGO_DE_FEDEX = 'a_cargo_de_fedex', // OD
+  ENTREGADO_POR_FEDEX = 'entregado_por_fedex', // ED o DL después de un OD
   //17 - 17 - A request was made to change this delivery date.
   //84
   //14
