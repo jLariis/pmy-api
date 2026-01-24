@@ -599,39 +599,13 @@ export class ConsolidatedService {
     console.log(`🎯 Total de shipments para actualizar FedEx: ${shipmentsForFedex.length}`);
     
     try {
-      const result = await this.shipmentService.checkStatusOnFedexBySubsidiaryRulesTesting(shipmentsTrackingNumbers, true);
-      const resultChargShipments = await this.shipmentService.checkStatusOnFedexChargeShipment(chargeShipmentsTrackingNumbers);
-
-      // Registrar resultados para auditoría
-      this.logger.log(
-        `✅ Resultado: ${result.updatedShipments.length} envíos actualizados, ` +
-        `${resultChargShipments.updatedChargeShipments.length} envíos F2 actualizados, ` +
-        `${result.shipmentsWithError.length} errores, ` +
-        `${resultChargShipments.chargeShipmentsWithError.length} errores de F2, ` +
-        `${result.unusualCodes.length} códigos inusuales, ` +
-        `${result.shipmentsWithOD.length} excepciones OD o fallos de validación`
-      );
-
-      // Registrar detalles de errores, códigos inusuales y excepciones OD si los hay
-      if (result.shipmentsWithError.length) {
-        this.logger.warn(`⚠️ Errores detectados: ${JSON.stringify(result.shipmentsWithError, null, 2)}`);
-      }
-
-      if (resultChargShipments.chargeShipmentsWithError.length) {
-        this.logger.warn(`⚠️ Errores detectados en F2: ${JSON.stringify(resultChargShipments.chargeShipmentsWithError, null, 2)}`);
-      }
-
-      if (result.unusualCodes.length) {
-        this.logger.warn(`⚠️ Códigos inusuales: ${JSON.stringify(result.unusualCodes, null, 2)}`);
-      }
-      if (result.shipmentsWithOD.length) {
-        this.logger.warn(`⚠️ Excepciones OD o fallos de validación: ${JSON.stringify(result.shipmentsWithOD, null, 2)}`);
-      }
+      await this.shipmentService.processMasterFedexUpdate(shipmentsTrackingNumbers);
+      await this.shipmentService.processChargeFedexUpdate(chargeShipmentsTrackingNumbers);
     } catch (err) {
-      this.logger.error(`❌ Error en handleCron: ${err.message}`);
+      this.logger.error(`❌ Error al actualizar FedEx para consolidados ${consolidates}: ${err.message}`);
     }
 
-    return shipmentsForFedex;
+    return "Proceso terminado.";
   }
 
   async updateFedexDataByConsolidatedId(consolidatedId: string) {
@@ -723,45 +697,10 @@ export class ConsolidatedService {
     let fedexChargeResult = null;
 
     try {
-      fedexResult = await this.shipmentService.processMasterFedexUpdate(shipmentsTrackingNumbers)
-      // Old Method
-      /*fedexResult = await this.shipmentService.checkStatusOnFedexBySubsidiaryRulesTesting(
-        shipmentsTrackingNumbers,
-        true
-      );*/
+      await this.shipmentService.processMasterFedexUpdate(shipmentsTrackingNumbers)
+      await this.shipmentService.processChargeFedexUpdate(chargeTrackingNumbers);
 
-      fedexChargeResult = await this.shipmentService.processChargeFedexUpdate(
-        chargeTrackingNumbers
-      );
-
-      // Logs de actualizaciones
-      this.logger.log(
-        `✅ FedEx completado para consolidated #${consolidated.consNumber}\n` +
-        `- Shipments actualizados: ${fedexResult.updatedShipments.length}\n` +
-        `- ChargeShipments actualizados: ${fedexChargeResult.updatedChargeShipments.length}\n` +
-        `- Errores normales: ${fedexResult.shipmentsWithError.length}\n` +
-        `- Errores F2: ${fedexChargeResult.chargeShipmentsWithError.length}\n` +
-        `- Códigos inusuales: ${fedexResult.unusualCodes.length}\n` +
-        `- Excepciones OD: ${fedexResult.shipmentsWithOD.length}`
-      );
-
-      // Logs detallados
-      if (fedexResult.shipmentsWithError.length) {
-        this.logger.warn(`⚠️ Errores normales:\n${JSON.stringify(fedexResult.shipmentsWithError, null, 2)}`);
-      }
-
-      if (fedexChargeResult.chargeShipmentsWithError.length) {
-        this.logger.warn(`⚠️ Errores F2:\n${JSON.stringify(fedexChargeResult.chargeShipmentsWithError, null, 2)}`);
-      }
-
-      if (fedexResult.unusualCodes.length) {
-        this.logger.warn(`⚠️ Códigos inusuales detectados:\n${JSON.stringify(fedexResult.unusualCodes, null, 2)}`);
-      }
-
-      if (fedexResult.shipmentsWithOD.length) {
-        this.logger.warn(`⚠️ Excepciones OD:\n${JSON.stringify(fedexResult.shipmentsWithOD, null, 2)}`);
-      }
-
+      this.logger.log(`✅ Consolidado ${consolidated.consNumber} procesado exitosamente.`);
     } catch (err) {
       this.logger.error(`❌ Error al consultar FedEx: ${err.message}`);
     }

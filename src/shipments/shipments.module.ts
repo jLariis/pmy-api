@@ -11,10 +11,12 @@ import { Income, ShipmentStatus, Subsidiary, Charge, ChargeShipment, Consolidate
 import { ConsolidatedService } from 'src/consolidated/consolidated.service';
 import { MailService } from 'src/mail/mail.service';
 import { ForPickUp } from 'src/entities/for-pick-up.entity';
+import { PackageDispatch } from 'src/entities/package-dispatch.entity';
+import { Unloading } from 'src/entities/unloading.entity';
 
 @Module({
   controllers: [ShipmentsController],
-  imports: [TypeOrmModule.forFeature([Shipment, ShipmentStatus,Subsidiary, Income, Charge, ChargeShipment, Consolidated, ForPickUp]), TrackingModule],
+  imports: [TypeOrmModule.forFeature([Shipment, ShipmentStatus,Subsidiary, Income, Charge, ChargeShipment, Consolidated, ForPickUp, PackageDispatch, Consolidated, Unloading]), TrackingModule],
   providers: [ShipmentsService, FedexService, DHLService, SubsidiariesService, ConsolidatedService, MailService],
   exports: [ShipmentsService],
 })
