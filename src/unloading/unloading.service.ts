@@ -1523,15 +1523,59 @@ export class UnloadingService {
   }
 
   async findAllBySubsidiary(subsidiaryId: string) {
-    const response = await this.unloadingRepository.find({
-      where: { subsidiary: { id: subsidiaryId } },
-      relations: ['vehicle', 'subsidiary'],
-      order: {
-        createdAt: 'DESC'
-      }
-    });
+    const qb = this.unloadingRepository.createQueryBuilder('unloading')
+      // Relaciones directas (Eager-like)
+      .leftJoinAndSelect('unloading.vehicle', 'vehicle')
+      .leftJoinAndSelect('unloading.subsidiary', 'subsidiary')
+      
+      // Relaciones inversas para el conteo
+      // 'unloading.shipments' usa la relación que definiste en la entidad
+      .leftJoin('unloading.shipments', 'shipments')
+      .leftJoin('unloading.chargeShipments', 'chargeShipments')
+      
+      .where('subsidiary.id = :subsidiaryId', { subsidiaryId })
+      
+      .select([
+        'unloading.id',
+        'unloading.trackingNumber',
+        'unloading.missingTrackings',
+        'unloading.unScannedTrackings',
+        'unloading.date',
+        'unloading.createdAt',
+        'vehicle.id',
+        'vehicle.plateNumber',
+        'vehicle.name',
+        'subsidiary.id',
+        'subsidiary.name',
+      ])
+      // Usamos DISTINCT porque al tener dos leftJoin de colecciones, 
+      // las filas se multiplican en el SQL plano (Producto Cartesiano)
+      .addSelect('COUNT(DISTINCT shipments.id)', 'shipmentsCount')
+      .addSelect('COUNT(DISTINCT chargeShipments.id)', 'chargeShipmentsCount')
+      
+      .groupBy('unloading.id')
+      .addGroupBy('vehicle.id')
+      .addGroupBy('subsidiary.id')
+      
+      .orderBy('unloading.createdAt', 'DESC');
 
-    return response
+    const { entities, raw } = await qb.getRawAndEntities();
+
+    return entities.map((unloading, index) => {
+      // Buscamos la fila raw correspondiente a esta entidad
+      // TypeORM suele usar el alias "unloading_id" en el objeto raw
+      const rawData = raw.find(r => r.unloading_id === unloading.id);
+
+      return {
+        ...unloading,
+        shipments: rawData ? Number(rawData.shipmentsCount) : 0,
+        chargeShipments: rawData ? Number(rawData.chargeShipmentsCount) : 0,
+        // Opcional: para tu interfaz de frontend
+        totalPackages: rawData 
+          ? Number(rawData.shipmentsCount) + Number(rawData.chargeShipmentsCount) 
+          : 0
+      };
+    });
   }
 
   findOne(id: number) {

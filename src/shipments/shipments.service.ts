@@ -681,6 +681,156 @@ export class ShipmentsService {
   }
 
   async processFileF2(file: Express.Multer.File, subsidiaryId: string, consNumber: string, consDate?: Date) {
+    this.logger.log("🚀 Iniciando migración masiva y carga directa (F2)");
+
+    if (!file) throw new BadRequestException('No se subió ningún archivo');
+
+    const { buffer } = file;
+    const queryRunner = this.dataSource.createQueryRunner();
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
+
+    const migrated: any[] = [];
+    const createdFromScratch: any[] = [];
+    const errors: any[] = [];
+
+    try {
+      // 1. Lectura de Excel
+      const workbook = XLSX.read(buffer, { type: 'buffer', cellDates: true, cellText: false });
+      const sheet = workbook.Sheets[workbook.SheetNames[0]];
+      const shipmentsToProcess = parseDynamicFileF2(sheet);
+
+      if (shipmentsToProcess.length === 0) return { message: 'Archivo vacío.' };
+
+      // 2. Obtener Subsidiaria y Crear Cabecera (Charge)
+      const chargeSubsidiary = await queryRunner.manager.findOne(Subsidiary, { where: { id: subsidiaryId } });
+      if (!chargeSubsidiary) throw new BadRequestException('Subsidiaria no encontrada');
+
+      const newCharge = this.chargeRepository.create({
+        subsidiary: chargeSubsidiary,
+        chargeDate: consDate || new Date(),
+        numberOfPackages: shipmentsToProcess.length,
+        consNumber
+      });
+      const savedCharge = await queryRunner.manager.save(newCharge);
+
+      // 3. Procesamiento Atómico Paquete por Paquete
+      for (const data of shipmentsToProcess) {
+        try {
+          // Buscamos si existe en la tabla original de Shipments
+          const original = await queryRunner.manager.findOne(Shipment, {
+            where: { trackingNumber: data.trackingNumber },
+            relations: ['statusHistory', 'payment']
+          });
+
+          let savedCS: ChargeShipment;
+
+          if (original) {
+            // --- ESCENARIO A: EXISTE -> MIGRAR ---
+            await queryRunner.manager.delete(Income, { trackingNumber: original.trackingNumber });
+
+            const chargeShipment = this.chargeShipmentRepository.create({
+              ...original,
+              id: undefined, // Nuevo UUID para la tabla charge_shipment
+              charge: savedCharge,
+              subsidiary: chargeSubsidiary,
+              status: original.status || ShipmentStatusType.PENDIENTE,
+            });
+
+            savedCS = await queryRunner.manager.save(chargeShipment);
+
+            // Mover Historial si existe
+            if (original.statusHistory?.length > 0) {
+              const newHistory = original.statusHistory.map(old => 
+                this.shipmentStatusRepository.create({
+                  ...old,
+                  id: undefined,
+                  chargeShipment: { id: savedCS.id },
+                  shipment: null
+                })
+              );
+              await queryRunner.manager.save(newHistory);
+            }
+
+            // Eliminar el original solo después de salvar el nuevo y su historia
+            await queryRunner.manager.delete(Shipment, original.id);
+            migrated.push(savedCS.trackingNumber);
+
+          } else {
+            // --- ESCENARIO B: NO EXISTE -> INSERTAR DIRECTO ---
+            const newCS = this.chargeShipmentRepository.create({
+              trackingNumber: data.trackingNumber,
+              recipientName: data.recipientName || 'N/A',
+              recipientAddress: data.recipientAddress || 'N/A',
+              recipientZip: data.recipientZip || 'N/A',
+              recipientCity: data.recipientCity || 'N/A',
+              recipientPhone: data.recipientPhone || 'N/A',
+              shipmentType: ShipmentType.FEDEX,
+              status: ShipmentStatusType.PENDIENTE,
+              charge: savedCharge,
+              subsidiary: chargeSubsidiary,
+            });
+
+            savedCS = await queryRunner.manager.save(newCS);
+
+            // Crear un historial inicial para este paquete nuevo
+            const initialStatus = this.shipmentStatusRepository.create({
+              status: ShipmentStatusType.PENDIENTE,
+              notes: 'Cargado directamente desde archivo F2 (No existía en sistema)',
+              timestamp: new Date(),
+              chargeShipment: { id: savedCS.id }
+            });
+            await queryRunner.manager.save(initialStatus);
+            
+            createdFromScratch.push(savedCS.trackingNumber);
+          }
+
+        } catch (err) {
+          this.logger.error(`❌ Error procesando tracking ${data.trackingNumber}: ${err.message}`);
+          errors.push({ tracking: data.trackingNumber, error: err.message });
+        }
+      }
+
+      // 4. Generar Ingreso Global (Income)
+      if (migrated.length > 0 || createdFromScratch.length > 0) {
+        const newIncome = this.incomeRepository.create({
+          subsidiary: chargeSubsidiary,
+          shipmentType: ShipmentType.FEDEX,
+          incomeType: IncomeStatus.ENTREGADO,
+          cost: chargeSubsidiary.chargeCost || 0,
+          isGrouped: true,
+          sourceType: IncomeSourceType.CHARGE,
+          charge: savedCharge,
+          date: consDate || new Date(),
+        });
+        await queryRunner.manager.save(newIncome);
+      }
+
+      // Si todo salió bien, confirmamos cambios
+      await queryRunner.commitTransaction();
+
+      return {
+        success: true,
+        summary: {
+          totalProcessed: shipmentsToProcess.length,
+          migrated: migrated.length,
+          insertedNew: createdFromScratch.length,
+          failed: errors.length
+        },
+        details: { errors }
+      };
+
+    } catch (error) {
+      // Si algo falló en la estructura (ej. BD caída), deshacemos TODO
+      await queryRunner.rollbackTransaction();
+      this.logger.error(`💥 Error crítico en proceso F2: ${error.message}`);
+      throw new InternalServerErrorException('Fallo la migración masiva. No se realizaron cambios.');
+    } finally {
+      await queryRunner.release();
+    }
+  }
+
+  async processFileF2Resp23012026(file: Express.Multer.File, subsidiaryId: string, consNumber: string, consDate?: Date) {
     this.logger.log("🚀 Iniciando migración masiva (F2)");
 
     if (!file) throw new BadRequestException('No se subió ningún archivo');
@@ -1995,846 +2145,7 @@ export class ShipmentsService {
     return statuses;
   }
 
- /*** TESTING ARCHIVOS HILLO !!*/
-  async addConsMasterBySubsidiaryBuenoFuncional(
-    file: Express.Multer.File,
-    subsidiaryId: string,
-    consNumber: string,
-    consDate?: Date,
-    isAereo?: boolean
-  ): Promise<{
-    saved: number;
-    failed: number;
-    duplicated: number;
-    duplicatedTrackings: ParsedShipmentDto[];
-    failedTrackings: { trackingNumber: string; reason: string }[];
-    errors: { trackingNumber: string; reason: string }[];
-  }> {
-    const startTime = Date.now();
-    this.logger.log(`📂 Iniciando procesamiento de archivo: ${file?.originalname}`);
-
-    if (!file) {
-      const reason = 'No se subió ningún archivo';
-      this.logger.error(`❌ ${reason}`);
-      this.logBuffer.push(reason);
-      throw new BadRequestException(reason);
-    }
-
-    if (!file.originalname.toLowerCase().match(/\.(csv|xlsx?)$/)) {
-      const reason = 'Tipo de archivo no soportado';
-      this.logger.error(`❌ ${reason}`);
-      this.logBuffer.push(reason);
-      throw new BadRequestException(reason);
-    }
-
-    this.logger.log(`🔍 Validando subsidiaria con ID: ${subsidiaryId}`);
-    const predefinedSubsidiary = await this.subsidiaryService.findById(subsidiaryId);
-
-    if (!predefinedSubsidiary) {
-      const reason = `Subsidiaria con ID '${subsidiaryId}' no encontrada`;
-      this.logger.error(`❌ ${reason}`);
-      this.logBuffer.push(reason);
-      throw new BadRequestException(reason);
-    }
-
-    this.logger.log(`📄 Leyendo archivo Excel: ${file.originalname}`);
-    const workbook = XLSX.read(file.buffer, { type: 'buffer' });
-    const shipmentsToSave = parseDynamicSheet(workbook, { fileName: file.originalname })
-    
-    this.logger.log(`📄 Total de envíos procesados desde archivo: ${shipmentsToSave.length}`);
-
-    // Crear Consolidated
-    this.logger.log(`📦 Creando consolidado para ${shipmentsToSave.length} envíos`);
-    const consolidated = Object.assign(new Consolidated(), {
-      date: consDate || new Date(),
-      type: isAereo ? ConsolidatedType.AEREO : ConsolidatedType.ORDINARIA,
-      numberOfPackages: shipmentsToSave.length,
-      subsidiary: predefinedSubsidiary,
-      subsidiaryId: predefinedSubsidiary.id,
-      consNumber,
-      isCompleted: false,
-      efficiency: 0,
-      commitDateTime: new Date(),
-    });
-
-    try {
-      const savedConsolidated = await this.consolidatedService.create(consolidated);
-      if (!savedConsolidated?.id) {
-        const reason = `Error: Consolidated no retornó un ID válido tras guardar`;
-        this.logger.error(`❌ ${reason}`);
-        this.logBuffer.push(reason);
-        throw new Error(reason);
-      }
-      consolidated.id = savedConsolidated.id;
-      this.logger.log(`📦 Consolidado creado con ID: ${consolidated.id}`);
-      this.logBuffer.push(`📦 Consolidado creado con ID: ${consolidated.id}`);
-    } catch (err) {
-      const reason = `Error al crear consolidado: ${err.message}`;
-      this.logger.error(`❌ ${reason}`);
-      this.logBuffer.push(reason);
-      throw new BadRequestException(reason);
-    }
-
-    const result = {
-      saved: 0,
-      failed: 0,
-      duplicated: 0,
-      duplicatedTrackings: [] as ParsedShipmentDto[],
-      failedTrackings: [] as { trackingNumber: string; reason: string }[],
-    };
-
-    const shipmentsWithError = {
-      duplicated: [] as { trackingNumber: string; reason: string }[],
-      fedexError: [] as { trackingNumber: string; reason: string }[],
-      saveError: [] as { trackingNumber: string; reason: string }[],
-    };
-
-    const processedTrackingNumbers = new Set<string>();
-    const shipmentsToGenerateIncomes: { shipment: Shipment; timestamp: Date; exceptionCode: string | undefined }[] = [];
-    const batches = Array.from(
-      { length: Math.ceil(shipmentsToSave.length / this.BATCH_SIZE) },
-      (_, i) => shipmentsToSave.slice(i * this.BATCH_SIZE, (i + 1) * this.BATCH_SIZE)
-    );
-    this.logger.log(`📦 Procesando ${batches.length} lotes de ${this.BATCH_SIZE} envíos cada uno`);
-
-    // Start transaction
-    await this.shipmentRepository.manager.transaction(async (transactionalEntityManager) => {
-      for (let i = 0; i < batches.length; i++) {
-        const batch = batches[i];
-        this.logger.log(`📦 Iniciando lote ${i + 1}/${batches.length} con ${batch.length} envíos`);
-        this.shipmentBatch = []; // Reset batch for each loop
-
-        // Process shipments and collect valid ones
-        await Promise.all(
-          batch.map((shipment, index) =>
-            this.processShipment(
-              shipment,
-              predefinedSubsidiary,
-              consolidated,
-              result,
-              shipmentsWithError,
-              i + 1,
-              index + 1,
-              processedTrackingNumbers,
-              shipmentsToGenerateIncomes, 
-              consolidated.id
-            )
-          )
-        );
-
-        // Save batch of shipments
-        if (this.shipmentBatch.length) {
-          try {
-            this.logger.debug(`💾 Intentando guardar lote ${i + 1} con ${this.shipmentBatch.length} envíos`);
-            
-            // 🔥🔥🔥 PRE-LIMPIEZA COMPLETA: Extraer y limpiar todas las relaciones circulares
-            const statusHistoryMap = new Map<string, ShipmentStatus[]>(); // trackingNumber -> statusHistory[]
-            const paymentMap = new Map<string, Payment>(); // trackingNumber -> Payment
-            
-            this.shipmentBatch.forEach((shipment, index) => {
-              this.logger.debug(`🔍 Preparando shipment ${index + 1}/${this.shipmentBatch.length}: ${shipment.trackingNumber}`);
-              
-              // 1. Extraer y limpiar statusHistory
-              if (shipment.statusHistory && Array.isArray(shipment.statusHistory)) {
-                this.logger.debug(`🔍 Extrayendo ${shipment.statusHistory.length} statusHistory entries para ${shipment.trackingNumber}`);
-                
-                // Guardar una copia limpia en el mapa
-                const cleanStatusHistory = shipment.statusHistory.map(status => {
-                  const cleanStatus = Object.assign(new ShipmentStatus(), {
-                    status: status.status,
-                    timestamp: status.timestamp,
-                    exceptionCode: status.exceptionCode,
-                    notes: status.notes,
-                    // 🔥 NO incluir shipment o id - se asignarán después
-                  });
-                  return cleanStatus;
-                });
-                
-                statusHistoryMap.set(shipment.trackingNumber, cleanStatusHistory);
-                
-                // Limpiar el array original temporalmente para evitar referencias circulares
-                shipment.statusHistory.length = 0;
-              }
-              
-              // 2. Extraer y limpiar Payment
-              if (shipment.payment && typeof shipment.payment === 'object') {
-                this.logger.debug(`🔍 Extrayendo payment para ${shipment.trackingNumber}`);
-                
-                // Guardar una copia limpia en el mapa
-                const cleanPayment = Object.assign(new Payment(), {
-                  amount: shipment.payment.amount,
-                  type: shipment.payment.type,
-                  status: shipment.payment.status,
-                  // 🔥 NO incluir relaciones circulares
-                });
-                
-                paymentMap.set(shipment.trackingNumber, cleanPayment);
-                
-                // Limpiar el payment original
-                shipment.payment = undefined;
-              }
-              
-              // 3. Limpiar otras relaciones para evitar ciclos
-              if (shipment.subsidiary && typeof shipment.subsidiary === 'object') {
-                shipment.subsidiary = { id: shipment.subsidiary.id } as Subsidiary;
-              }
-              
-              // 4. Verificar que no queden referencias circulares
-              try {
-                JSON.stringify(shipment);
-                this.logger.debug(`✅ Shipment ${shipment.trackingNumber} se serializa correctamente después de la limpieza`);
-              } catch (jsonError) {
-                this.logger.error(`❌ ERROR: Shipment ${shipment.trackingNumber} aún tiene referencias circulares: ${jsonError.message}`);
-                // Forzar limpieza más agresiva
-                shipment.statusHistory = [];
-                shipment.payment = undefined;
-                shipment.subsidiary = { id: predefinedSubsidiary.id } as Subsidiary;
-              }
-            });
-
-            // 🔥 GUARDAR SHIPMENTS PRINCIPALES (sin relaciones circulares)
-            this.logger.debug(`🔍 Guardando ${this.shipmentBatch.length} shipments principales`);
-            const savedShipments = await transactionalEntityManager.save(Shipment, this.shipmentBatch, { chunk: 50 });
-            this.logger.log(`💾 Guardados ${this.shipmentBatch.length} envíos en lote ${i + 1}`);
-            this.logBuffer.push(`💾 Guardados ${this.shipmentBatch.length} envíos en lote ${i + 1}`);
-
-            // Assign IDs to shipments
-            this.shipmentBatch.forEach((shipment, idx) => {
-              shipment.id = savedShipments[idx]?.id;
-              if (!shipment.id) {
-                const reason = `Error: No se asignó ID al envío ${shipment.trackingNumber} tras guardar lote ${i + 1}`;
-                this.logger.error(`❌ ${reason}`);
-                this.logBuffer.push(reason);
-                shipmentsWithError.saveError.push({ trackingNumber: shipment.trackingNumber, reason });
-                result.failed++;
-                result.saved--;
-              } else {
-                this.logger.debug(`✅ Shipment ${shipment.trackingNumber} guardado con ID: ${shipment.id}`);
-              }
-            });
-
-            // 🔥 GUARDAR PAYMENTS CON LAS RELACIONES CORRECTAS
-            const allPaymentsToSave: Payment[] = [];
-
-            paymentMap.forEach((payment, trackingNumber) => {
-              const correspondingShipment = savedShipments.find(s => s.trackingNumber === trackingNumber);
-              if (correspondingShipment?.id) {
-                // Asignar la relación correcta al payment
-                payment.shipment = { id: correspondingShipment.id } as Shipment;
-                allPaymentsToSave.push(payment);
-                this.logger.debug(`🔍 Asignada relación de payment para ${trackingNumber}`);
-              } else {
-                this.logger.warn(`⚠️ No se encontró shipment para payment de ${trackingNumber}`);
-              }
-            });
-
-            if (allPaymentsToSave.length > 0) {
-              try {
-                const savedPayments = await transactionalEntityManager.save(Payment, allPaymentsToSave, { chunk: 50 });
-                this.logger.log(`💾 Guardados ${savedPayments.length} payments para lote ${i + 1}`);
-                
-                // 🔥 RESTAURAR PAYMENTS EN LOS OBJETOS SHIPMENT
-                this.shipmentBatch.forEach(shipment => {
-                  if (shipment.id) {
-                    const shipmentPayment = allPaymentsToSave.find(
-                      payment => payment.shipment?.id === shipment.id
-                    );
-                    if (shipmentPayment) {
-                      shipment.payment = shipmentPayment;
-                      this.logger.debug(`🔍 Restaurado payment para ${shipment.trackingNumber}`);
-                    }
-                  }
-                });
-              } catch (paymentError) {
-                this.logger.error(`❌ Error guardando payments para lote ${i + 1}: ${paymentError.message}`);
-              }
-            }
-
-            // 🔥 GUARDAR STATUS HISTORY CON LAS RELACIONES CORRECTAS
-            const allStatusHistoryToSave: ShipmentStatus[] = [];
-
-            statusHistoryMap.forEach((statusHistory, trackingNumber) => {
-              const correspondingShipment = savedShipments.find(s => s.trackingNumber === trackingNumber);
-              if (correspondingShipment?.id) {
-                // Asignar la relación correcta a cada statusHistory
-                statusHistory.forEach(status => {
-                  status.shipment = { id: correspondingShipment.id } as Shipment;
-                  allStatusHistoryToSave.push(status);
-                });
-                this.logger.debug(`🔍 Asignadas ${statusHistory.length} relaciones de statusHistory para ${trackingNumber}`);
-              } else {
-                this.logger.warn(`⚠️ No se encontró shipment para statusHistory de ${trackingNumber}`);
-              }
-            });
-
-            if (allStatusHistoryToSave.length > 0) {
-              try {
-                const savedStatusHistory = await transactionalEntityManager.save(ShipmentStatus, allStatusHistoryToSave, { chunk: 50 });
-                this.logger.log(`💾 Guardados ${savedStatusHistory.length} statusHistory entries para lote ${i + 1}`);
-                
-                // 🔥 RESTAURAR STATUS HISTORY EN LOS OBJETOS SHIPMENT
-                this.shipmentBatch.forEach(shipment => {
-                  if (shipment.id) {
-                    const shipmentStatusHistory = allStatusHistoryToSave.filter(
-                      status => status.shipment?.id === shipment.id
-                    );
-                    if (shipmentStatusHistory.length > 0) {
-                      shipment.statusHistory = shipmentStatusHistory;
-                      this.logger.debug(`🔍 Restaurados ${shipmentStatusHistory.length} statusHistory entries para ${shipment.trackingNumber}`);
-                    }
-                  }
-                });
-              } catch (statusError) {
-                this.logger.error(`❌ Error guardando statusHistory para lote ${i + 1}: ${statusError.message}`);
-              }
-            }
-
-            // 🔥 GENERAR INCOMES (ahora los shipments tienen todas las relaciones correctas)
-            this.logger.debug(`🔍 Generando incomes para ${shipmentsToGenerateIncomes.length} shipments`);
-            const incomesToProcess = [...shipmentsToGenerateIncomes];
-            
-            for (const { shipment, timestamp, exceptionCode } of incomesToProcess) {
-              if (!shipment.id) {
-                const reason = `Error: No se puede generar income para ${shipment.trackingNumber} porque falta shipment.id`;
-                this.logger.error(`❌ ${reason}`);
-                this.logBuffer.push(reason);
-                shipmentsWithError.saveError.push({ trackingNumber: shipment.trackingNumber, reason });
-                result.failed++;
-                result.saved--;
-                continue;
-              }
-              try {
-                this.logger.debug(`💰 Generando income para shipment ${shipment.trackingNumber} (ID: ${shipment.id})`);
-                await this.generateIncomes(shipment, timestamp, exceptionCode, transactionalEntityManager);
-                this.logger.log(`✅ Income generado para ${shipment.trackingNumber}`);
-                
-                // Remover de la lista una vez procesado
-                const index = shipmentsToGenerateIncomes.findIndex(item => item.shipment.trackingNumber === shipment.trackingNumber);
-                if (index !== -1) {
-                  shipmentsToGenerateIncomes.splice(index, 1);
-                }
-              } catch (err) {
-                const reason = `Error en generateIncomes para ${shipment.trackingNumber}: ${err.message}`;
-                this.logger.error(`❌ ${reason}`);
-                this.logBuffer.push(reason);
-                shipmentsWithError.saveError.push({ trackingNumber: shipment.trackingNumber, reason });
-                result.failed++;
-                result.saved--;
-              }
-            }
-
-            this.shipmentBatch = [];
-            this.logger.debug(`🔍 Lote ${i + 1}: Limpiados arrays temporales`);
-            
-          } catch (err) {
-            const reason = `Error al guardar lote de envíos ${i + 1}: ${err.message}`;
-            this.logger.error(`❌ ${reason}`);
-            this.logBuffer.push(reason);
-            
-            // DEBUG DETALLADO del error
-            this.logger.error(`🔍 DEBUG Error en lote ${i + 1}:`, {
-              message: err.message,
-              stack: err.stack,
-              batchSize: this.shipmentBatch.length,
-              firstTracking: this.shipmentBatch[0]?.trackingNumber,
-              errorDetails: JSON.stringify(err, Object.getOwnPropertyNames(err))
-            });
-
-            // Verificar si es el error de dependencia cíclica
-            if (err.message.includes('Cyclic dependency') || err.message.includes('circular reference') || err.message.includes('cyclic')) {
-              this.logger.error(`🔄 ERROR DE DEPENDENCIA CÍCLICA DETECTADO EN LOTE ${i + 1}`);
-              
-              // Analizar las relaciones del primer shipment para debug
-              if (this.shipmentBatch.length > 0) {
-                const problemShipment = this.shipmentBatch[0];
-                this.logger.error(`🔍 Analizando shipment problemático: ${problemShipment.trackingNumber}`, {
-                  shipment: {
-                    trackingNumber: problemShipment.trackingNumber,
-                    consolidatedId: problemShipment.consolidatedId,
-                    subsidiary: problemShipment.subsidiary ? {
-                      id: problemShipment.subsidiary.id,
-                      name: problemShipment.subsidiary.name,
-                    } : 'null',
-                    statusHistoryCount: problemShipment.statusHistory?.length || 0,
-                    hasPayment: !!problemShipment.payment
-                  }
-                });
-
-                // Intentar detectar ciclos manualmente
-                this.detectCircularReferences(problemShipment);
-              }
-            }
-
-            shipmentsWithError.saveError.push({ trackingNumber: `LOTE_${i + 1}`, reason });
-            result.failed += this.shipmentBatch.length;
-            // No restamos de saved porque estos shipments nunca se contaron como guardados
-            this.shipmentBatch = [];
-          }
-        }
-        this.logger.log(`✅ Finalizado lote ${i + 1}/${batches.length}`);
-      }
-    });
-
-    // Evitar Consolidated innecesario si todos son duplicados
-    if (result.duplicated === shipmentsToSave.length) {
-      await this.consolidatedService.remove(consolidated.id);
-      this.logger.warn(`⚠️ Todos los envíos son duplicados. Consolidado ${consolidated.id} eliminado.`);
-      this.logBuffer.push(`⚠️ Todos los envíos son duplicados. Consolidado ${consolidated.id} eliminado.`);
-    } else {
-      // Actualizar consolidado
-      this.logger.log(`📊 Actualizando consolidado ${consolidated.id}`);
-      consolidated.isCompleted = true;
-      consolidated.efficiency = shipmentsToSave.length
-        ? (result.saved / shipmentsToSave.length) * 100
-        : 0;
-      consolidated.commitDateTime = new Date();
-      try {
-        await this.consolidatedService.create(consolidated);
-        this.logger.log(`📊 Consolidado ${consolidated.id} actualizado: efficiency ${consolidated.efficiency}%`);
-        this.logBuffer.push(`📊 Consolidado ${consolidated.id} actualizado: efficiency ${consolidated.efficiency}%`);
-      } catch (err) {
-        const reason = `Error al actualizar consolidado ${consolidated.id}: ${err.message}`;
-        this.logger.error(`❌ ${reason}`);
-        this.logBuffer.push(reason);
-      }
-    }
-
-    await this.flushLogBuffer();
-    await this.logErrors(shipmentsWithError);
-
-    const durationMin = ((Date.now() - startTime) / 60000).toFixed(2);
-    this.logger.log(`⏱️ Tiempo total de procesamiento: ${durationMin} minutos`);
-    this.logger.log(
-      `✅ Proceso finalizado: ${result.saved} guardados, ${result.duplicated} duplicados, ${result.failed} fallidos`
-    );
-
-    return {
-      ...result,
-      errors: [
-        ...shipmentsWithError.duplicated,
-        ...shipmentsWithError.fedexError,
-        ...shipmentsWithError.saveError,
-      ],
-    };
-  }
-
-  async addConsMasterBySubsidiaryResp22012026(
-    file: Express.Multer.File,
-    subsidiaryId: string,
-    consNumber: string,
-    consDate?: Date,
-    isAereo?: boolean
-  ): Promise<{
-    saved: number;
-    failed: number;
-    duplicated: number;
-    duplicatedTrackings: ParsedShipmentDto[];
-    failedTrackings: { trackingNumber: string; reason: string }[];
-    errors: { trackingNumber: string; reason: string }[];
-  }> {
-    const startTime = Date.now();
-    this.logger.log(`📂 Iniciando procesamiento de archivo: ${file?.originalname}`);
-
-    if (!file) {
-      const reason = 'No se subió ningún archivo';
-      this.logger.error(`❌ ${reason}`);
-      this.logBuffer.push(reason);
-      throw new BadRequestException(reason);
-    }
-
-    if (!file.originalname.toLowerCase().match(/\.(csv|xlsx?)$/)) {
-      const reason = 'Tipo de archivo no soportado';
-      this.logger.error(`❌ ${reason}`);
-      this.logBuffer.push(reason);
-      throw new BadRequestException(reason);
-    }
-
-    this.logger.log(`🔍 Validando subsidiaria con ID: ${subsidiaryId}`);
-    const predefinedSubsidiary = await this.subsidiaryService.findById(subsidiaryId);
-
-    if (!predefinedSubsidiary) {
-      const reason = `Subsidiaria con ID '${subsidiaryId}' no encontrada`;
-      this.logger.error(`❌ ${reason}`);
-      this.logBuffer.push(reason);
-      throw new BadRequestException(reason);
-    }
-
-    this.logger.log(`📄 Leyendo archivo Excel: ${file.originalname}`);
-    const workbook = XLSX.read(file.buffer, { type: 'buffer' });
-    const shipmentsToSave = parseDynamicSheet(workbook, { fileName: file.originalname })
-    
-    this.logger.log(`📄 Total de envíos procesados desde archivo: ${shipmentsToSave.length}`);
-
-    // Crear Consolidated
-    this.logger.log(`📦 Creando consolidado para ${shipmentsToSave.length} envíos`);
-    const consolidated = Object.assign(new Consolidated(), {
-      date: consDate || new Date(),
-      type: isAereo ? ConsolidatedType.AEREO : ConsolidatedType.ORDINARIA,
-      numberOfPackages: shipmentsToSave.length,
-      subsidiary: predefinedSubsidiary,
-      subsidiaryId: predefinedSubsidiary.id,
-      consNumber,
-      isCompleted: false,
-      efficiency: 0,
-      commitDateTime: new Date(),
-    });
-
-    try {
-      const savedConsolidated = await this.consolidatedService.create(consolidated);
-      if (!savedConsolidated?.id) {
-        const reason = `Error: Consolidated no retornó un ID válido tras guardar`;
-        this.logger.error(`❌ ${reason}`);
-        this.logBuffer.push(reason);
-        throw new Error(reason);
-      }
-      consolidated.id = savedConsolidated.id;
-      this.logger.log(`📦 Consolidado creado con ID: ${consolidated.id}`);
-      this.logBuffer.push(`📦 Consolidado creado con ID: ${consolidated.id}`);
-    } catch (err) {
-      const reason = `Error al crear consolidado: ${err.message}`;
-      this.logger.error(`❌ ${reason}`);
-      this.logBuffer.push(reason);
-      throw new BadRequestException(reason);
-    }
-
-    const result = {
-      saved: 0,
-      failed: 0,
-      duplicated: 0,
-      duplicatedTrackings: [] as ParsedShipmentDto[],
-      failedTrackings: [] as { trackingNumber: string; reason: string }[],
-    };
-
-    const shipmentsWithError = {
-      duplicated: [] as { trackingNumber: string; reason: string }[],
-      fedexError: [] as { trackingNumber: string; reason: string }[],
-      saveError: [] as { trackingNumber: string; reason: string }[],
-    };
-
-    const processedTrackingNumbers = new Set<string>();
-    const shipmentsToGenerateIncomes: { shipment: Shipment; timestamp: Date; exceptionCode: string | undefined }[] = [];
-    const batches = Array.from(
-      { length: Math.ceil(shipmentsToSave.length / this.BATCH_SIZE) },
-      (_, i) => shipmentsToSave.slice(i * this.BATCH_SIZE, (i + 1) * this.BATCH_SIZE)
-    );
-    this.logger.log(`📦 Procesando ${batches.length} lotes de ${this.BATCH_SIZE} envíos cada uno`);
-
-    // Start transaction
-    await this.shipmentRepository.manager.transaction(async (transactionalEntityManager) => {
-      for (let i = 0; i < batches.length; i++) {
-        const batch = batches[i];
-        this.logger.log(`📦 Iniciando lote ${i + 1}/${batches.length} con ${batch.length} envíos`);
-        this.shipmentBatch = []; // Reset batch for each loop
-
-        // Process shipments and collect valid ones
-        await Promise.all(
-          batch.map((shipment, index) =>
-            this.processShipment(
-              shipment,
-              predefinedSubsidiary,
-              consolidated,
-              result,
-              shipmentsWithError,
-              i + 1,
-              index + 1,
-              processedTrackingNumbers,
-              shipmentsToGenerateIncomes, 
-              consolidated.id
-            )
-          )
-        );
-
-        // Save batch of shipments
-        if (this.shipmentBatch.length) {
-          try {
-            this.logger.debug(`💾 Intentando guardar lote ${i + 1} con ${this.shipmentBatch.length} envíos`);
-            
-            // PRE-LIMPIEZA: Extraer y limpiar todas las relaciones circulares
-            const statusHistoryMap = new Map<string, ShipmentStatus[]>(); 
-            const paymentMap = new Map<string, Payment>(); 
-            
-            this.shipmentBatch.forEach((shipment, index) => {
-              this.logger.debug(`🔍 Preparando shipment ${index + 1}/${this.shipmentBatch.length}: ${shipment.trackingNumber} (Status: ${shipment.status})`);
-              
-              // 1. Extraer y limpiar statusHistory
-              if (shipment.statusHistory && Array.isArray(shipment.statusHistory)) {
-                this.logger.debug(`🔍 Extrayendo ${shipment.statusHistory.length} statusHistory entries para ${shipment.trackingNumber}`);
-                
-                const cleanStatusHistory = shipment.statusHistory.map(status => {
-                  const cleanStatus = Object.assign(new ShipmentStatus(), {
-                    status: status.status,
-                    timestamp: status.timestamp,
-                    exceptionCode: status.exceptionCode,
-                    notes: status.notes,
-                  });
-                  return cleanStatus;
-                });
-                
-                statusHistoryMap.set(shipment.trackingNumber, cleanStatusHistory);
-                shipment.statusHistory.length = 0;
-              }
-              
-              // 2. Extraer y limpiar Payment
-              if (shipment.payment && typeof shipment.payment === 'object') {
-                this.logger.debug(`🔍 Extrayendo payment para ${shipment.trackingNumber}: $${shipment.payment.amount} - ${shipment.payment.status}`);
-                
-                const cleanPayment = Object.assign(new Payment(), {
-                  amount: shipment.payment.amount,
-                  type: shipment.payment.type,
-                  status: shipment.payment.status,
-                });
-                
-                paymentMap.set(shipment.trackingNumber, cleanPayment);
-                shipment.payment = undefined;
-              }
-              
-              // 3. Limpiar otras relaciones para evitar ciclos
-              if (shipment.subsidiary && typeof shipment.subsidiary === 'object') {
-                shipment.subsidiary = { id: shipment.subsidiary.id } as Subsidiary;
-              }
-            });
-
-            // GUARDAR SHIPMENTS PRINCIPALES
-            this.logger.debug(`🔍 Guardando ${this.shipmentBatch.length} shipments principales`);
-            const savedShipments = await transactionalEntityManager.save(Shipment, this.shipmentBatch, { chunk: 50 });
-            this.logger.log(`💾 Guardados ${this.shipmentBatch.length} envíos en lote ${i + 1}`);
-
-            // Assign IDs to shipments y registrar SOLO fallidos reales
-            const failedShipmentsInBatch: { trackingNumber: string; reason: string }[] = [];
-            
-            this.shipmentBatch.forEach((shipment, idx) => {
-              shipment.id = savedShipments[idx]?.id;
-              if (!shipment.id) {
-                const reason = `Error: No se asignó ID al envío ${shipment.trackingNumber} tras guardar`;
-                this.logger.error(`❌ ${reason}`);
-                failedShipmentsInBatch.push({ trackingNumber: shipment.trackingNumber, reason });
-                shipmentsWithError.saveError.push({ trackingNumber: shipment.trackingNumber, reason });
-                result.failed++;
-                result.saved--;
-              } else {
-                this.logger.debug(`✅ Shipment ${shipment.trackingNumber} guardado con ID: ${shipment.id} (Status: ${shipment.status})`);
-              }
-            });
-
-            // REGISTRAR FALLIDOS DEL BATCH (solo errores reales de guardado)
-            if (failedShipmentsInBatch.length > 0) {
-              this.logger.error(`❌ ${failedShipmentsInBatch.length} envíos fallaron en el GUARDADO:`);
-              failedShipmentsInBatch.forEach(failed => {
-                this.logger.error(`   - ${failed.trackingNumber}: ${failed.reason}`);
-                result.failedTrackings.push(failed);
-              });
-            }
-
-            // GUARDAR PAYMENTS
-            const allPaymentsToSave: Payment[] = [];
-
-            paymentMap.forEach((payment, trackingNumber) => {
-              const correspondingShipment = savedShipments.find(s => s.trackingNumber === trackingNumber && s.id);
-              if (correspondingShipment?.id) {
-                payment.shipment = { id: correspondingShipment.id } as Shipment;
-                allPaymentsToSave.push(payment);
-              }
-            });
-
-            if (allPaymentsToSave.length > 0) {
-              try {
-                await transactionalEntityManager.save(Payment, allPaymentsToSave, { chunk: 50 });
-                this.logger.log(`💾 Guardados ${allPaymentsToSave.length} payments`);
-                
-                // RESTAURAR PAYMENTS
-                this.shipmentBatch.forEach(shipment => {
-                  if (shipment.id) {
-                    const shipmentPayment = allPaymentsToSave.find(
-                      payment => payment.shipment?.id === shipment.id
-                    );
-                    if (shipmentPayment) {
-                      shipment.payment = shipmentPayment;
-                    }
-                  }
-                });
-              } catch (paymentError) {
-                this.logger.error(`❌ Error guardando payments: ${paymentError.message}`);
-              }
-            }
-
-            // GUARDAR STATUS HISTORY
-            const allStatusHistoryToSave: ShipmentStatus[] = [];
-
-            statusHistoryMap.forEach((statusHistory, trackingNumber) => {
-              const correspondingShipment = savedShipments.find(s => s.trackingNumber === trackingNumber && s.id);
-              if (correspondingShipment?.id) {
-                statusHistory.forEach(status => {
-                  status.shipment = { id: correspondingShipment.id } as Shipment;
-                  allStatusHistoryToSave.push(status);
-                });
-              }
-            });
-
-            if (allStatusHistoryToSave.length > 0) {
-              try {
-                await transactionalEntityManager.save(ShipmentStatus, allStatusHistoryToSave, { chunk: 50 });
-                this.logger.log(`💾 Guardados ${allStatusHistoryToSave.length} statusHistory entries`);
-                
-                // RESTAURAR STATUS HISTORY
-                this.shipmentBatch.forEach(shipment => {
-                  if (shipment.id) {
-                    const shipmentStatusHistory = allStatusHistoryToSave.filter(
-                      status => status.shipment?.id === shipment.id
-                    );
-                    if (shipmentStatusHistory.length > 0) {
-                      shipment.statusHistory = shipmentStatusHistory;
-                    }
-                  }
-                });
-              } catch (statusError) {
-                this.logger.error(`❌ Error guardando statusHistory: ${statusError.message}`);
-              }
-            }
-
-            // 🔥 CORRECCIÓN: GENERAR INCOMES - NO contar como fallidos los "no_entregados"
-            this.logger.debug(`🔍 Procesando incomes para ${shipmentsToGenerateIncomes.length} shipments`);
-            const incomesToProcess = [...shipmentsToGenerateIncomes];
-            const skippedIncomes: { trackingNumber: string; reason: string }[] = [];
-            
-            for (const { shipment, timestamp, exceptionCode } of incomesToProcess) {
-              if (!shipment.id) {
-                // Este ya se contó como fallido anteriormente, solo registrar
-                const reason = `No se puede generar income - shipment no guardado: ${shipment.trackingNumber}`;
-                this.logger.warn(`⚠️ ${reason}`);
-                continue;
-              }
-
-              try {
-                this.logger.debug(`💰 Generando income para ${shipment.trackingNumber} (Status: ${shipment.status})`);
-                await this.generateIncomes(shipment, timestamp, exceptionCode, transactionalEntityManager);
-                this.logger.log(`✅ Income generado para ${shipment.trackingNumber}`);
-                
-                // Remover de la lista
-                const index = shipmentsToGenerateIncomes.findIndex(item => item.shipment.trackingNumber === shipment.trackingNumber);
-                if (index !== -1) {
-                  shipmentsToGenerateIncomes.splice(index, 1);
-                }
-              } catch (err) {
-                // 🔥 CORRECCIÓN IMPORTANTE: NO contar como fallido, solo registrar como skipped
-                const reason = `No se generó income para ${shipment.trackingNumber}: ${err.message}`;
-                this.logger.warn(`⚠️ ${reason}`);
-                skippedIncomes.push({ trackingNumber: shipment.trackingNumber, reason });
-                shipmentsWithError.saveError.push({ trackingNumber: shipment.trackingNumber, reason });
-                // 🔥 NO incrementar result.failed aquí - el shipment SÍ se guardó exitosamente
-              }
-            }
-
-            // REGISTRAR INCOMES SKIPPEADOS (no fallidos)
-            if (skippedIncomes.length > 0) {
-              this.logger.warn(`⚠️ ${skippedIncomes.length} incomes no se generaron (pero shipments se guardaron):`);
-              skippedIncomes.forEach(skipped => {
-                this.logger.warn(`   - ${skipped.trackingNumber}: ${skipped.reason}`);
-              });
-            }
-
-            this.shipmentBatch = [];
-            
-          } catch (err) {
-            const reason = `Error al guardar lote de envíos ${i + 1}: ${err.message}`;
-            this.logger.error(`❌ ${reason}`);
-            
-            // REGISTRAR TODOS LOS SHIPMENTS DEL BATCH COMO FALLIDOS (solo en error crítico)
-            this.shipmentBatch.forEach(shipment => {
-              const failedReason = `Error crítico en lote: ${err.message}`;
-              shipmentsWithError.saveError.push({ trackingNumber: shipment.trackingNumber, reason: failedReason });
-              result.failedTrackings.push({ trackingNumber: shipment.trackingNumber, reason: failedReason });
-              result.failed++;
-              result.saved--;
-            });
-
-            this.logger.error(`❌ ERROR CRÍTICO: ${this.shipmentBatch.length} envíos fallaron:`);
-            this.shipmentBatch.forEach(shipment => {
-              this.logger.error(`   - ${shipment.trackingNumber}`);
-            });
-
-            this.shipmentBatch = [];
-          }
-        }
-        this.logger.log(`✅ Finalizado lote ${i + 1}/${batches.length}`);
-      }
-    });
-
-    // 🔥 CORRECCIÓN: CALCULAR ESTADÍSTICAS FINALES CORRECTAS
-    const totalProcessed = shipmentsToSave.length;
-    const totalSaved = result.saved;
-    const totalDuplicated = result.duplicated;
-    const totalFailed = result.failed; // Solo errores reales de guardado
-    
-    // Identificar shipments con status "no_entregado" que fueron guardados exitosamente
-    const savedButNotDelivered = totalSaved - result.failedTrackings.length;
-
-    // 🔥 RESUMEN FINAL CORREGIDO
-    this.logger.log(`📊 RESUMEN FINAL CORREGIDO:`);
-    this.logger.log(`   📄 Total procesado desde archivo: ${totalProcessed}`);
-    this.logger.log(`   ✅ Guardados exitosos: ${totalSaved} (incluyendo ${savedButNotDelivered} con status NO_ENTREGADO)`);
-    this.logger.log(`   🔁 Duplicados: ${totalDuplicated}`);
-    this.logger.log(`   ❌ Fallidos por ERROR: ${totalFailed}`);
-    
-    if (result.failedTrackings.length > 0) {
-      this.logger.log(`   📋 ENVÍOS FALLIDOS POR ERROR (${result.failedTrackings.length}):`);
-      result.failedTrackings.forEach((failed, index) => {
-        this.logger.log(`      ${index + 1}. ${failed.trackingNumber}: ${failed.reason}`);
-      });
-    } else {
-      this.logger.log(`   🎉 No hay envíos fallidos por error`);
-    }
-
-    if (result.duplicatedTrackings.length > 0) {
-      this.logger.log(`   🔁 ENVÍOS DUPLICADOS (${result.duplicatedTrackings.length}):`);
-      result.duplicatedTrackings.forEach((dup, index) => {
-        this.logger.log(`      ${index + 1}. ${dup.trackingNumber}`);
-      });
-    }
-
-    // Evitar Consolidated innecesario si todos son duplicados
-    if (result.duplicated === shipmentsToSave.length) {
-      await this.consolidatedService.remove(consolidated.id);
-      this.logger.warn(`⚠️ Todos los envíos son duplicados. Consolidado ${consolidated.id} eliminado.`);
-    } else {
-      // Actualizar consolidado
-      this.logger.log(`📊 Actualizando consolidado ${consolidated.id}`);
-      consolidated.isCompleted = true;
-      consolidated.efficiency = shipmentsToSave.length
-        ? (totalSaved / shipmentsToSave.length) * 100
-        : 0;
-      consolidated.commitDateTime = new Date();
-      try {
-        await this.consolidatedService.create(consolidated);
-        this.logger.log(`📊 Consolidado ${consolidated.id} actualizado: efficiency ${consolidated.efficiency.toFixed(2)}%`);
-      } catch (err) {
-        this.logger.error(`❌ Error al actualizar consolidado: ${err.message}`);
-      }
-    }
-
-    await this.flushLogBuffer();
-    await this.logErrors(shipmentsWithError);
-
-    const durationMin = ((Date.now() - startTime) / 60000).toFixed(2);
-    this.logger.log(`⏱️ Tiempo total de procesamiento: ${durationMin} minutos`);
-    this.logger.log(
-      `✅ Proceso finalizado: ${totalSaved} guardados, ${totalDuplicated} duplicados, ${totalFailed} fallidos`
-    );
-
-    return {
-      saved: totalSaved,
-      failed: totalFailed,
-      duplicated: totalDuplicated,
-      duplicatedTrackings: result.duplicatedTrackings,
-      failedTrackings: result.failedTrackings, // Solo errores reales de guardado
-      errors: [
-        ...shipmentsWithError.duplicated,
-        ...shipmentsWithError.fedexError,
-        ...shipmentsWithError.saveError,
-      ],
-    };
-  }
-
-  async addConsMasterBySubsidiary(
+ async addConsMasterBySubsidiaryResp23012026(
     file: Express.Multer.File,
     subsidiaryId: string,
     consNumber: string,
@@ -3040,6 +2351,155 @@ export class ShipmentsService {
     };
   }
 
+  async addConsMasterBySubsidiary(
+    file: Express.Multer.File,
+    subsidiaryId: string,
+    consNumber: string,
+    consDate?: Date,
+    isAereo?: boolean // Recuperamos el parámetro
+  ): Promise<any> {
+    const startTime = Date.now();
+    this.logger.log(`📂 Procesando archivo: ${file?.originalname} | Tipo: ${isAereo ? 'AÉREO' : 'ORDINARIO'}`);
+
+    // 1. Validaciones de entrada
+    if (!file) throw new BadRequestException('No se ha recibido el archivo de Excel.');
+    
+    const predefinedSubsidiary = await this.subsidiaryService.findById(subsidiaryId);
+    if (!predefinedSubsidiary) {
+      throw new BadRequestException(`La subsidiaria seleccionada no es válida.`);
+    }
+
+    // 2. Validación de Consolidado Existente (Evita procesar FedEx en vano)
+    const existingCons = await this.consolidatedService.findByConsNumber(consNumber);
+    if (existingCons) {
+      throw new BadRequestException(`El número de consolidado '${consNumber}' ya existe. Por favor, asigne uno nuevo.`);
+    }
+
+    // 3. Lectura del Excel
+    const workbook = XLSX.read(file.buffer, { type: 'buffer' });
+    const shipmentsToSave = parseDynamicSheet(workbook, { fileName: file.originalname });
+    if (!shipmentsToSave.length) throw new BadRequestException('El archivo Excel está vacío o no tiene el formato correcto.');
+
+    // Variables de control para el resultado final
+    const result = { saved: 0, failed: 0, duplicated: 0, duplicatedTrackings: [], failedTrackings: [] };
+    const processedTrackingNumbers = new Set<string>();
+    const shipmentsToGenerateIncomes: any[] = [];
+    
+    const batches = Array.from({ length: Math.ceil(shipmentsToSave.length / this.BATCH_SIZE) }, (_, i) => 
+      shipmentsToSave.slice(i * this.BATCH_SIZE, (i + 1) * this.BATCH_SIZE)
+    );
+
+    // --- INICIO DE LA TRANSACCIÓN TOTAL ---
+    // Si algo falla dentro de este bloque, se hace ROLLBACK de todo (incluyendo el Consolidado)
+    return await this.shipmentRepository.manager.transaction(async (transactionalEntityManager) => {
+      
+      // 4. Crear el registro de Consolidated con el tipo correcto (isAereo)
+      const consolidated = transactionalEntityManager.create(Consolidated, {
+        date: consDate || new Date(),
+        type: isAereo ? ConsolidatedType.AEREO : ConsolidatedType.ORDINARIA, // <--- Aplicamos isAereo
+        numberOfPackages: shipmentsToSave.length,
+        subsidiary: predefinedSubsidiary,
+        consNumber,
+        isCompleted: false,
+        efficiency: 0,
+        commitDateTime: new Date(),
+      });
+
+      const savedCons = await transactionalEntityManager.save(Consolidated, consolidated);
+      this.logger.log(`📦 Consolidado [${consNumber}] creado temporalmente...`);
+
+      // 5. Procesamiento por Lotes (Batching)
+      for (let i = 0; i < batches.length; i++) {
+        this.shipmentBatch = []; // Limpiamos el buffer para el nuevo lote
+
+        // Ejecutamos el procesamiento de cada guía (Llama a FedEx, valida fechas, etc.)
+        // Si processShipment lanza un error (throw), la transacción se detiene aquí.
+        await Promise.all(
+          batches[i].map((shipment, index) =>
+            this.processShipment(
+              shipment,
+              predefinedSubsidiary,
+              savedCons,
+              result,
+              null, // shipmentsWithError ya no es necesario, usamos excepciones
+              i + 1,
+              index + 1,
+              processedTrackingNumbers,
+              shipmentsToGenerateIncomes,
+              savedCons.id
+            )
+          )
+        );
+
+        // 6. Guardado del Lote en DB
+        if (this.shipmentBatch.length > 0) {
+          try {
+            // Extraemos relaciones para evitar fallos de persistencia circular
+            const statusHistoryMap = new Map();
+            const paymentMap = new Map();
+
+            this.shipmentBatch.forEach(s => {
+              if (s.statusHistory?.length) statusHistoryMap.set(s.trackingNumber, [...s.statusHistory]);
+              if (s.payment) paymentMap.set(s.trackingNumber, s.payment);
+              s.statusHistory = [];
+              s.payment = undefined;
+            });
+
+            // A. Insertar Guías
+            const savedShipments = await transactionalEntityManager.save(Shipment, this.shipmentBatch, { chunk: 50 });
+
+            // B. Vincular y Guardar Pagos/Historial
+            const paymentsToSave = [];
+            const historiesToSave = [];
+
+            savedShipments.forEach(s => {
+              const pay = paymentMap.get(s.trackingNumber);
+              if (pay) { pay.shipment = { id: s.id }; paymentsToSave.push(pay); }
+
+              const hist = statusHistoryMap.get(s.trackingNumber);
+              if (hist) hist.forEach(h => { h.shipment = { id: s.id }; historiesToSave.push(h); });
+            });
+
+            if (paymentsToSave.length) await transactionalEntityManager.save(Payment, paymentsToSave);
+            if (historiesToSave.length) await transactionalEntityManager.save(ShipmentStatus, historiesToSave);
+
+            // C. Generar Incomes dentro de la misma transacción
+            for (const item of shipmentsToGenerateIncomes) {
+              await this.generateIncomes(item.shipment, item.timestamp, item.exceptionCode, transactionalEntityManager);
+            }
+            shipmentsToGenerateIncomes.length = 0; // Limpiar para el siguiente lote
+
+          } catch (err) {
+            this.logger.error(`❌ Error fatal en lote ${i + 1}: ${err.message}`);
+            throw new InternalServerErrorException(
+              `Error al guardar el lote ${i + 1}. No se guardó nada para evitar datos corruptos. Detalle: ${err.message}`
+            );
+          }
+        }
+      }
+
+      // 7. Finalización Exitosa
+      if (result.saved === 0 && result.duplicated > 0) {
+        throw new BadRequestException('Todas las guías del archivo ya existen. El consolidado no se creará.');
+      }
+
+      // Actualizamos el consolidado como completado
+      savedCons.isCompleted = true;
+      savedCons.efficiency = (result.saved / shipmentsToSave.length) * 100;
+      await transactionalEntityManager.save(Consolidated, savedCons);
+
+      const duration = ((Date.now() - startTime) / 60000).toFixed(2);
+      this.logger.log(`✅ Consolidado ${consNumber} finalizado en ${duration} min.`);
+
+      return {
+        ...result,
+        duration: `${duration} min`,
+        consNumber: savedCons.consNumber,
+        type: savedCons.type
+      };
+    });
+  }
+
   // Métodos auxiliares para detectar referencias circulares
   private detectCircularReferences(shipment: Shipment) {
     try {
@@ -3070,292 +2530,6 @@ export class ShipmentsService {
 
  /*** */ 
 
-  private async processShipmentResp22012026(
-    shipment: ParsedShipmentDto,
-    predefinedSubsidiary: Subsidiary,
-    consolidated: Consolidated,
-    result: any,
-    shipmentsWithError: any,
-    batchNumber: number,
-    shipmentIndex: number,
-    processedTrackingNumbers: Set<string>,
-    shipmentsToGenerateIncomes: { shipment: Shipment; timestamp: Date; exceptionCode: string | undefined }[],
-    consolidatedId: string
-  ): Promise<void> {
-    const trackingNumber = shipment.trackingNumber;
-    this.logger.log(`📦 Procesando envío ${shipmentIndex}/${this.BATCH_SIZE} del lote ${batchNumber}: ${trackingNumber}`);
-    this.logger.log(`📅 commitDate desde archivo: ${shipment.commitDate}, commitTime desde archivo: ${shipment.commitTime}`);
-
-    if (!consolidated.id) {
-      const reason = `Error: consolidated.id no está definido para ${trackingNumber}`;
-      this.logger.error(`❌ ${reason}`);
-      result.failed++;
-      result.failedTrackings.push({ trackingNumber, reason });
-      shipmentsWithError.saveError.push({ trackingNumber, reason });
-      this.logBuffer.push(reason);
-      return;
-    }
-
-    // Check in-memory duplicates
-    if (processedTrackingNumbers.has(trackingNumber)) {
-      const reason = `Envío duplicado en el lote actual: ${trackingNumber}`;
-      this.logger.warn(`🔁 ${reason}`);
-      result.duplicated++;
-      result.duplicatedTrackings.push(shipment);
-      shipmentsWithError.duplicated.push({ trackingNumber, reason });
-      this.logBuffer.push(reason);
-      return;
-    }
-
-    // Check database duplicates
-    if (await this.existShipment(trackingNumber, consolidatedId)) {
-      const reason = `Envío duplicado en la base de datos: ${trackingNumber}`;
-      this.logger.warn(`🔁 ${reason}`);
-      result.duplicated++;
-      result.duplicatedTrackings.push(shipment);
-      shipmentsWithError.duplicated.push({ trackingNumber, reason });
-      this.logBuffer.push(reason);
-      return;
-    }
-
-    processedTrackingNumbers.add(trackingNumber);
-
-    // Validate and format commitDate and commitTime from Excel
-    let commitDate: string | undefined;
-    let commitTime: string | undefined;
-    let commitDateTime: Date | undefined;
-    let dateSource = '';
-
-    //Formatear a utc los commit que vienen normal
-    if (shipment.commitDate && shipment.commitTime) {
-      try {
-        const timeZone = 'America/Hermosillo';
-        const parsedDate = parse(shipment.commitDate, 'yyyy-MM-dd', new Date());
-        const parsedTime = parse(shipment.commitTime, 'HH:mm:ss', new Date());
-
-        if (!isNaN(parsedDate.getTime()) && !isNaN(parsedTime.getTime())) {
-          commitDate = format(parsedDate, 'yyyy-MM-dd');
-          commitTime = format(parsedTime, 'HH:mm:ss');
-
-          // Fecha local como string
-          const localDateTime = `${commitDate}T${commitTime}`;
-
-          // ⬇️ Aquí está el truco: usar toDate con timeZone
-          // Esto interpreta localDateTime como si fuera Hermosillo y devuelve UTC
-          commitDateTime = toDate(localDateTime, { timeZone });
-
-          dateSource = 'Excel';
-          this.logger.log(
-            `📅 commitDateTime (UTC) asignado desde Excel para ${trackingNumber}: ${commitDateTime.toISOString()} (commitDate=${commitDate}, commitTime=${commitTime}, TZ=${timeZone})`,
-          );
-        } else {
-          this.logger.log(
-            `⚠️ Formato inválido en Excel para ${trackingNumber}: commitDate=${shipment.commitDate}, commitTime=${shipment.commitTime}`,
-          );
-        }
-      } catch (err) {
-        this.logger.log(
-          `⚠️ Error al parsear datos de Excel para ${trackingNumber}: ${err.message}`,
-        );
-      }
-    }
-
-    const newShipment = Object.assign(new Shipment(), {
-      trackingNumber,
-      shipmentType: ShipmentType.FEDEX,
-      recipientName: shipment.recipientName || '',
-      recipientAddress: shipment.recipientAddress || '',
-      recipientCity: shipment.recipientCity || predefinedSubsidiary.name,
-      recipientZip: shipment.recipientZip || '',
-      commitDate: commitDate || undefined,
-      commitTime: commitTime || undefined,
-      commitDateTime: commitDateTime || undefined,
-      recipientPhone: shipment.recipientPhone || '',
-      status: ShipmentStatusType.PENDIENTE,
-      priority: Priority.BAJA,
-      consNumber: consolidated.consNumber || '',
-      receivedByName: '',
-      subsidiary: predefinedSubsidiary,
-      subsidiaryId: predefinedSubsidiary.id,
-      consolidatedId: consolidated.id,
-    });
-
-    let fedexShipmentData: FedExTrackingResponseDto;
-
-    try {
-      this.logger.log(`📬 Consultando FedEx para ${trackingNumber}`);
-      fedexShipmentData = await this.trackPackageWithRetry(trackingNumber);
-      this.logger.log(`📬 Datos FedEx recibidos para: ${trackingNumber}`);
-    } catch (err) {
-      const reason = `Error FedEx (${trackingNumber}): ${err.message}`;
-      this.logger.error(`❌ ${reason}`);
-      result.failed++;
-      result.failedTrackings.push({ trackingNumber, reason });
-      shipmentsWithError.fedexError.push({ trackingNumber, reason });
-      this.logBuffer.push(reason);
-      return;
-    }
-
-    try {
-      const trackResults = fedexShipmentData.output.completeTrackResults[0].trackResults;
-      
-      // 🔥 CORRECCIÓN: Crear un objeto shipment mínimo para evitar referencias circulares
-      const shipmentReference = Object.assign(new Shipment(), {
-        trackingNumber: trackingNumber,
-        // Solo incluir propiedades necesarias, NO incluir relaciones bidireccionales
-      });
-
-      const histories = await this.processFedexScanEventsToStatusesResp(
-        trackResults.flatMap((result) => result.scanEvents || []),
-        shipmentReference
-      );
-
-      // 🔥 LIMPIAR REFERENCIAS CIRCULARES INMEDIATAMENTE
-      if (histories && Array.isArray(histories)) {
-        histories.forEach(status => {
-          // Eliminar cualquier referencia circular que se haya creado
-          status.shipment = undefined;
-          status.id = undefined; // Los IDs se generarán al guardar
-        });
-      }
-
-      this.logger.log(
-        `📜 Historial generado para ${trackingNumber}: ${histories.map((h) => h.status).join(', ')}`
-      );
-
-      const trackResult = trackResults.find((r) => r.latestStatusDetail?.derivedCode === 'DL') || trackResults.sort((a, b) => {
-        const dateA = a.scanEvents[0]?.date ? new Date(a.scanEvents[0].date).getTime() : 0;
-        const dateB = b.scanEvents[0]?.date ? new Date(b.scanEvents[0].date).getTime() : 0;
-        return dateB - dateA;
-      })[0];
-
-      // Set commitDateTime from FedEx if Excel date is invalid
-      if (!commitDateTime) {
-        const rawDate = trackResult?.standardTransitTimeWindow?.window?.ends;
-        console.log("🚀 ~ ShipmentsService ~ processShipment ~ rawDate:", rawDate)
-        if (rawDate) {
-          try {
-            const parsedFedexDate = parse(rawDate, "yyyy-MM-dd'T'HH:mm:ssXXX", new Date());
-            if (!isNaN(parsedFedexDate.getTime())) {
-              commitDate = format(parsedFedexDate, 'yyyy-MM-dd');
-              commitTime = format(parsedFedexDate, 'HH:mm:ss');
-              commitDateTime = parsedFedexDate;
-              dateSource = 'FedEx';
-              this.logger.log(`📅 commitDateTime asignado desde FedEx para ${trackingNumber}: ${commitDateTime.toISOString()} (commitDate=${commitDate}, commitTime=${commitTime})`);
-            } else {
-              this.logger.log(`⚠️ Formato de fecha inválido en FedEx para ${trackingNumber}: ${rawDate}`);
-            }
-          } catch (err) {
-            this.logger.log(`⚠️ Error al parsear fecha de FedEx para ${trackingNumber}: ${err.message}`);
-          }
-        }
-      }
-
-      // Use default date as last resort
-      if (!commitDateTime) {
-        // Crear directamente la fecha UTC equivalente a 18:00 UTC-7
-        const now = new Date();
-        const utcDate = new Date(Date.UTC(
-          now.getUTCFullYear(),
-          now.getUTCMonth(),
-          now.getUTCDate(),
-          18 + 7, // 18:00 UTC-7 = 01:00 UTC (día siguiente)
-          0,
-          0
-        ));
-        
-        commitDateTime = utcDate;
-        dateSource = 'Default';
-        this.logger.log(`⚠️ commitDateTime asignado por defecto: ${commitDateTime.toISOString()}`);
-      }
-
-      // Update shipment with final date values
-      newShipment.commitDate = commitDate;
-      newShipment.commitTime = commitTime;
-      newShipment.commitDateTime = commitDateTime;
-      newShipment.priority = getPriority(commitDateTime);
-
-      this.logger.log(`📅 Fecha final asignada para ${trackingNumber} desde ${dateSource}: commitDateTime=${commitDateTime.toISOString()}`);
-
-      Object.assign(newShipment, {
-        statusHistory: histories,
-        status: histories[histories.length - 1]?.status || ShipmentStatusType.PENDIENTE,
-        receivedByName: trackResult?.deliveryDetails?.receivedByName || '',
-        shipmentType: ShipmentType.FEDEX,
-      });
-
-      if (shipment.payment) {
-        const typeMatch =  shipment.payment.match(/^(COD|FTC|ROD)/);
-        const amountMatch =  shipment.payment.match(/([0-9]+(?:\.[0-9]+)?)/);
-
-        if (amountMatch) {
-          const paymentType = typeMatch ? typeMatch[1] as PaymentTypeEnum : null;
-          const paymentAmount = amountMatch ? parseFloat(amountMatch[1]) : null;
-                         
-          if (!isNaN(paymentAmount) && paymentAmount > 0) {
-            newShipment.payment = Object.assign(new Payment(), {
-              amount: paymentAmount,
-              type: paymentType,
-              status: histories.some((h) => h.status === ShipmentStatusType.ENTREGADO)
-                ? PaymentStatus.PAID
-                : PaymentStatus.PENDING,
-            });
-            this.logger.log(
-              `💰 Monto de pago: $${paymentAmount} - Estatus: ${newShipment.payment.status}`
-            );
-          }
-        }
-      }
-
-      // Add to batch for saving later
-      this.shipmentBatch.push(newShipment);
-      result.saved++;
-
-      // Validación para income con reglas extendidas
-      if ([ShipmentStatusType.ENTREGADO, ShipmentStatusType.NO_ENTREGADO].includes(newShipment.status)) {
-        const matchedHistory = histories
-          .filter((h) => h.status === newShipment.status)
-          .sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime())[0];
-        const exceptionCodes = histories.map((h) => h.exceptionCode).filter(Boolean);
-
-        const validationResult = await this.applyIncomeValidationRules(
-          newShipment,
-          newShipment.status,
-          exceptionCodes,
-          histories,
-          trackingNumber,
-          matchedHistory?.timestamp || new Date()
-        );
-
-        if (validationResult.isValid && matchedHistory) {
-          shipmentsToGenerateIncomes.push({
-            shipment: newShipment,
-            timestamp: validationResult.timestamp,
-            exceptionCode: matchedHistory.exceptionCode,
-          });
-          this.logger.log(`✅ Incluido income para ${newShipment.status}: ${trackingNumber}`);
-        } else {
-          const reason = validationResult.reason || `❌ No se encontró matchedHistory válido para income: ${trackingNumber}`;
-          this.logger.log(reason);
-          this.logBuffer.push(reason);
-          result.failed++;
-          result.saved--;
-          result.failedTrackings.push({ trackingNumber, reason });
-          shipmentsWithError.saveError.push({ trackingNumber, reason });
-          return;
-        }
-      }
-    } catch (err) {
-      const reason = `Error al procesar shipment ${trackingNumber}: ${err.message}`;
-      this.logger.error(`❌ ${reason}`);
-      result.failed++;
-      result.saved--;
-      result.failedTrackings.push({ trackingNumber, reason });
-      shipmentsWithError.saveError.push({ trackingNumber, reason });
-      this.logBuffer.push(reason);
-    }
-  }
-
   private async processShipment(
     shipment: ParsedShipmentDto,
     predefinedSubsidiary: Subsidiary,
@@ -3368,181 +2542,154 @@ export class ShipmentsService {
     shipmentsToGenerateIncomes: { shipment: Shipment; timestamp: Date; exceptionCode: string | undefined }[],
     consolidatedId: string
   ): Promise<void> {
-    const trackingNumber = shipment.trackingNumber;
-    this.logger.log(`📦 Procesando envío ${shipmentIndex}/${this.BATCH_SIZE} del lote ${batchNumber}: ${trackingNumber}`);
-
-    // 1. Validaciones de Integridad y Duplicados
-    if (!consolidated.id) {
-      const reason = `Error: consolidated.id no está definido para ${trackingNumber}`;
-      this.logger.error(`❌ ${reason}`);
-      result.failed++;
-      result.failedTrackings.push({ trackingNumber, reason });
-      shipmentsWithError.saveError.push({ trackingNumber, reason });
-      return;
+    const trackingNumber = shipment.trackingNumber?.toString().trim();
+    
+    // 1. Validaciones Críticas (Si esto falla, abortamos todo el proceso)
+    if (!trackingNumber) {
+      throw new BadRequestException(`Fila ${shipmentIndex} (Lote ${batchNumber}): El número de guía está vacío en el archivo.`);
     }
 
-    if (processedTrackingNumbers.has(trackingNumber)) {
-      this.logger.warn(`🔁 Duplicado en memoria: ${trackingNumber}`);
+    this.logger.log(`📦 Procesando guía ${trackingNumber} (${shipmentIndex}/${this.BATCH_SIZE})`);
+
+    // 2. Control de Duplicados
+    // Verificamos en el Set (memoria) y en la DB
+    if (processedTrackingNumbers.has(trackingNumber) || await this.existShipment(trackingNumber, consolidatedId)) {
+      this.logger.warn(`🔁 Guía duplicada detectada: ${trackingNumber}`);
       result.duplicated++;
       result.duplicatedTrackings.push(shipment);
+      processedTrackingNumbers.add(trackingNumber);
+      // Nota: El duplicado no detiene el proceso (rollback), solo lo saltamos
       return;
     }
-
-    if (await this.existShipment(trackingNumber, consolidatedId)) {
-      this.logger.warn(`🔁 Duplicado en DB: ${trackingNumber}`);
-      result.duplicated++;
-      result.duplicatedTrackings.push(shipment);
-      return;
-    }
-
     processedTrackingNumbers.add(trackingNumber);
 
-    // 2. Lógica de Fechas (Excel)
-    let commitDateTime: Date | undefined;
+    // 3. Consulta FedEx con Error Explícito
+    let fedexShipmentData: FedExTrackingResponseDto;
+    try {
+      fedexShipmentData = await this.trackPackageWithRetry(trackingNumber);
+    } catch (err) {
+      // Si FedEx falla de forma definitiva tras reintentos, cancelamos todo para evitar datos incompletos
+      throw new InternalServerErrorException(
+        `Error de conexión con FedEx en la guía ${trackingNumber}: ${err.message}. El proceso se detuvo para proteger la integridad del consolidado.`
+      );
+    }
+
+    const trackResult = fedexShipmentData.output.completeTrackResults[0].trackResults[0];
+
+    // 4. Determinación de Fecha (Salvaguarda de integridad)
+    let finalCommitDate: Date;
+
     if (shipment.commitDate && shipment.commitTime) {
       try {
         const timeZone = 'America/Hermosillo';
         const localDateTime = `${shipment.commitDate}T${shipment.commitTime}`;
-        commitDateTime = toDate(localDateTime, { timeZone });
-      } catch (err) {
-        this.logger.warn(`⚠️ Error parseando fecha Excel para ${trackingNumber}: ${err.message}`);
+        finalCommitDate = toDate(localDateTime, { timeZone });
+      } catch (e) {
+        this.logger.warn(`Fecha Excel inválida para ${trackingNumber}, intentando FedEx...`);
       }
     }
 
-    // 3. Consulta a FedEx
-    let fedexShipmentData: FedExTrackingResponseDto;
-    try {
-      this.logger.log(`📬 Consultando FedEx para ${trackingNumber}`);
-      fedexShipmentData = await this.trackPackageWithRetry(trackingNumber);
-    } catch (err) {
-      const reason = `Error FedEx (${trackingNumber}): ${err.message}`;
-      this.logger.error(`❌ ${reason}`);
-      result.failed++;
-      result.failedTrackings.push({ trackingNumber, reason });
-      shipmentsWithError.fedexError.push({ trackingNumber, reason });
-      return;
+    if (!finalCommitDate) {
+      const rawFedexDate = trackResult?.standardTransitTimeWindow?.window?.ends;
+      if (rawFedexDate) {
+        finalCommitDate = parse(rawFedexDate, "yyyy-MM-dd'T'HH:mm:ssXXX", new Date());
+      }
     }
 
+    if (!finalCommitDate || isNaN(finalCommitDate.getTime())) {
+      finalCommitDate = new Date(); 
+    }
+
+    // 5. Construcción y procesamiento
     try {
-      const trackResult = fedexShipmentData.output.completeTrackResults[0].trackResults[0];
-
-      // --- 🚀 CAPTURA Y DEBUG DE NUEVAS COLUMNAS ---
-      let fedexUniqueIdFromApi = null;
-      let carrierCodeFromApi = null;
-
-      if (trackResult?.trackingNumberInfo) {
-        // DEBUG: Ver qué llega de la API
-        this.logger.debug(`🔬 [DEBUG API] trackingNumberInfo: ${JSON.stringify(trackResult.trackingNumberInfo)}`);
-        fedexUniqueIdFromApi = trackResult.trackingNumberInfo.trackingNumberUniqueId;
-        carrierCodeFromApi = trackResult.trackingNumberInfo.carrierCode;
-      }
-
-      // 4. Instanciar el nuevo Shipment (Usando create para asegurar reconocimiento de columnas)
-      const newShipment = this.shipmentRepository.create({
-        trackingNumber,
-        shipmentType: ShipmentType.FEDEX,
-        recipientName: shipment.recipientName || '',
-        recipientAddress: shipment.recipientAddress || '',
-        recipientCity: shipment.recipientCity || predefinedSubsidiary.name,
-        recipientZip: shipment.recipientZip || '',
-        recipientPhone: shipment.recipientPhone || '',
-        status: ShipmentStatusType.PENDIENTE,
-        priority: Priority.BAJA,
-        consNumber: consolidated.consNumber || '',
-        receivedByName: trackResult?.deliveryDetails?.receivedByName || '',
-        subsidiary: predefinedSubsidiary,
-        consolidatedId: consolidated.id,
-        // Asignación de las nuevas columnas
-        fedexUniqueId: fedexUniqueIdFromApi,
-        carrierCode: carrierCodeFromApi,
-      });
-
-      // DEBUG: Verificar que el objeto tiene los datos antes del batch
-      this.logger.debug(`📋 [DEBUG OBJETO] fedexUniqueId: ${newShipment.fedexUniqueId} | carrierCode: ${newShipment.carrierCode}`);
-
-      // 5. Procesar Historial
       const shipmentReference = Object.assign(new Shipment(), { trackingNumber });
       const histories = await this.processFedexScanEventsToStatusesResp(
         trackResult?.scanEvents || [],
         shipmentReference
       );
 
-      if (histories) {
+      let currentStatus = ShipmentStatusType.PENDIENTE;
+      if (histories && histories.length > 0) {
         histories.forEach(h => { h.shipment = undefined; });
-        newShipment.statusHistory = histories;
-        newShipment.status = histories[histories.length - 1]?.status || ShipmentStatusType.PENDIENTE;
+        currentStatus = histories[histories.length - 1]?.status || ShipmentStatusType.PENDIENTE;
       }
 
-      // 6. Lógica de commitDateTime (FedEx como respaldo)
-      if (!commitDateTime) {
-        const rawDate = trackResult?.standardTransitTimeWindow?.window?.ends;
-        if (rawDate) {
-          commitDateTime = parse(rawDate, "yyyy-MM-dd'T'HH:mm:ssXXX", new Date());
-        } else {
-          const now = new Date();
-          commitDateTime = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 25, 0, 0));
-        }
-      }
-      newShipment.commitDateTime = commitDateTime;
-      newShipment.priority = getPriority(commitDateTime);
+      const newShipmentData = {
+        trackingNumber,
+        shipmentType: ShipmentType.FEDEX,
+        recipientName: shipment.recipientName || 'N/A',
+        recipientAddress: shipment.recipientAddress || 'N/A',
+        recipientCity: shipment.recipientCity || predefinedSubsidiary.name,
+        recipientZip: shipment.recipientZip || 'N/A',
+        recipientPhone: shipment.recipientPhone || 'N/A',
+        status: currentStatus,
+        priority: getPriority(finalCommitDate),
+        commitDateTime: finalCommitDate,
+        consNumber: consolidated.consNumber || '',
+        receivedByName: trackResult?.deliveryDetails?.receivedByName || '',
+        subsidiary: predefinedSubsidiary,
+        consolidatedId: consolidated.id,
+        fedexUniqueId: trackResult?.trackingNumberInfo?.trackingNumberUniqueId || null,
+        carrierCode: trackResult?.trackingNumberInfo?.carrierCode || null,
+        statusHistory: histories || [],
+        createdAt: new Date(),
+      };
 
-      // 7. Lógica de Pagos (Mantenida IGUAL que antes)
+      // 6. Lógica de Pagos
       if (shipment.payment) {
         const amountMatch = shipment.payment.match(/([0-9]+(?:\.[0-9]+)?)/);
-        const typeMatch = shipment.payment.match(/^(COD|FTC|ROD)/);
         if (amountMatch) {
-          const paymentAmount = parseFloat(amountMatch[1]);
-          if (!isNaN(paymentAmount) && paymentAmount > 0) {
-            newShipment.payment = Object.assign(new Payment(), {
-              amount: paymentAmount,
+          const amount = parseFloat(amountMatch[1]);
+          const typeMatch = shipment.payment.match(/^(COD|FTC|ROD)/);
+          if (!isNaN(amount) && amount > 0) {
+            (newShipmentData as any).payment = {
+              amount,
               type: typeMatch ? typeMatch[1] : null,
-              status: newShipment.status === ShipmentStatusType.ENTREGADO ? PaymentStatus.PAID : PaymentStatus.PENDING
-            });
+              status: currentStatus === ShipmentStatusType.ENTREGADO ? PaymentStatus.PAID : PaymentStatus.PENDING
+            };
           }
         }
       }
 
-      // 8. Validación de Incomes
-      if ([ShipmentStatusType.ENTREGADO, ShipmentStatusType.NO_ENTREGADO].includes(newShipment.status)) {
-        const matchedHistory = histories
-          ?.filter((h) => h.status === newShipment.status)
-          .sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime())[0];
-
-        const exceptionCodes = histories?.map((h) => h.exceptionCode).filter(Boolean) || [];
-        
-        const validationResult = await this.applyIncomeValidationRules(
-          newShipment,
-          newShipment.status,
-          exceptionCodes,
+      // 7. Validación de Incomes con Aborto (Si el ingreso es inválido, cancelamos el consolidado)
+      if ([ShipmentStatusType.ENTREGADO, ShipmentStatusType.NO_ENTREGADO].includes(currentStatus)) {
+        const matchedHistory = histories?.find(h => h.status === currentStatus);
+        const validation = await this.applyIncomeValidationRules(
+          newShipmentData as any,
+          currentStatus,
+          histories?.map(h => h.exceptionCode).filter(Boolean) || [],
           histories || [],
           trackingNumber,
           matchedHistory?.timestamp || new Date()
         );
 
-        if (validationResult.isValid && matchedHistory) {
+        if (validation.isValid) {
           shipmentsToGenerateIncomes.push({
-            shipment: newShipment,
-            timestamp: validationResult.timestamp,
-            exceptionCode: matchedHistory.exceptionCode,
+            shipment: newShipmentData as any,
+            timestamp: validation.timestamp,
+            exceptionCode: matchedHistory?.exceptionCode,
           });
         } else {
-          const reason = validationResult.reason || `Error validación income: ${trackingNumber}`;
-          result.failed++;
-          result.failedTrackings.push({ trackingNumber, reason });
-          return; 
+          // ERROR EXPLÍCITO DE REGLAS DE NEGOCIO
+          throw new BadRequestException(
+            `La guía ${trackingNumber} no cumple con las reglas de ingreso: ${validation.reason}. Corrige el estado o la fecha para poder generar el consolidado.`
+          );
         }
       }
 
-      // 9. Guardar en el lote
-      this.shipmentBatch.push(newShipment);
+      // 8. PUSH AL BATCH
+      this.shipmentBatch.push(newShipmentData as Shipment);
       result.saved++;
 
     } catch (err) {
-      const reason = `Error crítico procesando ${trackingNumber}: ${err.message}`;
-      this.logger.error(`❌ ${reason}`);
-      result.failed++;
-      result.failedTrackings.push({ trackingNumber, reason });
-      shipmentsWithError.saveError.push({ trackingNumber, reason });
+      // Si el error ya es una instancia de NestJS Exception, lo relanzamos para el rollback
+      if (err instanceof BadRequestException || err instanceof InternalServerErrorException) {
+        throw err;
+      }
+      // Si es un error inesperado, le damos formato
+      throw new InternalServerErrorException(
+        `Error inesperado procesando la guía ${trackingNumber}: ${err.message}`
+      );
     }
   }
 
@@ -7437,6 +6584,13 @@ export class ShipmentsService {
 
 
     /************ (ACTIVO) NUEVO METODO PARA CHECK STATUS ON FEDEX 20-01-2026*/
+      private SUBSIDIARY_CONFIG = {
+        'abf2fc38-cb42-41b6-9554-4b71c11b8916': { // Cabo San Lucas
+          trackExternalDelivery: true,
+          forceFedexStatus: true
+        }
+      };
+
       async processMasterFedexUpdate(trackingNumbers: string[]) {
         const limit = pLimit(5);
 
@@ -7457,7 +6611,6 @@ export class ShipmentsService {
               return;
             }
 
-            // 1. Consulta a FedEx (usando los nuevos parámetros opcionales si estuvieran en el objeto)
             const fedexInfo = await this.fedexService.trackPackage(tn);
             const allTrackResults = fedexInfo?.output?.completeTrackResults?.[0]?.trackResults || [];
 
@@ -7472,15 +6625,32 @@ export class ShipmentsService {
               const exceptionCode = ancillaryReason !== '' ? ancillaryReason : (lastEvent?.exceptionCode || '');
               const derivedStatusCode = latestStatusDetail.derivedCode || latestStatusDetail.code || '';
 
-              const mappedStatus = mapFedexStatusToLocalStatus(derivedStatusCode, exceptionCode);
+              // 1. Obtener configuración de la sucursal
+              const subId = shipmentList[0].subsidiary?.id;
+              const subConfig = this.SUBSIDIARY_CONFIG[subId] || { trackExternalDelivery: false, forceFedexStatus: false };
 
-              // 2. Obtener último historial para decidir si actualizar
+              // 2. Mapeo inicial
+              let mappedStatus = mapFedexStatusToLocalStatus(derivedStatusCode, exceptionCode);
+              
+              // 3. Aplicar Regla Especial: Entrega Externa (Cabo y otras configuradas)
+              if (subConfig.trackExternalDelivery) {
+                const hasODEvent = scanEvents.some(e => e.eventType === 'OD');
+                
+                if (derivedStatusCode === 'DL' && hasODEvent) {
+                  mappedStatus = ShipmentStatusType.ENTREGADO_POR_FEDEX;
+                } else if (derivedStatusCode === 'OD') {
+                  mappedStatus = ShipmentStatusType.ACARGO_DE_FEDEX;
+                }
+              }
+
+              // 4. Decidir si actualizar basado en el historial
               const lastHistory = await queryRunner.manager.query(
                 `SELECT status, exceptionCode, timestamp FROM shipment_status WHERE shipmentId = ? ORDER BY timestamp DESC LIMIT 1`,
                 [shipmentList[0].id]
               );
 
               let shouldUpdate = false;
+
               if (!lastHistory.length) {
                 shouldUpdate = true;
               } else {
@@ -7497,29 +6667,34 @@ export class ShipmentsService {
 
               if (shouldUpdate) {
                 for (const shipment of shipmentList) {
-                  // 3. Crear entrada de historial
+                  // 5. Crear historial con nota de procedencia
+                  const isExternal = [ShipmentStatusType.ENTREGADO_POR_FEDEX, ShipmentStatusType.ACARGO_DE_FEDEX].includes(mappedStatus as any);
+                  
                   const historyEntry = queryRunner.manager.create(ShipmentStatus, {
                     status: mappedStatus,
                     exceptionCode: exceptionCode,
                     timestamp: new Date(),
                     shipment: shipment,
                     createdAt: new Date(),
-                    notes: (ancillaryReason !== '' ? latestStatusDetail?.ancillaryDetails?.[0]?.reasonDescription : null)
-                      || lastEvent?.eventDescription
-                      || latestStatusDetail.description
-                      || 'Actualización automática FedEx'
+                    notes: isExternal 
+                      ? `[RED FEDEX] Movimiento externo detectado (${derivedStatusCode})`
+                      : (ancillaryReason !== '' ? latestStatusDetail?.ancillaryDetails?.[0]?.reasonDescription : null) 
+                        || lastEvent?.eventDescription || latestStatusDetail.description || 'Actualización automática'
                   });
+              
                   await queryRunner.manager.save(historyEntry);
 
-                  // 4. Actualizar Shipment Maestro
-                  const receivedBy = trackResult.deliveryDetails?.receivedByName;
+                  // 6. Actualizar Registro Maestro
                   shipment.status = mappedStatus as any;
-                  if (receivedBy) shipment.receivedByName = receivedBy;
-
+                  if (trackResult.deliveryDetails?.receivedByName) {
+                    shipment.receivedByName = trackResult.deliveryDetails.receivedByName;
+                  }
+              
                   await queryRunner.manager.save(Shipment, shipment);
 
-                  // 5. LÓGICA DE INGRESOS (INCOME)
-                  const isDelivered = (mappedStatus === ShipmentStatusType.ENTREGADO);
+                  // 7. Lógica de Ingresos (Contabilidad)
+                  // IMPORTANTE: ENTREGADO_POR_FEDEX NO genera ingresos
+                  const isInternalDelivery = (mappedStatus === ShipmentStatusType.ENTREGADO);
                   const isRejected07 = (exceptionCode === '07');
                   let isThirdVisit08 = false;
 
@@ -7531,54 +6706,25 @@ export class ShipmentsService {
                     if (parseInt(countRes[0]?.total || 0) >= 3) isThirdVisit08 = true;
                   }
 
-                  // --- NUEVA REGLA PARA RECHAZADOS (07) EN DIFERENTE SEMANA ---
-                  if ((isDelivered || isRejected07 || isThirdVisit08) && shipment.id === shipmentList[0].id) {
+                  // --- DISPARADOR DE INCOME ---
+                  // Solo entra si es entrega propia, rechazo o 3ra visita.
+                  if ((isInternalDelivery || isRejected07 || isThirdVisit08) && shipment.id === shipmentList[0].id) {
                     
-                    let forceNewIncome = false;
-
-                    if (isRejected07) {
-                      // Buscamos si ya existe un ingreso para este tracking
-                      const existingIncomes = await queryRunner.manager.find(Income, {
-                        where: { trackingNumber: shipment.trackingNumber },
-                        order: { date: 'DESC' }
-                      });
-
-                      if (existingIncomes.length > 0) {
-                        const lastIncomeDate = new Date(existingIncomes[0].date);
-                        const now = new Date();
-
-                        // Comparamos las semanas del año
-                        const weekOfLastIncome = getWeek(lastIncomeDate);
-                        const weekOfNow = getWeek(now);
-                        const yearOfLastIncome = lastIncomeDate.getFullYear();
-                        const yearOfNow = now.getFullYear();
-
-                        if (weekOfNow !== weekOfLastIncome || yearOfNow !== yearOfLastIncome) {
-                          this.logger.log(`[${tn}] 07 detectado en semana diferente. Forzando nuevo income.`);
-                          forceNewIncome = true;
-                        }
-                      } else {
-                        // Si no hay ingresos previos, se genera normalmente
-                        forceNewIncome = true;
-                      }
-                    }
-
-                    const targetStatusForIncome = isDelivered
+                    const targetStatusForIncome = isInternalDelivery
                       ? IncomeStatus.ENTREGADO
                       : (isThirdVisit08 ? ShipmentStatusType.CLIENTE_NO_DISPONIBLE : ShipmentStatusType.RECHAZADO);
 
                     const shipmentForIncome = { ...shipment, status: targetStatusForIncome };
-
-                    // Si es 07 y cumple la regla de semana, o si son los otros estados normales
-                    if (forceNewIncome || isDelivered || isThirdVisit08) {
-                      await this.generateIncomes(shipmentForIncome as Shipment, new Date(), exceptionCode, queryRunner.manager);
-                    }
+                    await this.generateIncomes(shipmentForIncome as Shipment, new Date(), exceptionCode, queryRunner.manager);
                   }
                 }
-                this.logger.log(`[${tn}] Actualizado: ${mappedStatus} | Ex: ${exceptionCode}`);
+              
+                this.logger.log(`[${tn}] Update: ${mappedStatus} | Sub: ${subId}`);
               }
             }
+
             await queryRunner.commitTransaction();
+
           } catch (error) {
             this.logger.error(`[${tn}] 💥 Error: ${error.message}`);
             if (queryRunner.isTransactionActive) await queryRunner.rollbackTransaction();
@@ -7586,6 +6732,7 @@ export class ShipmentsService {
             await queryRunner.release();
           }
         }));
+
         await Promise.all(tasks);
       }
 
@@ -7598,9 +6745,10 @@ export class ShipmentsService {
           await queryRunner.startTransaction();
 
           try {
-            // 1. Buscar en ChargeShipment (F2)
+            // 1. Buscar en ChargeShipment (F2) con relación a sucursal
             const chargeList = await queryRunner.manager.find(ChargeShipment, {
               where: { trackingNumber: tn },
+              relations: ['subsidiary'], // Cargamos sucursal para leer la config
               lock: { mode: 'pessimistic_write' }
             });
 
@@ -7624,21 +6772,35 @@ export class ShipmentsService {
               const exceptionCode = ancillaryReason !== '' ? ancillaryReason : (lastEvent?.exceptionCode || '');
               const derivedStatusCode = latestStatusDetail.derivedCode || latestStatusDetail.code || '';
               
-              const mappedStatus = mapFedexStatusToLocalStatus(derivedStatusCode, exceptionCode);
+              // 2. OBTENER CONFIGURACIÓN DE SUCURSAL
+              const subId = chargeList[0].subsidiary?.id;
+              const subConfig = this.SUBSIDIARY_CONFIG[subId] || { trackExternalDelivery: false };
+
+              // 3. MAPEO DE ESTATUS CON REGLAS ESPECIALES
+              let mappedStatus = mapFedexStatusToLocalStatus(derivedStatusCode, exceptionCode);
               
-              // Usamos el primer registro para comparar estatus general
+              if (subConfig.trackExternalDelivery) {
+                const hasODEvent = scanEvents.some(e => e.eventType === 'OD');
+                
+                if (derivedStatusCode === 'DL' && hasODEvent) {
+                  mappedStatus = ShipmentStatusType.ENTREGADO_POR_FEDEX;
+                } else if (derivedStatusCode === 'OD') {
+                  mappedStatus = ShipmentStatusType.ACARGO_DE_FEDEX;
+                }
+              }
+
               const currentChargeStatus = chargeList[0].status;
 
-              // 2. Bloqueo de retroceso
-              if (currentChargeStatus === ShipmentStatusType.ENTREGADO && mappedStatus !== ShipmentStatusType.ENTREGADO) {
+              // 4. Bloqueo de retroceso (Evitar que un entregado vuelva a ruta)
+              const statusAlreadyDone = [ShipmentStatusType.ENTREGADO, ShipmentStatusType.ENTREGADO_POR_FEDEX];
+              if (statusAlreadyDone.includes(currentChargeStatus as any) && !statusAlreadyDone.includes(mappedStatus as any)) {
                 continue; 
               }
 
-              // 3. Fecha del evento (Corregido para priorizar la fecha real del escaneo)
               let eventDate = new Date(lastEvent?.date || trackResult?.dateAndTimes?.find(d => d.type === 'ACTUAL_DELIVERY')?.dateTime || new Date());
               if (isNaN(eventDate.getTime())) eventDate = new Date();
 
-              // 4. VALIDACIÓN DE HISTORIAL
+              // 5. VALIDACIÓN DE HISTORIAL
               const lastHistory = await queryRunner.manager.query(
                 `SELECT status, exceptionCode, timestamp FROM shipment_status 
                 WHERE chargeShipmentId = ? ORDER BY timestamp DESC LIMIT 1`,
@@ -7663,10 +6825,10 @@ export class ShipmentsService {
 
                 if (isDifferentStatus || isDifferentException) {
                   shouldUpdate = true;
-                  updateReason = `Cambio operativo: [Status: ${isDifferentStatus}] [Ex: ${isDifferentException}]`;
+                  updateReason = `Cambio de estado: ${lastSt} -> ${mappedStatus}`;
                 } else if (currentEx !== '' && isDifferentDay) {
                   shouldUpdate = true;
-                  updateReason = `Seguimiento diario de excepción: ${currentEx}`;
+                  updateReason = `Seguimiento diario: ${currentEx}`;
                 }
               }
 
@@ -7675,32 +6837,32 @@ export class ShipmentsService {
 
                 for (const charge of chargeList) {
                   // A. INSERTAR HISTORIAL
+                  const isExternal = [ShipmentStatusType.ENTREGADO_POR_FEDEX, ShipmentStatusType.ACARGO_DE_FEDEX].includes(mappedStatus as any);
+
                   const historyEntry = queryRunner.manager.create('ShipmentStatus', {
                     status: mappedStatus,
                     exceptionCode: exceptionCode,
                     timestamp: eventDate,
                     chargeShipment: charge,
                     createdAt: new Date(),
-                    notes: (ancillaryReason !== '' ? latestStatusDetail?.ancillaryDetails?.[0]?.reasonDescription : null) 
-                          || lastEvent?.eventDescription 
-                          || latestStatusDetail.description 
-                          || 'Actualización F2'
+                    notes: isExternal 
+                      ? `[RED FEDEX] Movimiento externo en F2 (${derivedStatusCode})`
+                      : (ancillaryReason !== '' ? latestStatusDetail?.ancillaryDetails?.[0]?.reasonDescription : null) 
+                        || lastEvent?.eventDescription || latestStatusDetail.description || 'Actualización F2'
                   });
                   await queryRunner.manager.save(historyEntry);
 
-                  // B. ACTUALIZAR CARGO (Sincronizando objeto en memoria)
+                  // B. ACTUALIZAR CARGO
                   charge.status = mappedStatus as any;
                   const fedexReceivedBy = trackResult.deliveryDetails?.receivedByName;
-                  if (fedexReceivedBy) {
-                    charge.receivedByName = fedexReceivedBy;
-                  }
+                  if (fedexReceivedBy) charge.receivedByName = fedexReceivedBy;
 
-                  // Guardamos el objeto completo para asegurar consistencia
                   await queryRunner.manager.save(ChargeShipment, charge);
                 }
               }
             }
             await queryRunner.commitTransaction();
+
           } catch (error) {
             if (queryRunner.isTransactionActive) await queryRunner.rollbackTransaction();
             this.logger.error(`❌ Error F2 Tracking ${tn}: ${error.message}`);
@@ -7708,6 +6870,7 @@ export class ShipmentsService {
             await queryRunner.release();
           }
         }));
+
         await Promise.all(tasks);
       }
 

@@ -98,19 +98,33 @@ export class FedexService {
     }
   }
 
-  // --- MÉTODOS DE RASTREO ---
 
-  async trackPackageResp(trackingNumber: string): Promise<FedExTrackingResponseDto> {
-    this.logger.log(`Rastreando guía: ${trackingNumber}`);
+  async trackPackage(
+    trackingNumber: string, 
+    fedexUniqueId?: string, 
+    carrierCode?: string
+  ): Promise<FedExTrackingResponseDto> {
+    this.logger.log(`Rastreando guía: ${trackingNumber} ${fedexUniqueId ? `(ID Único: ${fedexUniqueId})` : ''}`);
     
     const token = await this.getSmartToken();
     const url = `${process.env.FEDEX_API_URL}${FEDEX_TRACKING_ENDPOINT}`;
+
+    // Construimos el trackingNumberInfo de forma dinámica
+    const trackingNumberInfo: any = { trackingNumber };
+
+    // Agregamos los IDs opcionales solo si están presentes
+    if (fedexUniqueId) {
+      trackingNumberInfo.trackingNumberUniqueId = fedexUniqueId;
+    }
+    if (carrierCode) {
+      trackingNumberInfo.carrierCode = carrierCode;
+    }
 
     const body = {
       includeDetailedScans: true,
       trackingInfo: [
         {
-          trackingNumberInfo: { trackingNumber },
+          trackingNumberInfo: trackingNumberInfo,
         }
       ],
     };
@@ -130,53 +144,6 @@ export class FedexService {
       throw error;
     }
   }
-
-  async trackPackage(
-  trackingNumber: string, 
-  fedexUniqueId?: string, 
-  carrierCode?: string
-): Promise<FedExTrackingResponseDto> {
-  this.logger.log(`Rastreando guía: ${trackingNumber} ${fedexUniqueId ? `(ID Único: ${fedexUniqueId})` : ''}`);
-  
-  const token = await this.getSmartToken();
-  const url = `${process.env.FEDEX_API_URL}${FEDEX_TRACKING_ENDPOINT}`;
-
-  // Construimos el trackingNumberInfo de forma dinámica
-  const trackingNumberInfo: any = { trackingNumber };
-
-  // Agregamos los IDs opcionales solo si están presentes
-  if (fedexUniqueId) {
-    trackingNumberInfo.trackingNumberUniqueId = fedexUniqueId;
-  }
-  if (carrierCode) {
-    trackingNumberInfo.carrierCode = carrierCode;
-  }
-
-  const body = {
-    includeDetailedScans: true,
-    trackingInfo: [
-      {
-        trackingNumberInfo: trackingNumberInfo,
-      }
-    ],
-  };
-
-  try {
-    const response = await axios.post(url, body, {
-      headers: FEDEX_HEADERS(token),
-    });
-    return response.data;
-  } catch (error) {
-    // VALIDACIÓN EXTRA: Si el error es 401 (No autorizado), borramos el token local 
-    // para forzar uno nuevo en la siguiente vuelta.
-    if (error.response?.status === 401) {
-      this.deleteTokenFile();
-    }
-    this.logger.error(`❌ Error trackPackage [${trackingNumber}]:`, error.response?.data || error.message);
-    throw error;
-  }
-}
-
 
   async completePackageInfo(trackingNumber: string): Promise<ValidatedPackageDispatchDto[]> {
     this.logger.log(`Obteniendo info completa: ${trackingNumber}`);

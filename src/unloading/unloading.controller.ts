@@ -128,7 +128,7 @@ export class UnloadingController {
     };*/
   }
 
-  @Get(':subsidiaryId')
+  @Get('subsidiary/:subsidiaryId')
   findBySubsidiary(@Param('subsidiaryId') subsidiaryId: string) {
     return this.unloadingService.findAllBySubsidiary(subsidiaryId);
   }
