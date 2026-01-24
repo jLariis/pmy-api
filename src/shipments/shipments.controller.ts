@@ -1,6 +1,6 @@
-import { Controller, Get, Post, Param, UseGuards, UseInterceptors, UploadedFile, BadRequestException, InternalServerErrorException, Request, UploadedFiles, Query, Body, Logger, Res, HttpStatus, HttpCode, HttpException } from '@nestjs/common';
+import { Controller, Get, Post, Param, UseGuards, UseInterceptors, UploadedFile, BadRequestException, InternalServerErrorException, Request, UploadedFiles, Query, Body, Logger, Res, HttpStatus, HttpCode, HttpException, ParseBoolPipe } from '@nestjs/common';
 import { ShipmentsService } from './shipments.service';
-import { ApiBadRequestResponse, ApiBearerAuth, ApiBody, ApiConsumes, ApiOkResponse, ApiOperation, ApiProduces, ApiProperty, ApiResponse, ApiTags } from '@nestjs/swagger';
+import { ApiBadRequestResponse, ApiBearerAuth, ApiBody, ApiConsumes, ApiOkResponse, ApiOperation, ApiProduces, ApiProperty, ApiQuery, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from 'src/auth/guards/jwt-auth.guard';
 import { FileFieldsInterceptor, FileInterceptor } from '@nestjs/platform-express';
 import { FedexService } from './fedex.service';
@@ -567,6 +567,35 @@ export class ShipmentsController {
       // El error ya viene con mensaje desde el service
       throw new BadRequestException(error.message);
     }
+  }
+
+  @Post('audit-universal')
+  @ApiOperation({ summary: 'Auditoría masiva por Entidad (Unloading, Dispatch, etc.)' })
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        entityType: { 
+          type: 'string', 
+          enum: ['trackings', 'dispatch', 'consolidated', 'unloading'],
+          example: 'unloading' 
+        },
+        identifier: { 
+          oneOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' } }],
+          example: 'ID-123-ABC' 
+        }
+      }
+    }
+  })
+  async universalAudit(
+    @Body() body: { entityType: any, identifier: any },
+    @Query('applyFix', new ParseBoolPipe({ optional: true })) applyFix: boolean = false
+  ) {
+    return await this.shipmentsService.auditByEntity(
+      body.entityType, 
+      body.identifier, 
+      applyFix
+    );
   }
 }
 

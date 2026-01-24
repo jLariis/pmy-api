@@ -21,7 +21,6 @@ import { SubsidiariesService } from 'src/subsidiaries/subsidiaries.service';
 import { Priority } from 'src/common/enums/priority.enum';
 import { IncomeStatus } from 'src/common/enums/income-status.enum';
 import * as stringSimilarity from 'string-similarity';
-import * as fs from 'node:fs/promises';
 import * as path from 'path';
 import { Charge } from 'src/entities/charge.entity';
 import { ChargeShipment } from 'src/entities/charge-shipment.entity';
@@ -46,7 +45,10 @@ import * as ExcelJS from 'exceljs';
 import { DataSource } from 'typeorm';
 import pLimit from 'p-limit';
 import { PackageDispatch } from 'src/entities/package-dispatch.entity';
-import { startOfWeek, getWeek } from 'date-fns';
+import * as fs from 'node:fs/promises'; // Para el código viejo (await)
+import * as fsSync from 'node:fs';
+import { Unloading } from 'src/entities/unloading.entity';
+
 
 @Injectable()
 export class ShipmentsService {
@@ -74,6 +76,12 @@ export class ShipmentsService {
     private chargeShipmentRepository: Repository<ChargeShipment>,
     @InjectRepository(ShipmentStatus)
     private shipmentStatusRepository: Repository<ShipmentStatus>,
+    @InjectRepository(Unloading)
+    private unloadingRepository: Repository<Unloading>,
+    @InjectRepository(PackageDispatch)
+    private packageDispatchRepository: Repository<PackageDispatch>,
+    @InjectRepository(Consolidated)
+    private consolidatedRepository: Repository<Consolidated>,
     @InjectRepository(ForPickUp)
     private forPickUpRepository: Repository<ForPickUp>,
     private readonly fedexService: FedexService,
@@ -4020,22 +4028,33 @@ export class ShipmentsService {
     async getShipmentsWithStatus03(subdiaryId: string) {
       const todayUTC = new Date();
       todayUTC.setUTCHours(0, 0, 0, 0);
-      console.log("🚀 ~ ConsolidatedService ~ todayUTC:", todayUTC);
 
       const tomorrowUTC = new Date(todayUTC);
       tomorrowUTC.setUTCDate(tomorrowUTC.getUTCDate() + 1);
-      console.log("🚀 ~ ConsolidatedService ~ tomorrowUTC:", tomorrowUTC);
 
       const subsidiary = await this.subsidiaryRepository.findOneBy({ id: subdiaryId });
 
-      const shipments = await this.shipmentRepository
+      const queryBuilder = this.shipmentRepository
         .createQueryBuilder("shipment")
-        .leftJoin("shipment.statusHistory", "statusHistory")
+        .innerJoin("shipment.statusHistory", "statusHistory")
         .leftJoin("shipment.packageDispatch", "packageDispatch")
         .where("shipment.subsidiaryId = :subdiaryId", { subdiaryId })
-        .andWhere("shipment.status = :status", { status: ShipmentStatusType.NO_ENTREGADO })
+        /**
+         * AJUSTE CLAVE:
+         * Buscamos específicamente el nuevo estatus definido en tu mapeador.
+         * También incluimos un filtro de seguridad por si acaso quedó como NO_ENTREGADO.
+         */
+        .andWhere("shipment.status IN (:...targetStatus)", { 
+          targetStatus: [
+            ShipmentStatusType.DIRECCION_INCORRECTA, 
+            ShipmentStatusType.NO_ENTREGADO 
+          ] 
+        })
         .andWhere("statusHistory.exceptionCode = :exceptionCode", { exceptionCode: "03" })
-        .andWhere("statusHistory.timestamp BETWEEN :todayUTC AND :tomorrowUTC", { todayUTC, tomorrowUTC })
+        .andWhere("statusHistory.timestamp >= :todayUTC", { todayUTC })
+        .andWhere("statusHistory.timestamp < :tomorrowUTC", { tomorrowUTC });
+
+      const rawResults = await queryBuilder
         .select([
           "shipment.trackingNumber AS trackingNumber",
           "shipment.recipientName AS recipientName",
@@ -4053,20 +4072,25 @@ export class ShipmentsService {
             .orderBy("d.id", "ASC")
             .limit(1);
         }, "doItByUser")
-        .distinct(true)
+        .orderBy("statusHistory.timestamp", "DESC")
         .getRawMany<ShipmentStatusForReportDto>();
 
-      if (shipments.length > 0) {
-        const sendEmail = await this.mailService.sendHighPriorityShipmentWithStatus03(
+      // Deduplicación por tracking para el correo
+      const uniqueShipments = Array.from(
+        new Map(rawResults.map(item => [item.trackingNumber, item])).values()
+      );
+
+      if (uniqueShipments.length > 0) {
+        await this.mailService.sendHighPriorityShipmentWithStatus03(
           subsidiary,
-          shipments,
+          uniqueShipments,
         );
-        console.log("🚀 ~ ShipmentsService ~ getShipmentsWithStatus03 ~ sendEmail:", sendEmail);
+        console.log(`✅ Reporte enviado: ${uniqueShipments.length} guías con Dirección Incorrecta.`);
       } else {
-        console.log("🚀 ~ ShipmentsService ~ getShipmentsWithStatus03: No shipments found, no email sent");
+        console.log("ℹ️ No se detectaron guías con código 03 para los estatus seleccionados.");
       }
 
-      return shipments;
+      return uniqueShipments;
     }
 
     async getCompleteDataForPackage(trackingNumber: string) {
@@ -6946,6 +6970,244 @@ export class ShipmentsService {
           await queryRunner.release();
         }
       }
+
+      async auditByEntity(
+        type: 'trackings' | 'dispatch' | 'consolidated' | 'unloading',
+        idOrList: string | string[],
+        applyFix: boolean = false
+      ) {
+        let trackingNumbers: string[] = [];
+
+        switch (type) {
+          case 'trackings':
+            trackingNumbers = Array.isArray(idOrList) ? idOrList : [idOrList];
+            break;
+
+          case 'dispatch':
+            // Buscamos los shipments que apuntan a este dispatch
+            const shipmentsD = await this.shipmentRepository.find({
+              where: { packageDispatch: { id: idOrList as any } },
+              select: ['trackingNumber']
+            });
+            trackingNumbers = shipmentsD.map(s => s.trackingNumber);
+            break;
+
+          case 'consolidated':
+            // Buscamos los shipments que apuntan a este consolidated
+            const shipmentsC = await this.shipmentRepository.find({
+              where: { consolidatedId: idOrList as any },
+              select: ['trackingNumber']
+            });
+            trackingNumbers = shipmentsC.map(s => s.trackingNumber);
+            break;
+
+          case 'unloading':
+            // Buscamos los shipments que apuntan a este unloading
+            const shipmentsU = await this.shipmentRepository.find({
+              where: { unloading: { id: idOrList as any } },
+              select: ['trackingNumber']
+            });
+            trackingNumbers = shipmentsU.map(s => s.trackingNumber);
+            break;
+        }
+
+        if (!trackingNumbers || trackingNumbers.length === 0) {
+          throw new Error(`No se encontraron guías vinculadas a ${type} con el ID proporcionado.`);
+        }
+
+        return await this.auditAndFixFedexShipments(trackingNumbers, applyFix);
+      }
+
+      async auditAndFixFedexShipments(trackingNumbers: string[], applyFix: boolean = false) {
+        const limit = pLimit(5);
+        const logDir = './logs';
+        const logFile = `${logDir}/master_audit_${Date.now()}.txt`;
+
+        if (!fsSync.existsSync(logDir)) fsSync.mkdirSync(logDir, { recursive: true });
+
+        const tasks = trackingNumbers.map((tn) => limit(async () => {
+          const queryRunner = this.dataSource.createQueryRunner();
+          await queryRunner.connect();
+          await queryRunner.startTransaction();
+
+          const audit = {
+            tracking: tn,
+            analysis: [] as string[],
+            actions: [] as string[],
+            status: 'PENDING',
+            fedex_state: { code: 'N/A' },
+            db_state: { has_income: false }
+          };
+
+          try {
+            // 1. CARGA DE CONTEXTO LOCAL
+            const shipment = await queryRunner.manager.findOne(Shipment, {
+              where: { trackingNumber: tn }, relations: ['subsidiary']
+            });
+            const charges = await queryRunner.manager.find(ChargeShipment, { where: { trackingNumber: tn } });
+            const incomeCount = shipment ? await queryRunner.manager.count(Income, { where: { shipment: { id: shipment.id } } }) : 0;
+            audit.db_state.has_income = incomeCount > 0;
+
+            // 2. OBTENER VERDAD ABSOLUTA DE FEDEX (Manejo de múltiples trackResults)
+            const fedexInfo = await this.fedexService.trackPackage(tn);
+            const allTrackResults = fedexInfo?.output?.completeTrackResults?.[0]?.trackResults || [];
+
+            if (allTrackResults.length === 0) {
+              audit.status = 'SKIPPED_FEDEX_ERROR';
+              return audit;
+            }
+
+            // Prioridad: bulto entregado (DL)
+            const trackResult = allTrackResults.find(r => r.latestStatusDetail?.derivedCode === 'DL') || allTrackResults[0];
+            const scanEvents = trackResult.scanEvents || [];
+            const lastEvent = scanEventsFilter(scanEvents) as any;
+            const derivedCode = trackResult.latestStatusDetail?.derivedCode || '';
+            const exceptionCode = trackResult.latestStatusDetail?.ancillaryDetails?.[0]?.reason || lastEvent?.exceptionCode || '';
+            
+            audit.fedex_state.code = derivedCode;
+
+            // 3. MOTOR DE REGLAS
+            let targetStatus = mapFedexStatusToLocalStatus(derivedCode, exceptionCode);
+            const subConfig = this.SUBSIDIARY_CONFIG[shipment?.subsidiary?.id] || { trackExternalDelivery: false };
+
+            // A. REGLA 67: Rescate por Tercerizado
+            const has67 = scanEvents.some(e => String(e.exceptionCode) === '67');
+            if (derivedCode === 'DL' && has67) {
+              targetStatus = ShipmentStatusType.ENTREGADO;
+              audit.analysis.push(`[REGLA_67] DL + 67. Forzando ENTREGADO propio.`);
+            } 
+            // B. REGLA CABO: Entrega Externa
+            else if (subConfig.trackExternalDelivery) {
+              const hasOD = scanEvents.some(e => e.eventType === 'OD');
+              if (derivedCode === 'DL' && hasOD) {
+                targetStatus = ShipmentStatusType.ENTREGADO_POR_FEDEX;
+                audit.analysis.push(`[REGLA_CABO] DL + OD. Marcando EXTERNO.`);
+              }
+            }
+
+            // C. REGLA DE SEGURIDAD: Bloqueo de Retroceso (Incluye DEVUELTO_A_FEDEX)
+            const isFinishedLocally = [
+              ShipmentStatusType.ENTREGADO, 
+              ShipmentStatusType.ENTREGADO_POR_FEDEX,
+              ShipmentStatusType.DEVUELTO_A_FEDEX
+            ].includes(shipment?.status as any);
+            
+            const isNewStatusIncomplete = ![
+              ShipmentStatusType.ENTREGADO, 
+              ShipmentStatusType.ENTREGADO_POR_FEDEX,
+              ShipmentStatusType.DEVUELTO_A_FEDEX
+            ].includes(targetStatus as any);
+
+            if (isFinishedLocally && isNewStatusIncomplete) {
+              audit.analysis.push(`[SEGURIDAD] Bloqueo retroceso: ${shipment.status} -> ${targetStatus}.`);
+              targetStatus = shipment.status as any;
+            }
+
+            // D. REGLA DE INGRESOS (Validación Fina)
+            // Solo genera ingreso si es:
+            // - Entrega propia (ENTREGADO)
+            // - Rechazo (07)
+            // - 3era Visita (08 con conteo >= 3)
+            // IMPORTANTE: ENTREGADO_POR_FEDEX NO entra aquí.
+            const isInternalDelivery = (targetStatus === ShipmentStatusType.ENTREGADO);
+            const isRejected = (exceptionCode === '07');
+            const visits08 = scanEvents.filter(e => e.exceptionCode === '08').length;
+            const isThirdVisit = (exceptionCode === '08' && visits08 >= 3);
+            
+            const incomeShouldExist = isInternalDelivery || isRejected || isThirdVisit;
+
+            // 4. DETECCIÓN DE DISCREPANCIAS
+            if (shipment && shipment.status !== targetStatus) {
+              audit.actions.push(`[F1] Corregir estatus: ${shipment.status} -> ${targetStatus}`);
+            }
+
+            if (incomeShouldExist && incomeCount === 0) {
+              audit.actions.push(`[FINANZAS] FALTA INGRESO. Motivo: ${isRejected ? '07' : isThirdVisit ? '08-3V' : 'Entrega'}`);
+            }
+
+            for (const charge of charges) {
+              if (charge.status !== targetStatus) {
+                audit.actions.push(`[F2] Sincronizar Cargo ID ${charge.id}: ${charge.status} -> ${targetStatus}`);
+              }
+            }
+
+            // 5. EJECUCIÓN
+            if (applyFix && audit.actions.length > 0) {
+              if (shipment) {
+                shipment.status = targetStatus as any;
+                if (trackResult.deliveryDetails?.receivedByName) {
+                  shipment.receivedByName = trackResult.deliveryDetails.receivedByName;
+                }
+                await queryRunner.manager.save(shipment);
+
+                if (incomeShouldExist && incomeCount === 0) {
+                  await this.generateIncomes(shipment, new Date(), exceptionCode, queryRunner.manager);
+                }
+              }
+              for (const charge of charges) {
+                charge.status = targetStatus as any;
+                await queryRunner.manager.save(charge);
+              }
+              
+              const hist = queryRunner.manager.create(ShipmentStatus, {
+                status: targetStatus,
+                shipment: shipment,
+                notes: `[FIXER-MASTER] ${audit.analysis.join(' | ')}`,
+                timestamp: new Date()
+              });
+              await queryRunner.manager.save(hist);
+              audit.status = 'SUCCESS_REPAIRED';
+            } else {
+              audit.status = audit.actions.length > 0 ? 'ISSUE_DETECTED' : 'PERFECT_MATCH';
+            }
+
+            await queryRunner.commitTransaction();
+            this.logDeepAudit(logFile, audit, shipment, targetStatus, exceptionCode, applyFix);
+            return audit;
+
+          } catch (error) {
+            if (queryRunner.isTransactionActive) await queryRunner.rollbackTransaction();
+            audit.status = 'CRITICAL_FAILURE';
+            return audit;
+          } finally {
+            await queryRunner.release();
+          }
+        }));
+
+        const finalResults = await Promise.all(tasks);
+        return { log: logFile, summary: finalResults };
+      }
+
+      private logDeepAudit(
+        path: string, 
+        audit: any, 
+        shipment: any, 
+        target: any, 
+        ex: string, 
+        applyFix: boolean // <-- Agregamos el parámetro aquí
+      ) {
+        const separator = "=".repeat(80);
+        const content = `
+      ${separator}
+      GUÍA: ${audit.tracking} | RESULTADO: ${audit.status}
+      ${separator}
+      [ANÁLISIS DE REGLAS]:
+      ${audit.analysis.length ? audit.analysis.map(a => `  - ${a}`).join('\n') : '  - Ninguna regla especial disparada.'}
+
+      [DISCREPANCIAS HALLADAS]:
+      ${audit.actions.length ? audit.actions.map(a => `  ⚠️ ${a}`).join('\n') : '  ✅ Ninguna. Los datos son íntegros.'}
+
+      [DETALLE TÉCNICO]:
+        - Estatus DB: ${shipment?.status || 'N/A'} | Estatus Sugerido: ${target}
+        - Código FedEx: ${audit.fedex_state?.code || 'N/A'} | Excepción: ${ex || 'N/A'}
+        - ¿Tiene Ingreso?: ${audit.db_state?.has_income ? 'Sí' : 'No'}
+
+      ${applyFix ? '>>> ACCIÓN: Cambios aplicados a la base de datos.' : '>>> ACCIÓN: Solo lectura (Audit Mode).'}
+      ${separator}
+      `;
+        fsSync.appendFileSync(path, content);
+      }
+
 }
 
 
