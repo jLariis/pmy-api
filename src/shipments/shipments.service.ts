@@ -7040,15 +7040,20 @@ export class ShipmentsService {
           };
 
           try {
-            // 1. CARGA DE CONTEXTO LOCAL
+            // 1. CONTEXTO LOCAL
             const shipment = await queryRunner.manager.findOne(Shipment, {
               where: { trackingNumber: tn }, relations: ['subsidiary']
             });
+            if (!shipment) {
+              audit.status = 'NOT_FOUND_IN_DB';
+              return audit;
+            }
+
             const charges = await queryRunner.manager.find(ChargeShipment, { where: { trackingNumber: tn } });
-            const incomeCount = shipment ? await queryRunner.manager.count(Income, { where: { shipment: { id: shipment.id } } }) : 0;
+            const incomeCount = await queryRunner.manager.count(Income, { where: { shipment: { id: shipment.id } } });
             audit.db_state.has_income = incomeCount > 0;
 
-            // 2. OBTENER VERDAD ABSOLUTA DE FEDEX (Manejo de múltiples trackResults)
+            // 2. VERDAD DE FEDEX
             const fedexInfo = await this.fedexService.trackPackage(tn);
             const allTrackResults = fedexInfo?.output?.completeTrackResults?.[0]?.trackResults || [];
 
@@ -7057,7 +7062,7 @@ export class ShipmentsService {
               return audit;
             }
 
-            // Prioridad: bulto entregado (DL)
+            // Prioridad a bultos entregados
             const trackResult = allTrackResults.find(r => r.latestStatusDetail?.derivedCode === 'DL') || allTrackResults[0];
             const scanEvents = trackResult.scanEvents || [];
             const lastEvent = scanEventsFilter(scanEvents) as any;
@@ -7068,29 +7073,23 @@ export class ShipmentsService {
 
             // 3. MOTOR DE REGLAS
             let targetStatus = mapFedexStatusToLocalStatus(derivedCode, exceptionCode);
-            const subConfig = this.SUBSIDIARY_CONFIG[shipment?.subsidiary?.id] || { trackExternalDelivery: false };
+            const subConfig = this.SUBSIDIARY_CONFIG[shipment.subsidiary?.id] || { trackExternalDelivery: false };
 
-            // A. REGLA 67: Rescate por Tercerizado
+            // REGLA 67 / REGLA CABO
             const has67 = scanEvents.some(e => String(e.exceptionCode) === '67');
             if (derivedCode === 'DL' && has67) {
               targetStatus = ShipmentStatusType.ENTREGADO;
-              audit.analysis.push(`[REGLA_67] DL + 67. Forzando ENTREGADO propio.`);
-            } 
-            // B. REGLA CABO: Entrega Externa
-            else if (subConfig.trackExternalDelivery) {
+            } else if (subConfig.trackExternalDelivery) {
               const hasOD = scanEvents.some(e => e.eventType === 'OD');
-              if (derivedCode === 'DL' && hasOD) {
-                targetStatus = ShipmentStatusType.ENTREGADO_POR_FEDEX;
-                audit.analysis.push(`[REGLA_CABO] DL + OD. Marcando EXTERNO.`);
-              }
+              if (derivedCode === 'DL' && hasOD) targetStatus = ShipmentStatusType.ENTREGADO_POR_FEDEX;
             }
 
-            // C. REGLA DE SEGURIDAD: Bloqueo de Retroceso (Incluye DEVUELTO_A_FEDEX)
+            // REGLA DE SEGURIDAD (Retroceso)
             const isFinishedLocally = [
               ShipmentStatusType.ENTREGADO, 
               ShipmentStatusType.ENTREGADO_POR_FEDEX,
               ShipmentStatusType.DEVUELTO_A_FEDEX
-            ].includes(shipment?.status as any);
+            ].includes(shipment.status as any);
             
             const isNewStatusIncomplete = ![
               ShipmentStatusType.ENTREGADO, 
@@ -7103,12 +7102,7 @@ export class ShipmentsService {
               targetStatus = shipment.status as any;
             }
 
-            // D. REGLA DE INGRESOS (Validación Fina)
-            // Solo genera ingreso si es:
-            // - Entrega propia (ENTREGADO)
-            // - Rechazo (07)
-            // - 3era Visita (08 con conteo >= 3)
-            // IMPORTANTE: ENTREGADO_POR_FEDEX NO entra aquí.
+            // 4. REGLA DE INGRESOS Y FECHAS
             const isInternalDelivery = (targetStatus === ShipmentStatusType.ENTREGADO);
             const isRejected = (exceptionCode === '07');
             const visits08 = scanEvents.filter(e => e.exceptionCode === '08').length;
@@ -7116,43 +7110,63 @@ export class ShipmentsService {
             
             const incomeShouldExist = isInternalDelivery || isRejected || isThirdVisit;
 
-            // 4. DETECCIÓN DE DISCREPANCIAS
-            if (shipment && shipment.status !== targetStatus) {
+            // Búsqueda de fecha real del evento
+            let fedexEventDate = new Date();
+            
+            if (incomeShouldExist) {
+              const triggerEvent = scanEvents.find(e => {
+                if (isRejected) return e.exceptionCode === '07';
+                if (isThirdVisit) return e.exceptionCode === '08';
+                if (isInternalDelivery) return e.eventType === 'DL';
+                return false;
+              });
+              if (triggerEvent?.date) fedexEventDate = new Date(triggerEvent.date);
+            }
+
+            // 5. DETECCIÓN Y ACCIONES
+            if (shipment.status !== targetStatus) {
               audit.actions.push(`[F1] Corregir estatus: ${shipment.status} -> ${targetStatus}`);
             }
 
             if (incomeShouldExist && incomeCount === 0) {
-              audit.actions.push(`[FINANZAS] FALTA INGRESO. Motivo: ${isRejected ? '07' : isThirdVisit ? '08-3V' : 'Entrega'}`);
+              audit.actions.push(`[FINANZAS] FALTA INGRESO del día ${fedexEventDate.toLocaleDateString()}`);
+            }
+
+            // Nueva acción: Eliminar ingresos sobrantes en entregas externas
+            if (targetStatus === ShipmentStatusType.ENTREGADO_POR_FEDEX && incomeCount > 0) {
+              audit.actions.push(`[FINANZAS] ELIMINAR INGRESO: Paquete externo con cobro local.`);
             }
 
             for (const charge of charges) {
               if (charge.status !== targetStatus) {
-                audit.actions.push(`[F2] Sincronizar Cargo ID ${charge.id}: ${charge.status} -> ${targetStatus}`);
+                audit.actions.push(`[F2] Sincronizar Cargo ID ${charge.id}`);
               }
             }
 
-            // 5. EJECUCIÓN
+            // 6. APLICAR CAMBIOS
             if (applyFix && audit.actions.length > 0) {
-              if (shipment) {
-                shipment.status = targetStatus as any;
-                if (trackResult.deliveryDetails?.receivedByName) {
-                  shipment.receivedByName = trackResult.deliveryDetails.receivedByName;
-                }
-                await queryRunner.manager.save(shipment);
-
-                if (incomeShouldExist && incomeCount === 0) {
-                  await this.generateIncomes(shipment, new Date(), exceptionCode, queryRunner.manager);
-                }
+              shipment.status = targetStatus as any;
+              if (trackResult.deliveryDetails?.receivedByName) {
+                shipment.receivedByName = trackResult.deliveryDetails.receivedByName;
               }
+              await queryRunner.manager.save(shipment);
+
+              // Gestión de Incomes
+              if (incomeShouldExist && incomeCount === 0) {
+                await this.generateIncomes(shipment, fedexEventDate, exceptionCode, queryRunner.manager);
+              } else if (targetStatus === ShipmentStatusType.ENTREGADO_POR_FEDEX && incomeCount > 0) {
+                await queryRunner.manager.delete(Income, { shipment: { id: shipment.id } });
+              }
+
               for (const charge of charges) {
                 charge.status = targetStatus as any;
                 await queryRunner.manager.save(charge);
               }
-              
+
               const hist = queryRunner.manager.create(ShipmentStatus, {
                 status: targetStatus,
                 shipment: shipment,
-                notes: `[FIXER-MASTER] ${audit.analysis.join(' | ')}`,
+                notes: `[FIXER-MASTER] Acción basada en evento FedEx del ${fedexEventDate.toLocaleDateString()}`,
                 timestamp: new Date()
               });
               await queryRunner.manager.save(hist);
@@ -7168,6 +7182,7 @@ export class ShipmentsService {
           } catch (error) {
             if (queryRunner.isTransactionActive) await queryRunner.rollbackTransaction();
             audit.status = 'CRITICAL_FAILURE';
+            audit.analysis.push(`Error: ${error.message}`);
             return audit;
           } finally {
             await queryRunner.release();
@@ -7177,7 +7192,6 @@ export class ShipmentsService {
         const finalResults = await Promise.all(tasks);
         return { log: logFile, summary: finalResults };
       }
-
       private logDeepAudit(
         path: string, 
         audit: any, 
