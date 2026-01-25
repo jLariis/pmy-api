@@ -48,6 +48,7 @@ import { PackageDispatch } from 'src/entities/package-dispatch.entity';
 import * as fs from 'node:fs/promises'; // Para el código viejo (await)
 import * as fsSync from 'node:fs';
 import { Unloading } from 'src/entities/unloading.entity';
+import * as dayjs from 'dayjs';
 
 
 @Injectable()
@@ -7036,7 +7037,7 @@ export class ShipmentsService {
             actions: [] as string[],
             status: 'PENDING',
             fedex_state: { code: 'N/A' },
-            db_state: { has_income: false }
+            db_state: { has_income_this_week: false }
           };
 
           try {
@@ -7050,9 +7051,7 @@ export class ShipmentsService {
             }
 
             const charges = await queryRunner.manager.find(ChargeShipment, { where: { trackingNumber: tn } });
-            const incomeCount = await queryRunner.manager.count(Income, { where: { shipment: { id: shipment.id } } });
-            audit.db_state.has_income = incomeCount > 0;
-
+            
             // 2. VERDAD DE FEDEX
             const fedexInfo = await this.fedexService.trackPackage(tn);
             const allTrackResults = fedexInfo?.output?.completeTrackResults?.[0]?.trackResults || [];
@@ -7062,7 +7061,6 @@ export class ShipmentsService {
               return audit;
             }
 
-            // Prioridad a bultos entregados
             const trackResult = allTrackResults.find(r => r.latestStatusDetail?.derivedCode === 'DL') || allTrackResults[0];
             const scanEvents = trackResult.scanEvents || [];
             const lastEvent = scanEventsFilter(scanEvents) as any;
@@ -7071,7 +7069,7 @@ export class ShipmentsService {
             
             audit.fedex_state.code = derivedCode;
 
-            // 3. MOTOR DE REGLAS
+            // 3. MOTOR DE REGLAS DE ESTATUS
             let targetStatus = mapFedexStatusToLocalStatus(derivedCode, exceptionCode);
             const subConfig = this.SUBSIDIARY_CONFIG[shipment.subsidiary?.id] || { trackExternalDelivery: false };
 
@@ -7102,7 +7100,7 @@ export class ShipmentsService {
               targetStatus = shipment.status as any;
             }
 
-            // 4. REGLA DE INGRESOS Y FECHAS
+            // 4. REGLA DE INGRESOS (Validación Semanal)
             const isInternalDelivery = (targetStatus === ShipmentStatusType.ENTREGADO);
             const isRejected = (exceptionCode === '07');
             const visits08 = scanEvents.filter(e => e.exceptionCode === '08').length;
@@ -7110,9 +7108,8 @@ export class ShipmentsService {
             
             const incomeShouldExist = isInternalDelivery || isRejected || isThirdVisit;
 
-            // Búsqueda de fecha real del evento
+            // Extraer fecha del evento de FedEx
             let fedexEventDate = new Date();
-            
             if (incomeShouldExist) {
               const triggerEvent = scanEvents.find(e => {
                 if (isRejected) return e.exceptionCode === '07';
@@ -7123,17 +7120,33 @@ export class ShipmentsService {
               if (triggerEvent?.date) fedexEventDate = new Date(triggerEvent.date);
             }
 
+            // --- CÁLCULO DE SEMANA FISCAL (Lunes a Domingo) ---
+            const mDate = dayjs(fedexEventDate);
+            const startOfWeek = mDate.startOf('week').add(1, 'day').toDate(); // Lunes 00:00
+            const endOfWeek = mDate.endOf('week').add(1, 'day').toDate();     // Domingo 23:59
+
+            const incomeCountThisWeek = await queryRunner.manager.count(Income, {
+              where: {
+                shipment: { id: shipment.id },
+                date: Between(startOfWeek, endOfWeek)
+              }
+            });
+
+            audit.db_state.has_income_this_week = incomeCountThisWeek > 0;
+
             // 5. DETECCIÓN Y ACCIONES
             if (shipment.status !== targetStatus) {
               audit.actions.push(`[F1] Corregir estatus: ${shipment.status} -> ${targetStatus}`);
             }
 
-            if (incomeShouldExist && incomeCount === 0) {
-              audit.actions.push(`[FINANZAS] FALTA INGRESO del día ${fedexEventDate.toLocaleDateString()}`);
+            // IMPORTANTE: Si falta el ingreso EN ESA SEMANA, se agrega la acción
+            if (incomeShouldExist && !audit.db_state.has_income_this_week) {
+              audit.actions.push(`[FINANZAS] FALTA INGRESO SEMANAL del ${fedexEventDate.toLocaleDateString()}`);
             }
 
-            // Nueva acción: Eliminar ingresos sobrantes en entregas externas
-            if (targetStatus === ShipmentStatusType.ENTREGADO_POR_FEDEX && incomeCount > 0) {
+            // Eliminar ingresos sobrantes si es externo (Aplica a cualquier semana)
+            const totalIncomeCount = await queryRunner.manager.count(Income, { where: { shipment: { id: shipment.id } } });
+            if (targetStatus === ShipmentStatusType.ENTREGADO_POR_FEDEX && totalIncomeCount > 0) {
               audit.actions.push(`[FINANZAS] ELIMINAR INGRESO: Paquete externo con cobro local.`);
             }
 
@@ -7151,10 +7164,12 @@ export class ShipmentsService {
               }
               await queryRunner.manager.save(shipment);
 
-              // Gestión de Incomes
-              if (incomeShouldExist && incomeCount === 0) {
+              // Gestión de Incomes Semanal
+              if (incomeShouldExist && !audit.db_state.has_income_this_week) {
                 await this.generateIncomes(shipment, fedexEventDate, exceptionCode, queryRunner.manager);
-              } else if (targetStatus === ShipmentStatusType.ENTREGADO_POR_FEDEX && incomeCount > 0) {
+              } 
+              else if (targetStatus === ShipmentStatusType.ENTREGADO_POR_FEDEX && totalIncomeCount > 0) {
+                // Borrado físico de ingresos para entregas externas
                 await queryRunner.manager.delete(Income, { shipment: { id: shipment.id } });
               }
 
@@ -7166,7 +7181,7 @@ export class ShipmentsService {
               const hist = queryRunner.manager.create(ShipmentStatus, {
                 status: targetStatus,
                 shipment: shipment,
-                notes: `[FIXER-MASTER] Acción basada en evento FedEx del ${fedexEventDate.toLocaleDateString()}`,
+                notes: `[FIXER-MASTER] Auditoría semanal. Evento: ${fedexEventDate.toLocaleDateString()}`,
                 timestamp: new Date()
               });
               await queryRunner.manager.save(hist);
@@ -7192,6 +7207,7 @@ export class ShipmentsService {
         const finalResults = await Promise.all(tasks);
         return { log: logFile, summary: finalResults };
       }
+
       private logDeepAudit(
         path: string, 
         audit: any, 
