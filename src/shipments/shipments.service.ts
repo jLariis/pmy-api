@@ -2805,6 +2805,7 @@ export class ShipmentsService {
         break;
       case ShipmentStatusType.RECHAZADO:
       case ShipmentStatusType.CLIENTE_NO_DISPONIBLE:
+      case ShipmentStatusType.DEVUELTO_A_FEDEX:
       case 'no_entregado':
         incomeType = IncomeStatus.NO_ENTREGADO;
         break;
