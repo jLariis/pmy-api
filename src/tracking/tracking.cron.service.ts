@@ -25,34 +25,31 @@ export class TrackingCronService {
         this.shipmentService.getSimpleChargeShipments()
       ]);
 
-      const trackingNumbers = [...new Set(shipments.map(s => s.trackingNumber))];
-      const trackingNumbersF2 = [...new Set(chargeShipments.map(s => s.trackingNumber))];
-
-      if (trackingNumbers.length === 0 && trackingNumbersF2.length === 0) {
+      if (shipments.length === 0 && chargeShipments.length === 0) {
         this.logger.log('📪 No hay envíos ni F2 para procesar.');
         return;
       }
 
-      this.logger.log(`📊 Total a procesar: ${trackingNumbers.length} normales y ${trackingNumbersF2.length} F2`);
+      this.logger.log(`📊 Total a procesar: ${shipments.length} normales y ${chargeShipments.length} F2`);
 
       // 2. FASE 1: Envíos Normales
-      if (trackingNumbers.length > 0) {
+      if (shipments.length > 0) {
         const startF1 = Date.now();
         this.logger.log('🚀 [FASE 1] Iniciando actualización de Envíos Normales...');
         
-        await this.shipmentService.processMasterFedexUpdate(trackingNumbers);
+        await this.shipmentService.processMasterFedexUpdate(shipments);
         
         const durationF1 = ((Date.now() - startF1) / 1000 / 60).toFixed(2);
         this.logger.log(`✅ [FASE 1] Finalizada en ${durationF1} minutos.`);
       }
 
       // 3. FASE 2: ChargeShipments (F2)
-      if (trackingNumbersF2.length > 0) {
+      if (chargeShipments.length > 0) {
         const startF2 = Date.now();
         this.logger.log('🚀 [FASE 2] Iniciando actualización de ChargeShipments (F2)...');
-        this.logger.log(`📝 Nota: Se generará historial en shipment_status para ${trackingNumbersF2.length} cargos.`);
+        this.logger.log(`📝 Nota: Se generará historial en shipment_status para ${chargeShipments.length} cargos.`);
         
-        await this.shipmentService.processChargeFedexUpdate(trackingNumbersF2); 
+        await this.shipmentService.processChargeFedexUpdate(chargeShipments); 
         
         const durationF2 = ((Date.now() - startF2) / 1000 / 60).toFixed(2);
         this.logger.log(`✅ [FASE 2] Finalizada en ${durationF2} minutos.`);
@@ -60,7 +57,7 @@ export class TrackingCronService {
 
       // Resumen Final
       const totalDurationMin = ((Date.now() - globalStart) / 1000 / 60).toFixed(2);
-      const totalCount = trackingNumbers.length + trackingNumbersF2.length;
+      const totalCount = shipments.length + chargeShipments.length;
       
       this.logger.log(`🏁 Sincronización TOTAL finalizada con éxito.`);
       this.logger.log(`✅ Detalle final: ${totalCount} trackings procesados en ${totalDurationMin} minutos.`);

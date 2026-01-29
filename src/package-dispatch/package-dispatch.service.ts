@@ -746,8 +746,8 @@ export class PackageDispatchService {
 
     try {
       // 3. Procesar actualizaciones (Ahora sí incluirán las guías con excepciones)
-      await this.shipmentService.processMasterFedexUpdate(shipmentsTrackingNumbers);
-      await this.shipmentService.processChargeFedexUpdate(chargeShipmentsTrackingNumbers);
+      await this.shipmentService.processMasterFedexUpdate(shipments);
+      await this.shipmentService.processChargeFedexUpdate(chargeShipments);
 
       this.logger.log(`✅ Despacho ${packageDispatch.trackingNumber} procesado exitosamente.`);
     } catch (err) {
@@ -765,7 +765,7 @@ export class PackageDispatchService {
     const shipmentsWithout67 = [];
 
     const shipments = await this.shipmentRepository.find({
-      where: { packageDispatch: { id } },
+      where: { packageDispatch: { id }, status: Not(ShipmentStatusType.ENTREGADO) },
       relations: [
         'statusHistory',
 
@@ -775,7 +775,7 @@ export class PackageDispatchService {
     console.log("📦 Shipments encontrados:", shipments.length);
 
     const chargeShipments = await this.chargeShipmentRepository.find({
-      where: { consolidatedId: id },
+      where: { consolidatedId: id, status: Not(ShipmentStatusType.ENTREGADO) },
       relations: [
         'statusHistory',
       ],
@@ -856,7 +856,7 @@ export class PackageDispatchService {
 
     // 1. Buscar Shipments normales relacionados al despacho
     const shipments = await this.shipmentRepository.find({
-      where: { packageDispatch: { id } },
+      where: { packageDispatch: { id }, status: Not(ShipmentStatusType.ENTREGADO) },
       relations: ['statusHistory'],
     });
 
@@ -864,7 +864,7 @@ export class PackageDispatchService {
 
     // 2. Buscar ChargeShipments relacionados al despacho
     const chargeShipments = await this.chargeShipmentRepository.find({
-      where: { packageDispatch: { id } }, // Corregido para usar la relación de despacho
+      where: { packageDispatch: { id }, status: Not(ShipmentStatusType.ENTREGADO) }, // Corregido para usar la relación de despacho
       relations: ['statusHistory'],
     });
 
