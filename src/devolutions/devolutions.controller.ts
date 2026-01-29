@@ -13,8 +13,9 @@ export class DevolutionsController {
     return this.devolutionsService.create(createDevolutionDto);
   }
 
-  @Get(':subsidirayId')
+  @Get(':subsidiaryId')
   findAll(@Param('subsidiaryId') subsidiaryId: string) {
+    console.log("🚀 ~ DevolutionsController ~ findAll ~ subsidiaryId:", subsidiaryId)
     return this.devolutionsService.findAll(subsidiaryId);
   }
 

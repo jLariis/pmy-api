@@ -13,6 +13,7 @@ import { format, fromZonedTime, toZonedTime } from 'date-fns-tz';
 import { BadRequestException } from '@nestjs/common';
 import { groupBy } from 'lodash';
 import { addDays, endOfDay, parseISO, startOfDay } from 'date-fns';
+import * as dayjs from 'dayjs';
 
 @Injectable()
 export class IncomeService {
@@ -147,50 +148,238 @@ export class IncomeService {
       }
     }
 
-    /******* DE AQUI EMPIEZA PARA GENERAR LOS INGRESOS */
-    async getIncome(subsidiaryId: string, fromDate: Date, toDate: Date) {
-      this.logger.log(`📊 Iniciando getIncome para subsidiaryId=${subsidiaryId}, fromDate=${fromDate.toISOString()}, toDate=${toDate.toISOString()}`);
+    /*******  Métodos módificados el 26-01-2026 mejorados..*/
+      async getIncome(subsidiaryId: string, fromDate: Date, toDate: Date) {
+        this.logger.log(`📊 Iniciando getIncome optimizado para sucursal=${subsidiaryId}`);
 
-      // Validación de fechas
-      if (!(fromDate instanceof Date) || isNaN(fromDate.getTime())) {
-          throw new BadRequestException('Fecha inicial debe ser un objeto Date válido');
+        // 1. Definir rangos (Hermosillo Offset)
+        const startCurrentUTC = dayjs(fromDate).startOf('day').add(7, 'hour');
+        const endCurrentUTC = dayjs(toDate).endOf('day').add(7, 'hour');
+        
+        // El inicio real de nuestra búsqueda es hace 7 días desde la fecha inicial
+        const startLastWeekUTC = startCurrentUTC.subtract(7, 'day');
+
+        // 2. UNA SOLA CONSULTA a la BD
+        // Quitamos 'statusHistory' para ganar velocidad.
+        const allIncomes = await this.incomeRepository.createQueryBuilder('income')
+            .leftJoinAndSelect('income.shipment', 'shipment')
+            .where('income.subsidiaryId = :subsidiaryId', { subsidiaryId })
+            .andWhere('income.date BETWEEN :start AND :end', { 
+                start: startLastWeekUTC.toDate(), 
+                end: endCurrentUTC.toDate() 
+            })
+            .orderBy('income.date', 'ASC')
+            .getMany();
+
+        // 3. Separar los datos en memoria
+        // Datos actuales: desde startCurrentUTC en adelante
+        const currentIncomes = allIncomes.filter(i => 
+            dayjs(i.date).isAfter(startCurrentUTC.subtract(1, 'second'))
+        );
+
+        // Datos semana pasada: entre startLastWeek y el inicio de esta semana
+        const lastWeekIncomes = allIncomes.filter(i => 
+            dayjs(i.date).isBefore(startCurrentUTC) && 
+            dayjs(i.date).isAfter(startLastWeekUTC.subtract(1, 'second'))
+        );
+
+        // 4. Formatear (Tu método formatIncomesNew ya maneja la lógica de agrupación)
+        const currentFormatted = await this.formatIncomesNew(currentIncomes, fromDate, toDate);
+        
+        const lastWeekFrom = dayjs(fromDate).subtract(7, 'day').toDate();
+        const lastWeekTo = dayjs(toDate).subtract(7, 'day').toDate();
+        const lastWeekFormatted = await this.formatIncomesNew(lastWeekIncomes, lastWeekFrom, lastWeekTo);
+
+        // 5. Preparar respuesta consolidada
+        const lastWeekTotal = lastWeekFormatted.reduce(
+            (acc, day) => acc + this.parseCurrency(day.totalIncome), 0
+        );
+
+        const chartData = currentFormatted.map((day, index) => {
+            // Buscamos el día equivalente en la semana pasada por posición (index)
+            const pastDay = lastWeekFormatted[index];
+            return {
+                name: day.date,
+                actual: this.parseCurrency(day.totalIncome),
+                pasada: this.parseCurrency(pastDay?.totalIncome || 0)
+            };
+        });
+
+        return {
+            current: currentFormatted,
+            lastWeekTotal,
+            chartData
+        };
       }
-      if (!(toDate instanceof Date) || isNaN(toDate.getTime())) {
-          throw new BadRequestException('Fecha final debe ser un objeto Date válido');
+
+      async formatIncomesNew(
+          incomes: Income[],
+          hermFromDate: Date,
+          hermToDate: Date
+      ): Promise<FormatIncomesDto[]> {
+          const report: FormatIncomesDto[] = [];
+
+          // 1. Filtrar ingresos para excluir nonDeliveryStatus = '03' (Regla de negocio)
+          const filteredIncomes = incomes.filter(i => {
+              return !(i.sourceType === 'shipment' &&
+                      i.shipmentType === 'fedex' &&
+                      i.incomeType === 'no_entregado' &&
+                      i.nonDeliveryStatus === '03');
+          });
+
+          // 2. Función estandarizada para convertir UTC a fecha local de Hermosillo (UTC-7)
+          const toHermosilloDate = (date: Date | string) => {
+              // Usamos dayjs para restar las 7 horas de diferencia de forma segura
+              return dayjs(date).subtract(7, 'hour');
+          };
+
+          // 3. Agrupar ingresos por fecha local de Hermosillo
+          const grouped = filteredIncomes.reduce((acc, income) => {
+            let hermDate;
+
+            if (income.sourceType === 'charge') {
+                // REGLA ESPECIAL: Las cargas ya están en hora local
+                // Solo las parseamos sin restar horas
+                hermDate = dayjs(income.date);
+            } else {
+                // Los envíos y recolecciones sí vienen en UTC
+                hermDate = dayjs(income.date).subtract(7, 'hour');
+            }
+
+            const dateKey = hermDate.format('YYYY-MM-DD');
+            
+            if (!acc[dateKey]) {
+                acc[dateKey] = [];
+            }
+            acc[dateKey].push(income);
+            return acc;
+        }, {} as Record<string, Income[]>);
+
+          // 4. Procesar el rango solicitado día por día
+          let currentDate = dayjs(hermFromDate).startOf('day');
+          const endDate = dayjs(hermToDate).endOf('day');
+
+          while (currentDate.isBefore(endDate) || currentDate.isSame(endDate, 'day')) {
+              const dateKey = currentDate.format('YYYY-MM-DD');
+              const dayIncomes = grouped[dateKey] || [];
+
+              // Clasificación por origen
+              const dayShipments = dayIncomes.filter(i => i.sourceType === 'shipment');
+              const dayCollections = dayIncomes.filter(i => i.sourceType === 'collection');
+              const dayCharges = dayIncomes.filter(i => i.sourceType === 'charge');
+
+              // Métricas FedEx
+              const fedexIncomes = dayShipments.filter(i => i.shipmentType === 'fedex');
+              const fedexDelivered = fedexIncomes.filter(i => i.incomeType === 'entregado').length;
+              const fedexDex07 = fedexIncomes.filter(i => 
+                  i.incomeType === 'no_entregado' && i.nonDeliveryStatus === '07'
+              ).length;
+              const fedexDex08 = fedexIncomes.filter(i => 
+                  i.incomeType === 'no_entregado' && i.nonDeliveryStatus === '08'
+              ).length;
+              const fedexTotalIncome = fedexIncomes.reduce((sum, i) => sum + (Number(i.cost) || 0), 0);
+
+              // Métricas DHL
+              const dhlIncomes = dayShipments.filter(i => i.shipmentType === 'dhl');
+              const dhlDelivered = dhlIncomes.filter(i => i.incomeType === 'entregado').length;
+              const dhlNotDelivered = dhlIncomes.filter(i => i.incomeType === 'no_entregado').length;
+              const dhlTotalIncome = dhlIncomes.reduce((sum, i) => sum + (Number(i.cost) || 0), 0);
+
+              // Métricas Otros (Collections y Cargas)
+              const collectionTotalIncome = dayCollections.reduce((sum, i) => sum + (Number(i.cost) || 0), 0);
+              const chargeTotalIncome = dayCharges.reduce((sum, i) => sum + (Number(i.cost) || 0), 0);
+
+              // Construcción de items detallados
+              const items = dayIncomes.map(i => {
+                  const hermDate = toHermosilloDate(i.date);
+                  
+                  // Mapeo dinámico del tipo para el frontend
+                  let displayType: 'shipment' | 'collection' | 'carga' = 'shipment';
+                  if (i.sourceType === 'collection') displayType = 'collection';
+                  if (i.sourceType === 'charge') displayType = 'carga';
+
+                  return {
+                      type: displayType,
+                      trackingNumber: i.trackingNumber,
+                      shipmentType: i.shipmentType,
+                      status: (i.shipmentType === 'fedex' && i.incomeType === 'no_entregado' && ['07', '08'].includes(i.nonDeliveryStatus ?? ''))
+                          ? `DEX${i.nonDeliveryStatus}`
+                          : i.incomeType,
+                      date: hermDate.format('YYYY-MM-DD HH:mm:ss'),
+                      cost: Number(i.cost) || 0,
+                      statusHistory: i.shipment?.statusHistory || [],
+                      commitDateTime: i.shipment?.commitDateTime
+                  };
+              });
+
+              report.push({
+                  date: dateKey,
+                  fedex: {
+                      pod: fedexDelivered,
+                      dex07: fedexDex07,
+                      dex08: fedexDex08,
+                      total: fedexDelivered + fedexDex07 + fedexDex08,
+                      totalIncome: formatCurrency(fedexTotalIncome),
+                  },
+                  dhl: {
+                      ba: dhlDelivered,
+                      ne: dhlNotDelivered,
+                      total: dhlDelivered + dhlNotDelivered,
+                      totalIncome: formatCurrency(dhlTotalIncome),
+                  },
+                  collections: dayCollections.length,
+                  cargas: dayCharges.length,
+                  total: dayIncomes.length,
+                  totalIncome: formatCurrency(fedexTotalIncome + dhlTotalIncome + chargeTotalIncome + collectionTotalIncome),
+                  items,
+              });
+
+              // Avanzar al siguiente día usando DayJS (más seguro que milisegundos)
+              currentDate = currentDate.add(1, 'day');
+          }
+
+          return report;
       }
-      if (fromDate > toDate) {
-          throw new BadRequestException('La fecha inicial no puede ser mayor que la fecha final');
+
+      // Agrega esto al final de tu archivo de servicio o en un helper
+      private parseCurrency(val: string | number): number {
+          if (typeof val === 'number') return val;
+          if (!val) return 0;
+          return parseFloat(val.toString().replace(/[$,]/g, '')) || 0;
       }
 
-      // Las fechas del frontend representan fechas en Hermosillo (UTC-7)
-      // Necesitamos convertirlas a UTC para buscar en la BD
-      // Ejemplo: 03-Nov 00:00 Hermosillo = 03-Nov 07:00 UTC
-      const HERMOSILLO_OFFSET_MS = 7 * 60 * 60 * 1000; // 7 horas en milisegundos
+      async getIncomeWithComparison(subsidiaryId: string, fromDate: Date, toDate: Date) {
+        // 1. Fechas actuales (Rango A)
+        const currentStart = dayjs(fromDate).startOf('day').add(7, 'hour').toDate();
+        const currentEnd = dayjs(toDate).endOf('day').add(7, 'hour').toDate();
 
-      // Convertir fecha de Hermosillo a UTC
-      // fromDate ya viene como medianoche, le sumamos 7 horas para obtener medianoche en UTC
-      const startUTC = new Date(fromDate.getTime() + HERMOSILLO_OFFSET_MS);
+        // 2. Fechas semana pasada (Rango B: Restamos exactamente 7 días)
+        const lastWeekStart = dayjs(fromDate).subtract(7, 'day').startOf('day').add(7, 'hour').toDate();
+        const lastWeekEnd = dayjs(toDate).subtract(7, 'day').endOf('day').add(7, 'hour').toDate();
 
-      // Para el fin del día: toDate + 7 horas + 23:59:59.999
-      const endUTC = new Date(toDate.getTime() + HERMOSILLO_OFFSET_MS + (24 * 60 * 60 * 1000) - 1);
+        // Consultamos ambos rangos de un solo golpe
+        const allIncomes = await this.incomeRepository.createQueryBuilder('income')
+            .leftJoinAndSelect('income.shipment', 'shipment')
+            .where('income.subsidiaryId = :subsidiaryId', { subsidiaryId })
+            .andWhere('income.date BETWEEN :start AND :end', { 
+                start: lastWeekStart, 
+                end: currentEnd 
+            })
+            .getMany();
 
-      console.log("startUTC: ", startUTC.toISOString());
-      console.log("endUTC: ", endUTC.toISOString());
+        // Separamos los datos para procesarlos
+        const currentData = allIncomes.filter(i => i.date >= currentStart);
+        const lastWeekData = allIncomes.filter(i => i.date >= lastWeekStart && i.date <= lastWeekEnd);
 
-      // Consulta a la base de datos con LEFT JOIN a Shipment
-      const incomes = await this.incomeRepository.createQueryBuilder('income')
-          .leftJoinAndSelect('income.shipment', 'shipment')
-          .leftJoinAndSelect('shipment.statusHistory', 'statusHistory')
-          .where({
-              subsidiary: { id: subsidiaryId },
-              date: Between(startUTC, endUTC),
-          })
-          .orderBy('income.date', 'ASC')
-          .getMany();
+        const currentFormatted = await this.formatIncomesNew(currentData, fromDate, toDate);
+        const lastWeekFormatted = await this.formatIncomesNew(lastWeekData, dayjs(fromDate).subtract(7, 'day').toDate(), dayjs(toDate).subtract(7, 'day').toDate());
 
-      // Pasar las fechas originales (Hermosillo) para el formateo
-      return this.formatIncomesNew(incomes, fromDate, toDate);
-    }
+        return {
+            current: currentFormatted,
+            lastWeekTotalIncome: lastWeekFormatted.reduce((acc, day) => acc + this.parseCurrency(day.totalIncome), 0)
+        };
+      }
+    /****************************************************** */
 
     async formatIncomesNewUTC(
         incomes: Income[],
@@ -310,7 +499,7 @@ export class IncomeService {
         return report;
     }
 
-    async formatIncomesNew(
+    async formatIncomesNewResp(
         incomes: Income[],
         hermFromDate: Date,
         hermToDate: Date
@@ -450,6 +639,7 @@ export class IncomeService {
 
         return report;
     }
+
     
     /******* HASTA AQUI */
 

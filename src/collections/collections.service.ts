@@ -106,6 +106,7 @@ export class CollectionsService {
         return { savedCollections: [], duplicates, errors };
       }
     }
+
     async getByTrackingNumber(trackingNumber: string){
       return await this.collectionRepository.findOneBy({trackingNumber});
     }
@@ -119,7 +120,7 @@ export class CollectionsService {
         }})
     }
 
-    async validateHavePickUpEvent(trackingNumber: string): Promise<{
+    async validateHavePickUpEventResp(trackingNumber: string): Promise<{
       isPickUp: boolean;
       status: string | null;
     }> {
@@ -129,6 +130,7 @@ export class CollectionsService {
         }
 
         const fedexData: FedExTrackingResponseDto = await this.fedexService.trackPackage(trackingNumber);
+
         const scanEvents = fedexData?.output?.completeTrackResults?.[0]?.trackResults?.[0]?.scanEvents;
 
         if (!Array.isArray(scanEvents) || scanEvents.length === 0) {
@@ -152,6 +154,67 @@ export class CollectionsService {
           isPickUp: false,
           status: null,
         };
+      } catch (error) {
+        throw new BadRequestException(
+          `Failed to validate pickup event for tracking number ${trackingNumber}: ${error.message}`
+        );
+      }
+    }
+
+    async validateHavePickUpEvent(trackingNumber: string): Promise<{
+      isPickUp: boolean;
+      status: string | null;
+      description: string | null;
+    }> {
+      try {
+        if (!trackingNumber) {
+          throw new BadRequestException('Tracking number is required');
+        }
+
+        const fedexData: FedExTrackingResponseDto = await this.fedexService.trackPackage(trackingNumber);
+        const trackResult = fedexData?.output?.completeTrackResults?.[0]?.trackResults?.[0];
+        const scanEvents = trackResult?.scanEvents;
+
+        if (!Array.isArray(scanEvents) || scanEvents.length === 0) {
+          return { isPickUp: false, status: null, description: null };
+        }
+
+        /**
+         * Códigos de éxito que confirman que FedEx ya tiene el paquete:
+         * PU: Picked Up (Recolección en domicilio)
+         * DP: Dropped Off (Cliente lo dejó en sucursal)
+         * AR: Arrival at FedEx Location (Llegó a la primera estación)
+         * OC: Order Created / Pickup confirmed (En ciertos servicios internacionales)
+         * IT: In Transit (Si ya está en tránsito, obviamente ya se recolectó)
+         */
+        const SUCCESS_CODES = ['PU', 'DP', 'AR', 'OC', 'IT'];
+
+        // Buscamos el primer evento que coincida con nuestra lista de éxito
+        // Usamos .reverse() porque queremos el evento más reciente que confirme la posesión
+        const pickupEvent = [...scanEvents]
+          .reverse()
+          .find(event => SUCCESS_CODES.includes(event.eventType));
+
+        if (pickupEvent) {
+          return {
+            isPickUp: true,
+            status: pickupEvent.eventType,
+            description: pickupEvent.eventDescription || 'Package in FedEx custody',
+          };
+        }
+
+        // Opcional: Si no hay evento en el historial, pero el estatus actual dice que ya está en camino
+        const currentStatus = trackResult?.latestStatusDetail?.code;
+        if (currentStatus && SUCCESS_CODES.includes(currentStatus)) {
+            return {
+                isPickUp: true,
+                status: currentStatus,
+                description: trackResult?.latestStatusDetail?.description || 'In Transit',
+            };
+        }
+
+        return { isPickUp: false, status: null, description: null };
+
       } catch (error) {
         throw new BadRequestException(
           `Failed to validate pickup event for tracking number ${trackingNumber}: ${error.message}`

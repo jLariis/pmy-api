@@ -12,6 +12,7 @@ import { ShipmentToSaveDto } from './dto/shipment-to-save.dto';
 import { PendingShipmentsQueryDto } from './dto/pendending-shipments.dto';
 import { UploadShipmentDto } from './dto/upload-shipment.dto';
 import { Response } from 'express';
+import * as dayjs from 'dayjs'; 
 
 @ApiTags('shipments')
 @ApiBearerAuth()
@@ -405,9 +406,9 @@ export class ShipmentsController {
     return this.shipmentsService.getShipmentsKPIsForDashboard(query);
   }
 
-  @Get('charges')
-  async getCharges() {
-    return await this.shipmentsService.getAllChargesWithStatus();
+  @Get('charges/:subdidiaryId')
+  async getCharges(@Param('subdidiaryId') subsidiaryId: string) {
+    return await this.shipmentsService.getAllChargesWithStatus(subsidiaryId);
   }
 
   @Get('test-email')
@@ -569,6 +570,16 @@ export class ShipmentsController {
     }
   }
 
+  @Post('fedex-direct')
+  async getFedexDirect(@Body('trackingNumbers') trackingNumbers: string[]) {
+    console.log("🚀 ~ ShipmentsController ~ getFedexDirect ~ trackingNumbers:", trackingNumbers);
+
+    if (!trackingNumbers || trackingNumbers.length === 0) {
+      throw new BadRequestException('Se requieren números de guía');
+    }
+    return await this.shipmentsService.trackFedexDirect(trackingNumbers);
+  }
+
   @Post('audit-universal')
   @ApiOperation({ summary: 'Auditoría masiva por Entidad (Unloading, Dispatch, etc.)' })
   @ApiBody({
@@ -596,6 +607,15 @@ export class ShipmentsController {
       body.identifier, 
       applyFix
     );
+  }
+
+  @Get('undelivered/:subsidiaryId')
+  async getNonDeliveredShipments(
+    @Param('subsidiaryId') subsidiaryId: string,
+    @Query('date') date: string
+  ) {
+    const parsedDate = dayjs(date).toDate();
+    return await this.shipmentsService.findNonDeliveredShipments(subsidiaryId, parsedDate);
   }
 }
 

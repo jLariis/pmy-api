@@ -22,6 +22,7 @@ export class SearchShipmentDto {
         id: string;
         trackingNumber: string;
     };
+    isCharge?: boolean;
     route: undefined | {
         id: string;
         trackingNumber: string;

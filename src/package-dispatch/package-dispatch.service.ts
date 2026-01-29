@@ -1,9 +1,9 @@
-import { forwardRef, Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { BadRequestException, forwardRef, Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { CreatePackageDispatchDto } from './dto/create-package-dispatch.dto';
 import { UpdatePackageDispatchDto } from './dto/update-package-dispatch.dto';
 import { InjectRepository } from '@nestjs/typeorm';
 import { PackageDispatch } from 'src/entities/package-dispatch.entity';
-import { In, Not, Repository } from 'typeorm';
+import { DataSource, In, Not, Repository } from 'typeorm';
 import { Shipment, ChargeShipment, Consolidated, ShipmentStatus } from 'src/entities';
 import { ValidatedPackageDispatchDto } from './dto/validated-package-dispatch.dto';
 import { Devolution } from 'src/entities/devolution.entity';
@@ -35,13 +35,14 @@ export class PackageDispatchService {
     @Inject(forwardRef(() => ShipmentsService))
     private readonly shipmentService: ShipmentsService,
     @InjectRepository(ShipmentStatus)
-    private readonly shipmentStatusRepository: Repository<ShipmentStatus>
+    private readonly shipmentStatusRepository: Repository<ShipmentStatus>,
+    private readonly dataSource: DataSource,
 
   ){
 
   }
 
-  async create(dto: CreatePackageDispatchDto): Promise<PackageDispatch> {
+  async createResp2801(dto: CreatePackageDispatchDto): Promise<PackageDispatch> {
     const allShipmentIds = dto.shipments;
 
     // 1. Buscar en shipmentRepository
@@ -112,6 +113,101 @@ export class PackageDispatchService {
     }
 
     return savedDispatch;
+  }
+
+  async create(dto: CreatePackageDispatchDto): Promise<PackageDispatch> {
+    const allShipmentIds = dto.shipments;
+    // Usamos DataSource para el queryRunner
+    const queryRunner = this.dataSource.createQueryRunner();
+
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
+
+    try {
+      // 1. Buscar Shipments y ChargeShipments usando el manager del queryRunner
+      const shipments = await queryRunner.manager.find(Shipment, {
+        where: { id: In(allShipmentIds) },
+      });
+      
+      const foundShipmentIds = shipments.map(s => s.id);
+      const missingIds = allShipmentIds.filter(id => !foundShipmentIds.includes(id));
+
+      const chargeShipments = await queryRunner.manager.find(ChargeShipment, {
+        where: { id: In(missingIds) },
+      });
+
+      const foundChargeShipmentIds = chargeShipments.map(s => s.id);
+      const stillMissing = missingIds.filter(id => !foundChargeShipmentIds.includes(id));
+
+      if (stillMissing.length > 0) {
+        throw new BadRequestException(`No se encontraron los siguientes IDs: ${stillMissing.join(', ')}`);
+      }
+
+      // 2. Crear el Despacho
+      const newDispatch = queryRunner.manager.create(PackageDispatch, {
+        routes: dto.routes || [],
+        drivers: dto.drivers || [],
+        vehicle: dto.vehicle,
+        subsidiary: dto.subsidiary,
+        kms: dto.kms,
+      });
+
+      const savedDispatch = await queryRunner.manager.save(newDispatch);
+
+      // 3. Lógica para Actualizar Estatus y Crear Historial
+      const processUpdates = async (ids: string[], entity: any, relationKey: 'shipment' | 'chargeShipment') => {
+        if (ids.length === 0) return;
+
+        // Actualización masiva de estatus
+        await queryRunner.manager.update(entity, { id: In(ids) }, { status: ShipmentStatusType.EN_RUTA });
+
+        // Creación masiva de historial
+        const historyRecords = ids.map(id => {
+          return queryRunner.manager.create(ShipmentStatus, {
+            status: ShipmentStatusType.EN_RUTA,
+            exceptionCode: '', // Agregado el código 44 que mencionamos antes
+            comment: `Salida a ruta (Folio Despacho: ${savedDispatch.id})`,
+            timestamp: new Date(),
+            [relationKey]: { id } // Relacionamos con el paquete correspondiente
+          });
+        });
+
+        await queryRunner.manager.save(ShipmentStatus, historyRecords);
+      };
+
+      // Ejecutar para ambos tipos de paquetes
+      await processUpdates(foundShipmentIds, Shipment, 'shipment');
+      await processUpdates(foundChargeShipmentIds, ChargeShipment, 'chargeShipment');
+
+      // 4. Relacionar con el Despacho (Tablas Pivot usando QueryBuilder del Manager)
+      if (foundShipmentIds.length > 0) {
+        await queryRunner.manager
+          .createQueryBuilder()
+          .relation(PackageDispatch, 'shipments')
+          .of(savedDispatch)
+          .add(foundShipmentIds); // Usamos los IDs directamente
+      }
+
+      if (foundChargeShipmentIds.length > 0) {
+        await queryRunner.manager
+          .createQueryBuilder()
+          .relation(PackageDispatch, 'chargeShipments')
+          .of(savedDispatch)
+          .add(foundChargeShipmentIds);
+      }
+
+      // 5. Confirmar todos los cambios
+      await queryRunner.commitTransaction();
+      return savedDispatch;
+
+    } catch (error) {
+      // Si algo falla, se deshace TODO (incluso el registro de Despacho)
+      await queryRunner.rollbackTransaction();
+      throw error;
+    } finally {
+      // Liberar la conexión al pool de MySQL siempre
+      await queryRunner.release();
+    }
   }
 
   async validatePackage(
@@ -461,7 +557,17 @@ export class PackageDispatchService {
 
     // ========= 🔥 Helper: obtener dexCode =========
     const getDexCode = async (shipmentId: string, status: string) => {
-      if (status !== 'no_entregado') return null;
+      const rejectedStatuses = [
+        'rechazado',
+        'no_entregado',
+        'direccion_incorrecta',
+        'cliente_no_encontrado',
+        'cambio_fecha_solicitado'
+      ];
+
+      if (!rejectedStatuses.includes(status)) {
+        return null;
+      }
 
       const row = await this.shipmentStatusRepository
         .createQueryBuilder('ss')
@@ -473,8 +579,6 @@ export class PackageDispatchService {
 
       return row?.exceptionCode ?? null;
     };
-
-
 
     // ================================
     // MAPEO
@@ -745,6 +849,95 @@ export class PackageDispatchService {
       shipments: shipmentsWithout67
     };
 
+  }
+
+  async getShipmentsWithout44ByPackageDispatch(id: string) {
+    const shipmentsWithout44 = [];
+
+    // 1. Buscar Shipments normales relacionados al despacho
+    const shipments = await this.shipmentRepository.find({
+      where: { packageDispatch: { id } },
+      relations: ['statusHistory'],
+    });
+
+    console.log("📦 Shipments encontrados en despacho:", shipments.length);
+
+    // 2. Buscar ChargeShipments relacionados al despacho
+    const chargeShipments = await this.chargeShipmentRepository.find({
+      where: { packageDispatch: { id } }, // Corregido para usar la relación de despacho
+      relations: ['statusHistory'],
+    });
+
+    console.log("⚡ ChargeShipments encontrados en despacho:", chargeShipments.length);
+
+    const allShipments = [...shipments, ...chargeShipments];
+
+    for (const shipment of allShipments) {
+      try {
+        // Validar historial
+        if (!shipment.statusHistory || shipment.statusHistory.length === 0) {
+          shipmentsWithout44.push({
+            trackingNumber: shipment.trackingNumber,
+            currentStatus: shipment.status,
+            statusHistoryCount: 0,
+            exceptionCodes: [],
+            firstStatusDate: null,
+            lastStatusDate: null,
+            comment: 'Sin historial de estados',
+          });
+          continue;
+        }
+
+        // Ordenar historial
+        const sortedHistory = shipment.statusHistory.sort(
+          (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+        );
+
+        // --- VALIDACIÓN DEL CÓDIGO 44 (Salida a Ruta) ---
+        const hasExceptionCode44 = sortedHistory.some(status => 
+          status.exceptionCode === '44'
+        );
+
+        if (!hasExceptionCode44) {
+          const firstStatus = sortedHistory[0];
+          const lastStatus = sortedHistory[sortedHistory.length - 1];
+
+          const exceptionCodes = sortedHistory
+            .map(h => h.exceptionCode)
+            .filter(code => code !== null && code !== undefined);
+
+          shipmentsWithout44.push({
+            trackingNumber: shipment.trackingNumber,
+            recipientAddress: shipment.recipientAddress,
+            recipientName: shipment.recipientName,
+            recipientCity: shipment.recipientCity,
+            recipientZip: shipment.recipientZip,
+            currentStatus: shipment.status,
+            statusHistoryCount: sortedHistory.length,
+            exceptionCodes: [...new Set(exceptionCodes)],
+            firstStatusDate: firstStatus?.timestamp,
+            lastStatusDate: lastStatus?.timestamp,
+            comment: 'No tiene exceptionCode 44',
+          });
+        }
+
+      } catch (error) {
+        shipmentsWithout44.push({
+          trackingNumber: shipment.trackingNumber,
+          currentStatus: shipment.status,
+          statusHistoryCount: 0,
+          exceptionCodes: [],
+          firstStatusDate: null,
+          lastStatusDate: null,
+          comment: `Error: ${error.message}`,
+        });
+      }
+    }
+
+    return { 
+      count: shipmentsWithout44.length,
+      shipments: shipmentsWithout44
+    };
   }
 
   async getShipmentsByPackageDispatchId(packageDispatchId: string) {

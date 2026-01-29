@@ -49,6 +49,7 @@ import * as fs from 'node:fs/promises'; // Para el código viejo (await)
 import * as fsSync from 'node:fs';
 import { Unloading } from 'src/entities/unloading.entity';
 import * as dayjs from 'dayjs';
+import { ReturnValidationDto } from './dto/returning-validation.dto';
 
 
 @Injectable()
@@ -636,13 +637,15 @@ export class ShipmentsService {
   }
 
   /*** Método para obtener las cargas con sus envios */
-  async getAllChargesWithStatus(): Promise<ChargeWithStatusDto[]> {
+  async getAllChargesWithStatusResp(subsidiaryId: string): Promise<ChargeWithStatusDto[]> {
     const charges = await this.chargeRepository.find({
+      where: { subsidiary: { id: subsidiaryId } },
       relations: ['subsidiary'],
       order: {
         createdAt: 'DESC'
       }
     });
+    console.log("🚀 ~ ShipmentsService ~ getAllChargesWithStatus ~ charges:", charges)
 
     const chargeShipments = await this.chargeShipmentRepository.find({
       relations: ['charge', 'subsidiary', 'statusHistory'],
@@ -662,6 +665,49 @@ export class ShipmentsService {
     // Procesa y determina si está completo
     return charges.map((charge) => {
       const relatedShipments = chargeMap.get(charge.id) ?? [];
+      const isComplete = relatedShipments.length > 0 &&
+        relatedShipments.every(s => s.status === 'entregado');
+
+      return {
+        ...charge,
+        isChargeComplete: isComplete,
+        shipments: relatedShipments,
+      };
+    });
+  }
+
+  async getAllChargesWithStatus(subsidiaryId: string): Promise<ChargeWithStatusDto[]> {
+    // 1. Obtener solo los cargos de la sucursal
+    const charges = await this.chargeRepository.find({
+      where: { subsidiary: { id: subsidiaryId } },
+      relations: ['subsidiary'],
+      order: { createdAt: 'DESC' }
+    });
+
+    if (charges.length === 0) return [];
+
+    // 2. Extraer los IDs de los cargos para filtrar la segunda consulta
+    const chargeIds = charges.map(c => c.id);
+
+    // 3. Traer SOLO los envíos que pertenecen a esos cargos específicos
+    // Esto evita traer miles de registros innecesarios
+    const chargeShipments = await this.chargeShipmentRepository.find({
+      where: { charge: { id: In(chargeIds) } }, // Importar 'In' de typeorm
+      relations: ['charge', 'statusHistory'],
+    });
+
+    // 4. Agrupar de forma eficiente
+    const chargeMap = new Map<string, any[]>();
+    for (const shipment of chargeShipments) {
+      const cId = shipment.charge.id;
+      if (!chargeMap.has(cId)) chargeMap.set(cId, []);
+      chargeMap.get(cId)!.push(shipment);
+    }
+
+    // 5. Mapear resultados
+    return charges.map((charge) => {
+      const relatedShipments = chargeMap.get(charge.id) ?? [];
+      
       const isComplete = relatedShipments.length > 0 &&
         relatedShipments.every(s => s.status === 'entregado');
 
@@ -2702,77 +2748,6 @@ export class ShipmentsService {
     }
   }
 
-  private async generateIncomesResp(
-    shipment: Shipment,
-    timestamp: Date,
-    exceptionCode: string | undefined,
-    transactionalEntityManager: EntityManager
-  ): Promise<void> {
-    // 1. Prioridad: Intentar obtener el costo del objeto cargado
-    let packageCost = shipment.subsidiary?.fedexCostPackage || 0;
-
-    // 2. Re-consulta de seguridad: Si el costo viene en 0, lo buscamos directo en la DB
-    if (packageCost <= 0) {
-      const subsidiary = await transactionalEntityManager.getRepository(Subsidiary).findOne({
-        where: { id: shipment.subsidiary.id },
-        select: ['fedexCostPackage', 'name']
-      });
-      packageCost = subsidiary?.fedexCostPackage || 0;
-    }
-
-    // 3. BLOQUEO DEFINITIVO: Si el costo sigue siendo 0, lanzamos excepción.
-    // Esto disparará el catch en processMasterFedexUpdate y hará Rollback.
-    if (packageCost <= 0) {
-      throw new Error(`FINANCE_ERROR: La sucursal ${shipment.subsidiary?.name || shipment.subsidiary.id} tiene costo $0 configurado. No se puede generar ingreso para ${shipment.trackingNumber}.`);
-    }
-
-    let incomeType: IncomeStatus;
-    const incomeSubType = exceptionCode ?? '';
-
-    // Mapeo de IncomeStatus
-    switch (shipment.status) {
-      case ShipmentStatusType.ENTREGADO:
-      case 'entregado': // Soporte para el objeto clonado
-        incomeType = IncomeStatus.ENTREGADO;
-        break;
-      case ShipmentStatusType.RECHAZADO:
-      case ShipmentStatusType.CLIENTE_NO_DISPONIBLE:
-      case 'no_entregado':
-        incomeType = IncomeStatus.NO_ENTREGADO;
-        break;
-      default:
-        return; // Estatus que no generan ingreso
-    }
-
-    // 4. Verificación de duplicados
-    const exists = await transactionalEntityManager.getRepository(Income).findOne({
-      where: { 
-        shipment: { id: shipment.id }, 
-        incomeType: incomeType 
-      }
-    });
-
-    if (exists) return;
-
-    // 5. Creación segura
-    const newIncome = transactionalEntityManager.create(Income, {
-      trackingNumber: shipment.trackingNumber,
-      shipment: { id: shipment.id },
-      subsidiary: { id: shipment.subsidiary.id },
-      shipmentType: shipment.shipmentType || ShipmentType.FEDEX,
-      cost: packageCost, // Garantizado > 0
-      incomeType,
-      nonDeliveryStatus: incomeSubType,
-      isGrouped: false,
-      sourceType: IncomeSourceType.SHIPMENT,
-      date: timestamp || new Date(),
-      createdAt: new Date(),
-    });
-
-    await transactionalEntityManager.save(newIncome);
-    this.logger.log(`✅ Income [${incomeType}] registrado con costo: $${packageCost}`);
-  }
-
   private async generateIncomes(
     shipment: Shipment,
     timestamp: Date,
@@ -4260,6 +4235,7 @@ export class ShipmentsService {
               id: unloading?.id || '',
               trackingNumber: unloading?.trackingNumber || ''
           },
+          isCharge: isChargeShipment,
           route: packageDispatch ? {
               id: packageDispatch.id,
               trackingNumber: packageDispatch.trackingNumber,
@@ -6696,7 +6672,7 @@ export class ShipmentsService {
         }
       };
 
-      async processMasterFedexUpdate(trackingNumbers: string[]) {
+      async processMasterFedexUpdateResp2701(trackingNumbers: string[]) {
         const limit = pLimit(5);
 
         const tasks = trackingNumbers.map((tn) => limit(async () => {
@@ -6841,7 +6817,7 @@ export class ShipmentsService {
         await Promise.all(tasks);
       }
 
-      async processChargeFedexUpdate(trackingNumbers: string[]) {
+      async processChargeFedexUpdateResp2701(trackingNumbers: string[]) {
         const limit = pLimit(5);
 
         const tasks = trackingNumbers.map((tn) => limit(async () => {
@@ -6958,6 +6934,304 @@ export class ShipmentsService {
                   await queryRunner.manager.save(historyEntry);
 
                   // B. ACTUALIZAR CARGO
+                  charge.status = mappedStatus as any;
+                  const fedexReceivedBy = trackResult.deliveryDetails?.receivedByName;
+                  if (fedexReceivedBy) charge.receivedByName = fedexReceivedBy;
+
+                  await queryRunner.manager.save(ChargeShipment, charge);
+                }
+              }
+            }
+            await queryRunner.commitTransaction();
+
+          } catch (error) {
+            if (queryRunner.isTransactionActive) await queryRunner.rollbackTransaction();
+            this.logger.error(`❌ Error F2 Tracking ${tn}: ${error.message}`);
+          } finally {
+            await queryRunner.release();
+          }
+        }));
+
+        await Promise.all(tasks);
+      }
+
+      async processMasterFedexUpdate(trackingNumbers: string[]) {
+        const limit = pLimit(5);
+
+        const tasks = trackingNumbers.map((tn) => limit(async () => {
+          // --- PASO 1: LLAMADA A FEDEX FUERA DE LA TRANSACCIÓN ---
+          // Esto evita que la DB espere por la respuesta de red de la API
+          let fedexInfo;
+          try {
+            fedexInfo = await this.fedexService.trackPackage(tn);
+          } catch (error) {
+            this.logger.error(`[${tn}] Error al consultar FedEx: ${error.message}`);
+            return;
+          }
+
+          const queryRunner = this.dataSource.createQueryRunner();
+          await queryRunner.connect();
+          await queryRunner.startTransaction();
+
+          try {
+            // --- PASO 2: BUSCAR CON LOCK Y SKIP_LOCKED ---
+            // Si el archivo Excel está insertando esta guía, skip_locked hace que este proceso
+            // la ignore por ahora en lugar de causar un error de Lock.
+            const shipmentList = await queryRunner.manager.find(Shipment, {
+              where: { trackingNumber: tn },
+              relations: ['subsidiary', 'payment'],
+              lock: { 
+                mode: 'pessimistic_write',
+                onLocked: 'skip_locked' 
+              }
+            });
+
+            if (shipmentList.length === 0) {
+              await queryRunner.rollbackTransaction();
+              return;
+            }
+
+            const allTrackResults = fedexInfo?.output?.completeTrackResults?.[0]?.trackResults || [];
+
+            for (const trackResult of allTrackResults) {
+              const latestStatusDetail = trackResult?.latestStatusDetail;
+              if (!latestStatusDetail) continue;
+
+              const scanEvents = trackResult?.scanEvents || [];
+              const lastEvent = scanEventsFilter(scanEvents) as any;
+
+              const ancillaryReason = latestStatusDetail?.ancillaryDetails?.[0]?.reason || '';
+              const exceptionCode = ancillaryReason !== '' ? ancillaryReason : (lastEvent?.exceptionCode || '');
+              const derivedStatusCode = latestStatusDetail.derivedCode || latestStatusDetail.code || '';
+
+              // 1. Obtener configuración de la sucursal
+              const subId = shipmentList[0].subsidiary?.id;
+              const subConfig = this.SUBSIDIARY_CONFIG[subId] || { trackExternalDelivery: false, forceFedexStatus: false };
+
+              // 2. Mapeo inicial
+              let mappedStatus = mapFedexStatusToLocalStatus(derivedStatusCode, exceptionCode);
+              
+              // 3. Aplicar Regla Especial: Entrega Externa
+              if (subConfig.trackExternalDelivery) {
+                const hasODEvent = scanEvents.some(e => e.eventType === 'OD');
+                
+                if (derivedStatusCode === 'DL' && hasODEvent) {
+                  mappedStatus = ShipmentStatusType.ENTREGADO_POR_FEDEX;
+                } else if (derivedStatusCode === 'OD') {
+                  mappedStatus = ShipmentStatusType.ACARGO_DE_FEDEX;
+                }
+              }
+
+              // 4. Decidir si actualizar basado en el historial
+              const lastHistory = await queryRunner.manager.query(
+                `SELECT status, exceptionCode, timestamp FROM shipment_status WHERE shipmentId = ? ORDER BY timestamp DESC LIMIT 1`,
+                [shipmentList[0].id]
+              );
+
+              let shouldUpdate = false;
+
+              if (!lastHistory.length) {
+                shouldUpdate = true;
+              } else {
+                const lastSt = lastHistory[0].status;
+                const lastEx = String(lastHistory[0].exceptionCode || '').trim();
+                const currentEx = String(exceptionCode || '').trim();
+
+                if (lastSt !== mappedStatus || lastEx !== currentEx) {
+                  shouldUpdate = true;
+                } else if (currentEx !== '' && new Date().toDateString() !== new Date(lastHistory[0].timestamp).toDateString()) {
+                  shouldUpdate = true;
+                }
+              }
+
+              if (shouldUpdate) {
+                for (const shipment of shipmentList) {
+                  // 5. Crear historial con nota de procedencia
+                  const isExternal = [ShipmentStatusType.ENTREGADO_POR_FEDEX, ShipmentStatusType.ACARGO_DE_FEDEX].includes(mappedStatus as any);
+                  
+                  const historyEntry = queryRunner.manager.create(ShipmentStatus, {
+                    status: mappedStatus,
+                    exceptionCode: exceptionCode,
+                    timestamp: new Date(),
+                    shipment: shipment,
+                    createdAt: new Date(),
+                    notes: isExternal 
+                      ? `[RED FEDEX] Movimiento externo detectado (${derivedStatusCode})`
+                      : (ancillaryReason !== '' ? latestStatusDetail?.ancillaryDetails?.[0]?.reasonDescription : null) 
+                        || lastEvent?.eventDescription || latestStatusDetail.description || 'Actualización automática'
+                  });
+              
+                  await queryRunner.manager.save(historyEntry);
+
+                  // 6. Actualizar Registro Maestro
+                  shipment.status = mappedStatus as any;
+                  if (trackResult.deliveryDetails?.receivedByName) {
+                    shipment.receivedByName = trackResult.deliveryDetails.receivedByName;
+                  }
+              
+                  await queryRunner.manager.save(Shipment, shipment);
+
+                  // 7. Lógica de Ingresos (Contabilidad)
+                  const isInternalDelivery = (mappedStatus === ShipmentStatusType.ENTREGADO);
+                  const isRejected07 = (exceptionCode === '07');
+                  let isThirdVisit08 = false;
+
+                  if (exceptionCode === '08') {
+                    const countRes = await queryRunner.manager.query(
+                      `SELECT COUNT(*) as total FROM shipment_status WHERE shipmentId = ? AND exceptionCode = '08'`,
+                      [shipment.id]
+                    );
+                    if (parseInt(countRes[0]?.total || 0) >= 3) isThirdVisit08 = true;
+                  }
+
+                  // --- DISPARADOR DE INCOME ---
+                  if ((isInternalDelivery || isRejected07 || isThirdVisit08) && shipment.id === shipmentList[0].id) {
+                    const targetStatusForIncome = isInternalDelivery
+                      ? IncomeStatus.ENTREGADO
+                      : (isThirdVisit08 ? ShipmentStatusType.CLIENTE_NO_DISPONIBLE : ShipmentStatusType.RECHAZADO);
+
+                    const shipmentForIncome = { ...shipment, status: targetStatusForIncome };
+                    await this.generateIncomes(shipmentForIncome as Shipment, new Date(), exceptionCode, queryRunner.manager);
+                  }
+                }
+              
+                this.logger.log(`[${tn}] Update: ${mappedStatus} | Sub: ${subId}`);
+              }
+            }
+
+            await queryRunner.commitTransaction();
+
+          } catch (error) {
+            this.logger.error(`[${tn}] 💥 Error: ${error.message}`);
+            if (queryRunner.isTransactionActive) await queryRunner.rollbackTransaction();
+          } finally {
+            await queryRunner.release();
+          }
+        }));
+
+        await Promise.all(tasks);
+      }
+
+      async processChargeFedexUpdate(trackingNumbers: string[]) {
+        const limit = pLimit(5);
+
+        const tasks = trackingNumbers.map((tn) => limit(async () => {
+          // --- PASO 1: FEDEX FUERA ---
+          let fedexInfo;
+          try {
+            fedexInfo = await this.fedexService.trackPackage(tn);
+          } catch (error) {
+            this.logger.error(`[F2 - ${tn}] Error API FedEx: ${error.message}`);
+            return;
+          }
+
+          const queryRunner = this.dataSource.createQueryRunner();
+          await queryRunner.connect();
+          await queryRunner.startTransaction();
+
+          try {
+            // --- PASO 2: LOCK CON SKIP_LOCKED ---
+            const chargeList = await queryRunner.manager.find(ChargeShipment, {
+              where: { trackingNumber: tn },
+              relations: ['subsidiary'],
+              lock: { mode: 'pessimistic_write', onLocked: 'skip_locked' }
+            });
+
+            if (chargeList.length === 0) {
+              await queryRunner.rollbackTransaction();
+              return;
+            }
+
+            const allTrackResults = fedexInfo?.output?.completeTrackResults?.[0]?.trackResults || [];
+
+            for (const trackResult of allTrackResults) {
+              const latestStatusDetail = trackResult?.latestStatusDetail;
+              if (!latestStatusDetail) continue;
+
+              const scanEvents = trackResult?.scanEvents || [];
+              const lastEvent = scanEventsFilter(scanEvents) as any;
+
+              const ancillaryReason = latestStatusDetail?.ancillaryDetails?.[0]?.reason || '';
+              const exceptionCode = ancillaryReason !== '' ? ancillaryReason : (lastEvent?.exceptionCode || '');
+              const derivedStatusCode = latestStatusDetail.derivedCode || latestStatusDetail.code || '';
+              
+              const subId = chargeList[0].subsidiary?.id;
+              const subConfig = this.SUBSIDIARY_CONFIG[subId] || { trackExternalDelivery: false };
+
+              let mappedStatus = mapFedexStatusToLocalStatus(derivedStatusCode, exceptionCode);
+              
+              if (subConfig.trackExternalDelivery) {
+                const hasODEvent = scanEvents.some(e => e.eventType === 'OD');
+                
+                if (derivedStatusCode === 'DL' && hasODEvent) {
+                  mappedStatus = ShipmentStatusType.ENTREGADO_POR_FEDEX;
+                } else if (derivedStatusCode === 'OD') {
+                  mappedStatus = ShipmentStatusType.ACARGO_DE_FEDEX;
+                }
+              }
+
+              const currentChargeStatus = chargeList[0].status;
+
+              // 4. Bloqueo de retroceso
+              const statusAlreadyDone = [ShipmentStatusType.ENTREGADO, ShipmentStatusType.ENTREGADO_POR_FEDEX];
+              if (statusAlreadyDone.includes(currentChargeStatus as any) && !statusAlreadyDone.includes(mappedStatus as any)) {
+                continue; 
+              }
+
+              let eventDate = new Date(lastEvent?.date || trackResult?.dateAndTimes?.find(d => d.type === 'ACTUAL_DELIVERY')?.dateTime || new Date());
+              if (isNaN(eventDate.getTime())) eventDate = new Date();
+
+              // 5. VALIDACIÓN DE HISTORIAL
+              const lastHistory = await queryRunner.manager.query(
+                `SELECT status, exceptionCode, timestamp FROM shipment_status 
+                WHERE chargeShipmentId = ? ORDER BY timestamp DESC LIMIT 1`,
+                [chargeList[0].id]
+              );
+
+              let shouldUpdate = false;
+              let updateReason = "";
+
+              if (!lastHistory.length) {
+                shouldUpdate = true;
+                updateReason = "Primer registro en F2";
+              } else {
+                const lastSt = lastHistory[0].status;
+                const lastEx = String(lastHistory[0].exceptionCode || '').trim();
+                const currentEx = String(exceptionCode).trim();
+                const lastTs = new Date(lastHistory[0].timestamp);
+
+                const isDifferentStatus = lastSt !== mappedStatus;
+                const isDifferentException = lastEx !== currentEx;
+                const isDifferentDay = eventDate.toDateString() !== lastTs.toDateString();
+
+                if (isDifferentStatus || isDifferentException) {
+                  shouldUpdate = true;
+                  updateReason = `Cambio de estado: ${lastSt} -> ${mappedStatus}`;
+                } else if (currentEx !== '' && isDifferentDay) {
+                  shouldUpdate = true;
+                  updateReason = `Seguimiento diario: ${currentEx}`;
+                }
+              }
+
+              if (shouldUpdate) {
+                this.logger.log(`[F2 - ${tn}] Aplicando cambio: ${updateReason}`);
+
+                for (const charge of chargeList) {
+                  const isExternal = [ShipmentStatusType.ENTREGADO_POR_FEDEX, ShipmentStatusType.ACARGO_DE_FEDEX].includes(mappedStatus as any);
+
+                  const historyEntry = queryRunner.manager.create('ShipmentStatus', {
+                    status: mappedStatus,
+                    exceptionCode: exceptionCode,
+                    timestamp: eventDate,
+                    chargeShipment: charge,
+                    createdAt: new Date(),
+                    notes: isExternal 
+                      ? `[RED FEDEX] Movimiento externo en F2 (${derivedStatusCode})`
+                      : (ancillaryReason !== '' ? latestStatusDetail?.ancillaryDetails?.[0]?.reasonDescription : null) 
+                        || lastEvent?.eventDescription || latestStatusDetail.description || 'Actualización F2'
+                  });
+                  await queryRunner.manager.save(historyEntry);
+
                   charge.status = mappedStatus as any;
                   const fedexReceivedBy = trackResult.deliveryDetails?.receivedByName;
                   if (fedexReceivedBy) charge.receivedByName = fedexReceivedBy;
@@ -7097,199 +7371,6 @@ export class ShipmentsService {
         }
 
         return await this.auditAndFixFedexShipments(trackingNumbers, applyFix);
-      }
-
-      async auditAndFixFedexShipmentsResp2501(trackingNumbers: string[], applyFix: boolean = false) {
-        const limit = pLimit(5);
-        const logDir = './logs';
-        const logFile = `${logDir}/master_audit_${Date.now()}.txt`;
-
-        if (!fsSync.existsSync(logDir)) fsSync.mkdirSync(logDir, { recursive: true });
-
-        const tasks = trackingNumbers.map((tn) => limit(async () => {
-          const queryRunner = this.dataSource.createQueryRunner();
-          await queryRunner.connect();
-          await queryRunner.startTransaction();
-
-          const audit = {
-            tracking: tn,
-            analysis: [] as string[],
-            actions: [] as string[],
-            status: 'PENDING',
-            fedex_state: { code: 'N/A' },
-            db_state: { has_income_this_week: false }
-          };
-
-          try {
-            // 1. CONTEXTO LOCAL
-            const shipment = await queryRunner.manager.findOne(Shipment, {
-              where: { trackingNumber: tn }, relations: ['subsidiary']
-            });
-            if (!shipment) {
-              audit.status = 'NOT_FOUND_IN_DB';
-              return audit;
-            }
-
-            const charges = await queryRunner.manager.find(ChargeShipment, { where: { trackingNumber: tn } });
-            
-            // 2. VERDAD DE FEDEX
-            const fedexInfo = await this.fedexService.trackPackage(tn);
-            const allTrackResults = fedexInfo?.output?.completeTrackResults?.[0]?.trackResults || [];
-
-            if (allTrackResults.length === 0) {
-              audit.status = 'SKIPPED_FEDEX_ERROR';
-              return audit;
-            }
-
-            const trackResult = allTrackResults.find(r => r.latestStatusDetail?.derivedCode === 'DL') || allTrackResults[0];
-            const scanEvents = trackResult.scanEvents || [];
-            const lastEvent = scanEventsFilter(scanEvents) as any;
-            const derivedCode = trackResult.latestStatusDetail?.derivedCode || '';
-            const exceptionCode = trackResult.latestStatusDetail?.ancillaryDetails?.[0]?.reason || lastEvent?.exceptionCode || '';
-            
-            audit.fedex_state.code = derivedCode;
-
-            // 3. MOTOR DE REGLAS DE ESTATUS
-            let targetStatus = mapFedexStatusToLocalStatus(derivedCode, exceptionCode);
-            const subConfig = this.SUBSIDIARY_CONFIG[shipment.subsidiary?.id] || { trackExternalDelivery: false };
-
-            // REGLA 67 / REGLA CABO
-            const has67 = scanEvents.some(e => String(e.exceptionCode) === '67');
-            if (derivedCode === 'DL' && has67) {
-              targetStatus = ShipmentStatusType.ENTREGADO;
-            } else if (subConfig.trackExternalDelivery) {
-              const hasOD = scanEvents.some(e => e.eventType === 'OD');
-              if (derivedCode === 'DL' && hasOD) targetStatus = ShipmentStatusType.ENTREGADO_POR_FEDEX;
-            }
-
-            // REGLA DE SEGURIDAD (Retroceso)
-            const isFinishedLocally = [
-              ShipmentStatusType.ENTREGADO, 
-              ShipmentStatusType.ENTREGADO_POR_FEDEX,
-              ShipmentStatusType.DEVUELTO_A_FEDEX
-            ].includes(shipment.status as any);
-            
-            const isNewStatusIncomplete = ![
-              ShipmentStatusType.ENTREGADO, 
-              ShipmentStatusType.ENTREGADO_POR_FEDEX,
-              ShipmentStatusType.DEVUELTO_A_FEDEX
-            ].includes(targetStatus as any);
-
-            if (isFinishedLocally && isNewStatusIncomplete) {
-              audit.analysis.push(`[SEGURIDAD] Bloqueo retroceso: ${shipment.status} -> ${targetStatus}.`);
-              targetStatus = shipment.status as any;
-            }
-
-            // 4. REGLA DE INGRESOS (Validación Semanal)
-            const isInternalDelivery = (targetStatus === ShipmentStatusType.ENTREGADO);
-            const isRejected = (exceptionCode === '07');
-            const visits08 = scanEvents.filter(e => e.exceptionCode === '08').length;
-            const isThirdVisit = (exceptionCode === '08' && visits08 >= 3);
-            
-            const incomeShouldExist = isInternalDelivery || isRejected || isThirdVisit;
-
-            // Extraer fecha del evento de FedEx
-            let fedexEventDate = new Date();
-            if (incomeShouldExist) {
-              const triggerEvent = scanEvents.find(e => {
-                if (isRejected) return e.exceptionCode === '07';
-                if (isThirdVisit) return e.exceptionCode === '08';
-                if (isInternalDelivery) return e.eventType === 'DL';
-                return false;
-              });
-              if (triggerEvent?.date) fedexEventDate = new Date(triggerEvent.date);
-            }
-
-            // --- CÁLCULO DE SEMANA FISCAL (Lunes a Domingo) ---
-            const mDate = dayjs(fedexEventDate);
-            const startOfWeek = mDate.startOf('week').add(1, 'day').toDate(); // Lunes 00:00
-            const endOfWeek = mDate.endOf('week').add(1, 'day').toDate();     // Domingo 23:59
-
-            const incomeCountThisWeek = await queryRunner.manager.count(Income, {
-              where: {
-                shipment: { id: shipment.id },
-                // En lugar de startOfWeek y endOfWeek, usamos la fecha exacta del evento
-                date: Between(
-                  dayjs(fedexEventDate).startOf('day').toDate(),
-                  dayjs(fedexEventDate).endOf('day').toDate()
-                )
-              }
-            });
-
-            audit.db_state.has_income_this_week = incomeCountThisWeek > 0;
-
-            // 5. DETECCIÓN Y ACCIONES
-            if (shipment.status !== targetStatus) {
-              audit.actions.push(`[F1] Corregir estatus: ${shipment.status} -> ${targetStatus}`);
-            }
-
-            // IMPORTANTE: Si falta el ingreso EN ESA SEMANA, se agrega la acción
-            if (incomeShouldExist && !audit.db_state.has_income_this_week) {
-              audit.actions.push(`[FINANZAS] FALTA INGRESO SEMANAL del ${fedexEventDate.toLocaleDateString()}`);
-            }
-
-            // Eliminar ingresos sobrantes si es externo (Aplica a cualquier semana)
-            const totalIncomeCount = await queryRunner.manager.count(Income, { where: { shipment: { id: shipment.id } } });
-            if (targetStatus === ShipmentStatusType.ENTREGADO_POR_FEDEX && totalIncomeCount > 0) {
-              audit.actions.push(`[FINANZAS] ELIMINAR INGRESO: Paquete externo con cobro local.`);
-            }
-
-            for (const charge of charges) {
-              if (charge.status !== targetStatus) {
-                audit.actions.push(`[F2] Sincronizar Cargo ID ${charge.id}`);
-              }
-            }
-
-            // 6. APLICAR CAMBIOS
-            if (applyFix && audit.actions.length > 0) {
-              shipment.status = targetStatus as any;
-              if (trackResult.deliveryDetails?.receivedByName) {
-                shipment.receivedByName = trackResult.deliveryDetails.receivedByName;
-              }
-              await queryRunner.manager.save(shipment);
-
-              // Gestión de Incomes Semanal
-              if (incomeShouldExist && !audit.db_state.has_income_this_week) {
-                await this.generateIncomes(shipment, fedexEventDate, exceptionCode, queryRunner.manager);
-              } 
-              else if (targetStatus === ShipmentStatusType.ENTREGADO_POR_FEDEX && totalIncomeCount > 0) {
-                // Borrado físico de ingresos para entregas externas
-                await queryRunner.manager.delete(Income, { shipment: { id: shipment.id } });
-              }
-
-              for (const charge of charges) {
-                charge.status = targetStatus as any;
-                await queryRunner.manager.save(charge);
-              }
-
-              const hist = queryRunner.manager.create(ShipmentStatus, {
-                status: targetStatus,
-                shipment: shipment,
-                notes: `[FIXER-MASTER] Auditoría semanal. Evento: ${fedexEventDate.toLocaleDateString()}`,
-                timestamp: new Date()
-              });
-              await queryRunner.manager.save(hist);
-              audit.status = 'SUCCESS_REPAIRED';
-            } else {
-              audit.status = audit.actions.length > 0 ? 'ISSUE_DETECTED' : 'PERFECT_MATCH';
-            }
-
-            await queryRunner.commitTransaction();
-            this.logDeepAudit(logFile, audit, shipment, targetStatus, exceptionCode, applyFix);
-            return audit;
-
-          } catch (error) {
-            if (queryRunner.isTransactionActive) await queryRunner.rollbackTransaction();
-            audit.status = 'CRITICAL_FAILURE';
-            audit.analysis.push(`Error: ${error.message}`);
-            return audit;
-          } finally {
-            await queryRunner.release();
-          }
-        }));
-
-        const finalResults = await Promise.all(tasks);
-        return { log: logFile, summary: finalResults };
       }
 
       async auditAndFixFedexShipments(trackingNumbers: string[], applyFix: boolean = false) {
@@ -7482,6 +7563,117 @@ export class ShipmentsService {
       ${separator}
       `;
         fsSync.appendFileSync(path, content);
+      }
+
+      async trackFedexDirect(trackingNumbers: string[]) {
+        // Ejecutamos todas las consultas en paralelo
+        const results = await Promise.all(
+          trackingNumbers.map(async (tn) => {
+            try {
+              const fedexInfo = await this.fedexService.trackPackage(tn);
+              const trackDetail = fedexInfo?.output?.completeTrackResults?.[0]?.trackResults?.[0];
+              
+              if (!trackDetail) return { trackingNumber: tn, isError: true, description: 'No encontrado' };
+
+              const latestStatus = trackDetail.latestStatusDetail;
+              const scanEvents = trackDetail.scanEvents || [];
+              const lastEvent = scanEventsFilter(scanEvents) as any;
+              
+              const ancillaryReason = latestStatus?.ancillaryDetails?.[0]?.reason || '';
+              const exceptionCode = ancillaryReason !== '' ? ancillaryReason : (lastEvent?.exceptionCode || '');
+              const derivedStatusCode = latestStatus?.derivedCode || latestStatus?.code || '';
+
+              return {
+                trackingNumber: tn,
+                status: mapFedexStatusToLocalStatus(derivedStatusCode, exceptionCode),
+                description: latestStatus?.description || 'Sin info',
+                location: latestStatus?.statusByLocale || 'MÉXICO',
+                deliveredTo: trackDetail.deliveryDetails?.receivedByName || null,
+                isError: false
+              };
+            } catch (err) {
+              return { trackingNumber: tn, isError: true, description: 'Error de conexión' };
+            }
+          })
+        );
+        return results;
+      }
+
+      async findNonDeliveredShipments(
+        subsidiaryId: string, 
+        date: Date
+      ): Promise<ReturnValidationDto[]> {
+        const formattedDate = dayjs(date).format('YYYY-MM-DD');
+        const targetStatuses = [
+          ShipmentStatusType.NO_ENTREGADO,
+          ShipmentStatusType.CLIENTE_NO_DISPONIBLE,
+          ShipmentStatusType.RECHAZADO,
+          ShipmentStatusType.DIRECCION_INCORRECTA,
+          ShipmentStatusType.CAMBIO_FECHA_SOLICITADO,
+        ];
+
+        const buildQuery = (repo: any) => {
+          return repo.createQueryBuilder('entity')
+            .leftJoinAndSelect('entity.subsidiary', 'subsidiary')
+            .leftJoinAndSelect('entity.statusHistory', 'statusHistory') // Esta es la relación en tu entidad
+            .leftJoinAndSelect('entity.payment', 'payment')
+            .where('subsidiary.id = :subsidiaryId', { subsidiaryId })
+            .andWhere('entity.status IN (:...statuses)', { statuses: targetStatuses })
+            .andWhere((qb) => {
+              const subQuery = qb.subQuery()
+                .select('1')
+                .from('shipment_status', 'sh') // <-- NOMBRE CORRECTO SEGÚN TU LOG
+                .where('sh.shipmentId = entity.id OR sh.chargeShipmentId = entity.id')
+                .andWhere('sh.status IN (:...statuses)', { statuses: targetStatuses })
+                .andWhere('DATE(sh.createdAt) = :date', { date: formattedDate })
+                .getQuery();
+              return `EXISTS ${subQuery}`;
+            })
+            .orderBy('entity.createdAt', 'DESC') // Usamos createdAt ya que updatedAt no existe
+            .getMany();
+        };
+
+        const [shipments, chargeShipments] = await Promise.all([
+          buildQuery(this.shipmentRepository),
+          buildQuery(this.chargeShipmentRepository)
+        ]);
+
+        return [
+          ...shipments.map(s => this.mapEntityToReturnValidation(s, false)),
+          ...chargeShipments.map(cs => this.mapEntityToReturnValidation(cs, true))
+        ];
+      }
+
+      // Método genérico que funciona para ambos tipos
+      private mapEntityToReturnValidation(
+        entity: Shipment | ChargeShipment,
+        isCharge: boolean
+      ): ReturnValidationDto {
+        // Obtener el último status del historial
+        const lastStatusHistory = entity.statusHistory && entity.statusHistory.length > 0
+          ? [...entity.statusHistory].sort((a, b) => 
+              new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+            )[0]
+          : null;
+
+        return {
+          id: entity.id,
+          trackingNumber: entity.trackingNumber,
+          status: entity.status,
+          recipientAddress: entity.recipientAddress || '',
+          recipientName: entity.recipientName || '',
+          recipientPhone: entity.recipientPhone || '',
+          recipientZip: entity.recipientZip || '',
+          subsidiaryId: entity.subsidiary?.id || '',
+          subsidiaryName: entity.subsidiary?.name || '',
+          hasIncome: entity.payment ? true : false,
+          isCharge: isCharge,
+          lastStatus: lastStatusHistory ? {
+            type: null,
+            exceptionCode: lastStatusHistory.exceptionCode || null,
+            notes: lastStatusHistory.notes || null
+          } : null
+        };
       }
 
 }

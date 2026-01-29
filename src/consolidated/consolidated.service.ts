@@ -386,6 +386,7 @@ export class ConsolidatedService {
         'no_entregado',
         'direccion_incorrecta',
         'cliente_no_encontrado',
+        'cambio_fecha_solicitado'
       ];
 
       if (!rejectedStatuses.includes(status)) {
@@ -403,7 +404,7 @@ export class ConsolidatedService {
       return row?.exceptionCode ?? null;
     };
 
-    // ========= 🔥 MAPEO FINAL =========
+    // ========= 🔥 MAPEO FINAL CORREGIDO =========
     const mapShipment = async (shipment: any, isCharge: boolean) => {
       const dispatch = shipment.packageDispatch;
       const driverName = dispatch?.drivers?.length ? dispatch.drivers[0].name : null;
@@ -422,7 +423,8 @@ export class ConsolidatedService {
           shipmentStatus: shipment.status,
           commitDateTime: shipment.commitDateTime,
           ubication,
-          warehouse: shipment.subsidiary.name,
+          // 🛡️ PROTECCIÓN: Si subsidiary es null, ponemos "SIN SUCURSAL"
+          warehouse: shipment.subsidiary?.name ?? 'SIN SUCURSAL', 
           unloading: shipment.unloading
             ? {
                 trackingNumber: shipment.unloading.trackingNumber,
@@ -483,7 +485,6 @@ export class ConsolidatedService {
     console.log("✅ Resultado final:", result.length);
     return result;
   }
-
 
   async updateFedexDataBySucursalAndDate(
     subsidiaryId?: string,
@@ -641,6 +642,7 @@ export class ConsolidatedService {
       ShipmentStatusType.PENDIENTE,
       ShipmentStatusType.NO_ENTREGADO,
       ShipmentStatusType.DIRECCION_INCORRECTA,
+      ShipmentStatusType.CAMBIO_FECHA_SOLICITADO,
       ShipmentStatusType.CLIENTE_NO_DISPONIBLE,
     ];
 
@@ -815,6 +817,94 @@ export class ConsolidatedService {
       shipments: shipmentsWithout67
     };
 
+  }
+
+  async getShipmentsWithout44ByConsolidated(id: string) {
+    const shipmentsWithout44 = [];
+
+    // 1. Obtener embarques normales
+    const shipments = await this.shipmentRepository.find({
+      where: { consolidatedId: id },
+      relations: ['statusHistory'],
+    });
+
+    // 2. Obtener embarques de carga (ChargeShipments)
+    const chargeShipments = await this.chargeShipmentRepository.find({
+      where: { consolidatedId: id },
+      relations: ['statusHistory'],
+    });
+
+    console.log("📦 Shipments encontrados:", shipments.length);
+    console.log("⚡ ChargeShipments encontrados:", chargeShipments.length);
+
+    const allShipments = [...shipments, ...chargeShipments];
+
+    for (const shipment of allShipments) {
+      try {
+        // Caso: No hay historial de estados
+        if (!shipment.statusHistory || shipment.statusHistory.length === 0) {
+          shipmentsWithout44.push({
+            trackingNumber: shipment.trackingNumber,
+            currentStatus: shipment.status,
+            statusHistoryCount: 0,
+            exceptionCodes: [],
+            firstStatusDate: null,
+            lastStatusDate: null,
+            comment: 'Sin historial de estados',
+          });
+          continue;
+        }
+
+        // Ordenar historial por fecha
+        const sortedHistory = shipment.statusHistory.sort(
+          (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+        );
+
+        // --- CAMBIO CLAVE: Validar código 44 ---
+        const hasExceptionCode44 = sortedHistory.some(status => 
+          status.exceptionCode === '44'
+        );
+
+        if (!hasExceptionCode44) {
+          const firstStatus = sortedHistory[0];
+          const lastStatus = sortedHistory[sortedHistory.length - 1];
+
+          const exceptionCodes = sortedHistory
+            .map(h => h.exceptionCode)
+            .filter(code => code !== null && code !== undefined);
+
+          shipmentsWithout44.push({
+            trackingNumber: shipment.trackingNumber,
+            recipientAddress: shipment.recipientAddress,
+            recipientName: shipment.recipientName,
+            recipientCity: shipment.recipientCity,
+            recipientZip: shipment.recipientZip,
+            currentStatus: shipment.status,
+            statusHistoryCount: sortedHistory.length,
+            exceptionCodes: [...new Set(exceptionCodes)],
+            firstStatusDate: firstStatus?.timestamp,
+            lastStatusDate: lastStatus?.timestamp,
+            comment: 'No tiene exceptionCode 44',
+          });
+        }
+
+      } catch (error) {
+        shipmentsWithout44.push({
+          trackingNumber: shipment.trackingNumber,
+          currentStatus: shipment.status,
+          statusHistoryCount: 0,
+          exceptionCodes: [],
+          firstStatusDate: null,
+          lastStatusDate: null,
+          comment: `Error: ${error.message}`,
+        });
+      }
+    }
+
+    return { 
+      count: shipmentsWithout44.length,
+      shipments: shipmentsWithout44
+    };
   }
 
 }

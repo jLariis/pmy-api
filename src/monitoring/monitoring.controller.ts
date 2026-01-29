@@ -54,18 +54,18 @@ export class MonitoringController {
   }
 
   @Get('consolidated/no-67/:consolidatedId')
-  getNo67ShipmentsByConsolidated(@Param('consolidatedId') consolidatedId: string) {
-    return this.monitoringService.getShipmentsWithout67(consolidatedId);
+  getNo67ShipmentsByConsolidated(@Param('consolidatedId') consolidatedId: string, @Query('subsidiaryId') subsidiaryId: string) {
+    return this.monitoringService.getShipmentsWithout67(consolidatedId, subsidiaryId);
   }
 
   @Get('unloading/no-67/:unloadingId')
-  getNo67ShipmentsByUnloading(@Param('unloadingId') unloadingId: string) {
-    return this.monitoringService.getShipmentsWithout67ByUnloading(unloadingId);
+  getNo67ShipmentsByUnloading(@Param('unloadingId') unloadingId: string, @Query('subsidiaryId') subsidiaryId: string) {
+    return this.monitoringService.getShipmentsWithout67ByUnloading(unloadingId, subsidiaryId);
   }
 
   @Get('package-dispatch/no-67/:packageDispatchId')
-  getNo67ShipmentsByPackageDispatch(@Param('packageDispatchId') packageDispatchId: string) {
-    return this.monitoringService.getShipmentsWithout67ByPackageDispatch(packageDispatchId);
+  getNo67ShipmentsByPackageDispatch(@Param('packageDispatchId') packageDispatchId: string, @Query('subsidiaryId') subsidiaryId: string) {
+    return this.monitoringService.getShipmentsWithout67ByPackageDispatch(packageDispatchId, subsidiaryId);
   }
 
   @Get('inventory/67/:subsidiaryId')

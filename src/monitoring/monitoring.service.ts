@@ -11,6 +11,21 @@ import { InventoriesService } from 'src/inventories/inventories.service';
 export class MonitoringService {
   private readonly logger = new Logger(MonitoringService.name);
 
+  private SUBSIDIARY_CONFIG = { 
+    "abf2fc38-cb42-41b6-9554-4b71c11b8916": {
+      shouldCheck67: true,
+      shouldCheck44: false
+    },
+    "b45cbb94-84e0-481f-bbf8-75642b601230": {
+      shouldCheck67: false,
+      shouldCheck44: true
+    },
+    "040483fc-4322-4ce0-b124-cc5b6d2a9cee": {
+      shouldCheck67: false,
+      shouldCheck44: true
+    }
+  }
+
   constructor(
     private readonly mailService: MailService,
     private readonly fedexService: FedexService,
@@ -66,19 +81,46 @@ export class MonitoringService {
     return updatedPackages;
   }
 
-  async getShipmentsWithout67(consolidatedId: string){
-    const shipments = await this.consolidatedService.getShipmentsWithout67ByConsolidated(consolidatedId);
-    return shipments;
+  async getShipmentsWithout67(consolidatedId: string, subdidiaryId: string){
+    if(this.SUBSIDIARY_CONFIG[subdidiaryId]?.shouldCheck67){
+      const shipments = await this.consolidatedService.getShipmentsWithout67ByConsolidated(consolidatedId);
+      return shipments; 
+    }
+
+    if(this.SUBSIDIARY_CONFIG[subdidiaryId]?.shouldCheck44){
+      const shipments = await this.consolidatedService.getShipmentsWithout44ByConsolidated(consolidatedId);
+      return shipments;
+    }
+
+    return await this.consolidatedService.getShipmentsWithout67ByConsolidated(consolidatedId);    
   }
 
-  async getShipmentsWithout67ByUnloading(unloadingId: string){
-    const shipments = await this.unloadingService.getShipmentsWithout67ByUnloading(unloadingId);
-    return shipments;
+  async getShipmentsWithout67ByUnloading(unloadingId: string, subdidiaryId: string){
+    if(this.SUBSIDIARY_CONFIG[subdidiaryId]?.shouldCheck67){
+      const shipments = await this.unloadingService.getShipmentsWithout67ByUnloading(unloadingId);
+      return shipments; 
+    }
+
+    if(this.SUBSIDIARY_CONFIG[subdidiaryId]?.shouldCheck44){
+      const shipments = await this.unloadingService.getShipmentsWithout44ByUnloading(unloadingId);
+      return shipments;
+    }
+    
+    return await this.unloadingService.getShipmentsWithout67ByUnloading(unloadingId);  
   }
 
-  async getShipmentsWithout67ByPackageDispatch(packageDispatchId: string){
-    const shipments = await this.packageDispatchService.getShipmentsWithout67ByPackageDispatch(packageDispatchId);
-    return shipments;
+  async getShipmentsWithout67ByPackageDispatch(packageDispatchId: string, subdidiaryId: string){
+    if(this.SUBSIDIARY_CONFIG[subdidiaryId]?.shouldCheck67){
+      const shipments = await this.packageDispatchService.getShipmentsWithout67ByPackageDispatch(packageDispatchId);
+      return shipments; 
+    }
+
+    if(this.SUBSIDIARY_CONFIG[subdidiaryId]?.shouldCheck44){
+      const shipments = await this.packageDispatchService.getShipmentsWithout44ByPackageDispatch(packageDispatchId);
+      return shipments;
+    }
+
+    return await this.packageDispatchService.getShipmentsWithout67ByPackageDispatch(packageDispatchId);
   }
 
   async checkInventory67(subsidiaryId: string){
