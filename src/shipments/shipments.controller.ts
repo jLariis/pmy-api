@@ -27,9 +27,9 @@ export class ShipmentsController {
 
   @Get('test-new-cron')
   async testNewCronJob() {
-    const globalStart = Date.now();
-    this.logger.log('🚀 [TEST] Iniciando verificación manual de envíos (Normales y F2)...');
-
+    const globalStart = Date.now();    
+    this.logger.log('🕐 Iniciando verificación de envíos (Normales y F2)...');
+    
     try {
       // 1. Obtención de datos en paralelo
       const [shipments, chargeShipments] = await Promise.all([
@@ -37,77 +37,46 @@ export class ShipmentsController {
         this.shipmentsService.getSimpleChargeShipments()
       ]);
 
-      const trackingNumbers = [...new Set(shipments.map(s => s.trackingNumber))];
-      const trackingNumbersF2 = [...new Set(chargeShipments.map(s => s.trackingNumber))];
-
-      if (trackingNumbers.length === 0 && trackingNumbersF2.length === 0) {
+      if (shipments.length === 0 && chargeShipments.length === 0) {
         this.logger.log('📪 No hay envíos ni F2 para procesar.');
-        return { message: 'No hay datos para procesar' };
+        return;
       }
 
-      this.logger.log(`📊 Datos encontrados: ${trackingNumbers.length} normales y ${trackingNumbersF2.length} F2`);
+      this.logger.log(`📊 Total a procesar: ${shipments.length} normales y ${chargeShipments.length} F2`);
 
-      // --- FASE 1: Envíos Normales ---
-      if (trackingNumbers.length > 0) {
+      // 2. FASE 1: Envíos Normales
+      if (shipments.length > 0) {
         const startF1 = Date.now();
-        this.logger.log('🔎 [FASE 1] Actualizando Envíos Normales...');
+        this.logger.log('🚀 [FASE 1] Iniciando actualización de Envíos Normales...');
         
-        await this.shipmentsService.processMasterFedexUpdate(trackingNumbers);
+        await this.shipmentsService.processMasterFedexUpdate(shipments);
         
         const durationF1 = ((Date.now() - startF1) / 1000 / 60).toFixed(2);
-        this.logger.log(`✅ [FASE 1] ${trackingNumbers.length} procesados en ${durationF1} min.`);
+        this.logger.log(`✅ [FASE 1] Finalizada en ${durationF1} minutos.`);
       }
 
-      // --- FASE 2: ChargeShipments (F2) ---
-      if (trackingNumbersF2.length > 0) {
+      // 3. FASE 2: ChargeShipments (F2)
+      if (chargeShipments.length > 0) {
         const startF2 = Date.now();
-        this.logger.log('🔎 [FASE 2] Actualizando ChargeShipments (Cargos F2)...');
+        this.logger.log('🚀 [FASE 2] Iniciando actualización de ChargeShipments (F2)...');
+        this.logger.log(`📝 Nota: Se generará historial en shipment_status para ${chargeShipments.length} cargos.`);
         
-        await this.shipmentsService.processChargeFedexUpdate(trackingNumbersF2); 
+        await this.shipmentsService.processChargeFedexUpdate(chargeShipments); 
         
         const durationF2 = ((Date.now() - startF2) / 1000 / 60).toFixed(2);
-        this.logger.log(`✅ [FASE 2] ${trackingNumbersF2.length} procesados en ${durationF2} min.`);
+        this.logger.log(`✅ [FASE 2] Finalizada en ${durationF2} minutos.`);
       }
 
-      const totalDuration = ((Date.now() - globalStart) / 1000 / 60).toFixed(2);
-      const totalCount = trackingNumbers.length + trackingNumbersF2.length;
+      // Resumen Final
+      const totalDurationMin = ((Date.now() - globalStart) / 1000 / 60).toFixed(2);
+      //const totalCount = trackingNumbers.length + trackingNumbersF2.length;
       
-      this.logger.log(`🏁 [TEST] Sincronización TOTAL finalizada: ${totalCount} trackings en ${totalDuration} minutos.`);
-
-      return {
-        status: 'success',
-        processedMaster: trackingNumbers.length,
-        processedF2: trackingNumbersF2.length,
-        totalDurationMinutes: totalDuration
-      };
+      this.logger.log(`🏁 Sincronización TOTAL finalizada con éxito.`);
+      //this.logger.log(`✅ Detalle final: ${totalCount} trackings procesados en ${totalDurationMin} minutos.`);
 
     } catch (err) {
-      this.logger.error(`❌ Error fatal en testNewCronJob: ${err.message}`);
-      return { status: 'error', message: err.message };
+      this.logger.error(`❌ Error fatal en handleCron: ${err.message}`);
     }
-  }
-
-
-  @Post('update-package-statuses')
-  @ApiBody({
-    description: 'Array de números de tracking a actualizar',
-    schema: {
-      type: 'object',
-      properties: {
-        trackingNumbers: {
-          type: 'array',
-          items: {
-            type: 'string'
-          },
-          description: 'Números de tracking a actualizar',
-          example: ['TRK001', 'TRK002', 'TRK003']
-        }
-      },
-      required: ['trackingNumbers']
-    }
-  })
-  async updatePackageStatuses(@Body() body: { trackingNumbers: string[] }) {
-    return this.shipmentsService.processMasterFedexUpdate(body.trackingNumbers);
   }
 
   @Get('pendings')

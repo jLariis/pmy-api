@@ -10,6 +10,7 @@ import { ShipmentStatusType } from 'src/common/enums/shipment-status-type.enum';
 import { ValidatedPackageDispatchDto } from 'src/package-dispatch/dto/validated-package-dispatch.dto';
 import { Priority } from 'src/common/enums/priority.enum';
 import { ShipmentType } from 'src/common/enums/shipment-type.enum';
+import { plainToInstance } from 'class-transformer';
 
 @Injectable()
 export class FedexService {
@@ -99,51 +100,58 @@ export class FedexService {
   }
 
 
-  async trackPackage(
-    trackingNumber: string, 
-    fedexUniqueId?: string, 
-    carrierCode?: string
-  ): Promise<FedExTrackingResponseDto> {
-    this.logger.log(`Rastreando guía: ${trackingNumber} ${fedexUniqueId ? `(ID Único: ${fedexUniqueId})` : ''}`);
-    
-    const token = await this.getSmartToken();
-    const url = `${process.env.FEDEX_API_URL}${FEDEX_TRACKING_ENDPOINT}`;
+async trackPackage(
+  trackingNumber: string, 
+  fedexUniqueId?: string, 
+  carrierCode?: string
+): Promise<FedExTrackingResponseDto> {
+  this.logger.log(`Rastreando guía: ${trackingNumber} ${fedexUniqueId ? `(ID: ${fedexUniqueId})` : ''}`);
+  
+  const token = await this.getSmartToken();
+  const url = `${process.env.FEDEX_API_URL}${FEDEX_TRACKING_ENDPOINT}`;
 
-    // Construimos el trackingNumberInfo de forma dinámica
-    const trackingNumberInfo: any = { trackingNumber };
-
-    // Agregamos los IDs opcionales solo si están presentes
-    if (fedexUniqueId) {
-      trackingNumberInfo.trackingNumberUniqueId = fedexUniqueId;
-    }
-    if (carrierCode) {
-      trackingNumberInfo.carrierCode = carrierCode;
-    }
-
-    const body = {
-      includeDetailedScans: true,
-      trackingInfo: [
-        {
-          trackingNumberInfo: trackingNumberInfo,
-        }
-      ],
-    };
-
-    try {
-      const response = await axios.post(url, body, {
-        headers: FEDEX_HEADERS(token),
-      });
-      return response.data;
-    } catch (error) {
-      // VALIDACIÓN EXTRA: Si el error es 401 (No autorizado), borramos el token local 
-      // para forzar uno nuevo en la siguiente vuelta.
-      if (error.response?.status === 401) {
-        this.deleteTokenFile();
+  const body = {
+    includeDetailedScans: true,
+    trackingInfo: [
+      {
+        trackingNumberInfo: {
+          trackingNumber,
+          ...(fedexUniqueId && { trackingNumberUniqueId: fedexUniqueId }),
+          ...(carrierCode && { carrierCode: carrierCode }),
+        },
       }
-      this.logger.error(`❌ Error trackPackage [${trackingNumber}]:`, error.response?.data || error.message);
-      throw error;
+    ],
+  };
+
+  try {
+    const response = await axios.post(url, body, {
+      headers: FEDEX_HEADERS(token),
+      timeout: 10000, // Evita que el cron se cuelgue infinitamente
+    });
+
+    // --- CRÍTICO: Transformación y Validación ---
+    const trackData = plainToInstance(FedExTrackingResponseDto, response.data);
+    
+    // Opcional: Validar si la respuesta tiene la estructura esperada
+    // const errors = await validate(trackData);
+    // if (errors.length > 0) throw new Error('Estructura de respuesta FedEx inválida');
+
+    return trackData;
+
+  } catch (error) {
+    if (error.response?.status === 401) {
+      this.logger.warn(`Token expirado para [${trackingNumber}], limpiando...`);
+      this.deleteTokenFile();
     }
+    
+    // Si FedEx responde 404 o similar, logueamos pero no necesariamente 
+    // matamos el proceso para que el cron siga con la siguiente guía
+    const errorData = error.response?.data || error.message;
+    this.logger.error(`❌ Error API FedEx [${trackingNumber}]:`, JSON.stringify(errorData));
+    
+    throw error; 
   }
+}
 
   async completePackageInfo(trackingNumber: string): Promise<ValidatedPackageDispatchDto[]> {
     this.logger.log(`Obteniendo info completa: ${trackingNumber}`);

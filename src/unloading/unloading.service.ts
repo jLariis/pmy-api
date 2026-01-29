@@ -2818,7 +2818,7 @@ export class UnloadingService {
 
       return row?.exceptionCode ?? null;
     };
-    
+
     // ===================================================
     // MAPEO
     // ===================================================
@@ -3070,17 +3070,16 @@ export class UnloadingService {
     const shipmentsWithout67 = [];
 
     const shipments = await this.shipmentRepository.find({
-      where: { unloading: { id } },
+      where: { unloading: { id } , status: Not(ShipmentStatusType.ENTREGADO) },
       relations: [
-        'statusHistory',
-
+        'statusHistory'
       ],
     });
 
     console.log("📦 Shipments encontrados:", shipments.length);
 
     const chargeShipments = await this.chargeShipmentRepository.find({
-      where: { unloading: { id } },
+      where: { unloading: { id } , status: Not(ShipmentStatusType.ENTREGADO)},
       relations: [
         'statusHistory',
       ],
@@ -3161,7 +3160,7 @@ export class UnloadingService {
 
     // 1. Buscar Shipments normales relacionados a la descarga
     const shipments = await this.shipmentRepository.find({
-      where: { unloading: { id } },
+      where: { unloading: { id }, status: Not(ShipmentStatusType.ENTREGADO) },
       relations: ['statusHistory'],
     });
 
@@ -3169,7 +3168,7 @@ export class UnloadingService {
 
     // 2. Buscar ChargeShipments relacionados a la descarga
     const chargeShipments = await this.chargeShipmentRepository.find({
-      where: { unloading: { id } },
+      where: { unloading: { id }, status: Not(ShipmentStatusType.ENTREGADO) },
       relations: ['statusHistory'],
     });
 
