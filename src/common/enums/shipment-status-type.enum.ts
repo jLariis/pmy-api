@@ -16,7 +16,7 @@ export enum ShipmentStatusType {
   LLEGADO_DESPUES = 'llegado_despues',//STAT31
   DIRECCION_INCORRECTA = 'direccion_incorrecta', //DEX03
   CLIENTE_NO_DISPONIBLE = 'cliente_no_disponible', //DEX08
-  CAMBIO_FECHA_SOLICITADO = 'cambio_fecha_solicitado', //STAT17
+  CAMBIO_FECHA_SOLICITADO = 'cambio_fecha_solicitado', //DEX17
   ACARGO_DE_FEDEX = 'a_cargo_de_fedex', // OD
   ENTREGADO_POR_FEDEX = 'entregado_por_fedex', // ED o DL después de un OD
   //17 - 17 - A request was made to change this delivery date.

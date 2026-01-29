@@ -2796,7 +2796,17 @@ export class UnloadingService {
 
     // ========= 🔥 Helper: obtener dexCode =========
     const getDexCode = async (shipmentId: string, status: string) => {
-      if (status !== 'no_entregado') return null;
+      const rejectedStatuses = [
+        'rechazado',
+        'no_entregado',
+        'direccion_incorrecta',
+        'cliente_no_encontrado',
+        'cambio_fecha_solicitado'
+      ];
+
+      if (!rejectedStatuses.includes(status)) {
+        return null;
+      }
 
       const row = await this.shipmentStatusRepository
         .createQueryBuilder('ss')
@@ -2808,9 +2818,7 @@ export class UnloadingService {
 
       return row?.exceptionCode ?? null;
     };
-
-
-
+    
     // ===================================================
     // MAPEO
     // ===================================================
@@ -3148,5 +3156,92 @@ export class UnloadingService {
 
   }
 
+  async getShipmentsWithout44ByUnloading(id: string) {
+    const shipmentsWithout44 = [];
 
+    // 1. Buscar Shipments normales relacionados a la descarga
+    const shipments = await this.shipmentRepository.find({
+      where: { unloading: { id } },
+      relations: ['statusHistory'],
+    });
+
+    console.log("📦 Shipments encontrados:", shipments.length);
+
+    // 2. Buscar ChargeShipments relacionados a la descarga
+    const chargeShipments = await this.chargeShipmentRepository.find({
+      where: { unloading: { id } },
+      relations: ['statusHistory'],
+    });
+
+    console.log("⚡ ChargeShipments encontrados:", chargeShipments.length);
+
+    const allShipments = [...shipments, ...chargeShipments];
+
+    for (const shipment of allShipments) {
+      try {
+        // Validar si tiene historial
+        if (!shipment.statusHistory || shipment.statusHistory.length === 0) {
+          shipmentsWithout44.push({
+            trackingNumber: shipment.trackingNumber,
+            currentStatus: shipment.status,
+            statusHistoryCount: 0,
+            exceptionCodes: [],
+            firstStatusDate: null,
+            lastStatusDate: null,
+            comment: 'Sin historial de estados',
+          });
+          continue;
+        }
+
+        // Ordenar historial por fecha cronológica
+        const sortedHistory = shipment.statusHistory.sort(
+          (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+        );
+
+        // --- VALIDACIÓN DEL CÓDIGO 44 ---
+        const hasExceptionCode44 = sortedHistory.some(status => 
+          status.exceptionCode === '44'
+        );
+
+        if (!hasExceptionCode44) {
+          const firstStatus = sortedHistory[0];
+          const lastStatus = sortedHistory[sortedHistory.length - 1];
+
+          const exceptionCodes = sortedHistory
+            .map(h => h.exceptionCode)
+            .filter(code => code !== null && code !== undefined);
+
+          shipmentsWithout44.push({
+            trackingNumber: shipment.trackingNumber,
+            recipientAddress: shipment.recipientAddress,
+            recipientName: shipment.recipientName,
+            recipientCity: shipment.recipientCity,
+            recipientZip: shipment.recipientZip,
+            currentStatus: shipment.status,
+            statusHistoryCount: sortedHistory.length,
+            exceptionCodes: [...new Set(exceptionCodes)],
+            firstStatusDate: firstStatus?.timestamp,
+            lastStatusDate: lastStatus?.timestamp,
+            comment: 'No tiene exceptionCode 44',
+          });
+        }
+
+      } catch (error) {
+        shipmentsWithout44.push({
+          trackingNumber: shipment.trackingNumber,
+          currentStatus: shipment.status,
+          statusHistoryCount: 0,
+          exceptionCodes: [],
+          firstStatusDate: null,
+          lastStatusDate: null,
+          comment: `Error: ${error.message}`,
+        });
+      }
+    }
+
+    return { 
+      count: shipmentsWithout44.length,
+      shipments: shipmentsWithout44
+    };
+  }
 }
