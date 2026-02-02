@@ -6815,9 +6815,8 @@ export class ShipmentsService {
       
       /** Este es nuevo para pruebas cron */
       async processMasterFedexUpdate(shipmentsToUpdate: Shipment[]) {
-        this.logger.log(`🛡️ Iniciando Master Update (Time Machine) para ${shipmentsToUpdate.length} guías...`);
+        this.logger.log(`🛡️ Iniciando Master Update (Time Machine + Supremacía de Entrega) para ${shipmentsToUpdate.length} guías...`);
 
-        // 1. Agrupación para optimizar (Evita pedir la misma guía 2 veces)
         const shipmentsByTracking = shipmentsToUpdate.reduce((acc, s) => {
             if (!acc[s.trackingNumber]) acc[s.trackingNumber] = [];
             acc[s.trackingNumber].push(s.id); 
@@ -6825,13 +6824,13 @@ export class ShipmentsService {
         }, {} as Record<string, string[]>);
 
         const uniqueTrackingNumbers = Object.keys(shipmentsByTracking);
-        const limit = pLimit(10); // Control de concurrencia
+        const limit = pLimit(10); 
 
         const tasks = uniqueTrackingNumbers.map((tn) => limit(async () => {
             const shipmentWithId = shipmentsToUpdate.find(s => s.trackingNumber === tn && s.fedexUniqueId);
             const currentUniqueId = shipmentWithId?.fedexUniqueId;
 
-            // --- 1. LLAMADA A FEDEX ---
+            // 1. API FedEx
             let fedexInfo;
             try {
                 fedexInfo = await this.fedexService.trackPackage(tn, currentUniqueId);
@@ -6843,7 +6842,7 @@ export class ShipmentsService {
             const allTrackResults = fedexInfo?.output?.completeTrackResults?.[0]?.trackResults || [];
             if (allTrackResults.length === 0) return;
 
-            // Filtro de seguridad: Ignorar datos basura de más de 6 meses
+            // Filtro de 6 meses
             const validResults = allTrackResults.filter(result => {
                 if (!result.scanEvents?.length) return true;
                 const dates = result.scanEvents.map(e => new Date(e.date).getTime());
@@ -6852,8 +6851,7 @@ export class ShipmentsService {
 
             if (validResults.length === 0) return;
 
-            // --- 2. PREPARACIÓN DE EVENTOS ---
-            // Aplanamos, limpiamos duplicados y ordenamos cronológicamente (Nuevo a Viejo para el status final)
+            // 2. PREPARACIÓN DE EVENTOS
             let mergedScanEvents = validResults.flatMap(r => r.scanEvents || []);
             const uniqueEventsMap = new Map();
             mergedScanEvents.forEach(e => {
@@ -6861,7 +6859,7 @@ export class ShipmentsService {
                 if (!uniqueEventsMap.has(key)) uniqueEventsMap.set(key, e);
             });
             
-            // Orden Descendente (Índice 0 = Lo más reciente). Útil para actualizar el estatus final.
+            // Orden Descendente (Índice 0 = Lo más reciente)
             const eventsDesc = Array.from(uniqueEventsMap.values())
                 .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
@@ -6882,7 +6880,7 @@ export class ShipmentsService {
 
             if (!trackResult?.latestStatusDetail) return;
 
-            // --- 3. TRANSACCIÓN BD ---
+            // 3. TRANSACCIÓN BD
             const queryRunner = this.dataSource.createQueryRunner();
             await queryRunner.connect();
             await queryRunner.startTransaction();
@@ -6892,16 +6890,15 @@ export class ShipmentsService {
                 const shipmentList = await queryRunner.manager.find(Shipment, {
                     where: { id: In(targetIds) }, 
                     relations: ['subsidiary'],
-                    lock: { mode: 'pessimistic_write' } // Bloqueo para evitar condiciones de carrera
+                    lock: { mode: 'pessimistic_write' }
                 });
 
-                // Recuperamos el historial más reciente de la BD
+                // Recuperar último historial
                 const lastHistory = await queryRunner.manager.query(
                     `SELECT status, exceptionCode, timestamp FROM shipment_status WHERE shipmentId = ? ORDER BY timestamp DESC LIMIT 1`,
                     [shipmentList[0].id]
                 );
 
-                // Variables de estado DB
                 let dbTimestamp = 0;
                 let dbStatus = null;
                 let dbException = '';
@@ -6912,13 +6909,13 @@ export class ShipmentsService {
                     dbTimestamp = new Date(lastHistory[0].timestamp).getTime();
                 }
 
-                // 🔒 CANDADO MAESTRO: Si ya entregamos, no tocamos nada.
+                // 🔒 CANDADO MAESTRO DE BASE DE DATOS
                 if (dbStatus === ShipmentStatusType.ENTREGADO || dbStatus === 'entregado') {
                     await queryRunner.rollbackTransaction();
                     return; 
                 }
 
-                // Datos del Estatus ACTUAL (El más nuevo de FedEx)
+                // --- DETERMINAR ESTATUS ACTUAL (CON REGLA DE SUPREMACÍA) ---
                 const latestEvent = eventsDesc[0];
                 const latestStatusDetail = trackResult.latestStatusDetail;
                 const ancillaryReason = latestStatusDetail?.ancillaryDetails?.[0]?.reason || '';
@@ -6929,16 +6926,28 @@ export class ShipmentsService {
                 
                 let latestMappedStatus = mapFedexStatusToLocalStatus(latestDerived, latestException);
                 
-                // Sub-reglas OD/DL
-                const subId = shipmentList[0].subsidiary?.id;
-                const subConfig = this.SUBSIDIARY_CONFIG[subId] || { trackExternalDelivery: false };
-                if (subConfig.trackExternalDelivery) {
-                    const hasODEvent = eventsDesc.some(e => e.eventType === 'OD');
-                    if (latestDerived === 'DL' && hasODEvent) latestMappedStatus = ShipmentStatusType.ENTREGADO_POR_FEDEX;
-                    else if (latestDerived === 'OD') latestMappedStatus = ShipmentStatusType.ACARGO_DE_FEDEX;
+                // 👑 REGLA DE SUPREMACÍA: Buscamos si ALGUNO de los eventos nuevos es ENTREGADO.
+                // Si FedEx mandó DL y luego 67 en el mismo paquete, ignoramos el 67 para el estatus final.
+                const hasDeliveryEvent = eventsDesc.some(e => {
+                    const code = e.derivedStatusCode || '';
+                    const map = mapFedexStatusToLocalStatus(code, '');
+                    return map === ShipmentStatusType.ENTREGADO;
+                });
+
+                if (hasDeliveryEvent) {
+                    latestMappedStatus = ShipmentStatusType.ENTREGADO;
+                } else {
+                    // Solo si NO es entregado, aplicamos sub-reglas normales (OD, etc)
+                    const subId = shipmentList[0].subsidiary?.id;
+                    const subConfig = this.SUBSIDIARY_CONFIG[subId] || { trackExternalDelivery: false };
+                    if (subConfig.trackExternalDelivery) {
+                        const hasODEvent = eventsDesc.some(e => e.eventType === 'OD');
+                        if (latestDerived === 'DL' && hasODEvent) latestMappedStatus = ShipmentStatusType.ENTREGADO_POR_FEDEX;
+                        else if (latestDerived === 'OD') latestMappedStatus = ShipmentStatusType.ACARGO_DE_FEDEX;
+                    }
                 }
 
-                // --- LÓGICA DE ACTUALIZACIÓN VISUAL (Shipment & History) ---
+                // --- LÓGICA DE ACTUALIZACIÓN VISUAL ---
                 let shouldUpdateShipment = false;
                 let updateReason = '';
 
@@ -6946,12 +6955,10 @@ export class ShipmentsService {
                     shouldUpdateShipment = true;
                     updateReason = 'Inicial';
                 } else {
-                    // 1. ¿Cambió el estatus o la excepción?
                     if (dbStatus !== latestMappedStatus || dbException !== latestException) {
                         shouldUpdateShipment = true;
                         updateReason = 'Cambio de Estatus';
                     }
-                    // 2. ¿Mismo estatus pero fecha nueva (> 10 seg)? -> Avance de ruta
                     else if (Math.abs(latestDateTs - dbTimestamp) > 10000) {
                         shouldUpdateShipment = true;
                         updateReason = 'Avance de ruta';
@@ -6965,7 +6972,7 @@ export class ShipmentsService {
                     for (const shipment of shipmentList) {
                         let hasChanges = false;
 
-                        // A. Guardar Historial (Solo del ÚLTIMO estado para mostrar dónde está HOY)
+                        // A. Historial
                         if (shouldUpdateShipment) {
                             const historyEntry = queryRunner.manager.create(ShipmentStatus, {
                                 status: latestMappedStatus,
@@ -6978,7 +6985,7 @@ export class ShipmentsService {
                             await queryRunner.manager.save(historyEntry);
                         }
 
-                        // B. Actualizar Cabecera (Shipment)
+                        // B. Actualizar Cabecera
                         if (shouldUpdateShipment) {
                             shipment.status = latestMappedStatus as any;
                             hasChanges = true;
@@ -6997,16 +7004,12 @@ export class ShipmentsService {
                         // =================================================================
                         // C. RECUPERACIÓN DE INGRESOS (TIME MACHINE)
                         // =================================================================
-                        // Solo para la guía principal (evita duplicados si hay clones)
                         if (shipment.id === shipmentList[0].id) {
-                            
-                            // 1. Filtramos eventos "Ocultos" o "Pasados" que ocurrieron después de mi última actualización en DB
-                            // Usamos eventsDesc (que tiene todos)
+                            // Filtramos eventos posteriores a la DB
                             const missedEvents = eventsDesc.filter(e => 
                                 new Date(e.date).getTime() > dbTimestamp
                             );
-
-                            // 2. Ordenamos Cronológicamente (Viejo -> Nuevo) para procesar la historia linealmente
+                            // Ordenamos cronológicamente
                             const chronologicEvents = [...missedEvents].sort((a, b) => 
                                 new Date(a.date).getTime() - new Date(b.date).getTime()
                             );
@@ -7025,12 +7028,9 @@ export class ShipmentsService {
 
                                 let isThirdStrike08 = false;
                                 if (evtCode === '08') {
-                                    // Aquí contamos directo a la BD para tener la verdad absoluta
                                     const count08 = await queryRunner.manager.count(ShipmentStatus, {
                                         where: { shipment: { id: shipment.id }, exceptionCode: '08' }
                                     });
-                                    // Si en BD hay 2, y este es uno nuevo (o el 3ro que acabamos de guardar), cobramos.
-                                    // Usamos >= 2 para ser defensivos (2 previos + este actual = 3)
                                     if (count08 >= 2) isThirdStrike08 = true;
                                 }
 
@@ -7038,14 +7038,10 @@ export class ShipmentsService {
                                     this.logger.log(`💰 [${tn}] Evento recuperado: ${evtStatus} (${evtCode})`);
 
                                     if (!shipment.subsidiary) shipment.subsidiary = shipmentList[0].subsidiary;
-
-                                    // Clonamos para simular el estatus del momento exacto del evento
                                     const tempShipment = { ...shipment };
                                     if (isThirdStrike08) tempShipment.status = ShipmentStatusType.CLIENTE_NO_DISPONIBLE as any;
                                     else tempShipment.status = evtStatus as any;
 
-                                    // Generate Incomes tiene su propia validación de "no cobrar doble la misma semana"
-                                    // Así que es seguro llamarlo aquí.
                                     await this.generateIncomes(
                                         tempShipment as Shipment, 
                                         evtDate, 
@@ -7073,7 +7069,7 @@ export class ShipmentsService {
       }
 
       async processChargeFedexUpdate(chargeShipmentsToUpdate: ChargeShipment[]) {
-        this.logger.log(`🛡️ Iniciando F2 Charge Update Blindado (Time Machine) para ${chargeShipmentsToUpdate.length} guías...`);
+        this.logger.log(`🛡️ Iniciando F2 Charge Update Blindado (Time Machine + Supremacía) para ${chargeShipmentsToUpdate.length} guías...`);
 
         // 1. Agrupación por Tracking
         const shipmentsByTracking = chargeShipmentsToUpdate.reduce((acc, s) => {
@@ -7110,7 +7106,7 @@ export class ShipmentsService {
 
             if (validResults.length === 0) return;
 
-            // --- 2. PREPARACIÓN DE EVENTOS (Igual que Master) ---
+            // --- 2. PREPARACIÓN DE EVENTOS ---
             let mergedScanEvents = validResults.flatMap(r => r.scanEvents || []);
             const uniqueEventsMap = new Map();
             mergedScanEvents.forEach(e => {
@@ -7118,7 +7114,7 @@ export class ShipmentsService {
                 if (!uniqueEventsMap.has(key)) uniqueEventsMap.set(key, e);
             });
             
-            // Orden Descendente (Índice 0 = Lo más reciente)
+            // Orden Descendente (Índice 0 = Lo más reciente cronológicamente)
             const eventsDesc = Array.from(uniqueEventsMap.values())
                 .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
@@ -7169,13 +7165,13 @@ export class ShipmentsService {
                     dbTimestamp = new Date(lastHistory[0].timestamp).getTime();
                 }
 
-                // 🔒 CANDADO: Si ya está ENTREGADO en DB, no hacemos nada.
+                // 🔒 CANDADO DE ORO: Si ya está ENTREGADO en DB, no hacemos nada.
                 if (dbStatus === ShipmentStatusType.ENTREGADO || dbStatus === 'entregado') {
                     await queryRunner.rollbackTransaction();
                     return;
                 }
 
-                // Datos del Estatus ACTUAL (El más nuevo de FedEx)
+                // --- DETERMINACIÓN DE ESTATUS (SUPREMACÍA) ---
                 const latestEvent = eventsDesc[0];
                 const latestStatusDetail = trackResult.latestStatusDetail;
                 const ancillaryReason = latestStatusDetail?.ancillaryDetails?.[0]?.reason || '';
@@ -7186,13 +7182,32 @@ export class ShipmentsService {
 
                 let latestMappedStatus = mapFedexStatusToLocalStatus(latestDerived, latestException);
 
-                // Sub-reglas F2
-                const subId = chargeList[0].subsidiary?.id;
-                const subConfig = this.SUBSIDIARY_CONFIG[subId] || { trackExternalDelivery: false };
-                if (subConfig.trackExternalDelivery) {
+                // 👑 REGLA DE SUPREMACÍA: Buscamos si ALGUNO de los eventos nuevos es ENTREGADO.
+                const deliveryEvent = eventsDesc.find(e => {
+                    const code = e.derivedStatusCode || '';
+                    const map = mapFedexStatusToLocalStatus(code, '');
+                    return map === ShipmentStatusType.ENTREGADO;
+                });
+
+                if (deliveryEvent) {
+                    // Si encontramos entrega, forzamos estatus final, pero verificamos OD
+                    const subId = chargeList[0].subsidiary?.id;
+                    const subConfig = this.SUBSIDIARY_CONFIG[subId] || { trackExternalDelivery: false };
                     const hasODEvent = eventsDesc.some(e => e.eventType === 'OD');
-                    if (latestDerived === 'DL' && hasODEvent) latestMappedStatus = ShipmentStatusType.ENTREGADO_POR_FEDEX;
-                    else if (latestDerived === 'OD') latestMappedStatus = ShipmentStatusType.ACARGO_DE_FEDEX;
+
+                    if (subConfig.trackExternalDelivery && hasODEvent) {
+                        latestMappedStatus = ShipmentStatusType.ENTREGADO_POR_FEDEX;
+                    } else {
+                        latestMappedStatus = ShipmentStatusType.ENTREGADO;
+                    }
+                } else {
+                    // Si NO hay entrega, aplicamos lógica normal para el último evento
+                    const subId = chargeList[0].subsidiary?.id;
+                    const subConfig = this.SUBSIDIARY_CONFIG[subId] || { trackExternalDelivery: false };
+                    if (subConfig.trackExternalDelivery) {
+                        const hasODEvent = eventsDesc.some(e => e.eventType === 'OD');
+                        if (latestDerived === 'OD') latestMappedStatus = ShipmentStatusType.ACARGO_DE_FEDEX;
+                    }
                 }
 
                 // --- LÓGICA DE ACTUALIZACIÓN ---
@@ -7214,10 +7229,6 @@ export class ShipmentsService {
                         updateReason = 'Avance de ruta';
                     }
                 }
-
-                // (Opcional) ID Update logic for Charges if applicable
-                // const newUniqueId = trackResult.trackingNumberInfo?.trackingNumberUniqueId;
-                // const needsUniqueIdUpdate = ... 
 
                 if (shouldUpdate) {
                     for (const charge of chargeList) {
@@ -7387,7 +7398,7 @@ export class ShipmentsService {
         return await this.auditAndFixFedexShipments(trackingNumbers, applyFix);
       }
 
-      async auditAndFixFedexShipments(trackingNumbers: string[], applyFix: boolean = false) {
+      async auditAndFixFedexShipmentsResp(trackingNumbers: string[], applyFix: boolean = false) {
           const limit = pLimit(5);
           const logDir = './logs';
           const logFile = `${logDir}/audit_forensic_${Date.now()}.txt`;
@@ -7591,6 +7602,230 @@ export class ShipmentsService {
                   // 5. CIERRE
                   await queryRunner.commitTransaction();
                   
+                  if (audit.actions.length === 0) audit.status = 'HEALTHY';
+                  else audit.status = applyFix ? 'FIXED' : 'ISSUES_FOUND';
+
+                  this.logDeepAudit(logFile, audit, applyFix);
+                  return audit;
+
+              } catch (e) {
+                  if (queryRunner.isTransactionActive) await queryRunner.rollbackTransaction();
+                  return { tracking: tn, status: 'ERROR', analysis: [e.message] };
+              } finally {
+                  await queryRunner.release();
+              }
+          }));
+
+          const results = await Promise.all(tasks);
+          return { summary: results };
+      }
+
+      async auditAndFixFedexShipments(trackingNumbers: string[], applyFix: boolean = false) {
+          const limit = pLimit(5);
+          const logDir = './logs';
+          const logFile = `${logDir}/audit_forensic_${Date.now()}.txt`;
+
+          if (!fsSync.existsSync(logDir)) fsSync.mkdirSync(logDir, { recursive: true });
+
+          const tasks = trackingNumbers.map((tn) => limit(async () => {
+              const queryRunner = this.dataSource.createQueryRunner();
+              await queryRunner.connect();
+              await queryRunner.startTransaction();
+
+              const audit = {
+                  tracking: tn,
+                  status: 'PENDING',
+                  analysis: [] as string[],
+                  actions: [] as string[], // Aquí guardaremos acciones realizadas O sugeridas
+                  detected_incomes: 0,
+                  recovered_incomes: 0
+              };
+
+              try {
+                  // 1. OBTENER DATOS BD
+                  const shipments = await queryRunner.manager.find(Shipment, {
+                      where: { trackingNumber: tn },
+                      relations: ['subsidiary'],
+                      order: { createdAt: 'DESC' }
+                  });
+
+                  if (shipments.length === 0) {
+                      audit.status = 'NOT_FOUND_IN_DB';
+                      await queryRunner.rollbackTransaction();
+                      return audit;
+                  }
+
+                  const shipment = shipments[0]; 
+                  const dbStatus = shipment.status;
+
+                  // 2. OBTENER DATOS FEDEX
+                  let fedexInfo;
+                  try {
+                      fedexInfo = await this.fedexService.trackPackage(tn, shipment.fedexUniqueId || undefined);
+                  } catch (e) {
+                      audit.status = 'FEDEX_API_ERROR';
+                      audit.analysis.push(e.message);
+                      await queryRunner.rollbackTransaction();
+                      return audit;
+                  }
+
+                  const allTrackResults = fedexInfo?.output?.completeTrackResults?.[0]?.trackResults || [];
+                  if (allTrackResults.length === 0) {
+                      audit.status = 'NO_DATA_FEDEX';
+                      await queryRunner.rollbackTransaction();
+                      return audit;
+                  }
+
+                  const trackResult = allTrackResults[0]; 
+                  const scanEvents = trackResult.scanEvents || [];
+                  
+                  // Ordenamos cronológicamente (Viejo -> Nuevo)
+                  const chronologicalEvents = [...scanEvents].sort((a, b) => 
+                      new Date(a.date).getTime() - new Date(b.date).getTime()
+                  );
+
+                  // 3. ANÁLISIS FORENSE DE INGRESOS & DETECCIÓN DE "HITO DE ENTREGA"
+                  let count08 = 0;
+                  // Variable clave para evitar que un escaneo posterior "borre" la entrega
+                  let foundDelivered = false; 
+
+                  for (const event of chronologicalEvents) {
+                      const evtCode = (event.exceptionCode || '').trim();
+                      const derivedCode = event.derivedStatusCode || '';
+                      const evtStatus = mapFedexStatusToLocalStatus(derivedCode, evtCode);
+                      const evtDate = new Date(event.date);
+
+                      // A. Detección de Hitos
+                      if (evtStatus === ShipmentStatusType.ENTREGADO) {
+                          foundDelivered = true; // ¡HITO ALCANZADO!
+                      }
+
+                      // B. Lógica de Cobro
+                      let shouldCharge = false;
+                      let chargeReason = '';
+
+                      if (evtStatus === ShipmentStatusType.ENTREGADO) {
+                          shouldCharge = true;
+                          chargeReason = 'ENTREGADO (DL)';
+                      }
+                      
+                      if (evtCode === '07' || 
+                          [ShipmentStatusType.RECHAZADO, ShipmentStatusType.DEVUELTO_A_FEDEX].includes(evtStatus as any)) {
+                          shouldCharge = true;
+                          chargeReason = `RECHAZADO (${evtCode})`;
+                      }
+
+                      if (evtCode === '08') {
+                          count08++;
+                          if (count08 >= 3) {
+                              shouldCharge = true;
+                              chargeReason = `3ra VISITA (08) - Total: ${count08}`;
+                          }
+                      }
+
+                      if (shouldCharge) {
+                          audit.detected_incomes++;
+                          
+                          // Verificamos si existe ingreso esa semana
+                          const mDate = dayjs(evtDate);
+                          const startOfWeek = mDate.day(1).startOf('day').toDate();
+                          const endOfWeek = mDate.day(7).endOf('day').toDate();
+
+                          const incomeExists = await queryRunner.manager.findOne(Income, {
+                              where: {
+                                  trackingNumber: tn,
+                                  date: Between(startOfWeek, endOfWeek)
+                              }
+                          });
+
+                          if (!incomeExists) {
+                              const msg = `💰 FALTA INGRESO: ${chargeReason} fecha ${mDate.format('DD/MM/YYYY')}`;
+                              audit.analysis.push(msg);
+
+                              if (applyFix) {
+                                  if (!shipment.subsidiary) shipment.subsidiary = shipments[0].subsidiary;
+                                  const tempShipment = { ...shipment };
+                                  if (chargeReason.includes('3ra VISITA')) {
+                                      tempShipment.status = ShipmentStatusType.CLIENTE_NO_DISPONIBLE as any;
+                                  } else {
+                                      tempShipment.status = evtStatus as any;
+                                  }
+                                  await this.generateIncomes(tempShipment as Shipment, evtDate, evtCode, queryRunner.manager);
+                                  audit.recovered_incomes++;
+                                  audit.actions.push(`✅ Ingreso generado: ${chargeReason}`);
+                              } else {
+                                  audit.actions.push(`⚠️ Sugerencia: Generar ingreso por ${chargeReason}`);
+                              }
+                          }
+                      }
+                  }
+
+                  // 4. CÁLCULO DE ESTATUS FINAL (CORREGIDO)
+                  // Ignoramos el "Iron Lock" si vamos a corregir hacia ENTREGADO (porque eso es bueno)
+                  // Pero respetamos el Iron Lock si la DB dice ENTREGADO y FedEx dice otra cosa.
+                  
+                  const dbIsFinal = (dbStatus === ShipmentStatusType.ENTREGADO);
+                  const latestEvent = chronologicalEvents[chronologicalEvents.length - 1];
+                  
+                  if (latestEvent) {
+                      const latestEx = (latestEvent.exceptionCode || '').trim();
+                      let targetStatus = mapFedexStatusToLocalStatus(latestEvent.derivedStatusCode, latestEx);
+                      
+                      // 1. REGLA DE SUPREMACÍA: Si alguna vez fue entregado, SE QUEDA ENTREGADO.
+                      // Esto arregla el bug donde "En Bodega" reemplazaba a "Entregado"
+                      if (foundDelivered) {
+                          targetStatus = ShipmentStatusType.ENTREGADO;
+                      }
+
+                      // 2. Sub-reglas OD (Si no es entregado)
+                      if (!foundDelivered) {
+                          const subId = shipment.subsidiary?.id;
+                          const subConfig = this.SUBSIDIARY_CONFIG[subId] || { trackExternalDelivery: false };
+                          if (subConfig.trackExternalDelivery) {
+                               const hasOD = chronologicalEvents.some(e => e.eventType === 'OD');
+                               if (latestEvent.derivedStatusCode === 'DL' && hasOD) targetStatus = ShipmentStatusType.ENTREGADO_POR_FEDEX;
+                               else if (latestEvent.derivedStatusCode === 'OD') targetStatus = ShipmentStatusType.ACARGO_DE_FEDEX;
+                          }
+                      }
+
+                      // 3. COMPARACIÓN
+                      // Si la DB ya está en Entregado y el target es Entregado, todo bien.
+                      // Si la DB está en Entregado y el target NO (ej. Reembolso), activamos Iron Lock.
+                      if (dbIsFinal && targetStatus !== ShipmentStatusType.ENTREGADO && targetStatus !== ShipmentStatusType.ENTREGADO_POR_FEDEX) {
+                           audit.analysis.push(`🔒 IRON LOCK: DB es ${dbStatus}, FedEx dice ${targetStatus}. Se mantiene DB.`);
+                      } 
+                      else if (shipment.status !== targetStatus) {
+                          const msg = `🔄 STATUS DESACTUALIZADO: DB=${shipment.status} -> FEDEX=${targetStatus}`;
+                          audit.analysis.push(msg);
+                          
+                          if (applyFix) {
+                              shipment.status = targetStatus as any;
+                              // Actualizar UniqueId y RecibidoPor...
+                              shipment.fedexUniqueId = trackResult.trackingNumberInfo?.trackingNumberUniqueId || shipment.fedexUniqueId;
+                              if (trackResult.deliveryDetails?.receivedByName) {
+                                  shipment.receivedByName = trackResult.deliveryDetails.receivedByName;
+                              }
+
+                              await queryRunner.manager.save(Shipment, shipment);
+                              
+                              // Sync ChargeShipment
+                              const charges = await queryRunner.manager.find(ChargeShipment, { where: { trackingNumber: tn } });
+                              for (const c of charges) {
+                                  c.status = targetStatus as any;
+                                  if (trackResult.deliveryDetails?.receivedByName) c.receivedByName = trackResult.deliveryDetails.receivedByName;
+                                  await queryRunner.manager.save(ChargeShipment, c);
+                              }
+                              audit.actions.push(`✅ Estatus actualizado a ${targetStatus}`);
+                          } else {
+                              audit.actions.push(`⚠️ Sugerencia: Actualizar estatus a ${targetStatus}`);
+                          }
+                      }
+                  }
+
+                  // 5. CIERRE Y REPORTE
+                  await queryRunner.commitTransaction();
+                  
+                  // Ahora el status depende de si encontramos algo en actions (sugerido o realizado)
                   if (audit.actions.length === 0) audit.status = 'HEALTHY';
                   else audit.status = applyFix ? 'FIXED' : 'ISSUES_FOUND';
 
