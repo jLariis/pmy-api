@@ -2429,6 +2429,8 @@ export class ShipmentsService {
               // REFUERZO DE SEGURIDAD: Re-inyectar la sucursal si se perdió en el buffer
               if (!s.subsidiary) s.subsidiary = predefinedSubsidiary;
 
+              s.consolidatedId = savedCons.id;
+
               if (s.statusHistory?.length) statusHistoryMap.set(s.trackingNumber, [...s.statusHistory]);
               if (s.payment) paymentMap.set(s.trackingNumber, s.payment);
               
@@ -2689,14 +2691,14 @@ export class ShipmentsService {
   private async processShipment(
     shipment: ParsedShipmentDto,
     predefinedSubsidiary: Subsidiary,
-    consolidated: Consolidated,
+    consolidated: Consolidated, // <--- Este objeto YA debe tener ID (savedCons)
     result: any,
     shipmentsWithError: any,
     batchNumber: number,
     shipmentIndex: number,
     processedTrackingNumbers: Set<string>,
     shipmentsToGenerateIncomes: { shipment: Shipment; timestamp: Date; exceptionCode: string | undefined }[],
-    consolidatedId: string
+    consolidatedId: string // <--- Recibes el ID explícito aquí
   ): Promise<void> {
     const trackingNumber = shipment.trackingNumber?.toString().trim();
     
@@ -2721,7 +2723,7 @@ export class ShipmentsService {
 
     const trackResult = fedexShipmentData.output.completeTrackResults[0].trackResults[0];
 
-    // Determinación de Fecha
+    // Determinación de Fecha (Lógica original mantenida)
     let finalCommitDate: Date;
     if (shipment.commitDate && shipment.commitTime) {
       try {
@@ -2740,11 +2742,15 @@ export class ShipmentsService {
       const newShipment = new Shipment();
       newShipment.trackingNumber = trackingNumber;
       newShipment.shipmentType = ShipmentType.FEDEX;
+      
+      // Datos de cliente
       newShipment.recipientName = shipment.recipientName || 'N/A';
       newShipment.recipientAddress = shipment.recipientAddress || 'N/A';
       newShipment.recipientCity = shipment.recipientCity || predefinedSubsidiary.name;
       newShipment.recipientZip = shipment.recipientZip || 'N/A';
       newShipment.recipientPhone = shipment.recipientPhone || 'N/A';
+      
+      // Datos operativos
       newShipment.priority = getPriority(finalCommitDate);
       newShipment.commitDateTime = finalCommitDate;
       newShipment.consNumber = consolidated.consNumber || '';
@@ -2753,9 +2759,14 @@ export class ShipmentsService {
       newShipment.carrierCode = trackResult?.trackingNumberInfo?.carrierCode || null;
       newShipment.createdAt = new Date();
 
-      // Vínculo de Relaciones (Crucial)
+      // === CORRECCIÓN AQUÍ: Vínculo de Relaciones ===
       newShipment.subsidiary = predefinedSubsidiary;
-      (newShipment as any).consolidated = consolidated; 
+      
+      // 1. Asignamos la relación completa (Objeto)
+      newShipment.consolidatedId = consolidated.id; 
+      
+      // 2. [OPCIONAL PERO RECOMENDADO] Si tu entidad Shipment tiene la columna 'consolidatedId' explícita:
+      // newShipment.consolidatedId = consolidated.id; 
 
       // Procesar Historial
       const histories = await this.processFedexScanEventsToStatusesResp(
@@ -2801,11 +2812,12 @@ export class ShipmentsService {
 
         if (validation.isValid) {
           shipmentsToGenerateIncomes.push({
-            shipment: newShipment, // Pasamos la instancia completa con la sucursal
+            shipment: newShipment, // NOTA: newShipment aún NO tiene ID aquí, pero tendrá referencia al guardarse en el batch padre
             timestamp: validation.timestamp,
             exceptionCode: matchedHistory?.exceptionCode,
           });
         } else {
+          // Si quieres ser estricto y cancelar todo el Excel si una guía falla reglas de ingreso:
           throw new BadRequestException(`Guía ${trackingNumber} no cumple reglas de ingreso: ${validation.reason}`);
         }
       }
