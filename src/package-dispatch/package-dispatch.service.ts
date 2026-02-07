@@ -166,7 +166,7 @@ export class PackageDispatchService {
           return queryRunner.manager.create(ShipmentStatus, {
             status: ShipmentStatusType.EN_RUTA,
             exceptionCode: '', // Agregado el código 44 que mencionamos antes
-            comment: `Salida a ruta (Folio Despacho: ${savedDispatch.id})`,
+            notes: `Salida a ruta (Folio Despacho: ${savedDispatch.id})`,
             timestamp: new Date(),
             [relationKey]: { id } // Relacionamos con el paquete correspondiente
           });
