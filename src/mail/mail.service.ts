@@ -9,10 +9,32 @@ import { formatToHermosillo } from 'src/common/utils';
 import { RouteClosure } from 'src/entities/route-closure.entity';
 import { Inventory } from 'src/entities/inventory.entity';
 import { Subsidiary } from 'src/entities';
+import { ConfigService } from '@nestjs/config';
 
 @Injectable()
 export class MailService {
-  constructor(private readonly mailerService: MailerService) {}
+  constructor(
+    private readonly mailerService: MailerService,
+    private readonly configService: ConfigService
+  ) {}
+
+  /**
+   * Método privado para filtrar destinatarios según el ambiente.
+   * Si es development, redirige todo a sistemas.
+   */
+  private applyDevFilters(to: string | string[], cc?: string | string[]) {
+    const isDev = this.configService.get('NODE_ENV') === 'dev';
+    const systemsEmail = 'sistemas@paqueteriaymensajeriadelyaqui.com';
+
+    if (isDev) {
+      return {
+        to: systemsEmail,
+        cc: [], // En desarrollo limpiamos el CC para evitar spam
+      };
+    }
+
+    return { to, cc };
+  }
 
   formatMexicanPhoneNumber = (phone: string): string => {
     // Quita todo lo que no sea dígito
@@ -36,14 +58,15 @@ export class MailService {
 
   /** Enviar correo de Envios priotitarios */
   async sendHighPriorityShipmentsEmail(options: { to: string | string[], cc?: string | string[], htmlContent: string }) {
-    const { to, cc, htmlContent } = options;
+    //const { to, cc, htmlContent } = options;
+    const { to, cc } = this.applyDevFilters(options.to, options.cc);
     
     try {
       await this.mailerService.sendMail({
         to,
         cc,
         subject: '🔴 Envíos con Prioridad Alta en Curso',
-        html: htmlContent,
+        html: options.htmlContent,
         headers: {
           'X-Priority': '1',
           'X-MSMail-Priority': 'High',
@@ -116,10 +139,15 @@ export class MailService {
       </div>
     `;
 
+    const { to, cc } = this.applyDevFilters(
+      packageDispatch.subsidiary.officeEmail,
+      `${packageDispatch.subsidiary.officeEmailToCopy}, sistemas@paqueteriaymensajeriadelyaqui.com`
+    );
+
     try {
       await this.mailerService.sendMail({
-        to: packageDispatch.subsidiary.officeEmail,
-        cc: `${packageDispatch.subsidiary.officeEmailToCopy}, sistemas@paqueteriaymensajeriadelyaqui.com`,
+        to,
+        cc,
         //subject: `🚚 Salida a Ruta ${formattedDate} de ${subsidiaryName}`,
         subject: `🚚 SALIDA ${packageDispatch.drivers[0].name.toLocaleUpperCase()} ${formattedDate}`,
         html: htmlContent,
@@ -190,10 +218,15 @@ export class MailService {
       </div>
     `;
 
+    const { to, cc } = this.applyDevFilters(
+      unloading.subsidiary.officeEmail,
+      `${unloading.subsidiary.officeEmailToCopy}, sistemas@paqueteriaymensajeriadelyaqui.com`
+    );
+
     try {
       await this.mailerService.sendMail({
-        to: unloading.subsidiary.officeEmail,
-        cc: `${unloading.subsidiary.officeEmailToCopy}, sistemas@paqueteriaymensajeriadelyaqui.com`,
+        to,
+        cc,
         subject: `🚚 Desembarque ${formattedDate} de ${subsidiaryName}`,
         html: htmlContent,
         headers: {
@@ -209,14 +242,14 @@ export class MailService {
 
   /** Enviar correo de prioridades dentro de Desembarque */
   async sendHighPriorityUnloadingPriorityPackages(options: { to: string | string[], cc?: string | string[], htmlContent: string }) {
-    const { to, cc, htmlContent } = options;
+    const { to, cc } = this.applyDevFilters(options.to, options.cc);
     
     try {
       await this.mailerService.sendMail({
         to,
         cc,
         subject: '🔴 Envíos con Prioridad Alta en Descarga',
-        html: htmlContent,
+        html: options.htmlContent,
         headers: {
         },
       });
@@ -276,11 +309,15 @@ export class MailService {
       </div>
     `;
 
+    const { to, cc } = this.applyDevFilters(
+      subsidiary.officeEmail,
+      `${subsidiary.officeEmailToCopy}, sistemas@paqueteriaymensajeriadelyaqui.com`
+    );
+
     try {
       await this.mailerService.sendMail({
-        to: subsidiary.officeEmail,
-        cc: `${subsidiary.officeEmailToCopy}, sistemas@paqueteriaymensajeriadelyaqui.com`,
-        //to: 'javier.rappaz@gmail.com',
+        to,
+        cc,
         subject: `🚚 Devoluciones/Recolecciones ${formattedDate} de ${subsidiary.name}`,
         html: htmlContent,
         headers: {
@@ -371,11 +408,15 @@ export class MailService {
         </div>
       `;
 
+    const { to, cc } = this.applyDevFilters(
+      'paqueteriaymensajeriadelyaqui@hotmail.com',
+      `edgardolugo@paqueteriaymensajeriadelyaqui.com, gerardorobles@paqueteriaymensajeriadelyaqui.com, sistemas@paqueteriaymensajeriadelyaqui.com, ${subsidiary.officeEmail}, ${subsidiary.officeEmailToCopy}`
+    );  
+
     try {
       return await this.mailerService.sendMail({
-        //to: 'javier.rappaz@gmail.com',
-        to: 'paqueteriaymensajeriadelyaqui@hotmail.com',
-        cc: `edgardolugo@paqueteriaymensajeriadelyaqui.com, gerardorobles@paqueteriaymensajeriadelyaqui.com, sistemas@paqueteriaymensajeriadelyaqui.com, ${subsidiary.officeEmail}, ${subsidiary.officeEmailToCopy}`,
+        to,
+        cc,
         subject: `🚨🚥 Paquetes con status DEX03 de ${subsidiary.name.toUpperCase()}`,
         html: htmlContent,
         headers: {
@@ -441,10 +482,15 @@ export class MailService {
       </div>
     `;
 
+    const { to, cc } = this.applyDevFilters(
+      routeClosure.subsidiary.officeEmail,
+      `${routeClosure.subsidiary.officeEmailToCopy}, sistemas@paqueteriaymensajeriadelyaqui.com`
+    );
+
     try {
       const emailSent = await this.mailerService.sendMail({
-        to: routeClosure.subsidiary.officeEmail,
-        cc: `${routeClosure.subsidiary.officeEmailToCopy}, sistemas@paqueteriaymensajeriadelyaqui.com`,
+        to,
+        cc,
         //to: 'javier.rappaz@gmail.com',
         subject: `🚚 CIERRE DE RUTA - ${routeClosure.packageDispatch.drivers[0].name.toUpperCase()} - ${formattedDate} DE ${routeClosure.subsidiary.name.toUpperCase()}`,
         html: htmlContent,
@@ -516,11 +562,15 @@ export class MailService {
       </div>
     `;
 
+    const { to, cc } = this.applyDevFilters(
+      inventory.subsidiary.officeEmail,
+      `${inventory.subsidiary.officeEmailToCopy}, sistemas@paqueteriaymensajeriadelyaqui.com`
+    );
+
     try {
       await this.mailerService.sendMail({
-        to: inventory.subsidiary.officeEmail,
-        cc: `${inventory.subsidiary.officeEmailToCopy}, sistemas@paqueteriaymensajeriadelyaqui.com`,
-        //to: 'javier.rappaz@gmail.com',
+        to,
+        cc,
         subject: `📦 Inventario ${formattedDate} de ${subsidiaryName}`,
         html: htmlContent,
         headers: {
@@ -536,14 +586,14 @@ export class MailService {
 
   /** Enviar correo de prioridades dentro de Inventario */
   async sendHighPriorityPackagesOnInvetory(options: { to: string | string[], cc?: string | string[], htmlContent: string }) {
-    const { to, cc, htmlContent } = options;
+    const { to, cc } = this.applyDevFilters(options.to, options.cc);
     
     try {
       await this.mailerService.sendMail({
         to,
         cc,
         subject: '🔴 Envíos con Prioridad Alta en Inventario',
-        html: htmlContent,
+        html: options.htmlContent,
         headers: {
         },
       });
