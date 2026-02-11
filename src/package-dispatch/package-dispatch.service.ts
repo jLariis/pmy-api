@@ -161,13 +161,19 @@ export class PackageDispatchService {
         // Actualización masiva de estatus
         await queryRunner.manager.update(entity, { id: In(ids) }, { status: ShipmentStatusType.EN_RUTA });
 
+        const now = new Date();
+
+        const hermosilloDate = new Date(
+          now.toLocaleString("en-US", { timeZone: "America/Hermosillo" })
+        );
+
         // Creación masiva de historial
         const historyRecords = ids.map(id => {
           return queryRunner.manager.create(ShipmentStatus, {
             status: ShipmentStatusType.EN_RUTA,
             exceptionCode: '', // Agregado el código 44 que mencionamos antes
             notes: `Salida a ruta (Folio Despacho: ${savedDispatch.id})`,
-            timestamp: new Date(),
+            timestamp: hermosilloDate,
             [relationKey]: { id } // Relacionamos con el paquete correspondiente
           });
         });

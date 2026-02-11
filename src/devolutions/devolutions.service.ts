@@ -1,9 +1,9 @@
 import { forwardRef, Inject, Injectable, Logger } from '@nestjs/common';
 import { CreateDevolutionDto } from './dto/create-devolution.dto';
-import { Repository } from 'typeorm';
+import { DataSource, Repository } from 'typeorm';
 import { Devolution } from 'src/entities/devolution.entity';
 import { InjectRepository } from '@nestjs/typeorm';
-import { ChargeShipment, Income, Shipment, Subsidiary } from 'src/entities';
+import { ChargeShipment, Income, Shipment, ShipmentStatus, Subsidiary } from 'src/entities';
 import { ShipmentStatusType } from 'src/common/enums/shipment-status-type.enum';
 import { ValidateShipmentDto } from './dto/valiation-devolution.dto';
 import { MailService } from 'src/mail/mail.service';
@@ -27,9 +27,10 @@ export class DevolutionsService {
     private readonly mailService: MailService,
     @Inject(forwardRef(() => ShipmentsService))
     private readonly shipmentService: ShipmentsService,
+    private dataSource: DataSource
   ) {}
 
-  async create(devolutions: CreateDevolutionDto[]): Promise<{
+  async createResp1002(devolutions: CreateDevolutionDto[]): Promise<{
     success: Devolution[];
     duplicates: string[];
     notFound: string[];
@@ -137,6 +138,105 @@ export class DevolutionsService {
       errors 
     };
   }
+
+  async create(devolutions: CreateDevolutionDto[]): Promise<{
+  success: string[];
+  duplicates: string[];
+  notFound: string[];
+  errors: Array<{ trackingNumber: string; error: string }>;
+}> {
+  const success: string[] = [];
+  const duplicates: string[] = [];
+  const notFound: string[] = [];
+  const errors: Array<{ trackingNumber: string; error: string }> = [];
+
+  for (const dto of devolutions) {
+    const { trackingNumber, subsidiary, status } = dto;
+    const queryRunner = this.dataSource.createQueryRunner();
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
+
+    try {
+      // 1. Validaciones previas de integridad del DTO
+      if (!subsidiary) {
+        throw new Error('La sucursal es obligatoria para procesar la devolución.');
+      }
+
+      // 2. Verificar duplicados en devoluciones
+      const existingDevolution = await queryRunner.manager.findOne(Devolution, { 
+        where: { trackingNumber } 
+      });
+      if (existingDevolution) {
+        duplicates.push(trackingNumber);
+        await queryRunner.rollbackTransaction();
+        continue;
+      }
+
+      // 3. Buscar el paquete en Shipment o ChargeShipment
+      let shipment = await queryRunner.manager.findOne(Shipment, { where: { trackingNumber } });
+      let chargeShipment = null;
+      let relationKey: 'shipment' | 'chargeShipment' = 'shipment';
+
+      if (!shipment) {
+        chargeShipment = await queryRunner.manager.findOne(ChargeShipment, { where: { trackingNumber } });
+        relationKey = 'chargeShipment';
+      }
+
+      if (!shipment && !chargeShipment) {
+        notFound.push(trackingNumber);
+        await queryRunner.rollbackTransaction();
+        continue;
+      }
+
+      // 4. Crear registro de Devolución
+      const newDevolution = queryRunner.manager.create(Devolution, {
+        ...dto,
+        date: new Date(),
+      });
+      await queryRunner.manager.save(newDevolution);
+
+      // 5. Actualizar Estatus del Paquete
+      const targetEntity = shipment ? Shipment : ChargeShipment;
+      const packageId = shipment ? shipment.id : chargeShipment.id;
+
+      await queryRunner.manager.update(targetEntity, packageId, {
+        status: ShipmentStatusType.DEVUELTO_A_FEDEX,
+      });
+
+      // 6. Generar Historial (Timestamp Hermosillo)
+      const now = new Date();
+      const hermosilloDate = new Date(
+        now.toLocaleString("en-US", { timeZone: "America/Hermosillo" })
+      );
+
+      const history = queryRunner.manager.create(ShipmentStatus, {
+        status: ShipmentStatusType.DEVUELTO_A_FEDEX,
+        exceptionCode: '', // Código interno para devoluciones
+        notes: `Devolución registrada en sucursal: ${subsidiary}. Motivo: ${status || 'No especificado'}`,
+        timestamp: hermosilloDate,
+        [relationKey]: { id: packageId }
+      });
+      await queryRunner.manager.save(history);
+
+      // 7. Commit de la transacción
+      await queryRunner.commitTransaction();
+      success.push(trackingNumber);
+      this.logger.log(`Devolución exitosa: ${trackingNumber}`);
+
+    } catch (error) {
+      await queryRunner.rollbackTransaction();
+      this.logger.error(`Error en devolución ${trackingNumber}: ${error.message}`);
+      errors.push({ 
+        trackingNumber, 
+        error: error.message 
+      });
+    } finally {
+      await queryRunner.release();
+    }
+  }
+
+  return { success, duplicates, notFound, errors };
+}
 
   async findAll(subsidiaryId: string) {
     return await this.devolutionRepository.find({
