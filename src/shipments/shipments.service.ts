@@ -8132,253 +8132,7 @@ export class ShipmentsService {
        * Método Core: Audita y arregla Shipments basándose en su ID único (UUID)
        * Garantiza que solo se actualice el registro específico solicitado.
        */
-      async auditAndFixFedexShipmentsNewResp(shipmentIds: string[], applyFix: boolean = false) {
-          const limit = pLimit(5);
-          const logDir = './logs';
-          const logFile = `${logDir}/audit_forensic_${new Date().toISOString().replace(/:/g, '-')}.txt`;
-
-          if (!fsSync.existsSync(logDir)) fsSync.mkdirSync(logDir, { recursive: true });
-
-          const tasks = shipmentIds.map((shipmentId) => limit(async () => {
-              const queryRunner = this.dataSource.createQueryRunner();
-              await queryRunner.connect();
-              await queryRunner.startTransaction();
-
-              const audit = {
-                  shipmentId: shipmentId,
-                  tracking: 'PENDING',
-                  status: 'PENDING',
-                  analysis: [] as string[],
-                  actions: [] as string[],
-                  detected_incomes: 0,
-                  recovered_incomes: 0
-              };
-
-              try {
-                  // 1. OBTENER DATOS BD
-                  const shipment = await queryRunner.manager.findOne(Shipment, {
-                      where: { id: shipmentId },
-                      relations: ['subsidiary']
-                  });
-
-                  if (!shipment) {
-                      audit.status = 'NOT_FOUND_IN_DB';
-                      await queryRunner.rollbackTransaction();
-                      return audit;
-                  }
-
-                  audit.tracking = shipment.trackingNumber;
-                  const tn = shipment.trackingNumber;
-                  const dbStatus = shipment.status;
-
-                  // 2. OBTENER DATOS FEDEX
-                  let fedexInfo;
-                  try {
-                      fedexInfo = await this.fedexService.trackPackage(tn, shipment.fedexUniqueId || undefined);
-                  } catch (e) {
-                      audit.status = 'FEDEX_API_ERROR';
-                      audit.analysis.push(`Error API: ${e.message}`);
-                      await queryRunner.rollbackTransaction();
-                      return audit;
-                  }
-
-                  const allTrackResults = fedexInfo?.output?.completeTrackResults?.[0]?.trackResults || [];
-                  if (allTrackResults.length === 0) {
-                      audit.status = 'NO_DATA_FEDEX';
-                      audit.analysis.push("Sin datos en FedEx");
-                      await queryRunner.rollbackTransaction();
-                      return audit;
-                  }
-
-                  const trackResult = allTrackResults[0]; 
-                  const scanEvents = trackResult.scanEvents || [];
-                  const chronologicalEvents = [...scanEvents].sort((a, b) => 
-                      new Date(a.date).getTime() - new Date(b.date).getTime()
-                  );
-
-                  // 3. ANÁLISIS FORENSE
-                  let count08 = 0;
-                  let foundDelivered = false; 
-
-                  for (const event of chronologicalEvents) {
-                      const evtCode = (event.exceptionCode || '').trim();
-                      const derivedCode = event.derivedStatusCode || '';
-                      const evtStatus = mapFedexStatusToLocalStatus(derivedCode, evtCode);
-                      const evtDate = new Date(event.date);
-
-                      if (evtStatus === ShipmentStatusType.ENTREGADO) foundDelivered = true;
-
-                      // Lógica de Cobro
-                      let shouldCharge = false;
-                      let chargeReason = '';
-
-                      if (evtStatus === ShipmentStatusType.ENTREGADO) {
-                          shouldCharge = true;
-                          chargeReason = 'ENTREGADO (DL)';
-                      } else if (evtCode === '07' || [ShipmentStatusType.RECHAZADO, ShipmentStatusType.DEVUELTO_A_FEDEX].includes(evtStatus as any)) {
-                          shouldCharge = true;
-                          chargeReason = `RECHAZADO (${evtCode})`;
-                      } else if (evtCode === '08') {
-                          count08++;
-                          if (count08 >= 3) {
-                              shouldCharge = true;
-                              chargeReason = `3ra VISITA (08)`;
-                          }
-                      }
-
-                      // External Delivery Check
-                      const subId = shipment.subsidiary?.id?.toLowerCase();
-                      const configKeys = Object.keys(this.SUBSIDIARY_CONFIG);
-                      const matchedKey = configKeys.find(key => key.toLowerCase() === subId);
-                      const subConfig = matchedKey ? this.SUBSIDIARY_CONFIG[matchedKey] : { trackExternalDelivery: false };
-                      
-                      const hasOD = chronologicalEvents.some(e => e.eventType === 'OD');
-                      if (subConfig.trackExternalDelivery && hasOD) shouldCharge = false; 
-
-                      if (shouldCharge) {
-                          audit.detected_incomes++;
-                          const mDate = dayjs(evtDate);
-                          const startOfWeek = mDate.day(1).startOf('day').toDate();
-                          const endOfWeek = mDate.day(7).endOf('day').toDate();
-
-                          const incomeExists = await queryRunner.manager.findOne(Income, {
-                              where: { trackingNumber: tn, date: Between(startOfWeek, endOfWeek) }
-                          });
-
-                          if (!incomeExists) {
-                              audit.analysis.push(`💰 FALTA INGRESO: ${chargeReason} fecha ${mDate.format('DD/MM/YYYY')}`);
-                              if (applyFix) {
-                                  const tempShipment = { ...shipment };
-                                  if (chargeReason.includes('3ra VISITA')) tempShipment.status = ShipmentStatusType.CLIENTE_NO_DISPONIBLE as any;
-                                  else tempShipment.status = evtStatus as any;
-                                  
-                                  await this.generateIncomes(tempShipment as Shipment, evtDate, evtCode, queryRunner.manager);
-                                  audit.recovered_incomes++;
-                                  audit.actions.push(`✅ Ingreso generado: ${chargeReason}`);
-                              } else {
-                                  audit.actions.push(`⚠️ Sugerencia: Generar ingreso por ${chargeReason}`);
-                              }
-                          }
-                      }
-                  }
-
-                  // 4. ESTATUS FINAL
-                  const dbIsFinal = (dbStatus === ShipmentStatusType.ENTREGADO);
-                  const latestEvent = chronologicalEvents[chronologicalEvents.length - 1];
-                  
-                  if (latestEvent) {
-                      const latestEx = (latestEvent.exceptionCode || '').trim();
-                      const latestCode = latestEvent.derivedStatusCode || '';
-                      
-                      let targetStatus = mapFedexStatusToLocalStatus(latestCode, latestEx);
-                      
-                      // Validator de Enum
-                      const validValues = Object.values(ShipmentStatusType);
-                      if (!validValues.includes(targetStatus)) {
-                           audit.analysis.push(`🚨 Mapeo inválido: '${targetStatus}'. Usando DESCONOCIDO.`);
-                           targetStatus = ShipmentStatusType.DESCONOCIDO;
-                      }
-
-                      if (foundDelivered) targetStatus = ShipmentStatusType.ENTREGADO;
-
-                      const subId = shipment.subsidiary?.id?.toLowerCase();
-                      const configKeys = Object.keys(this.SUBSIDIARY_CONFIG);
-                      const matchedKey = configKeys.find(key => key.toLowerCase() === subId);
-                      const subConfig = matchedKey ? this.SUBSIDIARY_CONFIG[matchedKey] : { trackExternalDelivery: false };
-
-                      if (!foundDelivered && subConfig.trackExternalDelivery) {
-                           const hasOD = chronologicalEvents.some(e => e.eventType === 'OD');
-                           const isCritical = [
-                               ShipmentStatusType.RECHAZADO, 
-                               ShipmentStatusType.DEVUELTO_A_FEDEX,
-                               ShipmentStatusType.CLIENTE_NO_DISPONIBLE,
-                               ShipmentStatusType.DIRECCION_INCORRECTA
-                           ].includes(targetStatus);
-
-                           if (latestCode === 'DL' && hasOD) targetStatus = ShipmentStatusType.ENTREGADO_POR_FEDEX;
-                           else if (hasOD && !isCritical) targetStatus = ShipmentStatusType.ACARGO_DE_FEDEX;
-                      }
-
-                      // Comparación y Fix
-                      if (dbIsFinal && targetStatus !== ShipmentStatusType.ENTREGADO && targetStatus !== ShipmentStatusType.ENTREGADO_POR_FEDEX) {
-                           audit.analysis.push(`🔒 IRON LOCK ACTIVADO`);
-                      } 
-                      else if (shipment.status !== targetStatus) {
-                          audit.analysis.push(`🔄 STATUS: ${shipment.status} -> ${targetStatus}`);
-                          
-                          if (applyFix) {
-                              shipment.status = targetStatus;
-                              shipment.fedexUniqueId = trackResult.trackingNumberInfo?.trackingNumberUniqueId || shipment.fedexUniqueId;
-                              if (trackResult.deliveryDetails?.receivedByName) {
-                                  shipment.receivedByName = trackResult.deliveryDetails.receivedByName;
-                              }
-
-                              await queryRunner.manager.save(Shipment, shipment);
-                              
-                              const charges = await queryRunner.manager.find(ChargeShipment, { where: { trackingNumber: tn } });
-                              for (const c of charges) {
-                                  c.status = targetStatus;
-                                  if (trackResult.deliveryDetails?.receivedByName) c.receivedByName = trackResult.deliveryDetails.receivedByName;
-                                  await queryRunner.manager.save(ChargeShipment, c);
-                              }
-                              audit.actions.push(`✅ Estatus actualizado a ${targetStatus}`);
-                          } else {
-                              audit.actions.push(`⚠️ Sugerencia: Actualizar estatus a ${targetStatus}`);
-                          }
-                      }
-                  }
-
-                  await queryRunner.commitTransaction();
-                  
-                  // Determinación de estado
-                  if (audit.actions.length === 0 && audit.analysis.length === 0) {
-                      audit.status = 'HEALTHY';
-                  } else {
-                      audit.status = applyFix ? 'FIXED' : 'ISSUES_FOUND';
-                  }
-
-                  // Log en archivo (Solo si hay problemas)
-                  if (audit.status !== 'HEALTHY') {
-                      this.logDeepAudit(logFile, audit, applyFix);
-                  }
-
-                  return audit;
-
-              } catch (e) {
-                  if (queryRunner.isTransactionActive) await queryRunner.rollbackTransaction();
-                  const errorAudit = { ...audit, status: 'ERROR', analysis: [e.message] };
-                  this.logDeepAudit(logFile, errorAudit, applyFix);
-                  return errorAudit;
-              } finally {
-                  await queryRunner.release();
-              }
-          }));
-
-          const results = await Promise.all(tasks);
-
-          // === FILTRADO PARA FRONTEND/SWAGGER ===
-          
-          // 1. Estadísticas Generales
-          const healthyCount = results.filter(r => r.status === 'HEALTHY').length;
-          const issuesCount = results.filter(r => r.status === 'ISSUES_FOUND' || r.status.includes('ERROR') || r.status.includes('NO_DATA') || r.status.includes('NOT_FOUND')).length;
-          const fixedCount = results.filter(r => r.status === 'FIXED').length;
-
-          // 2. Lista Filtrada (Eliminamos los HEALTHY para no hacer ruido)
-          const problematicShipments = results.filter(r => r.status !== 'HEALTHY');
-
-          return {
-              summary: {
-                  total_processed: results.length,
-                  healthy: healthyCount,
-                  issues_found: issuesCount,
-                  fixed: fixedCount,
-                  log_file: logFile
-              },
-              details: problematicShipments // <-- Aquí solo van los que tienen problemas o fueron arreglados
-          };
-      }
-
-      async auditAndFixFedexShipments(shipmentIds: string[], applyFix: boolean = false) {
+      async auditAndFixFedexShipmentsResp1002(shipmentIds: string[], applyFix: boolean = false) {
           const limit = pLimit(5);
           const logDir = './logs';
           const logFile = `${logDir}/audit_forensic_${new Date().toISOString().replace(/:/g, '-')}.txt`;
@@ -8563,6 +8317,273 @@ export class ShipmentsService {
 
                           if (!allowedTransitions.includes(targetStatus)) {
                               lockReason = `🔒 CANDADO DEVOLUCIÓN: DB es ${dbStatus}. FedEx dice '${targetStatus}' (No permitido). Solo se permite cambiar a Entregado/Rechazado/Error.`;
+                          }
+                      }
+
+                      // APLICAR
+                      if (lockReason) {
+                           audit.analysis.push(lockReason);
+                      } 
+                      else if (shipment.status !== targetStatus) {
+                          audit.analysis.push(`🔄 STATUS: ${shipment.status} -> ${targetStatus}`);
+                          
+                          if (applyFix) {
+                              shipment.status = targetStatus;
+                              shipment.fedexUniqueId = trackResult.trackingNumberInfo?.trackingNumberUniqueId || shipment.fedexUniqueId;
+                              if (trackResult.deliveryDetails?.receivedByName) {
+                                  shipment.receivedByName = trackResult.deliveryDetails.receivedByName;
+                              }
+
+                              await queryRunner.manager.save(Shipment, shipment);
+                              
+                              const charges = await queryRunner.manager.find(ChargeShipment, { where: { trackingNumber: tn } });
+                              for (const c of charges) {
+                                  c.status = targetStatus;
+                                  if (trackResult.deliveryDetails?.receivedByName) c.receivedByName = trackResult.deliveryDetails.receivedByName;
+                                  await queryRunner.manager.save(ChargeShipment, c);
+                              }
+                              audit.actions.push(`✅ Estatus actualizado a ${targetStatus}`);
+                          } else {
+                              audit.actions.push(`⚠️ Sugerencia: Actualizar estatus a ${targetStatus}`);
+                          }
+                      }
+                  }
+
+                  await queryRunner.commitTransaction();
+                  
+                  if (audit.actions.length === 0 && audit.analysis.length === 0) {
+                      audit.status = 'HEALTHY';
+                  } else {
+                      audit.status = applyFix ? 'FIXED' : 'ISSUES_FOUND';
+                  }
+
+                  if (audit.status !== 'HEALTHY') {
+                      this.logDeepAudit(logFile, audit, applyFix);
+                  }
+
+                  return audit;
+
+              } catch (e) {
+                  if (queryRunner.isTransactionActive) await queryRunner.rollbackTransaction();
+                  const errorAudit = { ...audit, status: 'ERROR', analysis: [e.message] };
+                  this.logDeepAudit(logFile, errorAudit, applyFix);
+                  return errorAudit;
+              } finally {
+                  await queryRunner.release();
+              }
+          }));
+
+          const results = await Promise.all(tasks);
+
+          const healthyCount = results.filter(r => r.status === 'HEALTHY').length;
+          const issuesCount = results.filter(r => r.status === 'ISSUES_FOUND' || r.status.includes('ERROR') || r.status.includes('NO_DATA') || r.status.includes('NOT_FOUND')).length;
+          const fixedCount = results.filter(r => r.status === 'FIXED').length;
+          const problematicShipments = results.filter(r => r.status !== 'HEALTHY');
+
+          return {
+              summary: {
+                  total_processed: results.length,
+                  healthy: healthyCount,
+                  issues_found: issuesCount,
+                  fixed: fixedCount,
+                  log_file: logFile
+              },
+              details: problematicShipments 
+          };
+      }
+
+      async auditAndFixFedexShipments(shipmentIds: string[], applyFix: boolean = false) {
+          const limit = pLimit(5);
+          const logDir = './logs';
+          const logFile = `${logDir}/audit_forensic_${new Date().toISOString().replace(/:/g, '-')}.txt`;
+
+          if (!fsSync.existsSync(logDir)) fsSync.mkdirSync(logDir, { recursive: true });
+
+          const tasks = shipmentIds.map((shipmentId) => limit(async () => {
+              const queryRunner = this.dataSource.createQueryRunner();
+              await queryRunner.connect();
+              await queryRunner.startTransaction();
+
+              const audit = {
+                  shipmentId: shipmentId,
+                  tracking: 'PENDING',
+                  status: 'PENDING',
+                  analysis: [] as string[],
+                  actions: [] as string[],
+                  detected_incomes: 0,
+                  recovered_incomes: 0
+              };
+
+              try {
+                  // 1. OBTENER DATOS BD
+                  const shipment = await queryRunner.manager.findOne(Shipment, {
+                      where: { id: shipmentId },
+                      relations: ['subsidiary']
+                  });
+
+                  if (!shipment) {
+                      audit.status = 'NOT_FOUND_IN_DB';
+                      await queryRunner.rollbackTransaction();
+                      return audit;
+                  }
+
+                  audit.tracking = shipment.trackingNumber;
+                  const tn = shipment.trackingNumber;
+                  const dbStatus = shipment.status;
+
+                  // 2. OBTENER DATOS FEDEX
+                  let fedexInfo;
+                  try {
+                      fedexInfo = await this.fedexService.trackPackage(tn, shipment.fedexUniqueId || undefined);
+                  } catch (e) {
+                      audit.status = 'FEDEX_API_ERROR';
+                      audit.analysis.push(`Error API: ${e.message}`);
+                      await queryRunner.rollbackTransaction();
+                      return audit;
+                  }
+
+                  const allTrackResults = fedexInfo?.output?.completeTrackResults?.[0]?.trackResults || [];
+                  if (allTrackResults.length === 0) {
+                      audit.status = 'NO_DATA_FEDEX';
+                      audit.analysis.push("Sin datos en FedEx");
+                      await queryRunner.rollbackTransaction();
+                      return audit;
+                  }
+
+                  const trackResult = allTrackResults[0]; 
+                  const scanEvents = trackResult.scanEvents || [];
+                  const chronologicalEvents = [...scanEvents].sort((a, b) => 
+                      new Date(a.date).getTime() - new Date(b.date).getTime()
+                  );
+
+                  // 3. ANÁLISIS FORENSE DE INGRESOS
+                  let count08 = 0;
+                  let foundDelivered = false; 
+
+                  const subId = shipment.subsidiary?.id?.toLowerCase();
+                  const configKeys = Object.keys(this.SUBSIDIARY_CONFIG);
+                  const matchedKey = configKeys.find(key => key.toLowerCase() === subId);
+                  const subConfig = matchedKey ? this.SUBSIDIARY_CONFIG[matchedKey] : { trackExternalDelivery: false };
+                  const hasOD = chronologicalEvents.some(e => e.eventType === 'OD');
+
+                  for (const event of chronologicalEvents) {
+                      const evtCode = (event.exceptionCode || '').trim();
+                      const derivedCode = event.derivedStatusCode || '';
+                      const evtStatus = mapFedexStatusToLocalStatus(derivedCode, evtCode);
+                      const evtDate = new Date(event.date);
+
+                      if (evtStatus === ShipmentStatusType.ENTREGADO) foundDelivered = true;
+
+                      let shouldCharge = false;
+                      let chargeReason = '';
+
+                      if (evtStatus === ShipmentStatusType.ENTREGADO) {
+                          shouldCharge = true;
+                          chargeReason = 'ENTREGADO (DL)';
+                      } else if (evtCode === '07' || [ShipmentStatusType.RECHAZADO, ShipmentStatusType.DEVUELTO_A_FEDEX].includes(evtStatus as any)) {
+                          shouldCharge = true;
+                          chargeReason = `RECHAZADO (${evtCode})`;
+                      } else if (evtCode === '08') {
+                          count08++;
+                          if (count08 >= 3) {
+                              shouldCharge = true;
+                              chargeReason = `3ra VISITA (08)`;
+                          }
+                      }
+
+                      if (subConfig.trackExternalDelivery && hasOD) shouldCharge = false; 
+
+                      if (shouldCharge) {
+                          audit.detected_incomes++;
+                          const mDate = dayjs(evtDate);
+                          const startOfWeek = mDate.day(1).startOf('day').toDate();
+                          const endOfWeek = mDate.day(7).endOf('day').toDate();
+
+                          const incomeExists = await queryRunner.manager.findOne(Income, {
+                              where: { trackingNumber: tn, date: Between(startOfWeek, endOfWeek) }
+                          });
+
+                          if (!incomeExists) {
+                              audit.analysis.push(`💰 FALTA INGRESO: ${chargeReason} fecha ${mDate.format('DD/MM/YYYY')}`);
+                              if (applyFix) {
+                                  const tempShipment = { ...shipment };
+                                  if (chargeReason.includes('3ra VISITA')) tempShipment.status = ShipmentStatusType.CLIENTE_NO_DISPONIBLE as any;
+                                  else tempShipment.status = evtStatus as any;
+                                  
+                                  await this.generateIncomes(tempShipment as Shipment, evtDate, evtCode, queryRunner.manager);
+                                  audit.recovered_incomes++;
+                                  audit.actions.push(`✅ Ingreso generado: ${chargeReason}`);
+                              } else {
+                                  audit.actions.push(`⚠️ Sugerencia: Generar ingreso por ${chargeReason}`);
+                              }
+                          }
+                      }
+                  }
+
+                  // 4. ESTATUS FINAL
+                  const dbIsFinal = (dbStatus === ShipmentStatusType.ENTREGADO);
+                  
+                  // 🟢 AQUÍ ESTÁ EL CAMBIO: Agrupamos ambos estatus de retorno
+                  const dbIsReturned = (
+                      dbStatus === ShipmentStatusType.DEVUELTO_A_FEDEX || 
+                      dbStatus === ShipmentStatusType.RETORNO_ABANDONO_FEDEX
+                  );
+                  
+                  const latestEvent = chronologicalEvents[chronologicalEvents.length - 1];
+                  
+                  if (latestEvent) {
+                      const latestEx = (latestEvent.exceptionCode || '').trim();
+                      const latestCode = latestEvent.derivedStatusCode || '';
+                      
+                      let targetStatus = mapFedexStatusToLocalStatus(latestCode, latestEx);
+                      
+                      const validValues = Object.values(ShipmentStatusType);
+                      if (!validValues.includes(targetStatus)) {
+                           audit.analysis.push(`🚨 Mapeo inválido: '${targetStatus}'. Usando DESCONOCIDO.`);
+                           targetStatus = ShipmentStatusType.DESCONOCIDO;
+                      }
+
+                      if (foundDelivered) targetStatus = ShipmentStatusType.ENTREGADO;
+
+                      if (!foundDelivered && subConfig.trackExternalDelivery) {
+                           const isCritical = [
+                               ShipmentStatusType.RECHAZADO, 
+                               ShipmentStatusType.DEVUELTO_A_FEDEX,
+                               ShipmentStatusType.CLIENTE_NO_DISPONIBLE,
+                               ShipmentStatusType.DIRECCION_INCORRECTA
+                           ].includes(targetStatus);
+
+                           if (latestCode === 'DL' && hasOD) targetStatus = ShipmentStatusType.ENTREGADO_POR_FEDEX;
+                           else if (hasOD && !isCritical) targetStatus = ShipmentStatusType.ACARGO_DE_FEDEX;
+                      }
+
+                      // =========================================================
+                      // 🛡️ LÓGICA DE ACTUALIZACIÓN Y CANDADOS
+                      // =========================================================
+
+                      let lockReason = null;
+
+                      // 1. IRON LOCK (Si ya se entregó, no se mueve)
+                      if (dbIsFinal && targetStatus !== ShipmentStatusType.ENTREGADO && targetStatus !== ShipmentStatusType.ENTREGADO_POR_FEDEX) {
+                          lockReason = `🔒 IRON LOCK: DB es ${dbStatus} (Final), FedEx dice ${targetStatus}.`;
+                      }
+
+                      // 2. CANDADO DE DEVOLUCIÓN / ABANDONO
+                      if (dbIsReturned && !lockReason) {
+                          // Lista blanca: Solo permitimos salir de retorno si es para un cierre definitivo
+                          const allowedTransitions = [
+                              ShipmentStatusType.ENTREGADO,
+                              ShipmentStatusType.ENTREGADO_POR_FEDEX,
+                              ShipmentStatusType.RECHAZADO,
+                              ShipmentStatusType.DIRECCION_INCORRECTA,
+                              ShipmentStatusType.CLIENTE_NO_DISPONIBLE,
+                              // Permitimos cambiar entre ellos mismos (de abandono a devuelto o viceversa)
+                              ShipmentStatusType.DEVUELTO_A_FEDEX,
+                              ShipmentStatusType.RETORNO_ABANDONO_FEDEX
+                          ];
+
+                          if (!allowedTransitions.includes(targetStatus)) {
+                              lockReason = `🔒 CANDADO RETORNO: DB es '${dbStatus}'. FedEx intenta '${targetStatus}'. Bloqueado. Solo se permiten cierres definitivos.`;
                           }
                       }
 
