@@ -1,4 +1,4 @@
-import { forwardRef, Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { BadRequestException, forwardRef, Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { CreateUnloadingDto } from './dto/create-unloading.dto';
 import { UpdateUnloadingDto } from './dto/update-unloading.dto';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -118,7 +118,7 @@ export class UnloadingService {
     return consolidateds;
   }
 
-  async create(createUnloadingDto: CreateUnloadingDto) {
+  async createResp1002(createUnloadingDto: CreateUnloadingDto) {
   const allShipmentIds = createUnloadingDto.shipments;
   const queryRunner = this.dataSource.createQueryRunner();
   await queryRunner.connect();
@@ -205,7 +205,100 @@ export class UnloadingService {
   } finally {
     await queryRunner.release();
   }
-}
+  }
+
+  async create(createUnloadingDto: CreateUnloadingDto) {
+    const allShipmentIds = createUnloadingDto.shipments;
+    const queryRunner = this.dataSource.createQueryRunner();
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
+
+    try {
+      // 1. Búsqueda de registros existentes
+      const shipments = await queryRunner.manager.find(Shipment, {
+        where: { id: In(allShipmentIds) },
+      });
+
+      const foundShipmentIds = shipments.map(s => s.id);
+      const missingIds = allShipmentIds.filter(id => !foundShipmentIds.includes(id));
+
+      const chargeShipments = await queryRunner.manager.find(ChargeShipment, {
+        where: { id: In(missingIds) },
+      });
+
+      const foundChargeShipmentIds = chargeShipments.map(s => s.id);
+      const stillMissing = missingIds.filter(id => !foundChargeShipmentIds.includes(id));
+
+      if (stillMissing.length > 0) {
+        throw new BadRequestException(`Los siguientes IDs no existen en el sistema: ${stillMissing.join(', ')}`);
+      }
+
+      // 2. Crear y Guardar el Desembarque (Unloading)
+      const newUnloading = queryRunner.manager.create(Unloading, {
+        vehicle: createUnloadingDto.vehicle,
+        subsidiary: createUnloadingDto.subsidiary,
+        missingTrackings: createUnloadingDto.missingTrackings,
+        unScannedTrackings: createUnloadingDto.unScannedTrackings,
+        date: new Date(),
+      });
+      const savedUnloading = await queryRunner.manager.save(newUnloading);
+
+      // 3. Preparar Fecha Localizada (Hermosillo)
+      const now = new Date();
+      const hermosilloDate = new Date(
+        now.toLocaleString("en-US", { timeZone: "America/Hermosillo" })
+      );
+
+      // 4. Procesar Actualizaciones e Historial (Bulk)
+      const processUpdates = async (
+        entities: any[], 
+        entityClass: any, 
+        relationKey: 'shipment' | 'chargeShipment',
+        noteSuffix: string
+      ) => {
+        if (entities.length === 0) return;
+
+        const ids = entities.map(e => e.id);
+
+        // Actualización masiva de estatus y relación con Unloading
+        await queryRunner.manager.update(entityClass, { id: In(ids) }, { 
+          status: ShipmentStatusType.EN_BODEGA,
+          unloading: savedUnloading 
+        });
+
+        // Preparar registros de historial para inserción masiva
+        const historyRecords = entities.map(item => {
+          return queryRunner.manager.create(ShipmentStatus, {
+            status: ShipmentStatusType.EN_BODEGA,
+            notes: `Ingreso a bodega mediante desembarque (Folio: ${savedUnloading.id}) ${noteSuffix}`,
+            timestamp: hermosilloDate,
+            [relationKey]: { id: item.id }
+          });
+        });
+
+        await queryRunner.manager.save(ShipmentStatus, historyRecords);
+      };
+
+      // Ejecutar para Shipments y ChargeShipments
+      await processUpdates(shipments, Shipment, 'shipment', '');
+      await processUpdates(chargeShipments, ChargeShipment, 'chargeShipment', '(F2)');
+
+      // 5. Confirmar transacción
+      await queryRunner.commitTransaction();
+      
+      this.logger.log(`Desembarque exitoso. Folio: ${savedUnloading.id}. Paquetes: ${allShipmentIds.length}`);
+      return savedUnloading;
+
+    } catch (error) {
+      // Si algo falla, rollback total
+      await queryRunner.rollbackTransaction();
+      this.logger.error(`Error en Create Unloading: ${error.message}`, error.stack);
+      throw error;
+    } finally {
+      // Liberar conexión
+      await queryRunner.release();
+    }
+  }  
 
   async validatePackageResp(
     packageToValidate: ValidatedPackageDispatchDto,

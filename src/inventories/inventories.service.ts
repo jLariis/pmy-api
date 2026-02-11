@@ -2,8 +2,8 @@ import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { CreateInventoryDto } from './dto/create-inventory.dto';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Inventory } from 'src/entities/inventory.entity';
-import { In, Not, Repository } from 'typeorm';
-import { ChargeShipment, Consolidated, Shipment, Subsidiary } from 'src/entities';
+import { DataSource, In, Not, Repository } from 'typeorm';
+import { ChargeShipment, Consolidated, Shipment, ShipmentStatus, Subsidiary } from 'src/entities';
 import { ValidatedPackageDispatchDto } from 'src/package-dispatch/dto/validated-package-dispatch.dto';
 import { MailService } from 'src/mail/mail.service';
 import { ShipmentStatusType } from 'src/common/enums/shipment-status-type.enum';
@@ -47,10 +47,11 @@ export class InventoriesService {
     private readonly consolidatedRepository: Repository<Consolidated>,
     @InjectRepository(Subsidiary)
     private readonly subsidiaryRepository: Repository<Subsidiary>,
-    private readonly mailService: MailService
+    private readonly mailService: MailService,
+    private readonly dataSource: DataSource
   ){}
 
-  async create(createInventoryDto: CreateInventoryDto) {
+  async create1002(createInventoryDto: CreateInventoryDto) {
     const { inventoryDate, shipments, chargeShipments, subsidiary } = createInventoryDto;
 
     // Buscar entidades .findBy({ id: In([1, 2, 3]) })
@@ -66,6 +67,90 @@ export class InventoriesService {
     });
 
     return await this.inventoryRepository.save(newInventory);
+  }
+
+  async create(createInventoryDto: CreateInventoryDto) {
+    const { inventoryDate, shipments, chargeShipments, subsidiary } = createInventoryDto;
+    
+    const queryRunner = this.dataSource.createQueryRunner();
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
+
+    try {
+      // 1. Cargar las entidades necesarias dentro de la transacción
+      const shipmentsToSave = await queryRunner.manager.findBy(Shipment, {
+        id: In(shipments)
+      });
+      const chargeShipmentsToSave = await queryRunner.manager.findBy(ChargeShipment, {
+        id: In(chargeShipments)
+      });
+      const subsidiaryObj = await queryRunner.manager.findOneBy(Subsidiary, { 
+        id: subsidiary.id 
+      });
+
+      if (!subsidiaryObj) {
+        throw new Error(`La sucursal con ID ${subsidiary.id} no existe.`);
+      }
+
+      // 2. Crear y Guardar el Inventario
+      // Esto guardará automáticamente las relaciones en las tablas pivote
+      const newInventory = queryRunner.manager.create(Inventory, {
+        inventoryDate: inventoryDate || new Date(),
+        shipments: shipmentsToSave,
+        chargeShipments: chargeShipmentsToSave,
+        subsidiary: subsidiaryObj,
+      });
+
+      const savedInventory = await queryRunner.manager.save(newInventory);
+
+      // 3. Preparar Fecha Localizada (Hermosillo)
+      const now = new Date();
+      const hermosilloDate = new Date(
+        now.toLocaleString("en-US", { timeZone: "America/Hermosillo" })
+      );
+
+      // 4. Generar historial para cada paquete (Bulk History)
+      const historyRecords: ShipmentStatus[] = [];
+
+      // Historial para Shipments normales
+      shipmentsToSave.forEach(s => {
+        historyRecords.push(queryRunner.manager.create(ShipmentStatus, {
+          status: s.status, // Mantenemos su status actual (probablemente EN_BODEGA)
+          notes: `Paquete confirmado en inventario físico (Folio Inv: ${savedInventory.id}) en ${subsidiaryObj.name}`,
+          timestamp: hermosilloDate,
+          shipment: s
+        }));
+      });
+
+      // Historial para ChargeShipments (F2)
+      chargeShipmentsToSave.forEach(cs => {
+        historyRecords.push(queryRunner.manager.create(ShipmentStatus, {
+          status: cs.status,
+          notes: `Paquete F2 confirmado en inventario físico (Folio Inv: ${savedInventory.id}) en ${subsidiaryObj.name}`,
+          timestamp: hermosilloDate,
+          chargeShipment: cs
+        }));
+      });
+
+      // Guardado masivo de historiales
+      if (historyRecords.length > 0) {
+        await queryRunner.manager.save(ShipmentStatus, historyRecords);
+      }
+
+      // 5. Confirmar transacción
+      await queryRunner.commitTransaction();
+      
+      this.logger.log(`Inventario guardado. ID: ${savedInventory.id}. Sucursal: ${subsidiaryObj.name}`);
+      return savedInventory;
+
+    } catch (error) {
+      // Si algo falla, rollback de todo el inventario e historiales
+      await queryRunner.rollbackTransaction();
+      this.logger.error(`Error al crear inventario: ${error.message}`);
+      throw error;
+    } finally {
+      await queryRunner.release();
+    }
   }
 
   async validatePackage(
