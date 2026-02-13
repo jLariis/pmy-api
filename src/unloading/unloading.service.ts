@@ -13,6 +13,7 @@ import { ConsolidatedItemDto, ConsolidatedsDto } from './dto/consolidated.dto';
 import { ShipmentStatusType } from 'src/common/enums/shipment-status-type.enum';
 import { UnloadingReportDto } from './dto/unloading-report.dto';
 import { ShipmentsService } from 'src/shipments/shipments.service';
+import { fromZonedTime } from 'date-fns-tz';
 
 
 @Injectable()
@@ -245,9 +246,7 @@ export class UnloadingService {
 
       // 3. Preparar Fecha Localizada (Hermosillo)
       const now = new Date();
-      const hermosilloDate = new Date(
-        now.toLocaleString("en-US", { timeZone: "America/Hermosillo" })
-      );
+      const utcDate = fromZonedTime(now, 'America/Hermosillo');
 
       // 4. Procesar Actualizaciones e Historial (Bulk)
       const processUpdates = async (
@@ -271,7 +270,7 @@ export class UnloadingService {
           return queryRunner.manager.create(ShipmentStatus, {
             status: ShipmentStatusType.EN_BODEGA,
             notes: `Ingreso a bodega mediante desembarque (Folio: ${savedUnloading.id}) ${noteSuffix}`,
-            timestamp: hermosilloDate,
+            timestamp: utcDate,
             [relationKey]: { id: item.id }
           });
         });

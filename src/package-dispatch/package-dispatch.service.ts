@@ -14,6 +14,7 @@ import { FedexTrackingResponse } from 'src/shipments/dto/FedexTrackingCompleteIn
 import { Priority } from 'src/common/enums/priority.enum';
 import { ShipmentType } from 'src/common/enums/shipment-type.enum';
 import { ShipmentsService } from 'src/shipments/shipments.service';
+import { fromZonedTime, toZonedTime } from 'date-fns-tz';
 
 @Injectable()
 export class PackageDispatchService {
@@ -163,9 +164,8 @@ export class PackageDispatchService {
 
         const now = new Date();
 
-        const hermosilloDate = new Date(
-          now.toLocaleString("en-US", { timeZone: "America/Hermosillo" })
-        );
+        // Interpretamos "ahora" como hora Hermosillo
+        const utcDate = fromZonedTime(now, 'America/Hermosillo');
 
         // Creación masiva de historial
         const historyRecords = ids.map(id => {
@@ -173,7 +173,7 @@ export class PackageDispatchService {
             status: ShipmentStatusType.EN_RUTA,
             exceptionCode: '', // Agregado el código 44 que mencionamos antes
             notes: `Salida a ruta (Folio Despacho: ${savedDispatch.id})`,
-            timestamp: hermosilloDate,
+            timestamp: utcDate,
             [relationKey]: { id } // Relacionamos con el paquete correspondiente
           });
         });

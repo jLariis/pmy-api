@@ -8,6 +8,7 @@ import { ShipmentStatusType } from 'src/common/enums/shipment-status-type.enum';
 import { ValidateShipmentDto } from './dto/valiation-devolution.dto';
 import { MailService } from 'src/mail/mail.service';
 import { ShipmentsService } from 'src/shipments/shipments.service';
+import { fromZonedTime } from 'date-fns-tz';
 
 @Injectable()
 export class DevolutionsService {
@@ -205,15 +206,13 @@ export class DevolutionsService {
 
       // 6. Generar Historial (Timestamp Hermosillo)
       const now = new Date();
-      const hermosilloDate = new Date(
-        now.toLocaleString("en-US", { timeZone: "America/Hermosillo" })
-      );
+      const utcDate = fromZonedTime(now, 'America/Hermosillo');
 
       const history = queryRunner.manager.create(ShipmentStatus, {
         status: ShipmentStatusType.DEVUELTO_A_FEDEX,
         exceptionCode: '', // Código interno para devoluciones
         notes: `Devolución registrada en sucursal: ${subsidiary}. Motivo: ${status || 'No especificado'}`,
-        timestamp: hermosilloDate,
+        timestamp: utcDate,
         [relationKey]: { id: packageId }
       });
       await queryRunner.manager.save(history);
