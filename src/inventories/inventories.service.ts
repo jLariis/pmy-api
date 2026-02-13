@@ -8,6 +8,7 @@ import { ValidatedPackageDispatchDto } from 'src/package-dispatch/dto/validated-
 import { MailService } from 'src/mail/mail.service';
 import { ShipmentStatusType } from 'src/common/enums/shipment-status-type.enum';
 import * as ExcelJS from 'exceljs';
+import { fromZonedTime } from 'date-fns-tz';
 
 export interface ShipmentWithout67 {
   trackingNumber: string;
@@ -105,9 +106,7 @@ export class InventoriesService {
 
       // 3. Preparar Fecha Localizada (Hermosillo)
       const now = new Date();
-      const hermosilloDate = new Date(
-        now.toLocaleString("en-US", { timeZone: "America/Hermosillo" })
-      );
+      const utcDate = fromZonedTime(now, 'America/Hermosillo');
 
       // 4. Generar historial para cada paquete (Bulk History)
       const historyRecords: ShipmentStatus[] = [];
@@ -117,7 +116,7 @@ export class InventoriesService {
         historyRecords.push(queryRunner.manager.create(ShipmentStatus, {
           status: s.status, // Mantenemos su status actual (probablemente EN_BODEGA)
           notes: `Paquete confirmado en inventario físico (Folio Inv: ${savedInventory.id}) en ${subsidiaryObj.name}`,
-          timestamp: hermosilloDate,
+          timestamp: utcDate,
           shipment: s
         }));
       });
@@ -127,7 +126,7 @@ export class InventoriesService {
         historyRecords.push(queryRunner.manager.create(ShipmentStatus, {
           status: cs.status,
           notes: `Paquete F2 confirmado en inventario físico (Folio Inv: ${savedInventory.id}) en ${subsidiaryObj.name}`,
-          timestamp: hermosilloDate,
+          timestamp: utcDate,
           chargeShipment: cs
         }));
       });
