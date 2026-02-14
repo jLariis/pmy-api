@@ -1,27 +1,31 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger, BadRequestException, InternalServerErrorException  } from '@nestjs/common';
 import { CreateRouteclosureDto } from './dto/create-routeclosure.dto';
 import { InjectRepository } from '@nestjs/typeorm';
 import { RouteClosure } from 'src/entities/route-closure.entity';
-import { Repository } from 'typeorm';
+import { DataSource, Repository } from 'typeorm';
 import { ValidateTrackingsForClosureDto } from './dto/validate-trackings-for-closure';
 import { PackageDispatch } from 'src/entities/package-dispatch.entity';
 import { ValidatedPackageDispatchDto } from 'src/package-dispatch/dto/validated-package-dispatch.dto';
 import { ShipmentStatusType } from 'src/common/enums/shipment-status-type.enum';
-import { ShipmentStatus } from 'src/entities';
+import { ShipmentStatus, Collection } from 'src/entities';
 import { DispatchStatus } from 'src/common/enums/dispatch-enum';
 import { MailService } from 'src/mail/mail.service';
+import { fromZonedTime } from 'date-fns-tz';
 
 @Injectable()
 export class RouteclosureService {
+  private readonly logger = new Logger(RouteclosureService.name);
+
   constructor(
     @InjectRepository(RouteClosure)
     private readonly routeClouseRepository: Repository<RouteClosure>,
     @InjectRepository(PackageDispatch)
     private readonly packageDispatchRepository: Repository<PackageDispatch>,
-    private readonly mailService: MailService
+    private readonly mailService: MailService,
+    private readonly dataSource: DataSource
   ) {}
 
-  async create(createRouteclosureDto: CreateRouteclosureDto) {
+  async createResp(createRouteclosureDto: CreateRouteclosureDto) {
     console.log('🟡 [RouteClosure] DTO recibido:', createRouteclosureDto);
 
     const packageDispatch = await this.packageDispatchRepository.findOne({
@@ -71,6 +75,79 @@ export class RouteclosureService {
 
     return savedClosure;
   }
+
+  async create(createRouteclosureDto: CreateRouteclosureDto) {
+  const queryRunner = this.dataSource.createQueryRunner();
+  await queryRunner.connect();
+  await queryRunner.startTransaction();
+
+  try {
+    this.logger.log('🟡 [RouteClosure] Iniciando proceso de cierre de ruta...');
+
+    // 1. Validar el Despacho
+    const packageDispatch = await queryRunner.manager.findOne(PackageDispatch, {
+      where: { id: createRouteclosureDto.packageDispatch.id },
+      relations: ['subsidiary'],
+    });
+
+    if (!packageDispatch) {
+      throw new BadRequestException(`El despacho con ID ${createRouteclosureDto.packageDispatch.id} no existe.`);
+    }
+
+    // 2. Actualizar estado del Despacho
+    packageDispatch.status = DispatchStatus.COMPLETADA;
+    packageDispatch.closedAt = new Date();
+    await queryRunner.manager.save(PackageDispatch, packageDispatch);
+
+    // 3. Preparar datos para RouteClosure
+    // Según tu entidad, 'collections' es string[] (JSON en la BD)
+    // Aseguramos que si vienen objetos, solo guardemos el string del tracking
+    const trackingNumbers = createRouteclosureDto.collections.map(item => 
+      typeof item === 'string' ? item : (item as any).trackingNumber
+    );
+
+    const newRouteClosure = queryRunner.manager.create(RouteClosure, {
+      ...createRouteclosureDto,
+      collections: trackingNumbers, // Se guarda como JSON en la tabla route_closure
+      subsidiary: packageDispatch.subsidiary,
+    });
+
+    const savedClosure = await queryRunner.manager.save(RouteClosure, newRouteClosure);
+
+    // 4. Crear registros independientes en la tabla 'Collection'
+    if (trackingNumbers.length > 0) {
+      const now = new Date();
+      const utcDate = fromZonedTime(now, 'America/Hermosillo');
+      const collectionsToInsert = trackingNumbers.map(tn => {
+        return queryRunner.manager.create(Collection, {
+          trackingNumber: tn,
+          subsidiary: packageDispatch.subsidiary,
+          status: 'COLECTADO_EN_CIERRE', // O el status que prefieras por defecto
+          isPickUp: true,
+          createdAt: utcDate // Fecha Hermosillo
+        });
+      });
+
+      await queryRunner.manager.save(Collection, collectionsToInsert);
+      this.logger.log(`🟢 Se insertaron ${collectionsToInsert.length} registros en la tabla Collection.`);
+    }
+
+    // 5. Finalizar transacción
+    await queryRunner.commitTransaction();
+    this.logger.log(`✅ Cierre de ruta completado con éxito: ${savedClosure.id}`);
+
+    return savedClosure;
+
+  } catch (error) {
+    // Revertir todo si algo falla
+    await queryRunner.rollbackTransaction();
+    this.logger.error(`🔴 Error en RouteClosure: ${error.message}`);
+    throw new InternalServerErrorException(`Error al procesar el cierre: ${error.message}`);
+  } finally {
+    // Liberar conexión
+    await queryRunner.release();
+  }
+}
 
   async findAll(subsidiaryId: string) {
     return await this.routeClouseRepository.find({
