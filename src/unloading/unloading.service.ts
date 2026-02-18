@@ -246,7 +246,7 @@ export class UnloadingService {
 
       // 3. Preparar Fecha Localizada (Hermosillo)
       const now = new Date();
-      const utcDate = fromZonedTime(now, 'America/Hermosillo');
+      //const utcDate = fromZonedTime(now, 'America/Hermosillo');
 
       // 4. Procesar Actualizaciones e Historial (Bulk)
       const processUpdates = async (
@@ -270,7 +270,7 @@ export class UnloadingService {
           return queryRunner.manager.create(ShipmentStatus, {
             status: ShipmentStatusType.EN_BODEGA,
             notes: `Ingreso a bodega mediante desembarque (Folio: ${savedUnloading.id}) ${noteSuffix}`,
-            timestamp: utcDate,
+            timestamp: now,
             [relationKey]: { id: item.id }
           });
         });

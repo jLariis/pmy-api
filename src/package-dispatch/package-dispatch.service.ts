@@ -165,7 +165,7 @@ export class PackageDispatchService {
         const now = new Date();
 
         // Interpretamos "ahora" como hora Hermosillo
-        const utcDate = fromZonedTime(now, 'America/Hermosillo');
+        //const utcDate = fromZonedTime(now, 'America/Hermosillo');
 
         // Creación masiva de historial
         const historyRecords = ids.map(id => {
@@ -173,7 +173,7 @@ export class PackageDispatchService {
             status: ShipmentStatusType.EN_RUTA,
             exceptionCode: '', // Agregado el código 44 que mencionamos antes
             notes: `Salida a ruta (Folio Despacho: ${savedDispatch.id})`,
-            timestamp: utcDate,
+            timestamp: now,
             [relationKey]: { id } // Relacionamos con el paquete correspondiente
           });
         });

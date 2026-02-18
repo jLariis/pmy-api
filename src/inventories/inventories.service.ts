@@ -106,7 +106,7 @@ export class InventoriesService {
 
       // 3. Preparar Fecha Localizada (Hermosillo)
       const now = new Date();
-      const utcDate = fromZonedTime(now, 'America/Hermosillo');
+      //const utcDate = fromZonedTime(now, 'America/Hermosillo');
 
       // 4. Generar historial para cada paquete (Bulk History)
       const historyRecords: ShipmentStatus[] = [];
@@ -116,7 +116,7 @@ export class InventoriesService {
         historyRecords.push(queryRunner.manager.create(ShipmentStatus, {
           status: s.status, // Mantenemos su status actual (probablemente EN_BODEGA)
           notes: `Paquete confirmado en inventario físico (Folio Inv: ${savedInventory.id}) en ${subsidiaryObj.name}`,
-          timestamp: utcDate,
+          timestamp: now,
           shipment: s
         }));
       });
@@ -126,7 +126,7 @@ export class InventoriesService {
         historyRecords.push(queryRunner.manager.create(ShipmentStatus, {
           status: cs.status,
           notes: `Paquete F2 confirmado en inventario físico (Folio Inv: ${savedInventory.id}) en ${subsidiaryObj.name}`,
-          timestamp: utcDate,
+          timestamp: now,
           chargeShipment: cs
         }));
       });
