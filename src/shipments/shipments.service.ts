@@ -6916,7 +6916,7 @@ export class ShipmentsService {
         await Promise.all(tasks);
       }
     
-      async processMasterFedexUpdate(shipmentsToUpdate: Shipment[]) {
+      async processMasterFedexUpdateResp1702(shipmentsToUpdate: Shipment[]) {
         this.logger.log(`💎 Master Update (Titanium - Definitive Edition): Procesando ${shipmentsToUpdate.length} guías...`);
 
         // 1. Agrupación por Tracking (Eficiencia)
@@ -7238,109 +7238,241 @@ export class ShipmentsService {
         await Promise.all(tasks);
       }
 
-      async processChargeFedexUpdate(chargeShipmentsToUpdate: ChargeShipment[]) {
-        this.logger.log(`🛡️ F2 Charge Update (Titanium Deep Scan): Procesando ${chargeShipmentsToUpdate.length} cargas...`);
+      async processMasterFedexUpdate1702_1117(shipmentsToUpdate: Shipment[]) {
+        this.logger.log(`💎 Master Update (Titanium - Definitive Edition): Procesando ${shipmentsToUpdate.length} guías...`);
 
-        // 1. Agrupación por Tracking
-        const shipmentsByTracking = chargeShipmentsToUpdate.reduce((acc, s) => {
-            if (!acc[s.trackingNumber]) acc[s.trackingNumber] = [];
-            acc[s.trackingNumber].push(s.id);
-            return acc;
+        // 1. Agrupación por Tracking (Eficiencia Máxima)
+        const shipmentsByTracking = shipmentsToUpdate.reduce((acc, s) => {
+          if (!acc[s.trackingNumber]) acc[s.trackingNumber] = [];
+          acc[s.trackingNumber].push(s.id);
+          return acc;
         }, {} as Record<string, string[]>);
 
         const uniqueTrackingNumbers = Object.keys(shipmentsByTracking);
-        const limit = pLimit(5); 
+        const limit = pLimit(10); // Paralelismo controlado
 
         const tasks = uniqueTrackingNumbers.map((tn) => limit(async () => {
-            const shipmentWithId = chargeShipmentsToUpdate.find(s => s.trackingNumber === tn && (s as any).fedexUniqueId);
-            const currentUniqueId = (shipmentWithId as any)?.fedexUniqueId;
+          const shipmentWithId = shipmentsToUpdate.find(s => s.trackingNumber === tn && s.fedexUniqueId);
+          const currentUniqueId = shipmentWithId?.fedexUniqueId;
 
-            // --- 1. API FedEx ---
-            let fedexInfo;
-            try {
-                fedexInfo = await this.fedexService.trackPackage(tn, currentUniqueId);
-            } catch (error) {
-                this.logger.error(`[F2 - ${tn}] ❌ Error API FedEx: ${error.message}`);
-                return;
+          // --- 1. CONSULTA FEDEX ---
+          let fedexInfo;
+          try {
+             fedexInfo = await this.fedexService.trackPackage(tn, currentUniqueId);
+          } catch (error) {
+             this.logger.error(`[${tn}] Error API FedEx: ${error.message}`);
+             return;
+          }
+
+          let allTrackResults = fedexInfo?.output?.completeTrackResults?.[0]?.trackResults || [];
+          if (allTrackResults.length === 0) return;
+
+          // =================================================================================
+          // 🛡️ CORRECCIÓN 1: SELECTOR INTELIGENTE (Anti-Gemelo Malvado)
+          // =================================================================================
+          if (allTrackResults.length > 1) {
+              allTrackResults.sort((a, b) => {
+                  const dateA = new Date(a.scanEvents?.[0]?.date || 0).getTime();
+                  const dateB = new Date(b.scanEvents?.[0]?.date || 0).getTime();
+                  return dateB - dateA; // Descendente (Nuevo -> Viejo)
+              });
+              const winner = allTrackResults[0];
+              this.logger.log(`[${tn}] ⚠️ Múltiples resultados. Usando el más reciente: ${winner.latestStatusDetail?.statusByLocale}`);
+          }
+
+          const trackResult = allTrackResults[0]; 
+          const scanEvents = trackResult.scanEvents || [];
+
+          // --- 2. TRANSACCIÓN BD ---
+          const queryRunner = this.dataSource.createQueryRunner();
+          await queryRunner.connect();
+          await queryRunner.startTransaction();
+
+          try {
+            const targetIds = shipmentsByTracking[tn];
+            
+            // Bloqueo pesimista para evitar colisiones
+            const shipmentList = await queryRunner.manager.find(Shipment, {
+              where: { id: In(targetIds) },
+              relations: ['subsidiary'],
+              lock: { mode: 'pessimistic_write' }
+            });
+
+            if (shipmentList.length === 0) {
+                 await queryRunner.commitTransaction();
+                 return;
             }
 
-            const allTrackResults = fedexInfo?.output?.completeTrackResults?.[0]?.trackResults || [];
-            if (allTrackResults.length === 0) return;
+            const mainShipment = shipmentList[0];
+            const subId = mainShipment.subsidiary?.id?.toLowerCase() || '';
+            const configKeys = Object.keys(this.SUBSIDIARY_CONFIG);
+            const matchedKey = configKeys.find(key => key.toLowerCase() === subId);
+            const subConfig = matchedKey ? this.SUBSIDIARY_CONFIG[matchedKey] : { trackExternalDelivery: false };
 
-            // Filtro de 6 meses
-            const validResults = allTrackResults.filter(result => {
-                if (!result.scanEvents?.length) return true;
-                const dates = result.scanEvents.map(e => new Date(e.date).getTime());
-                return Math.max(...dates) > (Date.now() - (180 * 24 * 60 * 60 * 1000));
+            // =================================================================================
+            // 🛡️ CORRECCIÓN 2: HUELLA DIGITAL (Evita Duplicados)
+            // =================================================================================
+            const existingHistory = await queryRunner.manager.query(
+              `SELECT timestamp, exceptionCode FROM shipment_status WHERE shipmentId = ?`,
+              [mainShipment.id]
+            );
+
+            // Creamos firmas. Usamos '' si es null para coincidir con la API
+            const processedSignatures = new Set(existingHistory.map(h => {
+                const t = new Date(h.timestamp).getTime();
+                const c = (h.exceptionCode || '').trim(); 
+                return `${t}_${c}`;
+            }));
+
+            // Filtramos eventos nuevos
+            const newEvents = scanEvents.filter(e => {
+                const t = new Date(e.date).getTime();
+                const c = (e.exceptionCode || '').trim();
+                const signature = `${t}_${c}`;
+                return !processedSignatures.has(signature);
             });
-            if (validResults.length === 0) return;
 
-            const trackResult = validResults[0];
-            const scanEvents = trackResult.scanEvents || [];
-            // Ordenamos eventos: Nuevo -> Viejo
-            let mergedScanEvents = [...scanEvents].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+            // Ordenamos Cronológicamente para procesar
+            newEvents.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+            
+            // --- 4. PROCESAMIENTO DE HISTORIA ---
+            const existing08Count = await queryRunner.manager.count(ShipmentStatus, {
+                where: { shipment: { id: mainShipment.id }, exceptionCode: '08' }
+            });
+            let current08Count = existing08Count;
 
-            // --- 2. TRANSACCIÓN BD ---
-            const queryRunner = this.dataSource.createQueryRunner();
-            await queryRunner.connect();
-            await queryRunner.startTransaction();
+            // 🛡️ CORRECCIÓN 3: Protección de Bucle (Loop Blindness)
+            const paidWeeks = new Set<string>();
 
-            try {
-                const targetIds = shipmentsByTracking[tn]; 
+            for (const event of newEvents) {
+                const eventDate = new Date(event.date);
+                const dCode = event.derivedStatusCode || '';
+                const eCode = (event.exceptionCode || '').trim();
                 
-                // Bloqueo de Escritura
-                const chargeList = await queryRunner.manager.find(ChargeShipment, {
-                    where: { id: In(targetIds) }, 
-                    relations: ['subsidiary'],
-                    lock: { mode: 'pessimistic_write' }
-                });
+                let eventStatus = mapFedexStatusToLocalStatus(dCode, eCode);
+                if (eCode === '005') eventStatus = ShipmentStatusType.ENTREGADO_POR_FEDEX;
+                if (!Object.values(ShipmentStatusType).includes(eventStatus)) eventStatus = ShipmentStatusType.DESCONOCIDO;
 
-                if (chargeList.length === 0) {
-                     await queryRunner.commitTransaction();
-                     return;
+                if (subConfig.trackExternalDelivery) {
+                    if (event.eventType === 'OD') eventStatus = ShipmentStatusType.ACARGO_DE_FEDEX;
                 }
 
-                // Configuración y Contexto
-                const subId = chargeList[0].subsidiary?.id?.toLowerCase() || '';
-                const configKeys = Object.keys(this.SUBSIDIARY_CONFIG);
-                const matchedKey = configKeys.find(key => key.toLowerCase() === subId);
-                const subConfig = matchedKey ? this.SUBSIDIARY_CONFIG[matchedKey] : { trackExternalDelivery: false };
+                // 4.1 GUARDAR HISTORIA
+                for (const ship of shipmentList) {
+                    const historyEntry = queryRunner.manager.create(ShipmentStatus, {
+                        status: eventStatus,
+                        exceptionCode: eCode,
+                        timestamp: eventDate,
+                        shipment: ship,
+                        notes: event.eventDescription || 'FedEx Scan'
+                    });
+                    await queryRunner.manager.save(historyEntry);
+                }
 
-                // Recuperar último historial
-                const lastHistory = await queryRunner.manager.query(
-                    `SELECT status, exceptionCode, timestamp FROM shipment_status WHERE chargeShipmentId = ? ORDER BY timestamp DESC LIMIT 1`,
-                    [chargeList[0].id]
-                );
+                // =================================================================================
+                // 🛡️ GARANTÍA DE INGRESOS (BUCLE NORMAL)
+                // =================================================================================
+                let isChargeable = false;
+                let chargeReason = '';
 
-                const dbStatus = lastHistory.length ? lastHistory[0].status : null;
-                const dbTimestamp = lastHistory.length ? new Date(lastHistory[0].timestamp).getTime() : 0;
-                const dbException = lastHistory.length ? (lastHistory[0].exceptionCode || '').trim() : '';
-                const dbIsFinal = (dbStatus === ShipmentStatusType.ENTREGADO);
+                if (eventStatus === ShipmentStatusType.ENTREGADO) {
+                    isChargeable = true;
+                    chargeReason = 'ENTREGADO (DL)';
+                } else if (eCode === '07' || eventStatus === ShipmentStatusType.RECHAZADO) {
+                    isChargeable = true;
+                    chargeReason = `RECHAZADO (${eCode})`;
+                } else if (eCode === '08') {
+                    current08Count++;
+                    if (current08Count >= 3) {
+                        isChargeable = true;
+                        chargeReason = `3ra VISITA (Acumulado)`;
+                    }
+                }
 
-                // --- 3. CÁLCULO DEL ESTADO OBJETIVO (ESCÁNER PROFUNDO) ---
+                const mDate = dayjs(eventDate);
+                const weekKey = `${mDate.year()}-W${mDate.isoWeek()}`;
+                if (paidWeeks.has(weekKey)) isChargeable = false;
+
+                if (isChargeable) {
+                    const startOfWeek = mDate.day(1).startOf('day').toDate();
+                    const endOfWeek = mDate.day(7).endOf('day').toDate();
+                    
+                    const incomeExists = await queryRunner.manager.findOne(Income, {
+                        where: { trackingNumber: tn, date: Between(startOfWeek, endOfWeek) }
+                    });
+
+                    if (!incomeExists) {
+                        const tempShipment = { ...mainShipment };
+                        if (chargeReason.includes('3ra VISITA')) tempShipment.status = ShipmentStatusType.CLIENTE_NO_DISPONIBLE as any;
+                        else tempShipment.status = eventStatus as any;
+                        
+                        await this.generateIncomes(tempShipment as Shipment, eventDate, eCode, queryRunner.manager);
+                        this.logger.log(`💰 Ingreso Generado [${tn}]: ${chargeReason}`);
+                        paidWeeks.add(weekKey);
+                    } else {
+                        paidWeeks.add(weekKey);
+                    }
+                }
+            }
+
+            // =================================================================================
+            // 🚨 SAFETY NET: RESPALDO FINANCIERO (El Parche del "Header Ghost")
+            // =================================================================================
+            // Si el bucle de arriba falló porque FedEx se comió el evento en la lista, pero el header dice Entregado:
+            const lsdCheck = trackResult.latestStatusDetail;
+            const isDeliveredGlobal = (lsdCheck?.code === 'DL' || lsdCheck?.derivedCode === 'DL');
+
+            if (isDeliveredGlobal) {
+                // Buscamos la fecha REAL de entrega en los metadatos (Backup)
+                const actualDeliveryDateStr = trackResult.dateAndTimes?.find(d => d.type === 'ACTUAL_DELIVERY')?.dateTime;
                 
-                const latestEvent = mergedScanEvents[0];
-                const lsd = trackResult.latestStatusDetail;
-                
-                // A. RECOLECCIÓN DE PISTAS (EXTRAEMOS TODO)
+                if (actualDeliveryDateStr) {
+                    const deliveryDate = new Date(actualDeliveryDateStr);
+                    const mDate = dayjs(deliveryDate);
+                    const weekKey = `${mDate.year()}-W${mDate.isoWeek()}`;
+
+                    // Solo procedemos si NO hemos pagado ya en esta ejecución
+                    if (!paidWeeks.has(weekKey)) {
+                        const startOfWeek = mDate.day(1).startOf('day').toDate();
+                        const endOfWeek = mDate.day(7).endOf('day').toDate();
+
+                        // Verificación final en BD
+                        const incomeExists = await queryRunner.manager.findOne(Income, {
+                            where: { trackingNumber: tn, date: Between(startOfWeek, endOfWeek) }
+                        });
+
+                        if (!incomeExists) {
+                            // Forzamos estatus ENTREGADO en una copia para que el cálculo sea correcto
+                            const tempShipment = { ...mainShipment, status: ShipmentStatusType.ENTREGADO as any };
+                            
+                            await this.generateIncomes(tempShipment as Shipment, deliveryDate, 'DL', queryRunner.manager);
+                            
+                            this.logger.log(`💰 Ingreso Generado (Backup Header) [${tn}]: ENTREGADO (DL)`);
+                            paidWeeks.add(weekKey);
+                        } else {
+                            paidWeeks.add(weekKey);
+                        }
+                    }
+                }
+            }
+
+            // --- 5. ESTATUS FINAL (DEEP SCAN) ---
+            const lsd = trackResult.latestStatusDetail;
+            const allSortedEvents = [...scanEvents].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+            const latestScanEvent = allSortedEvents[0]; 
+            
+            if (latestScanEvent) {
                 const possibleCodes = [
-                    lsd?.code,                           
-                    lsd?.derivedCode,                    
-                    lsd?.ancillaryDetails?.[0]?.reason,  
-                    lsd?.delayDetail?.status,            
-                    lsd?.delayDetail?.subType,           
-                    latestEvent?.derivedStatusCode,   
-                    latestEvent?.exceptionCode,       
-                    latestEvent?.eventType            
+                    lsd?.code, lsd?.derivedCode, lsd?.ancillaryDetails?.[0]?.reason, 
+                    lsd?.delayDetail?.status, lsd?.delayDetail?.subType,
+                    latestScanEvent.derivedStatusCode, latestScanEvent.exceptionCode, latestScanEvent.eventType 
                 ].filter(c => c && c.trim() !== '');
 
-                // B. EVALUACIÓN DE PRIORIDAD
                 let detectedStatus = ShipmentStatusType.DESCONOCIDO;
-                let detectedPriority = 0; // 0: Bajo, 1: Problema, 2: Final/Critico
+                let detectedPriority = 0; 
 
                 for (const code of possibleCodes) {
                     let mapped = mapFedexStatusToLocalStatus(code, code);
-                    
                     if (code === '005') mapped = ShipmentStatusType.ENTREGADO_POR_FEDEX;
                     if (code === 'OD') mapped = ShipmentStatusType.ACARGO_DE_FEDEX;
 
@@ -7355,100 +7487,616 @@ export class ShipmentsService {
                     }
                 }
 
-                // Fallback si todo falla
-                if (detectedStatus === ShipmentStatusType.DESCONOCIDO && latestEvent) {
-                     const stdEx = (lsd?.ancillaryDetails?.[0]?.reason || latestEvent.exceptionCode || '').trim();
-                     const stdCode = latestEvent.derivedStatusCode || '';
+                if (detectedStatus === ShipmentStatusType.DESCONOCIDO) {
+                     const stdEx = (lsd?.ancillaryDetails?.[0]?.reason || latestScanEvent.exceptionCode || '').trim();
+                     const stdCode = latestScanEvent.derivedStatusCode || '';
                      detectedStatus = mapFedexStatusToLocalStatus(stdCode, stdEx);
                 }
 
-                let targetStatus = detectedStatus;
+                let finalStatus = detectedStatus;
 
-                // C. REGLAS FINALES DE NEGOCIO
+                if (possibleCodes.includes('005')) finalStatus = ShipmentStatusType.ENTREGADO_POR_FEDEX;
 
-                // 1. Regla 005 (Suprema)
-                if (possibleCodes.includes('005')) {
-                    targetStatus = ShipmentStatusType.ENTREGADO_POR_FEDEX;
-                }
-
-                // 2. Supremacía de Entrega (Historia)
-                if (targetStatus !== ShipmentStatusType.ENTREGADO_POR_FEDEX) {
-                    const foundDeliveredInHistory = mergedScanEvents.some(e => {
+                if (finalStatus !== ShipmentStatusType.ENTREGADO_POR_FEDEX) {
+                    const foundDeliveredInHistory = scanEvents.some(e => {
                          const map = mapFedexStatusToLocalStatus(e.derivedStatusCode || '', e.exceptionCode || '');
                          return map === ShipmentStatusType.ENTREGADO;
                     });
-                    if (foundDeliveredInHistory) targetStatus = ShipmentStatusType.ENTREGADO;
+                    if (foundDeliveredInHistory) finalStatus = ShipmentStatusType.ENTREGADO;
                 }
 
-                // 3. Lógica OD (Universal)
-                const hasODGlobal = mergedScanEvents.some(e => e.eventType === 'OD'); 
+                const hasODGlobal = scanEvents.some(e => e.eventType === 'OD'); 
                 if (subConfig.trackExternalDelivery) {
                      const hasODSignal = possibleCodes.includes('OD');
-                     
-                     if (hasODSignal && targetStatus !== ShipmentStatusType.ENTREGADO && targetStatus !== ShipmentStatusType.ENTREGADO_POR_FEDEX) {
-                         targetStatus = ShipmentStatusType.ACARGO_DE_FEDEX;
+                     if (hasODSignal && finalStatus !== ShipmentStatusType.ENTREGADO && finalStatus !== ShipmentStatusType.ENTREGADO_POR_FEDEX) {
+                         finalStatus = ShipmentStatusType.ACARGO_DE_FEDEX;
                      } 
-                     else if (targetStatus === ShipmentStatusType.ENTREGADO && hasODGlobal) {
-                         targetStatus = ShipmentStatusType.ENTREGADO_POR_FEDEX;
+                     else if (finalStatus === ShipmentStatusType.ENTREGADO && hasODGlobal) {
+                         finalStatus = ShipmentStatusType.ENTREGADO_POR_FEDEX;
                      }
                 }
 
-                // A. Validador Enum Final
-                const validValues = Object.values(ShipmentStatusType);
-                if (!validValues.includes(targetStatus)) {
-                    targetStatus = ShipmentStatusType.DESCONOCIDO;
+                // --- 6. CANDADOS Y GUARDADO ---
+                let isLocked = false;
+                const dbIsFinal = (mainShipment.status === ShipmentStatusType.ENTREGADO);
+                
+                // Iron Lock
+                if (dbIsFinal && finalStatus !== ShipmentStatusType.ENTREGADO && finalStatus !== ShipmentStatusType.ENTREGADO_POR_FEDEX) isLocked = true;
+                
+                // Return Lock
+                if ((mainShipment.status === ShipmentStatusType.DEVUELTO_A_FEDEX || mainShipment.status === ShipmentStatusType.RETORNO_ABANDONO_FEDEX) && !isLocked) {
+                     const allowed = [ShipmentStatusType.ENTREGADO, ShipmentStatusType.ENTREGADO_POR_FEDEX, ShipmentStatusType.RECHAZADO, ShipmentStatusType.DIRECCION_INCORRECTA, ShipmentStatusType.CLIENTE_NO_DISPONIBLE, ShipmentStatusType.DEVUELTO_A_FEDEX, ShipmentStatusType.RETORNO_ABANDONO_FEDEX];
+                     if (!allowed.includes(finalStatus)) isLocked = true;
+                }
+
+                if (!isLocked) {
+                    for (const shipment of shipmentList) {
+                        let hasChanges = false;
+                        
+                        // Actualizar estatus
+                        if (shipment.status !== finalStatus) { 
+                            shipment.status = finalStatus as any; 
+                            hasChanges = true; 
+                        }
+                        
+                        // Actualizar ID único
+                        const newUniqueId = trackResult.trackingNumberInfo?.trackingNumberUniqueId;
+                        if (newUniqueId && shipment.fedexUniqueId !== newUniqueId) { 
+                            shipment.fedexUniqueId = newUniqueId; 
+                            hasChanges = true; 
+                        }
+                        
+                        // Actualizar Recibido Por
+                        if (trackResult.deliveryDetails?.receivedByName && shipment.receivedByName !== trackResult.deliveryDetails.receivedByName) { 
+                            shipment.receivedByName = trackResult.deliveryDetails.receivedByName; 
+                            hasChanges = true; 
+                        }
+                        
+                        if (hasChanges) await queryRunner.manager.save(Shipment, shipment);
+                    }
+                }
+            }
+
+            await queryRunner.commitTransaction();
+
+          } catch (error) {
+            this.logger.error(`[${tn}] Error Transacción: ${error.message}`);
+            if (queryRunner.isTransactionActive) await queryRunner.rollbackTransaction();
+          } finally {
+            await queryRunner.release();
+          }
+        }));
+
+        await Promise.all(tasks);
+      }
+
+      async processMasterFedexUpdate(shipmentsToUpdate: Shipment[]) {
+        this.logger.log(`💎 Master Update (Titanium - Definitive Edition): Procesando ${shipmentsToUpdate.length} guías...`);
+
+        // 1. Agrupación por Tracking (Eficiencia Máxima)
+        const shipmentsByTracking = shipmentsToUpdate.reduce((acc, s) => {
+          if (!acc[s.trackingNumber]) acc[s.trackingNumber] = [];
+          acc[s.trackingNumber].push(s.id);
+          return acc;
+        }, {} as Record<string, string[]>);
+
+        const uniqueTrackingNumbers = Object.keys(shipmentsByTracking);
+        const limit = pLimit(10); // Paralelismo controlado
+
+        const tasks = uniqueTrackingNumbers.map((tn) => limit(async () => {
+          const shipmentWithId = shipmentsToUpdate.find(s => s.trackingNumber === tn && s.fedexUniqueId);
+          const currentUniqueId = shipmentWithId?.fedexUniqueId;
+
+          // --- 1. CONSULTA FEDEX (Estrategia Proactiva) ---
+          let fedexInfo;
+          try {
+             fedexInfo = await this.fedexService.trackPackage(tn, currentUniqueId);
+          } catch (error) {
+             this.logger.error(`[${tn}] Error API FedEx: ${error.message}`);
+             return;
+          }
+
+          let allTrackResults = fedexInfo?.output?.completeTrackResults?.[0]?.trackResults || [];
+
+          // 🚨 EL PARCHE CLAVE:
+          // Si el resultado es "Label Created" (OC) pero tenemos un UniqueID,
+          // hay un 99% de probabilidad de que sea el ID equivocado. Reintentamos global.
+          const isLabelOnly = allTrackResults.some(r => 
+            r.latestStatusDetail?.code === 'OC' && (r.scanEvents?.length || 0) <= 1
+          );
+
+          if (isLabelOnly || allTrackResults.length === 0) {
+              try {
+                  const retryInfo = await this.fedexService.trackPackage(tn, undefined);
+                  const retryResults = retryInfo?.output?.completeTrackResults?.[0]?.trackResults || [];
+                  if (retryResults.length > 0) {
+                      allTrackResults = retryResults;
+                  }
+              } catch (e) {
+                  this.logger.warn(`[${tn}] Falló reintento global: ${e.message}`);
+              }
+          }
+
+          if (allTrackResults.length === 0) return;
+
+          // =================================================================================
+          // 🛡️ CORRECCIÓN 1: SELECTOR INTELIGENTE (Anti-Gemelo Malvado)
+          // =================================================================================
+          if (allTrackResults.length > 1) {
+              allTrackResults.sort((a, b) => {
+                  const dateA = new Date(a.scanEvents?.[0]?.date || 0).getTime();
+                  const dateB = new Date(b.scanEvents?.[0]?.date || 0).getTime();
+                  return dateB - dateA; // Descendente (Nuevo -> Viejo)
+              });
+              const winner = allTrackResults[0];
+              this.logger.log(`[${tn}] ⚠️ Múltiples resultados. Usando el más reciente: ${winner.latestStatusDetail?.statusByLocale}`);
+          }
+
+          const trackResult = allTrackResults[0]; 
+          const scanEvents = trackResult.scanEvents || [];
+
+          // --- 2. TRANSACCIÓN BD ---
+          const queryRunner = this.dataSource.createQueryRunner();
+          await queryRunner.connect();
+          await queryRunner.startTransaction();
+
+          try {
+            const targetIds = shipmentsByTracking[tn];
+            
+            // Bloqueo pesimista para evitar colisiones
+            const shipmentList = await queryRunner.manager.find(Shipment, {
+              where: { id: In(targetIds) },
+              relations: ['subsidiary'],
+              lock: { mode: 'pessimistic_write' }
+            });
+
+            if (shipmentList.length === 0) {
+                 await queryRunner.commitTransaction();
+                 return;
+            }
+
+            const mainShipment = shipmentList[0];
+            const subId = mainShipment.subsidiary?.id?.toLowerCase() || '';
+            const configKeys = Object.keys(this.SUBSIDIARY_CONFIG);
+            const matchedKey = configKeys.find(key => key.toLowerCase() === subId);
+            const subConfig = matchedKey ? this.SUBSIDIARY_CONFIG[matchedKey] : { trackExternalDelivery: false };
+
+            // =================================================================================
+            // 🛡️ CORRECCIÓN 2: HUELLA DIGITAL (Evita Duplicados)
+            // =================================================================================
+            const existingHistory = await queryRunner.manager.query(
+              `SELECT timestamp, exceptionCode FROM shipment_status WHERE shipmentId = ?`,
+              [mainShipment.id]
+            );
+
+            // Creamos firmas. Usamos '' si es null para coincidir con la API
+            const processedSignatures = new Set(existingHistory.map(h => {
+                const t = new Date(h.timestamp).getTime();
+                const c = (h.exceptionCode || '').trim(); 
+                return `${t}_${c}`;
+            }));
+
+            // Filtramos eventos nuevos
+            const newEvents = scanEvents.filter(e => {
+                const t = new Date(e.date).getTime();
+                const c = (e.exceptionCode || '').trim();
+                const signature = `${t}_${c}`;
+                return !processedSignatures.has(signature);
+            });
+
+            // Ordenamos Cronológicamente para procesar
+            newEvents.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+            
+            // --- 4. PROCESAMIENTO DE HISTORIA ---
+            const existing08Count = await queryRunner.manager.count(ShipmentStatus, {
+                where: { shipment: { id: mainShipment.id }, exceptionCode: '08' }
+            });
+            let current08Count = existing08Count;
+
+            // 🛡️ CORRECCIÓN 3: Protección de Bucle (Loop Blindness)
+            const paidWeeks = new Set<string>();
+
+            for (const event of newEvents) {
+                const eventDate = new Date(event.date);
+                const dCode = event.derivedStatusCode || '';
+                const eCode = (event.exceptionCode || '').trim();
+                
+                let eventStatus = mapFedexStatusToLocalStatus(dCode, eCode);
+                if (eCode === '005') eventStatus = ShipmentStatusType.ENTREGADO_POR_FEDEX;
+                if (!Object.values(ShipmentStatusType).includes(eventStatus)) eventStatus = ShipmentStatusType.DESCONOCIDO;
+
+                if (subConfig.trackExternalDelivery) {
+                    if (event.eventType === 'OD') eventStatus = ShipmentStatusType.ACARGO_DE_FEDEX;
+                }
+
+                // 4.1 GUARDAR HISTORIA
+                for (const ship of shipmentList) {
+                    const historyEntry = queryRunner.manager.create(ShipmentStatus, {
+                        status: eventStatus,
+                        exceptionCode: eCode,
+                        timestamp: eventDate,
+                        shipment: ship,
+                        notes: event.eventDescription || 'FedEx Scan'
+                    });
+                    await queryRunner.manager.save(historyEntry);
+                }
+
+                // =================================================================================
+                // 🛡️ GARANTÍA DE INGRESOS (BUCLE NORMAL)
+                // =================================================================================
+                let isChargeable = false;
+                let chargeReason = '';
+
+                if (eventStatus === ShipmentStatusType.ENTREGADO) {
+                    isChargeable = true;
+                    chargeReason = 'ENTREGADO (DL)';
+                } else if (eCode === '07' || eventStatus === ShipmentStatusType.RECHAZADO) {
+                    isChargeable = true;
+                    chargeReason = `RECHAZADO (${eCode})`;
+                } else if (eCode === '08') {
+                    current08Count++;
+                    if (current08Count >= 3) {
+                        isChargeable = true;
+                        chargeReason = `3ra VISITA (Acumulado)`;
+                    }
+                }
+
+                const mDate = dayjs(eventDate);
+                const weekKey = `${mDate.year()}-W${mDate.isoWeek()}`;
+                if (paidWeeks.has(weekKey)) isChargeable = false;
+
+                if (isChargeable) {
+                    const startOfWeek = mDate.day(1).startOf('day').toDate();
+                    const endOfWeek = mDate.day(7).endOf('day').toDate();
+                    
+                    const incomeExists = await queryRunner.manager.findOne(Income, {
+                        where: { trackingNumber: tn, date: Between(startOfWeek, endOfWeek) }
+                    });
+
+                    if (!incomeExists) {
+                        const tempShipment = { ...mainShipment };
+                        if (chargeReason.includes('3ra VISITA')) tempShipment.status = ShipmentStatusType.CLIENTE_NO_DISPONIBLE as any;
+                        else tempShipment.status = eventStatus as any;
+                        
+                        await this.generateIncomes(tempShipment as Shipment, eventDate, eCode, queryRunner.manager);
+                        this.logger.log(`💰 Ingreso Generado [${tn}]: ${chargeReason}`);
+                        paidWeeks.add(weekKey);
+                    } else {
+                        paidWeeks.add(weekKey);
+                    }
+                }
+            }
+
+            // =================================================================================
+            // 🚨 SAFETY NET: RESPALDO FINANCIERO (El Parche del "Header Ghost")
+            // =================================================================================
+            // Si el bucle de arriba falló porque FedEx se comió el evento en la lista, pero el header dice Entregado:
+            const lsdCheck = trackResult.latestStatusDetail;
+            const isDeliveredGlobal = (lsdCheck?.code === 'DL' || lsdCheck?.derivedCode === 'DL');
+
+            if (isDeliveredGlobal) {
+                // Buscamos la fecha REAL de entrega en los metadatos (Backup)
+                const actualDeliveryDateStr = trackResult.dateAndTimes?.find(d => d.type === 'ACTUAL_DELIVERY')?.dateTime;
+                
+                if (actualDeliveryDateStr) {
+                    const deliveryDate = new Date(actualDeliveryDateStr);
+                    const mDate = dayjs(deliveryDate);
+                    const weekKey = `${mDate.year()}-W${mDate.isoWeek()}`;
+
+                    // Solo procedemos si NO hemos pagado ya en esta ejecución
+                    if (!paidWeeks.has(weekKey)) {
+                        const startOfWeek = mDate.day(1).startOf('day').toDate();
+                        const endOfWeek = mDate.day(7).endOf('day').toDate();
+
+                        // Verificación final en BD
+                        const incomeExists = await queryRunner.manager.findOne(Income, {
+                            where: { trackingNumber: tn, date: Between(startOfWeek, endOfWeek) }
+                        });
+
+                        if (!incomeExists) {
+                            // Forzamos estatus ENTREGADO en una copia para que el cálculo sea correcto
+                            const tempShipment = { ...mainShipment, status: ShipmentStatusType.ENTREGADO as any };
+                            
+                            await this.generateIncomes(tempShipment as Shipment, deliveryDate, 'DL', queryRunner.manager);
+                            
+                            this.logger.log(`💰 Ingreso Generado (Backup Header) [${tn}]: ENTREGADO (DL)`);
+                            paidWeeks.add(weekKey);
+                        } else {
+                            paidWeeks.add(weekKey);
+                        }
+                    }
+                }
+            }
+
+            // --- 5. ESTATUS FINAL (DEEP SCAN) ---
+            const lsd = trackResult.latestStatusDetail;
+            const allSortedEvents = [...scanEvents].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+            const latestScanEvent = allSortedEvents[0]; 
+            
+            if (latestScanEvent) {
+                const possibleCodes = [
+                    lsd?.code, lsd?.derivedCode, lsd?.ancillaryDetails?.[0]?.reason, 
+                    lsd?.delayDetail?.status, lsd?.delayDetail?.subType,
+                    latestScanEvent.derivedStatusCode, latestScanEvent.exceptionCode, latestScanEvent.eventType 
+                ].filter(c => c && c.trim() !== '');
+
+                let detectedStatus = ShipmentStatusType.DESCONOCIDO;
+                let detectedPriority = 0; 
+
+                for (const code of possibleCodes) {
+                    let mapped = mapFedexStatusToLocalStatus(code, code);
+                    if (code === '005') mapped = ShipmentStatusType.ENTREGADO_POR_FEDEX;
+                    if (code === 'OD') mapped = ShipmentStatusType.ACARGO_DE_FEDEX;
+
+                    let priority = 0;
+                    if (mapped === ShipmentStatusType.ENTREGADO || mapped === ShipmentStatusType.ENTREGADO_POR_FEDEX) priority = 3;
+                    else if ([ShipmentStatusType.RECHAZADO, ShipmentStatusType.DEVUELTO_A_FEDEX, ShipmentStatusType.DIRECCION_INCORRECTA].includes(mapped as any)) priority = 2;
+                    else if (mapped !== ShipmentStatusType.DESCONOCIDO && mapped !== ShipmentStatusType.EN_TRANSITO) priority = 1;
+
+                    if (priority > detectedPriority) {
+                        detectedStatus = mapped;
+                        detectedPriority = priority;
+                    }
+                }
+
+                if (detectedStatus === ShipmentStatusType.DESCONOCIDO) {
+                     const stdEx = (lsd?.ancillaryDetails?.[0]?.reason || latestScanEvent.exceptionCode || '').trim();
+                     const stdCode = latestScanEvent.derivedStatusCode || '';
+                     detectedStatus = mapFedexStatusToLocalStatus(stdCode, stdEx);
+                }
+
+                let finalStatus = detectedStatus;
+
+                if (possibleCodes.includes('005')) finalStatus = ShipmentStatusType.ENTREGADO_POR_FEDEX;
+
+                if (finalStatus !== ShipmentStatusType.ENTREGADO_POR_FEDEX) {
+                    const foundDeliveredInHistory = scanEvents.some(e => {
+                         const map = mapFedexStatusToLocalStatus(e.derivedStatusCode || '', e.exceptionCode || '');
+                         return map === ShipmentStatusType.ENTREGADO;
+                    });
+                    if (foundDeliveredInHistory) finalStatus = ShipmentStatusType.ENTREGADO;
+                }
+
+                const hasODGlobal = scanEvents.some(e => e.eventType === 'OD'); 
+                if (subConfig.trackExternalDelivery) {
+                     const hasODSignal = possibleCodes.includes('OD');
+                     if (hasODSignal && finalStatus !== ShipmentStatusType.ENTREGADO && finalStatus !== ShipmentStatusType.ENTREGADO_POR_FEDEX) {
+                         finalStatus = ShipmentStatusType.ACARGO_DE_FEDEX;
+                     } 
+                     else if (finalStatus === ShipmentStatusType.ENTREGADO && hasODGlobal) {
+                         finalStatus = ShipmentStatusType.ENTREGADO_POR_FEDEX;
+                     }
+                }
+
+                // --- 6. CANDADOS Y GUARDADO ---
+                let isLocked = false;
+                const dbIsFinal = (mainShipment.status === ShipmentStatusType.ENTREGADO);
+                
+                // Iron Lock
+                if (dbIsFinal && finalStatus !== ShipmentStatusType.ENTREGADO && finalStatus !== ShipmentStatusType.ENTREGADO_POR_FEDEX) isLocked = true;
+                
+                // Return Lock
+                if ((mainShipment.status === ShipmentStatusType.DEVUELTO_A_FEDEX || mainShipment.status === ShipmentStatusType.RETORNO_ABANDONO_FEDEX) && !isLocked) {
+                     const allowed = [ShipmentStatusType.ENTREGADO, ShipmentStatusType.ENTREGADO_POR_FEDEX, ShipmentStatusType.RECHAZADO, ShipmentStatusType.DIRECCION_INCORRECTA, ShipmentStatusType.CLIENTE_NO_DISPONIBLE, ShipmentStatusType.DEVUELTO_A_FEDEX, ShipmentStatusType.RETORNO_ABANDONO_FEDEX];
+                     if (!allowed.includes(finalStatus)) isLocked = true;
+                }
+
+                if (!isLocked) {
+                    for (const shipment of shipmentList) {
+                        let hasChanges = false;
+                        
+                        // Actualizar estatus
+                        if (shipment.status !== finalStatus) { 
+                            shipment.status = finalStatus as any; 
+                            hasChanges = true; 
+                        }
+                        
+                        // Actualizar ID único
+                        const newUniqueId = trackResult.trackingNumberInfo?.trackingNumberUniqueId;
+                        if (newUniqueId && shipment.fedexUniqueId !== newUniqueId) { 
+                            shipment.fedexUniqueId = newUniqueId; 
+                            hasChanges = true; 
+                        }
+                        
+                        // Actualizar Recibido Por
+                        if (trackResult.deliveryDetails?.receivedByName && shipment.receivedByName !== trackResult.deliveryDetails.receivedByName) { 
+                            shipment.receivedByName = trackResult.deliveryDetails.receivedByName; 
+                            hasChanges = true; 
+                        }
+                        
+                        if (hasChanges) await queryRunner.manager.save(Shipment, shipment);
+                    }
+                }
+            }
+
+            await queryRunner.commitTransaction();
+
+          } catch (error) {
+            this.logger.error(`[${tn}] Error Transacción: ${error.message}`);
+            if (queryRunner.isTransactionActive) await queryRunner.rollbackTransaction();
+          } finally {
+            await queryRunner.release();
+          }
+        }));
+
+        await Promise.all(tasks);
+      }
+
+      async processChargeFedexUpdate(chargeShipmentsToUpdate: ChargeShipment[]) {
+        this.logger.log(`🛡️ F2 Charge Update (Titanium Deep Scan): Procesando ${chargeShipmentsToUpdate.length} cargas...`);
+
+        // 1. Agrupación por Tracking
+        const shipmentsByTracking = chargeShipmentsToUpdate.reduce((acc, s) => {
+            if (!acc[s.trackingNumber]) acc[s.trackingNumber] = [];
+            acc[s.trackingNumber].push(s.id);
+            return acc;
+        }, {} as Record<string, string[]>);
+
+        const uniqueTrackingNumbers = Object.keys(shipmentsByTracking);
+        const limit = pLimit(5); 
+
+        const tasks = uniqueTrackingNumbers.map((tn) => limit(async () => {
+            const chargeWithId = chargeShipmentsToUpdate.find(s => s.trackingNumber === tn && (s as any).fedexUniqueId);
+            const currentUniqueId = (chargeWithId as any)?.fedexUniqueId;
+
+            // --- 1. API FedEx ---
+            let fedexInfo;
+            try {
+                fedexInfo = await this.fedexService.trackPackage(tn, currentUniqueId);
+            } catch (error) {
+                this.logger.error(`[F2 - ${tn}] ❌ Error API FedEx: ${error.message}`);
+                return;
+            }
+
+            let allTrackResults = fedexInfo?.output?.completeTrackResults?.[0]?.trackResults || [];
+
+            // =================================================================================
+            // 🚨 PROTECCIÓN 1: DETECCIÓN DE "LABEL ONLY" (EL PARCHE MPS)
+            // =================================================================================
+            const isLabelOnly = allTrackResults.some(r => 
+                r.latestStatusDetail?.code === 'OC' && (r.scanEvents?.length || 0) <= 1
+            );
+
+            if (isLabelOnly || allTrackResults.length === 0) {
+                try {
+                    const retryInfo = await this.fedexService.trackPackage(tn, undefined);
+                    const retryResults = retryInfo?.output?.completeTrackResults?.[0]?.trackResults || [];
+                    if (retryResults.length > 0) {
+                        allTrackResults = retryResults;
+                    }
+                } catch (e) {
+                    this.logger.warn(`[F2 - ${tn}] Falló reintento global: ${e.message}`);
+                }
+            }
+
+            if (allTrackResults.length === 0) return;
+
+            // Filtro de 6 meses
+            const validResults = allTrackResults.filter(result => {
+                if (!result.scanEvents?.length) return true;
+                const dates = result.scanEvents.map(e => new Date(e.date).getTime());
+                return Math.max(...dates) > (Date.now() - (180 * 24 * 60 * 60 * 1000));
+            });
+            
+            if (validResults.length === 0) return;
+
+            // =================================================================================
+            // 🛡️ PROTECCIÓN 2: SELECTOR INTELIGENTE
+            // =================================================================================
+            validResults.sort((a, b) => {
+                const aIsDL = a.latestStatusDetail?.code === 'DL' ? 1 : 0;
+                const bIsDL = b.latestStatusDetail?.code === 'DL' ? 1 : 0;
+                if (aIsDL !== bIsDL) return bIsDL - aIsDL;
+                
+                const dateA = new Date(a.scanEvents?.[0]?.date || 0).getTime();
+                const dateB = new Date(b.scanEvents?.[0]?.date || 0).getTime();
+                return dateB - dateA;
+            });
+
+            const trackResult = validResults[0];
+            const scanEvents = trackResult.scanEvents || [];
+            const lsd = trackResult.latestStatusDetail;
+
+            // --- 2. TRANSACCIÓN BD ---
+            const queryRunner = this.dataSource.createQueryRunner();
+            await queryRunner.connect();
+            await queryRunner.startTransaction();
+
+            try {
+                const targetIds = shipmentsByTracking[tn]; 
+                
+                const chargeList = await queryRunner.manager.find(ChargeShipment, {
+                    where: { id: In(targetIds) }, 
+                    relations: ['subsidiary'],
+                    lock: { mode: 'pessimistic_write' }
+                });
+
+                if (chargeList.length === 0) {
+                     await queryRunner.commitTransaction();
+                     return;
+                }
+
+                const subId = chargeList[0].subsidiary?.id?.toLowerCase() || '';
+                const configKeys = Object.keys(this.SUBSIDIARY_CONFIG);
+                const matchedKey = configKeys.find(key => key.toLowerCase() === subId);
+                const subConfig = matchedKey ? this.SUBSIDIARY_CONFIG[matchedKey] : { trackExternalDelivery: false };
+
+                const lastHistory = await queryRunner.manager.query(
+                    `SELECT status, exceptionCode, timestamp FROM shipment_status WHERE chargeShipmentId = ? ORDER BY timestamp DESC LIMIT 1`,
+                    [chargeList[0].id]
+                );
+
+                const dbStatus = lastHistory.length ? lastHistory[0].status : null;
+                const dbTimestamp = lastHistory.length ? new Date(lastHistory[0].timestamp).getTime() : 0;
+                const dbException = lastHistory.length ? (lastHistory[0].exceptionCode || '').trim() : '';
+                const dbIsFinal = (dbStatus === ShipmentStatusType.ENTREGADO);
+
+                // --- 3. CÁLCULO DEL ESTADO OBJETIVO ---
+                const possibleCodes = [
+                    lsd?.code, lsd?.derivedCode, lsd?.ancillaryDetails?.[0]?.reason, 
+                    scanEvents[0]?.derivedStatusCode, scanEvents[0]?.exceptionCode
+                ].filter(c => c && c.trim() !== '');
+
+                let detectedStatus = ShipmentStatusType.DESCONOCIDO;
+                let detectedPriority = 0;
+
+                for (const code of possibleCodes) {
+                    let mapped = mapFedexStatusToLocalStatus(code, code);
+                    if (code === '005') mapped = ShipmentStatusType.ENTREGADO_POR_FEDEX;
+                    if (code === 'OD') mapped = ShipmentStatusType.ACARGO_DE_FEDEX;
+
+                    let priority = 0;
+                    if (mapped === ShipmentStatusType.ENTREGADO || mapped === ShipmentStatusType.ENTREGADO_POR_FEDEX) priority = 3;
+                    else if ([ShipmentStatusType.RECHAZADO, ShipmentStatusType.DEVUELTO_A_FEDEX].includes(mapped as any)) priority = 2;
+                    else if (mapped !== ShipmentStatusType.DESCONOCIDO) priority = 1;
+
+                    if (priority > detectedPriority) {
+                        detectedStatus = mapped;
+                        detectedPriority = priority;
+                    }
+                }
+
+                // =================================================================================
+                // 🚨 PROTECCIÓN 3: SAFETY NET (HEADER OVERRIDE)
+                // =================================================================================
+                let targetStatus = detectedStatus;
+                const isDeliveredGlobal = (lsd?.code === 'DL' || lsd?.derivedCode === 'DL');
+                if (isDeliveredGlobal && targetStatus !== ShipmentStatusType.ENTREGADO_POR_FEDEX) {
+                    targetStatus = ShipmentStatusType.ENTREGADO;
                 }
 
                 // --- 4. DECISIÓN DE ACTUALIZACIÓN ---
-                const targetDate = latestEvent ? new Date(latestEvent.date) : new Date();
-                const noteDescription = lsd?.ancillaryDetails?.[0]?.reasonDescription || latestEvent?.eventDescription || 'Actualización F2 Titanium';
-                // Usamos el código más descriptivo disponible para guardar en exceptionCode
-                const targetException = lsd?.ancillaryDetails?.[0]?.reason || latestEvent?.exceptionCode || 'Update';
-
-                const isSameStatus = dbStatus === targetStatus;
-                // Comparamos contra la nueva excepción calculada
-                const isSameException = dbException === targetException; 
-                const isSameTime = Math.abs(targetDate.getTime() - dbTimestamp) < 2000;
+                const latestEvent = scanEvents.sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime())[0];
+                const actualDeliveryDate = trackResult.dateAndTimes?.find(d => d.type === 'ACTUAL_DELIVERY')?.dateTime;
+                
+                const targetDate = isDeliveredGlobal && actualDeliveryDate ? new Date(actualDeliveryDate) : (latestEvent ? new Date(latestEvent.date) : new Date());
+                const targetException = lsd?.ancillaryDetails?.[0]?.reason || latestEvent?.exceptionCode || (isDeliveredGlobal ? 'DL' : 'Update');
 
                 // Candados
                 let isLocked = false;
-                if (dbIsFinal && targetStatus !== ShipmentStatusType.ENTREGADO && targetStatus !== ShipmentStatusType.ENTREGADO_POR_FEDEX) {
-                    isLocked = true;
-                }
-                if ((dbStatus === ShipmentStatusType.DEVUELTO_A_FEDEX || dbStatus === ShipmentStatusType.RETORNO_ABANDONO_FEDEX) && !isLocked) {
-                      const allowed = [
-                        ShipmentStatusType.ENTREGADO, ShipmentStatusType.ENTREGADO_POR_FEDEX,
-                        ShipmentStatusType.RECHAZADO, ShipmentStatusType.DIRECCION_INCORRECTA,
-                        ShipmentStatusType.CLIENTE_NO_DISPONIBLE, ShipmentStatusType.DEVUELTO_A_FEDEX, 
-                        ShipmentStatusType.RETORNO_ABANDONO_FEDEX
-                      ];
-                      if (!allowed.includes(targetStatus)) isLocked = true;
-                }
+                if (dbIsFinal && targetStatus !== ShipmentStatusType.ENTREGADO && targetStatus !== ShipmentStatusType.ENTREGADO_POR_FEDEX) isLocked = true;
 
-                const shouldUpdate = !isLocked && (!isSameStatus || !isSameException || !isSameTime);
+                const shouldUpdate = !isLocked && (dbStatus !== targetStatus || Math.abs(targetDate.getTime() - dbTimestamp) > 5000);
 
-                // --- 5. EJECUCIÓN ---
                 if (shouldUpdate) {
                     for (const charge of chargeList) {
                         // A. Historial
-                        const historyEntry = queryRunner.manager.create(ShipmentStatus, {
+                        await queryRunner.manager.save(queryRunner.manager.create(ShipmentStatus, {
                             status: targetStatus,
                             exceptionCode: targetException,
                             timestamp: targetDate,
                             chargeShipment: charge, 
-                            createdAt: new Date(),
-                            notes: noteDescription
-                        });
-                        await queryRunner.manager.save(historyEntry);
+                            notes: lsd?.description || latestEvent?.eventDescription || 'F2 Titanium Update'
+                        }));
 
-                        // B. Actualizar ChargeShipment
+                        // B. Actualizar Entidad
                         charge.status = targetStatus as any;
+                        const newUniqueId = trackResult.trackingNumberInfo?.trackingNumberUniqueId;
+                        if (newUniqueId) (charge as any).fedexUniqueId = newUniqueId;
                         
-                        if (trackResult.deliveryDetails?.receivedByName && 
-                            charge.receivedByName !== trackResult.deliveryDetails.receivedByName) {
+                        if (trackResult.deliveryDetails?.receivedByName) {
                             charge.receivedByName = trackResult.deliveryDetails.receivedByName;
                         }
-                        
                         await queryRunner.manager.save(ChargeShipment, charge);
                     }
                 }
@@ -7947,7 +8595,7 @@ export class ShipmentsService {
       /**
        * Método Core: Audita y arregla Shipments (CORREGIDO: Desbloqueo de Ingresos)
        */
-      async auditAndFixFedexShipments(shipmentIds: string[], applyFix: boolean = false) {
+      async auditAndFixFedexShipments1702_1110pm(shipmentIds: string[], applyFix: boolean = false) {
           const limit = pLimit(5);
           const logDir = './logs';
           const logFile = `${logDir}/audit_forensic_${new Date().toISOString().replace(/:/g, '-')}.txt`;
@@ -8115,9 +8763,10 @@ export class ShipmentsService {
                   }
 
                   // =========================================================
-                  // 🚨 NUEVO: DEEP FINANCIAL CHECK (Respaldo Global)
+                  // 🚨 NUEVO: SAFETY NET / DEEP FINANCIAL CHECK (El Respaldo)
                   // =========================================================
-                  // Este es el parche para cuando FedEx no manda el evento DL en la lista pero sí en el header.
+                  // Si el bucle NO detectó ingresos, pero FedEx dice "Delivered" en el encabezado,
+                  // forzamos el cobro usando la fecha de metadatos.
                   const lsd = trackResult.latestStatusDetail;
                   const isDeliveredGlobal = (lsd?.code === 'DL' || lsd?.derivedCode === 'DL');
                   
@@ -8139,8 +8788,8 @@ export class ShipmentsService {
                               });
 
                               if (!incomeExists) {
-                                  const chargeReason = 'ENTREGADO (DL - Metadata Backup)';
-                                  audit.analysis.push(`💰 FALTA INGRESO (Backup): ${chargeReason} - Semana ${weekKey}`);
+                                  const chargeReason = 'ENTREGADO (DL - Safety Net)';
+                                  audit.analysis.push(`💰 FALTA INGRESO (Safety Net): ${chargeReason} - Semana ${weekKey}`);
                                   audit.detected_incomes++;
 
                                   if (applyFix) {
@@ -8149,10 +8798,10 @@ export class ShipmentsService {
                                       await this.generateIncomes(tempShipment as Shipment, deliveryDate, 'DL', queryRunner.manager);
                                       
                                       audit.recovered_incomes++;
-                                      audit.actions.push(`✅ Ingreso GENERADO (Backup): ${chargeReason}`);
+                                      audit.actions.push(`✅ Ingreso GENERADO (Safety Net): ${chargeReason}`);
                                       paidWeeks.add(weekKey);
                                   } else {
-                                      audit.actions.push(`⚠️ Sugerencia: Generar ingreso (Backup) ${chargeReason}`);
+                                      audit.actions.push(`⚠️ Sugerencia: Generar ingreso (Safety Net) ${chargeReason}`);
                                   }
                               }
                           }
@@ -8290,6 +8939,300 @@ export class ShipmentsService {
               },
               details: results.filter(r => r.status !== 'HEALTHY')
           };
+      }
+      
+      async auditAndFixFedexShipments(shipmentIds: string[], applyFix: boolean = false) {
+        const limit = pLimit(5);
+        const logDir = './logs';
+        const logFile = `${logDir}/audit_forensic_${new Date().toISOString().replace(/:/g, '-')}.txt`;
+
+        if (!fsSync.existsSync(logDir)) fsSync.mkdirSync(logDir, { recursive: true });
+
+        const tasks = shipmentIds.map((shipmentId) => limit(async () => {
+            const queryRunner = this.dataSource.createQueryRunner();
+            await queryRunner.connect();
+            await queryRunner.startTransaction();
+
+            const audit = {
+                shipmentId: shipmentId,
+                tracking: 'PENDING',
+                status: 'PENDING',
+                analysis: [] as string[],
+                actions: [] as string[],
+                detected_incomes: 0,
+                recovered_incomes: 0
+            };
+
+            try {
+                // 1. OBTENER DATOS BD
+                const shipment = await queryRunner.manager.findOne(Shipment, {
+                    where: { id: shipmentId },
+                    relations: ['subsidiary']
+                });
+
+                if (!shipment) {
+                    audit.status = 'NOT_FOUND_IN_DB';
+                    await queryRunner.rollbackTransaction();
+                    return audit;
+                }
+
+                audit.tracking = shipment.trackingNumber;
+                const tn = shipment.trackingNumber;
+                const dbStatus = shipment.status;
+
+                // 2. OBTENER DATOS FEDEX (Estrategia de Doble Intento)
+                let fedexInfo;
+                try {
+                    fedexInfo = await this.fedexService.trackPackage(tn, shipment.fedexUniqueId || undefined);
+                } catch (e) {
+                    audit.status = 'FEDEX_API_ERROR';
+                    audit.analysis.push(`Error API: ${e.message}`);
+                    await queryRunner.rollbackTransaction();
+                    return audit;
+                }
+
+                let allTrackResults = fedexInfo?.output?.completeTrackResults?.[0]?.trackResults || [];
+
+                // 🚨 CORRECCIÓN PARA EL TRACKING 397605917010
+                // Si el resultado actual solo dice "Label Created" pero hay otros resultados posibles
+                const isLabelOnly = allTrackResults.some(r => r.latestStatusDetail?.code === 'OC' && r.scanEvents?.length <= 1);
+                
+                if (isLabelOnly || allTrackResults.length === 0) {
+                    audit.analysis.push("🔍 Detectado resultado incompleto (Label Only). Intentando consulta global sin UniqueID...");
+                    try {
+                        const globalInfo = await this.fedexService.trackPackage(tn, undefined);
+                        const globalResults = globalInfo?.output?.completeTrackResults?.[0]?.trackResults || [];
+                        if (globalResults.length > 0) {
+                            allTrackResults = globalResults;
+                            audit.analysis.push(`✅ Se encontraron ${allTrackResults.length} resultados globales.`);
+                        }
+                    } catch (retryError) {
+                        audit.analysis.push(`❌ Error en reintento global: ${retryError.message}`);
+                    }
+                }
+                
+                if (allTrackResults.length === 0) {
+                    audit.status = 'NO_DATA_FEDEX';
+                    audit.analysis.push("Sin datos en FedEx tras reintento");
+                    await queryRunner.rollbackTransaction();
+                    return audit;
+                }
+
+                // SELECTOR INTELIGENTE (Priorizar Entregados y con más eventos)
+                allTrackResults.sort((a, b) => {
+                    const aIsDL = a.latestStatusDetail?.code === 'DL' ? 1 : 0;
+                    const bIsDL = b.latestStatusDetail?.code === 'DL' ? 1 : 0;
+                    if (aIsDL !== bIsDL) return bIsDL - aIsDL;
+                    
+                    const dateA = new Date(a.scanEvents?.[0]?.date || 0).getTime();
+                    const dateB = new Date(b.scanEvents?.[0]?.date || 0).getTime();
+                    return dateB - dateA; 
+                });
+
+                const trackResult = allTrackResults[0]; 
+                const scanEvents = trackResult.scanEvents || [];
+                const lsd = trackResult.latestStatusDetail;
+
+                // --- 3. SINCRONIZACIÓN DE IDENTIDAD ---
+                const newUniqueId = trackResult.trackingNumberInfo?.trackingNumberUniqueId;
+                if (newUniqueId && shipment.fedexUniqueId !== newUniqueId) {
+                    audit.analysis.push(`🆔 Cambio de ID detectado: ${shipment.fedexUniqueId} -> ${newUniqueId}`);
+                    if (applyFix) {
+                        shipment.fedexUniqueId = newUniqueId;
+                        await queryRunner.manager.save(Shipment, shipment);
+                        audit.actions.push(`✅ fedexUniqueId actualizado.`);
+                    }
+                }
+                
+                const chronologicalEvents = [...scanEvents].sort((a, b) => 
+                    new Date(a.date).getTime() - new Date(b.date).getTime()
+                );
+
+                // 🛡️ HUELLA DIGITAL
+                const existingHistory = await queryRunner.manager.query(
+                    `SELECT timestamp, exceptionCode FROM shipment_status WHERE shipmentId = ?`,
+                    [shipment.id]
+                );
+                const processedSignatures = new Set(existingHistory.map(h => {
+                    const t = new Date(h.timestamp).getTime();
+                    const c = (h.exceptionCode || '').trim();
+                    return `${t}_${c}`;
+                }));
+
+                // 4. ANÁLISIS FORENSE (Event Loop)
+                let count08 = 0;
+                const subId = shipment.subsidiary?.id?.toLowerCase();
+                const configKeys = Object.keys(this.SUBSIDIARY_CONFIG);
+                const matchedKey = configKeys.find(key => key.toLowerCase() === subId);
+                const subConfig = matchedKey ? this.SUBSIDIARY_CONFIG[matchedKey] : { trackExternalDelivery: false };
+                const paidWeeks = new Set<string>();
+
+                for (const event of chronologicalEvents) {
+                    const evtCode = (event.exceptionCode || '').trim();
+                    const derivedCode = event.derivedStatusCode || '';
+                    let evtStatus = mapFedexStatusToLocalStatus(derivedCode, evtCode);
+                    const evtDate = new Date(event.date);
+
+                    if (evtCode === '005') evtStatus = ShipmentStatusType.ENTREGADO_POR_FEDEX;
+                    if (subConfig.trackExternalDelivery && event.eventType === 'OD') evtStatus = ShipmentStatusType.ACARGO_DE_FEDEX;
+
+                    // A. Historia
+                    const signature = `${evtDate.getTime()}_${evtCode}`;
+                    if (!processedSignatures.has(signature)) {
+                        const debugInfo = `[Ex: ${evtCode || 'N/A'} | Der: ${derivedCode || 'N/A'} => Map: ${evtStatus}]`;
+                        audit.analysis.push(`📜 Falta evento: ${debugInfo} (${evtDate.toISOString()})`);
+                        
+                        if (applyFix) {
+                            const historyEntry = queryRunner.manager.create(ShipmentStatus, {
+                                status: evtStatus,
+                                exceptionCode: evtCode,
+                                timestamp: evtDate,
+                                shipment: shipment,
+                                notes: event.eventDescription || 'FedEx Scan (Recovered)'
+                            });
+                            await queryRunner.manager.save(historyEntry);
+                            processedSignatures.add(signature); 
+                            audit.actions.push(`✅ Historia recuperada: ${debugInfo}`);
+                        }
+                    }
+
+                    // B. Cobros
+                    let shouldCharge = false;
+                    let chargeReason = '';
+
+                    if (evtStatus === ShipmentStatusType.ENTREGADO || derivedCode === 'DL') { shouldCharge = true; chargeReason = 'ENTREGADO (DL)'; } 
+                    else if (evtCode === '07' || evtStatus === ShipmentStatusType.RECHAZADO) { shouldCharge = true; chargeReason = `RECHAZADO (${evtCode})`; } 
+                    else if (evtCode === '08') {
+                        count08++;
+                        if (count08 >= 3) { shouldCharge = true; chargeReason = `3ra VISITA (08)`; }
+                    }
+
+                    const mDate = dayjs(evtDate);
+                    const weekKey = `${mDate.year()}-W${mDate.isoWeek()}`;
+                    if (paidWeeks.has(weekKey)) shouldCharge = false;
+
+                    if (shouldCharge) {
+                        audit.detected_incomes++;
+                        const startOfWeek = mDate.day(1).startOf('day').toDate();
+                        const endOfWeek = mDate.day(7).endOf('day').toDate();
+
+                        const incomeExists = await queryRunner.manager.findOne(Income, {
+                            where: { trackingNumber: tn, date: Between(startOfWeek, endOfWeek) }
+                        });
+
+                        if (!incomeExists) {
+                            audit.analysis.push(`💰 FALTA INGRESO: ${chargeReason} - Semana ${weekKey}`);
+                            if (applyFix) {
+                                const tempShipment = { ...shipment };
+                                if (chargeReason.includes('3ra VISITA')) tempShipment.status = ShipmentStatusType.CLIENTE_NO_DISPONIBLE as any;
+                                else tempShipment.status = evtStatus as any;
+                                await this.generateIncomes(tempShipment as Shipment, evtDate, evtCode, queryRunner.manager);
+                                audit.recovered_incomes++;
+                                audit.actions.push(`✅ Ingreso GENERADO: ${chargeReason}`);
+                                paidWeeks.add(weekKey);
+                            } else {
+                                audit.actions.push(`⚠️ Sugerencia: Generar ingreso ${chargeReason}`);
+                            }
+                        } else {
+                            paidWeeks.add(weekKey);
+                        }
+                    }
+                }
+
+                // =========================================================
+                // 🚨 SAFETY NET: RESPALDO POR METADATA (Header Check)
+                // =========================================================
+                const isDeliveredGlobal = (lsd?.code === 'DL' || lsd?.derivedCode === 'DL');
+                
+                if (audit.detected_incomes === 0 && isDeliveredGlobal) {
+                    const actualDeliveryDateStr = trackResult.dateAndTimes?.find(d => d.type === 'ACTUAL_DELIVERY')?.dateTime;
+                    
+                    if (actualDeliveryDateStr) {
+                        const deliveryDate = new Date(actualDeliveryDateStr);
+                        const mDate = dayjs(deliveryDate);
+                        const weekKey = `${mDate.year()}-W${mDate.isoWeek()}`;
+                        
+                        if (!paidWeeks.has(weekKey)) {
+                            const incomeExists = await queryRunner.manager.findOne(Income, {
+                                where: { trackingNumber: tn, date: Between(mDate.startOf('week').toDate(), mDate.endOf('week').toDate()) }
+                            });
+
+                            if (!incomeExists) {
+                                audit.analysis.push(`🚨 RESCATE: Entregado según Header pero sin ingreso. Fecha: ${actualDeliveryDateStr}`);
+                                if (applyFix) {
+                                    const tempShipment = { ...shipment, status: ShipmentStatusType.ENTREGADO as any };
+                                    await this.generateIncomes(tempShipment as Shipment, deliveryDate, 'DL', queryRunner.manager);
+                                    audit.recovered_incomes++;
+                                    audit.actions.push(`✅ Ingreso GENERADO via Safety Net.`);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // 5. ESTATUS FINAL Y CANDADOS (Deep Scan)
+                const latestScanEvent = chronologicalEvents.length > 0 ? chronologicalEvents[chronologicalEvents.length - 1] : null;
+                const possibleCodes = [
+                    lsd?.code, lsd?.derivedCode, lsd?.ancillaryDetails?.[0]?.reason, 
+                    latestScanEvent?.derivedStatusCode, latestScanEvent?.exceptionCode
+                ].filter(c => c && c.trim() !== '');
+
+                let detectedStatus = ShipmentStatusType.DESCONOCIDO;
+                let detectedPriority = 0; 
+
+                for (const code of possibleCodes) {
+                    let mapped = mapFedexStatusToLocalStatus(code, code);
+                    if (code === '005') mapped = ShipmentStatusType.ENTREGADO_POR_FEDEX;
+
+                    let priority = 0;
+                    if (mapped === ShipmentStatusType.ENTREGADO || mapped === ShipmentStatusType.ENTREGADO_POR_FEDEX) priority = 3;
+                    else if ([ShipmentStatusType.RECHAZADO, ShipmentStatusType.DEVUELTO_A_FEDEX].includes(mapped as any)) priority = 2;
+                    else if (mapped !== ShipmentStatusType.DESCONOCIDO) priority = 1;
+
+                    if (priority > detectedPriority) {
+                        detectedStatus = mapped;
+                        detectedPriority = priority;
+                    }
+                }
+
+                let targetStatus = detectedStatus;
+                
+                // Candados de Estatus
+                const dbIsFinal = (dbStatus === ShipmentStatusType.ENTREGADO);
+                let lockReason = null;
+                if (dbIsFinal && targetStatus !== ShipmentStatusType.ENTREGADO && targetStatus !== ShipmentStatusType.ENTREGADO_POR_FEDEX) {
+                    lockReason = `🔒 IRON LOCK (Final Status)`;
+                }
+
+                if (!lockReason && (shipment.status !== targetStatus || shipment.receivedByName !== trackResult.deliveryDetails?.receivedByName)) {
+                    audit.analysis.push(`🔄 Diferencia: ${shipment.status} -> ${targetStatus}`);
+                    if (applyFix) {
+                        shipment.status = targetStatus as any;
+                        shipment.receivedByName = trackResult.deliveryDetails?.receivedByName || shipment.receivedByName;
+                        await queryRunner.manager.save(Shipment, shipment);
+                        audit.actions.push(`✅ Estatus actualizado.`);
+                    }
+                }
+
+                await queryRunner.commitTransaction();
+                audit.status = applyFix ? 'FIXED' : 'ISSUES_FOUND';
+                if (audit.actions.length === 0 && audit.analysis.length === 0) audit.status = 'HEALTHY';
+                
+                this.logDeepAudit(logFile, audit, applyFix);
+                return audit;
+
+            } catch (e) {
+                if (queryRunner.isTransactionActive) await queryRunner.rollbackTransaction();
+                const errorAudit = { ...audit, status: 'ERROR', analysis: [e.message] };
+                this.logDeepAudit(logFile, errorAudit, applyFix);
+                return errorAudit;
+            } finally {
+                await queryRunner.release();
+            }
+        }));
+
+        const results = await Promise.all(tasks);
+        return { summary: { total: results.length, fixed: results.filter(r => r.status === 'FIXED').length }, details: results };
       }
 
       // Helper simple para log
