@@ -7870,11 +7870,19 @@ export class ShipmentsService {
         applyFix: boolean = false
       ) {
         let shipmentIds: string[] = [];
-        const inputList = Array.isArray(idOrList) ? idOrList : [idOrList];
+        
+        // 1. Normalización y Limpieza de nulos/vacíos
+        const inputList = (Array.isArray(idOrList) ? idOrList : [idOrList])
+            .filter(val => val && val.trim() !== '');
+
+        if (inputList.length === 0) {
+            return { status: 'NO_DATA', message: 'No se proporcionaron datos válidos para auditar.' };
+        }
+
+        this.logger.log(`🔎 Audit By Entity [${type}]: Buscando referencias para ${inputList.length} items...`);
 
         switch (type) {
           case 'trackings':
-            // LEGACY: Si me dan trackings, busco TODOS los IDs asociados a esos trackings.
             const shipmentsT = await this.shipmentRepository.find({
                 where: { trackingNumber: In(inputList) },
                 select: ['id']
@@ -7883,36 +7891,56 @@ export class ShipmentsService {
             break;
 
           case 'dispatch':
-            // Precisión Quirúrgica: Solo los IDs de este despacho
+            // SOPORTE HÍBRIDO: Busca por ID del despacho (uuid) O por TrackingNumber del despacho
+            // Nota: Verifica que 'trackingNumber' sea el nombre real de la columna en tu entidad PackageDispatch
             const shipmentsD = await this.shipmentRepository.find({
-              where: { packageDispatch: { id: In(inputList) } },
+              where: [
+                  { packageDispatch: { id: In(inputList) } },             // Caso 1: IDs
+                  { packageDispatch: { trackingNumber: In(inputList) } }  // Caso 2: Trackings de Despacho
+              ],
               select: ['id']
             });
             shipmentIds = shipmentsD.map(s => s.id);
             break;
 
           case 'consolidated':
+            // CORRECCIÓN APLICADA AQUÍ: Quitamos las llaves extra en In()
             const shipmentsC = await this.shipmentRepository.find({
-              where: { consolidatedId: In(inputList) },
+              where: [
+                  { consolidatedId: In(inputList) },    // Caso 1: UUIDs directos
+                  { consNumber: In(inputList) }         // Caso 2: Folios Públicos (ej. CON-2026)
+              ],
               select: ['id']
             });
             shipmentIds = shipmentsC.map(s => s.id);
             break;
 
           case 'unloading':
+             // SOPORTE HÍBRIDO: Busca por ID de Unloading O por TrackingNumber de Unloading
             const shipmentsU = await this.shipmentRepository.find({
-              where: { unloading: { id: In(inputList) } },
+              where: [
+                  { unloading: { id: In(inputList) } },             // Caso 1: IDs
+                  { unloading: { trackingNumber: In(inputList) } }  // Caso 2: Trackings
+              ],
               select: ['id']
             });
             shipmentIds = shipmentsU.map(s => s.id);
             break;
         }
 
+        // Eliminamos duplicados por seguridad (si un ID y un Folio apuntan a lo mismo)
+        shipmentIds = [...new Set(shipmentIds)];
+
         if (!shipmentIds || shipmentIds.length === 0) {
-          throw new Error(`No se encontraron guías vinculadas a ${type} con los datos proporcionados.`);
+          return { 
+              status: 'NO_MATCH', 
+              message: `No se encontraron guías vinculadas a ${type} con los datos proporcionados.` 
+          };
         }
 
-        // Llamamos al método fix pasando IDs (UUIDs)
+        this.logger.log(`🚀 Iniciando Auditoría Titanium para ${shipmentIds.length} guías encontradas...`);
+
+        // Llamamos al método fix pasando los UUIDs recolectados
         return await this.auditAndFixFedexShipments(shipmentIds, applyFix);
       }
 
