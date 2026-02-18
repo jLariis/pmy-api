@@ -13,6 +13,7 @@ import { PendingShipmentsQueryDto } from './dto/pendending-shipments.dto';
 import { UploadShipmentDto } from './dto/upload-shipment.dto';
 import { Response } from 'express';
 import * as dayjs from 'dayjs'; 
+import { UniversalAuditDto } from './dto/audit-entity-type.dto';
 
 @ApiTags('shipments')
 @ApiBearerAuth()
@@ -550,30 +551,35 @@ export class ShipmentsController {
   }
 
   @Post('audit-universal')
-  @ApiOperation({ summary: 'Auditoría masiva por Entidad (Unloading, Dispatch, etc.)' })
-  @ApiBody({
+  @ApiOperation({ 
+    summary: '🛡️ Auditoría Forense Universal (Titanium)', 
+    description: 'Ejecuta el proceso de auditoría y recuperación de ingresos para múltiples entidades. Soporta UUIDs nativos o Folios Públicos.'
+  })
+  @ApiQuery({
+    name: 'applyFix',
+    required: false,
+    type: Boolean,
+    description: 'Si es true, aplica las correcciones y genera ingresos en BD. Si es false, solo simula.',
+  })
+  @ApiResponse({ 
+    status: 200, 
+    description: 'Auditoría ejecutada correctamente. Devuelve el reporte detallado.',
     schema: {
-      type: 'object',
-      properties: {
-        entityType: { 
-          type: 'string', 
-          enum: ['trackings', 'dispatch', 'consolidated', 'unloading'],
-          example: 'unloading' 
-        },
-        identifier: { 
-          oneOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' } }],
-          example: 'ID-123-ABC' 
-        }
+      example: {
+        summary: { total_processed: 5, healthy: 4, issues_found: 1, fixed: 0 },
+        details: []
       }
     }
   })
+  @ApiResponse({ status: 400, description: 'Datos de entrada inválidos (DTO falló).' })
+  @ApiResponse({ status: 404, description: 'No se encontraron guías para la entidad proporcionada.' })
   async universalAudit(
-    @Body() body: { entityType: any, identifier: any },
+    @Body() body: UniversalAuditDto, // ✅ Usamos el DTO blindado
     @Query('applyFix', new ParseBoolPipe({ optional: true })) applyFix: boolean = false
   ) {
     return await this.shipmentsService.auditByEntity(
-      body.entityType, 
-      body.identifier, 
+      body.entityType,
+      body.identifier,
       applyFix
     );
   }
