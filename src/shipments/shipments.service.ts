@@ -2135,6 +2135,76 @@ export class ShipmentsService {
     return statuses;
   }
 
+  private async processFedexScanEventsToStatuses(
+    scanEvents: FedExScanEventDto[],
+    shipment: Shipment
+  ): Promise<ShipmentStatus[]> {
+    
+    // 1. Orden cronológico (Fundamental)
+    const sortedEvents = [...scanEvents].sort((a, b) => {
+      const dateA = new Date(a.date).getTime();
+      const dateB = new Date(b.date).getTime();
+      return dateA - dateB;
+    });
+
+    const statuses: ShipmentStatus[] = [];
+
+    for (const event of sortedEvents) {
+      // --- A. EXTRACCIÓN DE DATOS CRUDOS ---
+      const eCode = (event.exceptionCode || '').trim();
+      const dCode = (event.derivedStatusCode || '').trim();
+      const type  = (event.eventType || '').trim();
+      
+      // Definimos qué código guardaremos en la columna 'exceptionCode'
+      // Prioridad: Exception > Derived > EventType
+      let codeToSave = eCode; 
+      if (!codeToSave) codeToSave = dCode;
+      if (!codeToSave) codeToSave = type;
+
+      // --- B. INTENTO DE MAPEO ---
+      let mappedStatus = mapFedexStatusToLocalStatus(dCode, eCode);
+
+      // 🛡️ REGLA: CÓDIGO 67 = PENDIENTE (BODEGA)
+      // Forzamos manualmente para que no caiga en Desconocido si tu función map no lo tiene.
+      if (eCode === '67' || codeToSave === '67') {
+          mappedStatus = ShipmentStatusType.PENDIENTE; 
+      }
+
+      // --- C. VALIDACIÓN DE FECHA ---
+      const timestamp = new Date(event.date);
+      if (isNaN(timestamp.getTime())) {
+          this.logger.warn(`⚠️ Fecha inválida en evento FedEx: ${event.date} para guía ${shipment.trackingNumber}`);
+          continue; // Solo saltamos si la fecha es corrupta (imposible de guardar)
+      }
+
+      // --- D. CREACIÓN DEL REGISTRO (SIN FILTROS DE ESTATUS) ---
+      const statusEntry = new ShipmentStatus();
+      statusEntry.shipment = shipment; 
+      statusEntry.status = mappedStatus; // Puede ser DESCONOCIDO
+      statusEntry.exceptionCode = codeToSave; 
+      statusEntry.timestamp = timestamp;
+      
+      // --- E. NOTAS DETALLADAS (PARA DEBUGGING) ---
+      // Si es DESCONOCIDO, guardamos TODA la evidencia en las notas.
+      if (mappedStatus === ShipmentStatusType.DESCONOCIDO) {
+          statusEntry.notes = `⚠️ UNMAPPED: Code=[${codeToSave}] Derived=[${dCode}] Type=[${type}] Desc=[${event.eventDescription || 'N/A'}]`;
+          
+          // Opcional: Log en consola para alertarte en tiempo real
+          this.logger.warn(`[${shipment.trackingNumber}] Estatus Desconocido guardado: ${statusEntry.notes}`);
+      } else {
+          // Si es conocido, guardamos formato estándar
+          statusEntry.notes = event.exceptionDescription 
+            ? `[${codeToSave}] ${event.exceptionDescription}`
+            : `[${codeToSave}] ${event.eventDescription || 'Evento FedEx'}`;
+      }
+
+      statuses.push(statusEntry);
+    }
+
+    // Retornamos la historia íntegra.
+    return statuses;
+  }
+
   async addConsMasterBySubsidiaryResp1002(
     file: Express.Multer.File,
     subsidiaryId: string,
@@ -2291,7 +2361,7 @@ export class ShipmentsService {
     });
   }
 
-  async addConsMasterBySubsidiary(
+  async addConsMasterBySubsidiary1802(
     file: Express.Multer.File,
     subsidiaryId: string,
     consNumber: string,
@@ -2466,9 +2536,139 @@ export class ShipmentsService {
     });
   }
 
+  async addConsMasterBySubsidiary(
+    file: Express.Multer.File,
+    subsidiaryId: string,
+    consNumber: string,
+    consDate?: Date,
+    isAereo?: boolean
+  ): Promise<any> {
+      const startTime = Date.now();
+      this.logger.log(`📂 Procesando archivo: ${file?.originalname} | Tipo: ${isAereo ? 'AÉREO' : 'ORDINARIO'}`);
+
+      if (!file) throw new BadRequestException('No se ha recibido el archivo de Excel.');
+      
+      const predefinedSubsidiary = await this.subsidiaryService.findById(subsidiaryId);
+      if (!predefinedSubsidiary) throw new BadRequestException(`La subsidiaria seleccionada no es válida.`);
+
+      const existingCons = await this.consolidatedService.findByConsNumber(consNumber);
+      if (existingCons) throw new BadRequestException(`El número de consolidado '${consNumber}' ya existe.`);
+
+      let shipmentsToSave: any[] = [];
+      try {
+          const workbook = XLSX.read(file.buffer, { type: 'buffer' });
+          shipmentsToSave = parseDynamicSheet(workbook, { fileName: file.originalname });
+          if (!shipmentsToSave || shipmentsToSave.length === 0) throw new Error('El archivo no contiene filas de datos.');
+      } catch (excelError) {
+          throw new BadRequestException(`Error en formato de Excel: ${excelError.message}`);
+      }
+
+      const result = { saved: 0, failed: 0, duplicated: 0, duplicatedTrackings: [], failedTrackings: [] };
+      const processedTrackingNumbers = new Set<string>();
+      const shipmentsToGenerateIncomes: any[] = [];
+      
+      const batches = Array.from({ length: Math.ceil(shipmentsToSave.length / this.BATCH_SIZE) }, (_, i) => 
+          shipmentsToSave.slice(i * this.BATCH_SIZE, (i + 1) * this.BATCH_SIZE)
+      );
+
+      return await this.shipmentRepository.manager.transaction(async (transactionalEntityManager) => {
+          const consolidated = transactionalEntityManager.create(Consolidated, {
+              date: consDate || new Date(),
+              type: isAereo ? ConsolidatedType.AEREO : ConsolidatedType.ORDINARIA,
+              numberOfPackages: shipmentsToSave.length,
+              subsidiary: predefinedSubsidiary,
+              consNumber,
+              isCompleted: false,
+              efficiency: 0,
+              commitDateTime: new Date(),
+          });
+
+          const savedCons = await transactionalEntityManager.save(Consolidated, consolidated);
+
+          for (let i = 0; i < batches.length; i++) {
+              this.shipmentBatch = []; 
+
+              await Promise.all(
+                  batches[i].map((shipment, index) =>
+                      this.processShipment(
+                          shipment,
+                          predefinedSubsidiary,
+                          savedCons,
+                          result,
+                          null,
+                          i + 1,
+                          index + 1,
+                          processedTrackingNumbers,
+                          shipmentsToGenerateIncomes,
+                          savedCons.id
+                      )
+                  )
+              );
+
+              if (this.shipmentBatch.length > 0) {
+                  try {
+                      const statusHistoryMap = new Map();
+                      const paymentMap = new Map();
+                      const now = new Date();
+
+                      this.shipmentBatch.forEach(s => {
+                          if (s.statusHistory?.length) statusHistoryMap.set(s.trackingNumber, [...s.statusHistory]);
+                          if (s.payment) paymentMap.set(s.trackingNumber, s.payment);
+                          s.statusHistory = [];
+                          s.payment = undefined;
+                      });
+
+                      // A. Insertar Guías (CHUNK de 50 para estabilidad)
+                      const savedShipments = await transactionalEntityManager.save(Shipment, this.shipmentBatch, { chunk: 50 });
+
+                      const paymentsToSave = [];
+                      const historiesToSave = [];
+
+                      savedShipments.forEach(s => {
+                          const pay = paymentMap.get(s.trackingNumber);
+                          if (pay) { pay.shipment = { id: s.id }; paymentsToSave.push(pay); }
+
+                          const fedexHist = statusHistoryMap.get(s.trackingNumber);
+                          if (fedexHist) {
+                              fedexHist.forEach(h => { h.shipment = { id: s.id }; historiesToSave.push(h); });
+                          }
+
+                          // INYECTAR HISTORIA INICIAL (Garantiza que el inicio sea PENDIENTE en el log)
+                          historiesToSave.push(transactionalEntityManager.create(ShipmentStatus, {
+                              status: s.status,
+                              notes: `Registro inicial. Cons: ${savedCons.consNumber}`,
+                              timestamp: now,
+                              shipment: { id: s.id },
+                              exceptionCode: 'INIT'
+                          }));
+                      });
+
+                      if (paymentsToSave.length) await transactionalEntityManager.save(Payment, paymentsToSave);
+                      if (historiesToSave.length) await transactionalEntityManager.save(ShipmentStatus, historiesToSave, { chunk: 100 });
+
+                      for (const item of shipmentsToGenerateIncomes) {
+                          await this.generateIncomes(item.shipment, item.timestamp, item.exceptionCode, transactionalEntityManager);
+                      }
+                      shipmentsToGenerateIncomes.length = 0;
+
+                  } catch (err) {
+                      this.logger.error(`❌ Error en lote ${i + 1}: ${err.message}`);
+                      throw new InternalServerErrorException(`Error al guardar datos: ${err.message}`);
+                  }
+              }
+          }
+
+          savedCons.isCompleted = true;
+          savedCons.efficiency = (result.saved / shipmentsToSave.length) * 100;
+          await transactionalEntityManager.save(Consolidated, savedCons);
+
+          return { ...result, duration: `${((Date.now() - startTime) / 60000).toFixed(2)} min`, consNumber: savedCons.consNumber };
+      });
+  }
+
  /*** */ 
 
-  private async processShipment(
+  private async processShipmentResp1802(
     shipment: ParsedShipmentDto,
     predefinedSubsidiary: Subsidiary,
     consolidated: Consolidated, // <--- Este objeto YA debe tener ID (savedCons)
@@ -2610,6 +2810,201 @@ export class ShipmentsService {
       throw new InternalServerErrorException(`Error procesando guía ${trackingNumber}: ${err.message}`);
     }
   }
+
+  private async processShipment(
+    shipment: ParsedShipmentDto,
+    predefinedSubsidiary: Subsidiary,
+    consolidated: Consolidated,
+    result: any,
+    shipmentsWithError: any,
+    batchNumber: number,
+    shipmentIndex: number,
+    processedTrackingNumbers: Set<string>,
+    shipmentsToGenerateIncomes: { shipment: Shipment; timestamp: Date; exceptionCode: string | undefined }[],
+    consolidatedId: string
+  ): Promise<void> {
+    const trackingNumber = shipment.trackingNumber?.toString().trim();
+    
+    if (!trackingNumber) {
+      throw new BadRequestException(`Fila ${shipmentIndex} (Lote ${batchNumber}): Guía vacía.`);
+    }
+
+    // 1. Duplicados
+    if (processedTrackingNumbers.has(trackingNumber) || await this.existShipment(trackingNumber, consolidatedId)) {
+      result.duplicated++;
+      result.duplicatedTrackings.push(shipment);
+      processedTrackingNumbers.add(trackingNumber);
+      return;
+    }
+    processedTrackingNumbers.add(trackingNumber);
+
+    // 2. Consulta FedEx con Selector de Generación (Anti-Gemelo Malvado)
+    let fedexShipmentData: FedExTrackingResponseDto;
+    try {
+      fedexShipmentData = await this.trackPackageWithRetry(trackingNumber);
+    } catch (err) {
+      throw new InternalServerErrorException(`Error FedEx guía ${trackingNumber}: ${err.message}`);
+    }
+
+    let allTrackResults = fedexShipmentData.output.completeTrackResults[0].trackResults || [];
+    
+    // =================================================================================
+    // 🛡️ CORRECCIÓN 1: SELECTOR DE GENERACIÓN (Jerarquía de UniqueID)
+    // =================================================================================
+    if (allTrackResults.length > 1) {
+        allTrackResults.sort((a, b) => {
+            // Extraemos la secuencia numérica del inicio del UniqueID (ej: 2461089000)
+            const seqA = parseInt(a.trackingNumberInfo?.trackingNumberUniqueId?.split('~')[0] || '0');
+            const seqB = parseInt(b.trackingNumberInfo?.trackingNumberUniqueId?.split('~')[0] || '0');
+
+            // La secuencia más alta es SIEMPRE la más reciente (la nueva vida de la guía)
+            if (seqA !== seqB) return seqB - seqA;
+
+            // Respaldo por fecha solo si los IDs son idénticos (muy raro)
+            const timeA = new Date(a.scanEvents?.[0]?.date || 0).getTime();
+            const timeB = new Date(b.scanEvents?.[0]?.date || 0).getTime();
+            return timeB - timeA;
+        });
+
+        const winner = allTrackResults[0];
+        this.logger.log(`[${trackingNumber}] 🚀 Selector de Generación: Elegido ID ${winner.trackingNumberInfo.trackingNumberUniqueId} (Secuencia Mayor).`);
+            }
+
+    const trackResult = allTrackResults[0]; 
+    const scanEvents = trackResult?.scanEvents || [];
+    const lsdHeader = trackResult?.latestStatusDetail;
+
+    // 3. Fechas (TimeZone Hermosillo)
+    let finalCommitDate: Date;
+    if (shipment.commitDate && shipment.commitTime) {
+      try {
+        const timeZone = 'America/Hermosillo';
+        finalCommitDate = toDate(`${shipment.commitDate}T${shipment.commitTime}`, { timeZone });
+      } catch (e) { /* ignore */ }
+    }
+    if (!finalCommitDate || isNaN(finalCommitDate.getTime())) {
+      const rawFedexDate = trackResult?.standardTransitTimeWindow?.window?.ends;
+      if (rawFedexDate) finalCommitDate = parse(rawFedexDate, "yyyy-MM-dd'T'HH:mm:ssXXX", new Date());
+    }
+    if (!finalCommitDate || isNaN(finalCommitDate.getTime())) finalCommitDate = new Date();
+
+    try {
+      const newShipment = new Shipment();
+      newShipment.trackingNumber = trackingNumber;
+      newShipment.shipmentType = ShipmentType.FEDEX;
+      newShipment.recipientName = shipment.recipientName || 'N/A';
+      newShipment.recipientAddress = shipment.recipientAddress || 'N/A';
+      newShipment.recipientCity = shipment.recipientCity || predefinedSubsidiary.name;
+      newShipment.recipientZip = shipment.recipientZip || 'N/A';
+      newShipment.recipientPhone = shipment.recipientPhone || 'N/A';
+      newShipment.priority = getPriority(finalCommitDate);
+      newShipment.commitDateTime = finalCommitDate;
+      newShipment.consNumber = consolidated.consNumber || '';
+      newShipment.receivedByName = trackResult?.deliveryDetails?.receivedByName || '';
+      newShipment.fedexUniqueId = trackResult?.trackingNumberInfo?.trackingNumberUniqueId || null;
+      newShipment.carrierCode = trackResult?.trackingNumberInfo?.carrierCode || null;
+      newShipment.createdAt = new Date();
+      newShipment.subsidiary = predefinedSubsidiary;
+      newShipment.consolidatedId = consolidated.id; 
+
+      // 4. Procesar Historial (Mapea todos los eventos sin ignorar nada)
+      const histories = await this.processFedexScanEventsToStatuses(scanEvents, newShipment);
+
+      // =================================================================================
+      // 🛡️ SECCIÓN 5: LÓGICA DE CONSENSO (HEADER + HISTORIA)
+      // =================================================================================
+      
+      // Peso de estatus para decisión
+      const getWeight = (status: any) => {
+          if (status === ShipmentStatusType.ENTREGADO || status === ShipmentStatusType.ENTREGADO_POR_FEDEX) return 10;
+          if ([ShipmentStatusType.RECHAZADO, ShipmentStatusType.DIRECCION_INCORRECTA, ShipmentStatusType.CLIENTE_NO_DISPONIBLE, ShipmentStatusType.RETORNO_ABANDONO_FEDEX].includes(status)) return 5;
+          if (status !== ShipmentStatusType.DESCONOCIDO && status !== ShipmentStatusType.PENDIENTE && status !== ShipmentStatusType.EN_TRANSITO) return 1;
+          return 0;
+      };
+
+      // A. Estatus del Header
+      const headerStatus = mapFedexStatusToLocalStatus(lsdHeader?.derivedCode || lsdHeader?.code || '', lsdHeader?.ancillaryDetails?.[0]?.reason);
+      
+      // B. Estatus de la Historia (El más pesado manda)
+      let historyStatus = ShipmentStatusType.PENDIENTE;
+      let historyWeight = -1;
+      
+      if (histories && histories.length > 0) {
+          histories.forEach(h => {
+              const w = getWeight(h.status);
+              if (w >= historyWeight) {
+                  historyStatus = h.status as any;
+                  historyWeight = w;
+              }
+          });
+      }
+
+      // C. Decisión: Si la historia tiene algo más específico (Peso >), corrige al Header
+      let finalStatus = (historyWeight > getWeight(headerStatus)) ? historyStatus : headerStatus;
+
+      // D. Supremacía de Entrega (DL en cualquier lado es final)
+      if (lsdHeader?.code === 'DL' || lsdHeader?.derivedCode === 'DL' || scanEvents.some(e => e.derivedStatusCode === 'DL')) {
+          finalStatus = ShipmentStatusType.ENTREGADO;
+      }
+
+      // E. Reseteo de Re-ingreso: Si es un paquete nuevo pero FedEx da DL viejo, forzamos PENDIENTE
+      // (Se detecta porque el UniqueID es mayor al que tendríamos pero el estatus es viejo)
+      if (finalStatus === ShipmentStatusType.ENTREGADO && scanEvents.length <= 1) {
+          finalStatus = ShipmentStatusType.PENDIENTE;
+      }
+
+      newShipment.status = finalStatus as any;
+
+      if (histories && histories.length > 0) {
+        histories.forEach(h => { h.shipment = undefined; });
+        newShipment.statusHistory = histories;
+      }
+
+      // 8. Lógica de Pagos (Original)
+      if (shipment.payment) {
+        const amountMatch = shipment.payment.match(/([0-9]+(?:\.[0-9]+)?)/);
+        if (amountMatch) {
+          const amount = parseFloat(amountMatch[1]);
+          const typeMatch = shipment.payment.match(/^(COD|FTC|ROD)/);
+          if (!isNaN(amount) && amount > 0) {
+            newShipment.payment = {
+              amount,
+              type: typeMatch ? typeMatch[1] : null,
+              status: finalStatus === ShipmentStatusType.ENTREGADO ? PaymentStatus.PAID : PaymentStatus.PENDING
+            } as any;
+          }
+        }
+      }
+
+      // 9. Validación de Incomes (Original)
+      if ([ShipmentStatusType.ENTREGADO, ShipmentStatusType.NO_ENTREGADO, ShipmentStatusType.RECHAZADO].includes(finalStatus as any)) {
+        const matchedHistory = histories?.find(h => h.status === finalStatus);
+        const validation = await this.applyIncomeValidationRules(
+          newShipment,
+          finalStatus as any,
+          histories?.map(h => h.exceptionCode).filter(Boolean) || [],
+          histories || [],
+          trackingNumber,
+          matchedHistory?.timestamp || new Date()
+        );
+
+        if (validation.isValid) {
+          shipmentsToGenerateIncomes.push({
+            shipment: newShipment,
+            timestamp: validation.timestamp,
+            exceptionCode: matchedHistory?.exceptionCode,
+          });
+        }
+      }
+
+      this.shipmentBatch.push(newShipment);
+      result.saved++;
+
+    } catch (err) {
+      this.logger.error(`❌ Error guía ${trackingNumber}: ${err.message}`);
+      throw err;
+    }
+}
 
   private async generateIncomes(
     shipment: Shipment,
@@ -7969,15 +8364,26 @@ export class ShipmentsService {
 
             if (allTrackResults.length === 0) return;
 
-            // 🛡️ CORRECCIÓN 1: SELECTOR INTELIGENTE (Anti-Gemelo Malvado)
+            // =================================================================================
+            // 🛡️ CORRECCIÓN 1: SELECTOR DE GENERACIÓN (Jerarquía de UniqueID)
+            // =================================================================================
             if (allTrackResults.length > 1) {
                 allTrackResults.sort((a, b) => {
-                    const dateA = new Date(a.scanEvents?.[0]?.date || 0).getTime();
-                    const dateB = new Date(b.scanEvents?.[0]?.date || 0).getTime();
-                    return dateB - dateA; // Descendente (Nuevo -> Viejo)
+                    // Extraemos la secuencia numérica del inicio del UniqueID (ej: 2461089000)
+                    const seqA = parseInt(a.trackingNumberInfo?.trackingNumberUniqueId?.split('~')[0] || '0');
+                    const seqB = parseInt(b.trackingNumberInfo?.trackingNumberUniqueId?.split('~')[0] || '0');
+
+                    // La secuencia más alta es SIEMPRE la más reciente (la nueva vida de la guía)
+                    if (seqA !== seqB) return seqB - seqA;
+
+                    // Respaldo por fecha solo si los IDs son idénticos (muy raro)
+                    const timeA = new Date(a.scanEvents?.[0]?.date || 0).getTime();
+                    const timeB = new Date(b.scanEvents?.[0]?.date || 0).getTime();
+                    return timeB - timeA;
                 });
+
                 const winner = allTrackResults[0];
-                this.logger.log(`[${tn}] ⚠️ Múltiples resultados. Usando el más reciente: ${winner.latestStatusDetail?.statusByLocale}`);
+                this.logger.log(`[${tn}] 🚀 Selector de Generación: Elegido ID ${winner.trackingNumberInfo.trackingNumberUniqueId} (Secuencia Mayor).`);
             }
 
             const trackResult = allTrackResults[0]; 
@@ -9339,14 +9745,26 @@ export class ShipmentsService {
                     return audit;
                 }
 
-                // Selector inteligente (Más reciente primero)
+                // =================================================================================
+                // 🛡️ CORRECCIÓN 1: SELECTOR DE GENERACIÓN (Jerarquía de UniqueID)
+                // =================================================================================
                 if (allTrackResults.length > 1) {
                     allTrackResults.sort((a, b) => {
-                        const dateA = new Date(a.scanEvents?.[0]?.date || 0).getTime();
-                        const dateB = new Date(b.scanEvents?.[0]?.date || 0).getTime();
-                        return dateB - dateA; 
+                        // Extraemos la secuencia numérica del inicio del UniqueID (ej: 2461089000)
+                        const seqA = parseInt(a.trackingNumberInfo?.trackingNumberUniqueId?.split('~')[0] || '0');
+                        const seqB = parseInt(b.trackingNumberInfo?.trackingNumberUniqueId?.split('~')[0] || '0');
+
+                        // La secuencia más alta es SIEMPRE la más reciente (la nueva vida de la guía)
+                        if (seqA !== seqB) return seqB - seqA;
+
+                        // Respaldo por fecha solo si los IDs son idénticos (muy raro)
+                        const timeA = new Date(a.scanEvents?.[0]?.date || 0).getTime();
+                        const timeB = new Date(b.scanEvents?.[0]?.date || 0).getTime();
+                        return timeB - timeA;
                     });
-                    audit.analysis.push(`⚠️ Múltiples resultados detectados. Analizando el más reciente.`);
+
+                    const winner = allTrackResults[0];
+                    this.logger.log(`[${tn}] 🚀 Selector de Generación: Elegido ID ${winner.trackingNumberInfo.trackingNumberUniqueId} (Secuencia Mayor).`);
                 }
 
                 const trackResult = allTrackResults[0]; 
