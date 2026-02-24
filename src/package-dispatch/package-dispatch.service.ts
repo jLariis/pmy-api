@@ -118,14 +118,13 @@ export class PackageDispatchService {
 
   async create(dto: CreatePackageDispatchDto): Promise<PackageDispatch> {
     const allShipmentIds = dto.shipments;
-    // Usamos DataSource para el queryRunner
     const queryRunner = this.dataSource.createQueryRunner();
 
     await queryRunner.connect();
     await queryRunner.startTransaction();
 
     try {
-      // 1. Buscar Shipments y ChargeShipments usando el manager del queryRunner
+      // 1. Identificar Shipments y ChargeShipments
       const shipments = await queryRunner.manager.find(Shipment, {
         where: { id: In(allShipmentIds) },
       });
@@ -141,10 +140,10 @@ export class PackageDispatchService {
       const stillMissing = missingIds.filter(id => !foundChargeShipmentIds.includes(id));
 
       if (stillMissing.length > 0) {
-        throw new BadRequestException(`No se encontraron los siguientes IDs: ${stillMissing.join(', ')}`);
+        throw new BadRequestException(`No se encontraron los IDs: ${stillMissing.join(', ')}`);
       }
 
-      // 2. Crear el Despacho
+      // 2. Crear y Guardar el Despacho primero
       const newDispatch = queryRunner.manager.create(PackageDispatch, {
         routes: dto.routes || [],
         drivers: dto.drivers || [],
@@ -155,43 +154,49 @@ export class PackageDispatchService {
 
       const savedDispatch = await queryRunner.manager.save(newDispatch);
 
-      // 3. Lógica para Actualizar Estatus y Crear Historial
+      // 3. Función de Actualización Forzada (Write)
       const processUpdates = async (ids: string[], entity: any, relationKey: 'shipment' | 'chargeShipment') => {
         if (ids.length === 0) return;
 
-        // Actualización masiva de estatus
-        await queryRunner.manager.update(entity, { id: In(ids) }, { status: ShipmentStatusType.EN_RUTA });
+        // FORZAR ESCRITURA: Usamos QueryBuilder para asegurar el UPDATE en la DB
+        const updateResult = await queryRunner.manager
+          .createQueryBuilder()
+          .update(entity)
+          .set({ status: ShipmentStatusType.EN_RUTA }) // Asegúrate que este valor sea el que espera el ENUM/VARCHAR
+          .whereInIds(ids)
+          .execute();
 
+        if (updateResult.affected === 0) {
+          console.warn(`Ojo: No se actualizaron filas para ${relationKey} con IDs: ${ids}`);
+        }
+
+        // Creación de Historial
         const now = new Date();
-
-        // Interpretamos "ahora" como hora Hermosillo
-        //const utcDate = fromZonedTime(now, 'America/Hermosillo');
-
-        // Creación masiva de historial
         const historyRecords = ids.map(id => {
           return queryRunner.manager.create(ShipmentStatus, {
             status: ShipmentStatusType.EN_RUTA,
-            exceptionCode: '', // Agregado el código 44 que mencionamos antes
+            exceptionCode: '', 
             notes: `Salida a ruta (Folio Despacho: ${savedDispatch.id})`,
             timestamp: now,
-            [relationKey]: { id } // Relacionamos con el paquete correspondiente
+            [relationKey]: { id } // Relación directa
           });
         });
 
         await queryRunner.manager.save(ShipmentStatus, historyRecords);
       };
 
-      // Ejecutar para ambos tipos de paquetes
+      // Ejecutar actualizaciones
       await processUpdates(foundShipmentIds, Shipment, 'shipment');
       await processUpdates(foundChargeShipmentIds, ChargeShipment, 'chargeShipment');
 
-      // 4. Relacionar con el Despacho (Tablas Pivot usando QueryBuilder del Manager)
+      // 4. Vincular tablas Pivot (Many-to-Many)
+      // Usamos el manager del queryRunner para que sea parte de la misma transacción
       if (foundShipmentIds.length > 0) {
         await queryRunner.manager
           .createQueryBuilder()
           .relation(PackageDispatch, 'shipments')
           .of(savedDispatch)
-          .add(foundShipmentIds); // Usamos los IDs directamente
+          .add(foundShipmentIds);
       }
 
       if (foundChargeShipmentIds.length > 0) {
@@ -202,16 +207,13 @@ export class PackageDispatchService {
           .add(foundChargeShipmentIds);
       }
 
-      // 5. Confirmar todos los cambios
       await queryRunner.commitTransaction();
       return savedDispatch;
 
     } catch (error) {
-      // Si algo falla, se deshace TODO (incluso el registro de Despacho)
       await queryRunner.rollbackTransaction();
       throw error;
     } finally {
-      // Liberar la conexión al pool de MySQL siempre
       await queryRunner.release();
     }
   }

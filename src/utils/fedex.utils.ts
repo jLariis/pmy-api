@@ -15,7 +15,6 @@ export function mapFedexStatusToLocalStatus(derivedStatusCode: string, exception
       case 'A13': return ShipmentStatusType.DIRECCION_INCORRECTA;
       case '41': 
       case '11': 
-      case '67':
       case 'DF': return ShipmentStatusType.PENDIENTE; 
       case '15':
       //case '44':
@@ -30,6 +29,7 @@ export function mapFedexStatusToLocalStatus(derivedStatusCode: string, exception
       case '08D': return ShipmentStatusType.NO_ENTREGADO;
       case '71':
       case '72': return ShipmentStatusType.CLIENTE_NO_DISPONIBLE;
+      case '31': return ShipmentStatusType.LLEGADO_DESPUES;
   
     }
   }
