@@ -121,7 +121,7 @@ export class ConsolidatedService {
     return result;
   }
 
-  async findAll(
+  /*async findAllResp2002(
     subsidiaryId?: string,
     fromDate?: Date,
     toDate?: Date,
@@ -213,6 +213,299 @@ export class ConsolidatedService {
         shipmentCounts: counts,
         shipments: []
       };
+    });
+  }*/
+
+  async findAllResp2102(subsidiaryId?: string, fromDate?: Date, toDate?: Date): Promise<ConsolidatedDto[]> {
+    let utcFromDate: Date | undefined;
+    let utcToDate: Date | undefined;
+
+    if (fromDate && toDate) {
+      utcFromDate = new Date(Date.UTC(fromDate.getUTCFullYear(), fromDate.getUTCMonth(), fromDate.getUTCDate(), 0, 0, 0));
+      utcToDate = new Date(Date.UTC(toDate.getUTCFullYear(), toDate.getUTCMonth(), toDate.getUTCDate(), 23, 59, 59));
+    }
+
+  const queryBuilder = this.consolidatedRepository
+    .createQueryBuilder('consolidated')
+    .leftJoinAndSelect('consolidated.subsidiary', 'subsidiary')
+    .select([
+      'consolidated.id AS id',
+      'consolidated.date AS date',
+      'consolidated.numberOfPackages AS numberOfPackages',
+      'consolidated.consNumber AS consNumber',
+      'consolidated.type AS type',
+      'subsidiary.id AS subsidiary_id',
+      'subsidiary.name AS subsidiary_name'
+    ])
+    .addSelect((sub) => sub.select('COUNT(s1.id)').from('shipment', 's1').where('s1.consolidatedId = consolidated.id'), 'countNormal')
+    .addSelect((sub) => sub.select('COUNT(cs.id)').from('charge_shipment', 'cs').where('cs.consolidatedId = consolidated.id'), 'countF2')
+
+    // 1. POD - Separado y Sumado
+    .addSelect(`(
+      SELECT (
+        (SELECT COUNT(*) FROM shipment s WHERE s.consolidatedId = consolidated.id AND s.status = 'entregado') +
+        (SELECT COUNT(*) FROM charge_shipment cs WHERE cs.consolidatedId = consolidated.id AND cs.status = 'entregado')
+      )
+    )`, 'entregado')
+
+    // 2. DEVOLUCIONES - LA SOLUCIÓN DEFINITIVA (Separando estados y tablas)
+    // Contamos cada estado por separado para que MySQL no pueda fallar en la lógica del OR
+    .addSelect(`(
+      SELECT (
+        (SELECT COUNT(*) FROM shipment s WHERE s.consolidatedId = consolidated.id AND s.status = 'devuelto_a_fedex') +
+        (SELECT COUNT(*) FROM shipment s WHERE s.consolidatedId = consolidated.id AND s.status = 'retorno_abandono_fedex') +
+        (SELECT COUNT(*) FROM charge_shipment cs WHERE cs.consolidatedId = consolidated.id AND cs.status = 'devuelto_a_fedex') +
+        (SELECT COUNT(*) FROM charge_shipment cs WHERE cs.consolidatedId = consolidated.id AND cs.status = 'retorno_abandono_fedex')
+      )
+    )`, 'totalDevueltos')
+
+    // 3. DEX (Mapeo por motivo)
+    .addSelect(`(
+      SELECT COUNT(*) FROM shipment s 
+      LEFT JOIN shipment_status sh ON sh.id = (SELECT id FROM shipment_status WHERE shipmentId = s.id ORDER BY timestamp DESC LIMIT 1)
+      WHERE s.consolidatedId = consolidated.id 
+      AND s.status NOT IN ('entregado', 'en_ruta', 'en_bodega')
+      AND (s.status = 'direccion_incorrecta' OR sh.exceptionCode = '03' OR sh.notes LIKE '%03%')
+    )`, 'dex03')
+
+    .addSelect(`(
+      SELECT COUNT(*) FROM shipment s 
+      LEFT JOIN shipment_status sh ON sh.id = (SELECT id FROM shipment_status WHERE shipmentId = s.id ORDER BY timestamp DESC LIMIT 1)
+      WHERE s.consolidatedId = consolidated.id 
+      AND s.status NOT IN ('entregado', 'en_ruta', 'en_bodega')
+      AND (s.status = 'rechazado' OR sh.exceptionCode = '07' OR sh.notes LIKE '%07%')
+    )`, 'dex07')
+
+    .addSelect(`(
+      SELECT COUNT(*) FROM shipment s 
+      LEFT JOIN shipment_status sh ON sh.id = (SELECT id FROM shipment_status WHERE shipmentId = s.id ORDER BY timestamp DESC LIMIT 1)
+      WHERE s.consolidatedId = consolidated.id 
+      AND s.status NOT IN ('entregado', 'en_ruta', 'en_bodega')
+      AND (s.status = 'cliente_no_disponible' OR sh.exceptionCode = '08' OR sh.notes LIKE '%08%')
+    )`, 'dex08')
+
+    // 4. LOGÍSTICA
+    .addSelect(`(SELECT (
+      (SELECT COUNT(*) FROM shipment s WHERE s.consolidatedId = consolidated.id AND s.status = 'en_ruta') +
+      (SELECT COUNT(*) FROM charge_shipment cs WHERE cs.consolidatedId = consolidated.id AND cs.status = 'en_ruta')
+    ))`, 'en_ruta')
+    .addSelect(`(SELECT (
+      (SELECT COUNT(*) FROM shipment s WHERE s.consolidatedId = consolidated.id AND s.status = 'en_bodega') +
+      (SELECT COUNT(*) FROM charge_shipment cs WHERE cs.consolidatedId = consolidated.id AND cs.status = 'en_bodega')
+    ))`, 'en_bodega')
+
+    // 5. OTROS (Filtro de exclusión actualizado)
+    .addSelect(`(
+      SELECT COUNT(*) FROM shipment s 
+      LEFT JOIN shipment_status sh ON sh.id = (SELECT id FROM shipment_status WHERE shipmentId = s.id ORDER BY timestamp DESC LIMIT 1)
+      WHERE s.consolidatedId = consolidated.id 
+      AND s.status NOT IN ('entregado', 'en_ruta', 'en_bodega', 'direccion_incorrecta', 'rechazado', 'cliente_no_disponible', 'devuelto_a_fedex', 'retorno_abandono_fedex')
+      AND (s.status != 'no_entregado' OR (sh.exceptionCode NOT IN ('03','07','08') OR sh.exceptionCode IS NULL))
+    )`, 'countOther')
+
+    .orderBy('consolidated.date', 'DESC');
+
+    if (subsidiaryId) queryBuilder.andWhere('consolidated.subsidiaryId = :subsidiaryId', { subsidiaryId });
+    if (utcFromDate && utcToDate) queryBuilder.andWhere('consolidated.date BETWEEN :fromDate AND :toDate', { fromDate: utcFromDate, toDate: utcToDate });
+
+    const results = await queryBuilder.getRawMany();
+
+    return results.map(res => {
+      const n = parseInt(res.countNormal, 10) || 0;
+      const f2 = parseInt(res.countF2, 10) || 0;
+      const total = n + f2;
+      
+      const entregado = parseInt(res.entregado, 10) || 0;
+      const dex03 = parseInt(res.dex03, 10) || 0;
+      const dex07 = parseInt(res.dex07, 10) || 0;
+      const dex08 = parseInt(res.dex08, 10) || 0;
+      const totalDex = dex03 + dex07 + dex08;
+      const totalDevueltos = parseInt(res.totalDevueltos, 10) || 0;
+      console.log("🚀 ~ ConsolidatedService ~ findAll ~ totalDevueltos:", totalDevueltos)
+      const other = parseInt(res.countOther, 10) || 0;
+      
+      const en_ruta = parseInt(res.en_ruta, 10) || 0;
+      const en_bodega = parseInt(res.en_bodega, 10) || 0;
+
+      // Procesados = Todo lo que ya tiene una resolución (POD + DEX + DEV + OTROS)
+      const conIntento = entregado + totalDex + other; 
+      const pendiente = total - conIntento;
+
+      return {
+        id: res.id,
+        date: res.date,
+        consolidatedDate: res.date,
+        numberOfPackages: res.numberOfPackages,
+        consNumber: res.consNumber,
+        type: res.type,
+        subsidiary: { id: res.subsidiary_id, name: res.subsidiary_name },
+        isConsolidatedComplete: total > 0 && en_ruta === 0 && en_bodega === 0 && pendiente === 0 && other === 0,
+        shipmentCounts: {
+          total,
+          countNormal: n,
+          countF2: f2,
+          entregado,
+          totalDex,
+          totalDevueltos,
+          pendiente,
+          en_ruta,
+          en_bodega,
+          dex03,
+          dex07,
+          dex08,
+          other,
+          porcEfectividad: total > 0 ? parseFloat(((entregado / total) * 100).toFixed(2)) : 0,
+          porcEfectividadEntrega: (entregado + totalDex) > 0 ? parseFloat(((entregado / (entregado + totalDex)) * 100).toFixed(2)) : 0,
+          porcRendimientoIntentos: total > 0 ? parseFloat(((conIntento / total) * 100).toFixed(2)) : 0,
+        },
+        shipments: []
+      } as ConsolidatedDto;
+    });
+  }
+
+  async findAll(
+    subsidiaryId?: string,
+    fromDate?: Date,
+    toDate?: Date,
+  ): Promise<ConsolidatedDto[]> {
+    let utcFromDate: Date | undefined;
+    let utcToDate: Date | undefined;
+
+    if (fromDate && toDate) {
+      utcFromDate = new Date(Date.UTC(fromDate.getUTCFullYear(), fromDate.getUTCMonth(), fromDate.getUTCDate(), 0, 0, 0));
+      utcToDate = new Date(Date.UTC(toDate.getUTCFullYear(), toDate.getUTCMonth(), toDate.getUTCDate(), 23, 59, 59));
+    }
+
+    /* 1️⃣ TRAER CONSOLIDADOS */
+    const consolidatedQB = this.consolidatedRepository
+      .createQueryBuilder('c')
+      .leftJoin('c.subsidiary', 's')
+      .select([
+        'c.id AS id',
+        'c.date AS date',
+        'c.numberOfPackages AS numberOfPackages',
+        'c.consNumber AS consNumber',
+        'c.type AS type',
+        's.id AS subsidiary_id',
+        's.name AS subsidiary_name',
+      ])
+      .orderBy('c.date', 'DESC');
+
+    if (subsidiaryId) consolidatedQB.andWhere('c.subsidiaryId = :subsidiaryId', { subsidiaryId });
+    if (utcFromDate && utcToDate) {
+      consolidatedQB.andWhere('c.date BETWEEN :fromDate AND :toDate', { fromDate: utcFromDate, toDate: utcToDate });
+    }
+
+    const consolidated = await consolidatedQB.getRawMany();
+    if (!consolidated.length) return [];
+
+    const consolidatedIds = consolidated.map(c => c.id);
+
+    /* 2️⃣ AGREGADOS SHIPMENT (Normales) */
+    const shipmentAgg = await this.consolidatedRepository.manager
+      .createQueryBuilder()
+      .select('s.consolidatedId', 'consolidatedId')
+      .addSelect('COUNT(*)', 'total')
+      .addSelect(`SUM(s.status = 'entregado')`, 'entregado')
+      .addSelect(`SUM(s.status = 'devuelto_a_fedex')`, 'devuelto_fedex') // Separado
+      .addSelect(`SUM(s.status = 'retorno_abandono_fedex')`, 'retorno_abandono') // Separado
+      .addSelect(`SUM(s.status = 'en_ruta')`, 'en_ruta')
+      .addSelect(`SUM(s.status = 'en_bodega')`, 'en_bodega')
+      .addSelect(`SUM(s.status = 'direccion_incorrecta')`, 'dex03')
+      .addSelect(`SUM(s.status = 'rechazado')`, 'dex07')
+      .addSelect(`SUM(s.status = 'cliente_no_disponible')`, 'dex08')
+      .from('shipment', 's')
+      .where('s.consolidatedId IN (:...ids)', { ids: consolidatedIds })
+      .groupBy('s.consolidatedId')
+      .getRawMany();
+
+    /* 3️⃣ AGREGADOS CHARGE_SHIPMENT (Cobros F2) */
+    const chargeAgg = await this.consolidatedRepository.manager
+      .createQueryBuilder()
+      .select('cs.consolidatedId', 'consolidatedId')
+      .addSelect('COUNT(*)', 'total')
+      .addSelect(`SUM(cs.status = 'entregado')`, 'entregado')
+      .addSelect(`SUM(cs.status = 'devuelto_a_fedex')`, 'devuelto_fedex') // Separado
+      .addSelect(`SUM(cs.status = 'retorno_abandono_fedex')`, 'retorno_abandono') // Separado
+      .addSelect(`SUM(cs.status = 'en_ruta')`, 'en_ruta')
+      .addSelect(`SUM(cs.status = 'en_bodega')`, 'en_bodega')
+      .addSelect(`SUM(cs.status = 'direccion_incorrecta')`, 'dex03')
+      .addSelect(`SUM(cs.status = 'rechazado')`, 'dex07')
+      .addSelect(`SUM(cs.status = 'cliente_no_disponible')`, 'dex08')
+      .from('charge_shipment', 'cs')
+      .where('cs.consolidatedId IN (:...ids)', { ids: consolidatedIds })
+      .groupBy('cs.consolidatedId')
+      .getRawMany();
+
+    const shipmentMap = new Map(shipmentAgg.map(r => [r.consolidatedId, r]));
+    const chargeMap = new Map(chargeAgg.map(r => [r.consolidatedId, r]));
+
+    /* 4️⃣ MERGE FINAL */
+    return consolidated.map(row => {
+      const ship = shipmentMap.get(row.id) || {};
+      const charge = chargeMap.get(row.id) || {};
+
+      // Base
+      const n = parseInt(ship.total || 0);
+      const f2 = parseInt(charge.total || 0);
+      const total = n + f2;
+
+      const entregado = parseInt(ship.entregado || 0) + parseInt(charge.entregado || 0);
+
+      // DEBAGUEO DE DEVOLUCIONES
+      const dFedex = parseInt(ship.devuelto_fedex || 0) + parseInt(charge.devuelto_fedex || 0);
+      const rAbandono = parseInt(ship.retorno_abandono || 0) + parseInt(charge.retorno_abandono || 0);
+      const totalDevueltos = dFedex + rAbandono;
+
+      // Debugging en consola para rastrear el problema de los 2 paquetes
+      if (row.consNumber === '305775288663') {
+          console.log(`[DEBUG] Guía: ${row.consNumber}`);
+          console.log(`- Devuelto Fedex: ${dFedex} (Ship: ${ship.devuelto_fedex}, Charge: ${charge.devuelto_fedex})`);
+          console.log(`- Retorno Abandono: ${rAbandono} (Ship: ${ship.retorno_abandono}, Charge: ${charge.retorno_abandono})`);
+      }
+
+      const en_ruta = parseInt(ship.en_ruta || 0) + parseInt(charge.en_ruta || 0);
+      const en_bodega = parseInt(ship.en_bodega || 0) + parseInt(charge.en_bodega || 0);
+
+      // DEX Unificados
+      const dex03 = parseInt(ship.dex03 || 0) + parseInt(charge.dex03 || 0);
+      const dex07 = parseInt(ship.dex07 || 0) + parseInt(charge.dex07 || 0);
+      const dex08 = parseInt(ship.dex08 || 0) + parseInt(charge.dex08 || 0);
+      const totalDex = dex03 + dex07 + dex08;
+
+      // Con Intento = POD + DEX + Devoluciones (Ya que son estados finales de intento)
+      const conIntento = entregado + totalDex + totalDevueltos;
+      const pendiente = total - conIntento;
+
+      return {
+        id: row.id,
+        date: row.date,
+        consolidatedDate: row.date,
+        numberOfPackages: row.numberOfPackages,
+        consNumber: row.consNumber,
+        type: row.type,
+        subsidiary: { id: row.subsidiary_id, name: row.subsidiary_name },
+        isConsolidatedComplete: total > 0 && en_ruta === 0 && en_bodega === 0 && pendiente === 0,
+        shipmentCounts: {
+          total,
+          countNormal: n,
+          countF2: f2,
+          entregado,
+          totalDex,
+          totalDevueltos,
+          pendiente,
+          en_ruta,
+          en_bodega,
+          dex03,
+          dex07,
+          dex08,
+          other: 0,
+          porcEfectividad: total > 0 ? parseFloat(((entregado / total) * 100).toFixed(2)) : 0,
+          porcEfectividadEntrega: (entregado + totalDex) > 0 ? parseFloat(((entregado / (entregado + totalDex)) * 100).toFixed(2)) : 0,
+          porcRendimientoIntentos: total > 0 ? parseFloat(((conIntento / total) * 100).toFixed(2)) : 0,
+        },
+        shipments: [],
+      } as ConsolidatedDto;
     });
   }
 
@@ -344,6 +637,7 @@ export class ConsolidatedService {
         'packageDispatch.vehicle',
         'packageDispatch.subsidiary',
         'packageDispatch.drivers',
+        'packageDispatch.routes',
         'subsidiary',
         'payment',
         'unloading',
@@ -358,6 +652,7 @@ export class ConsolidatedService {
         'packageDispatch.vehicle',
         'packageDispatch.subsidiary',
         'packageDispatch.drivers',
+        'packageDispatch.routes',
         'payment',
         'subsidiary',
         'unloading',
@@ -408,6 +703,12 @@ export class ConsolidatedService {
     const mapShipment = async (shipment: any, isCharge: boolean) => {
       const dispatch = shipment.packageDispatch;
       const driverName = dispatch?.drivers?.length ? dispatch.drivers[0].name : null;
+      const route = dispatch?.routes?.length
+        ? dispatch.routes.map(r => r.name).join(' - ')
+        : null;
+
+      console.log("🚀 ~ ConsolidatedService ~ mapShipment ~ route:", route)
+      
       const ubication = dispatch ? 'EN RUTA' : 'EN BODEGA';
 
       // 👉 Days in warehouse
@@ -460,6 +761,7 @@ export class ConsolidatedService {
               createdAt: dispatch.createdAt,
               status: dispatch.status,
               driver: driverName,
+              route,
               vehicle: dispatch.vehicle
                 ? {
                     name: dispatch.vehicle.name || null,

@@ -12,13 +12,21 @@ export interface ConsolidatedDto {
   isConsolidatedComplete: boolean;
   shipmentCounts: {
     total: number;
+    countNormal: number;
+    countF2: number;
     en_ruta: number;
-    en_bodega: number;      // Nuevo: Paquetes recibidos pero no despachados
+    en_bodega: number;
     entregado: number;
-    dex03: number;          // Dirección incorrecta
-    dex07: number;          // Rechazado
-    dex08: number;          // Cliente no disponible
-    other: number;          // Otros estados (ej. Devueltos, Dañados, etc.)
+    dex03: number;
+    dex07: number;
+    dex08: number;
+    totalDex: number;
+    totalDevueltos: number;   // Nuevo: devuelto_a_fedex + retorno_abandono
+    pendiente: number;        // total - (entregado + totalDex + totalDevueltos)
+    porcEfectividad: number;  // (entregado / total)
+    porcEfectividadEntrega: number; // (entregado / (entregado + totalDex))
+    porcRendimientoIntentos: number; // ((entregado + totalDex + totalDevueltos) / total)
+    other: number;
   };
   shipments: any[];
 }
