@@ -8224,6 +8224,15 @@ export class ShipmentsService {
                   });
                   shipmentIds = sD.map(s => s.id);
 
+                  const cD = await this.chargeShipmentRepository.find({
+                      where: [
+                          { packageDispatch: { id: In(inputList) } },
+                          { packageDispatch: { trackingNumber: In(inputList) } }
+                      ],
+                      select: ['id']
+                  });
+                  chargeShipmentIds = cD.map(c => c.id);
+
                   // Las cargas usualmente no están ligadas a despacho directamente, 
                   // pero si tuvieras la relación, se agregaría aquí.
                   break;
@@ -8397,6 +8406,7 @@ export class ShipmentsService {
                     let evtStatus = mapFedexStatusToLocalStatus(event.derivedStatusCode || '', evtCode);
 
                     if (evtCode === '005') evtStatus = ShipmentStatusType.ENTREGADO_POR_FEDEX;
+                    
                     if (subConfig.trackExternalDelivery && event.eventType === 'OD') evtStatus = ShipmentStatusType.ACARGO_DE_FEDEX;
 
                     // A. Recuperación de Historia
