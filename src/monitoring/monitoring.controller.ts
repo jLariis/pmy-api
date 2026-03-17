@@ -7,6 +7,31 @@ import { ApiTags } from '@nestjs/swagger';
 export class MonitoringController {
   constructor(private readonly monitoringService: MonitoringService) {}
 
+  @Get('package-dispatch/driver')
+  async getPackageDispatchByDriverAndDate(
+    @Query('driverId') driverId: string,
+    @Query('startDate') startDate: string,
+    @Query('endDate') endDate: string,
+  ) {
+    console.log("🚀 ~ MonitoringController ~ getPackageDispatchByDriverAndDate ~ driverId:", driverId)
+    return this.monitoringService.findPakageDispatchByDriverAndDate(
+      driverId,
+      startDate,
+      endDate
+    );
+  }
+
+  @Get('package-dispatch/date-range')
+  async getPackageDispatchByDateRange(
+    @Query('startDate') startDate: string,
+    @Query('endDate') endDate: string,
+  ) {
+    return this.monitoringService.findPakageDispatchByDateRange(
+      startDate,
+      endDate
+    );
+  }
+
   @Get('consolidated/:subdiaryId')
   findConsolidatedsBySubsidiary(@Param('subdiaryId') subdiaryId: string) {
     return this.monitoringService.getConsolidatedsBySubsidiary(subdiaryId);
@@ -103,5 +128,7 @@ export class MonitoringController {
       });
     }
   }
+
+  
 
 }

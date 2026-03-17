@@ -15,6 +15,8 @@ import { Priority } from 'src/common/enums/priority.enum';
 import { ShipmentType } from 'src/common/enums/shipment-type.enum';
 import { ShipmentsService } from 'src/shipments/shipments.service';
 import { fromZonedTime, toZonedTime } from 'date-fns-tz';
+import { PackageDispatchHistory } from 'src/entities/package-dispatch-history.entity';
+import { DateTime } from 'luxon';
 
 @Injectable()
 export class PackageDispatchService {
@@ -167,7 +169,7 @@ export class PackageDispatchService {
           .execute();
 
         if (updateResult.affected === 0) {
-          console.warn(`Ojo: No se actualizaron filas para ${relationKey} con IDs: ${ids}`);
+          this.logger.warn(`Ojo: No se actualizaron filas para ${relationKey} con IDs: ${ids}`);
         }
 
         // Creación de Historial
@@ -206,6 +208,23 @@ export class PackageDispatchService {
           .of(savedDispatch)
           .add(foundChargeShipmentIds);
       }
+
+      const dispatchHistoryRecords = [
+        ...foundShipmentIds.map(id =>
+          queryRunner.manager.create(PackageDispatchHistory, {
+            dispatch: { id: savedDispatch.id },
+            shipment: { id },
+          })
+        ),
+        ...foundChargeShipmentIds.map(id =>
+          queryRunner.manager.create(PackageDispatchHistory, {
+            dispatch: { id: savedDispatch.id },
+            chargeShipment: { id },
+          })
+        ),
+      ];
+
+      await queryRunner.manager.save(PackageDispatchHistory, dispatchHistoryRecords);
 
       await queryRunner.commitTransaction();
       return savedDispatch;
@@ -1005,4 +1024,381 @@ export class PackageDispatchService {
 
     return packageDispatch;
   }
+
+  async findByDriver(driverId: string): Promise<PackageDispatch[]> {
+    const dispatchs = this.packageDispatchRepository
+      .createQueryBuilder('dispatch')
+      
+      .leftJoin('dispatch.drivers', 'driver')
+      
+      .leftJoinAndSelect('dispatch.routes', 'routes')
+      .leftJoinAndSelect('dispatch.vehicle', 'vehicle')
+      .leftJoinAndSelect('dispatch.subsidiary', 'subsidiary')
+
+      .leftJoinAndSelect('dispatch.history', 'history')
+      .leftJoinAndSelect('history.shipment', 'shipment')
+      .leftJoinAndSelect('history.chargeShipment', 'chargeShipment')
+
+      .where('driver.id = :driverId', { driverId })
+      .orderBy('dispatch.createdAt', 'DESC')
+      .getMany();
+
+      return dispatchs;
+  }
+
+  async findByDriverAndDateRange(
+    driverId: string,
+    startDate: string,
+    endDate: string
+  ): Promise<PackageDispatch[]> {
+
+    const startUtc = DateTime
+      .fromISO(startDate, { zone: 'America/Hermosillo' })
+      .startOf('day')
+      .toUTC()
+      .toJSDate();
+
+    const endUtc = DateTime
+      .fromISO(endDate, { zone: 'America/Hermosillo' })
+      .endOf('day')
+      .toUTC()
+      .toJSDate();
+
+    return this.packageDispatchRepository
+      .createQueryBuilder('dispatch')
+
+      .leftJoin('dispatch.drivers', 'driver')
+
+      .leftJoinAndSelect('dispatch.routes', 'routes')
+      .leftJoinAndSelect('dispatch.vehicle', 'vehicle')
+      .leftJoinAndSelect('dispatch.subsidiary', 'subsidiary')
+
+      .leftJoinAndSelect('dispatch.history', 'history')
+      .leftJoinAndSelect('history.shipment', 'shipment')
+      .leftJoinAndSelect('history.chargeShipment', 'chargeShipment')
+
+      .where('driver.id = :driverId', { driverId })
+      .andWhere('dispatch.createdAt BETWEEN :start AND :end', {
+        start: startUtc,
+        end: endUtc
+      })
+
+      .orderBy('dispatch.createdAt', 'DESC')
+
+      .getMany();
+  }
+
+  async findByDateRange(
+    startDate: string,
+    endDate: string
+  ): Promise<PackageDispatch[]> {
+
+    const startUtc = DateTime
+      .fromISO(startDate, { zone: 'America/Hermosillo' })
+      .startOf('day')
+      .toUTC()
+      .toJSDate();
+
+    const endUtc = DateTime
+      .fromISO(endDate, { zone: 'America/Hermosillo' })
+      .endOf('day')
+      .toUTC()
+      .toJSDate();
+
+    return this.packageDispatchRepository
+      .createQueryBuilder('dispatch')
+
+      .leftJoinAndSelect('dispatch.drivers', 'driver')
+      .leftJoinAndSelect('dispatch.routes', 'routes')
+      .leftJoinAndSelect('dispatch.vehicle', 'vehicle')
+      .leftJoinAndSelect('dispatch.subsidiary', 'subsidiary')
+      .leftJoinAndSelect('dispatch.history', 'history')
+      .leftJoinAndSelect('history.shipment', 'shipment')
+      .leftJoinAndSelect('history.chargeShipment', 'chargeShipment')
+
+      .andWhere('dispatch.createdAt BETWEEN :start AND :end', {
+        start: startUtc,
+        end: endUtc
+      })
+      .orderBy('dispatch.createdAt', 'DESC')
+      .getMany();
+  }
+
+  async findPakageDispatchByDriverAndDate(
+    driverId: string,
+    startDate: string,
+    endDate: string
+  ) {
+    const dispatches = await this.findByDriverAndDateRange(
+      driverId,
+      startDate,
+      endDate
+    );
+
+    if (!dispatches.length) return [];
+
+    // ========= 🔥 Helpers (los reutilizas igual) =========
+
+    const calcDaysInWarehouse = (createdAt: Date) => {
+      const today = new Date();
+      const created = new Date(createdAt);
+      return Math.floor(
+        (today.getTime() - created.getTime()) / (1000 * 60 * 60 * 24)
+      );
+    };
+
+    const getDexCode = async (shipmentId: string, status: string) => {
+      const rejectedStatuses = [
+        'rechazado',
+        'no_entregado',
+        'direccion_incorrecta',
+        'cliente_no_encontrado',
+        'cambio_fecha_solicitado'
+      ];
+
+      if (!rejectedStatuses.includes(status)) return null;
+
+      const row = await this.shipmentStatusRepository
+        .createQueryBuilder('ss')
+        .select('ss.exceptionCode', 'exceptionCode')
+        .where('ss.shipmentId = :shipmentId', { shipmentId })
+        .orderBy('ss.createdAt', 'DESC')
+        .limit(1)
+        .getRawOne();
+
+      return row?.exceptionCode ?? null;
+    };
+
+    // ========= 🔥 MAP =========
+
+    const mapShipment = async (shipment: any, dispatch: any, isCharge: boolean) => {
+      const driverName = dispatch?.drivers?.length
+        ? dispatch.drivers[0].name
+        : null;
+
+      const route = dispatch?.routes?.length
+        ? dispatch.routes.map(r => r.name).join(' - ')
+        : null;
+
+      const ubication = dispatch ? 'EN RUTA' : 'EN BODEGA';
+
+      const daysInWarehouse = calcDaysInWarehouse(shipment.createdAt);
+
+      const dexCode = await getDexCode(shipment.id, shipment.status);
+
+      return {
+        shipmentData: {
+          id: shipment.id,
+          trackingNumber: shipment.trackingNumber,
+          shipmentStatus: shipment.status,
+          commitDateTime: shipment.commitDateTime,
+          ubication,
+          warehouse: shipment.subsidiary?.name ?? 'SIN SUCURSAL',
+          unloading: shipment.unloading
+            ? {
+                trackingNumber: shipment.unloading.trackingNumber,
+                date: shipment.unloading.date,
+              }
+            : null,
+          consolidated: null, // 👈 ya no existe aquí
+          destination: shipment.recipientCity || null,
+          payment: shipment.payment
+            ? {
+                type: shipment.payment.type,
+                amount: +shipment.payment.amount,
+              }
+            : null,
+          createdDate: shipment.createdAt,
+          recipientName: shipment.recipientName,
+          recipientAddress: shipment.recipientAddress,
+          recipientPhone: shipment.recipientPhone,
+          recipientZip: shipment.recipientZip,
+          shipmentType: shipment.shipmentType,
+          daysInWarehouse,
+          dexCode,
+          isCharge,
+        },
+        packageDispatch: dispatch
+          ? {
+              id: dispatch.id,
+              trackingNumber: dispatch.trackingNumber,
+              createdAt: dispatch.createdAt,
+              status: dispatch.status,
+              driver: driverName,
+              route,
+              vehicle: dispatch.vehicle
+                ? {
+                    name: dispatch.vehicle.name || null,
+                    plateNumber: dispatch.vehicle.plateNumber || null,
+                  }
+                : null,
+              subsidiary: dispatch.subsidiary
+                ? {
+                    id: dispatch.subsidiary.id,
+                    name: dispatch.subsidiary.name,
+                  }
+                : null,
+            }
+          : null,
+      };
+    };
+
+    // ========= 🔥 EXTRAER DESDE HISTORY =========
+
+    const results = [];
+
+    for (const dispatch of dispatches) {
+      for (const h of dispatch.history || []) {
+
+        if (h.shipment) {
+          results.push(await mapShipment(h.shipment, dispatch, false));
+        }
+
+        if (h.chargeShipment) {
+          results.push(await mapShipment(h.chargeShipment, dispatch, true));
+        }
+      }
+    }
+
+    return results;
+  }
+
+  async findPakageDispatchByDateRange(
+    startDate: string,
+    endDate: string
+  ) {
+    const dispatches = await this.findByDateRange(
+      startDate,
+      endDate
+    );
+
+    if (!dispatches.length) return [];
+
+    // ========= 🔥 Helpers (los reutilizas igual) =========
+
+    const calcDaysInWarehouse = (createdAt: Date) => {
+      const today = new Date();
+      const created = new Date(createdAt);
+      return Math.floor(
+        (today.getTime() - created.getTime()) / (1000 * 60 * 60 * 24)
+      );
+    };
+
+    const getDexCode = async (shipmentId: string, status: string) => {
+      const rejectedStatuses = [
+        'rechazado',
+        'no_entregado',
+        'direccion_incorrecta',
+        'cliente_no_encontrado',
+        'cambio_fecha_solicitado'
+      ];
+
+      if (!rejectedStatuses.includes(status)) return null;
+
+      const row = await this.shipmentStatusRepository
+        .createQueryBuilder('ss')
+        .select('ss.exceptionCode', 'exceptionCode')
+        .where('ss.shipmentId = :shipmentId', { shipmentId })
+        .orderBy('ss.createdAt', 'DESC')
+        .limit(1)
+        .getRawOne();
+
+      return row?.exceptionCode ?? null;
+    };
+
+    // ========= 🔥 MAP =========
+
+    const mapShipment = async (shipment: any, dispatch: any, isCharge: boolean) => {
+      const driverName = dispatch?.drivers?.length
+        ? dispatch.drivers[0].name
+        : null;
+
+      const route = dispatch?.routes?.length
+        ? dispatch.routes.map(r => r.name).join(' - ')
+        : null;
+
+      const ubication = dispatch ? 'EN RUTA' : 'EN BODEGA';
+
+      const daysInWarehouse = calcDaysInWarehouse(shipment.createdAt);
+
+      const dexCode = await getDexCode(shipment.id, shipment.status);
+
+      return {
+        shipmentData: {
+          id: shipment.id,
+          trackingNumber: shipment.trackingNumber,
+          shipmentStatus: shipment.status,
+          commitDateTime: shipment.commitDateTime,
+          ubication,
+          warehouse: shipment.subsidiary?.name ?? 'SIN SUCURSAL',
+          unloading: shipment.unloading
+            ? {
+                trackingNumber: shipment.unloading.trackingNumber,
+                date: shipment.unloading.date,
+              }
+            : null,
+          consolidated: null, // 👈 ya no existe aquí
+          destination: shipment.recipientCity || null,
+          payment: shipment.payment
+            ? {
+                type: shipment.payment.type,
+                amount: +shipment.payment.amount,
+              }
+            : null,
+          createdDate: shipment.createdAt,
+          recipientName: shipment.recipientName,
+          recipientAddress: shipment.recipientAddress,
+          recipientPhone: shipment.recipientPhone,
+          recipientZip: shipment.recipientZip,
+          shipmentType: shipment.shipmentType,
+          daysInWarehouse,
+          dexCode,
+          isCharge,
+        },
+        packageDispatch: dispatch
+          ? {
+              id: dispatch.id,
+              trackingNumber: dispatch.trackingNumber,
+              createdAt: dispatch.createdAt,
+              status: dispatch.status,
+              driver: driverName,
+              route,
+              vehicle: dispatch.vehicle
+                ? {
+                    name: dispatch.vehicle.name || null,
+                    plateNumber: dispatch.vehicle.plateNumber || null,
+                  }
+                : null,
+              subsidiary: dispatch.subsidiary
+                ? {
+                    id: dispatch.subsidiary.id,
+                    name: dispatch.subsidiary.name,
+                  }
+                : null,
+            }
+          : null,
+      };
+    };
+
+    // ========= 🔥 EXTRAER DESDE HISTORY =========
+
+    const results = [];
+
+    for (const dispatch of dispatches) {
+      for (const h of dispatch.history || []) {
+
+        if (h.shipment) {
+          results.push(await mapShipment(h.shipment, dispatch, false));
+        }
+
+        if (h.chargeShipment) {
+          results.push(await mapShipment(h.chargeShipment, dispatch, true));
+        }
+      }
+    }
+
+    return results;
+  }
+
+
 }

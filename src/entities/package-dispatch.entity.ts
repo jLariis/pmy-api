@@ -7,6 +7,7 @@ import { Subsidiary } from "./subsidiary.entity";
 import { Vehicle } from "./vehicle.entity";
 import { ChargeShipment } from "./charge-shipment.entity";
 import { RouteClosure } from "./route-closure.entity";
+import { PackageDispatchHistory } from "./package-dispatch-history.entity";
 
 @Entity('package_dispatch')
 export class PackageDispatch {
@@ -62,6 +63,9 @@ export class PackageDispatch {
   @JoinColumn({ name: 'subsidiaryId' })
   subsidiary: Subsidiary | null;
 
+  @OneToMany(() => PackageDispatchHistory, history => history.dispatch)
+  history: PackageDispatchHistory[];
+
   @Column({nullable: true, default: ''})
   kms: string;
 
@@ -73,6 +77,9 @@ export class PackageDispatch {
 
   @Column({ type: 'timestamp', nullable: true })
   updatedAt: Date | null;
+
+  @Column({ nullable: true })
+  createdBy: string;
 
   @BeforeInsert()
   setDefaults() {
