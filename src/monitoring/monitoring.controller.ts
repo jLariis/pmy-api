@@ -7,9 +7,23 @@ import { ApiTags } from '@nestjs/swagger';
 export class MonitoringController {
   constructor(private readonly monitoringService: MonitoringService) {}
 
+  @Get('package-dispatch/date-range')
+  async getPackageDispatchByDateRange(
+    @Query('subsidiaryId') subsidiaryId: string,
+    @Query('startDate') startDate: string,
+    @Query('endDate') endDate: string,
+  ) {
+    return this.monitoringService.findPakageDispatchByDateRange(
+      startDate,
+      endDate,
+      subsidiaryId
+    );
+  }
+
   @Get('package-dispatch/driver')
   async getPackageDispatchByDriverAndDate(
     @Query('driverId') driverId: string,
+    @Query('subsidiaryId') subsidiaryId: string,
     @Query('startDate') startDate: string,
     @Query('endDate') endDate: string,
   ) {
@@ -17,18 +31,8 @@ export class MonitoringController {
     return this.monitoringService.findPakageDispatchByDriverAndDate(
       driverId,
       startDate,
-      endDate
-    );
-  }
-
-  @Get('package-dispatch/date-range')
-  async getPackageDispatchByDateRange(
-    @Query('startDate') startDate: string,
-    @Query('endDate') endDate: string,
-  ) {
-    return this.monitoringService.findPakageDispatchByDateRange(
-      startDate,
-      endDate
+      endDate,
+      subsidiaryId
     );
   }
 
@@ -135,6 +139,7 @@ export class MonitoringController {
     @Query('endDate') endDate: string,
     @Query('subsidiaryId') subsidiaryId: string,
   ): Promise<StreamableFile> {
+    console.log("🚀 ~ MonitoringController ~ downloadReport ~ startDate:", startDate)
 
     const buffer = await this.monitoringService.generateDriverReportExcel(
       startDate,
@@ -147,7 +152,4 @@ export class MonitoringController {
       disposition: 'attachment; filename=reporte-choferes.xlsx',
     });
   }
-
-  
-
 }
