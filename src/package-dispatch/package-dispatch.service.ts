@@ -10,13 +10,10 @@ import { Devolution } from 'src/entities/devolution.entity';
 import { MailService } from 'src/mail/mail.service';
 import { ShipmentStatusType } from 'src/common/enums/shipment-status-type.enum';
 import { FedexService } from 'src/shipments/fedex.service';
-import { FedexTrackingResponse } from 'src/shipments/dto/FedexTrackingCompleteInfo.dto';
-import { Priority } from 'src/common/enums/priority.enum';
-import { ShipmentType } from 'src/common/enums/shipment-type.enum';
 import { ShipmentsService } from 'src/shipments/shipments.service';
-import { fromZonedTime, toZonedTime } from 'date-fns-tz';
 import { PackageDispatchHistory } from 'src/entities/package-dispatch-history.entity';
 import { DateTime } from 'luxon';
+import * as ExcelJS from 'exceljs';
 
 @Injectable()
 export class PackageDispatchService {
@@ -1039,6 +1036,19 @@ export class PackageDispatchService {
       .leftJoinAndSelect('history.shipment', 'shipment')
       .leftJoinAndSelect('history.chargeShipment', 'chargeShipment')
 
+      .leftJoinAndSelect('shipment.unloading', 'shipmentUnloading')
+      .leftJoinAndSelect('chargeShipment.unloading', 'chargeUnloading')
+      .leftJoin(
+        'consolidated',
+        'shipmentConsolidated',
+        'shipmentConsolidated.id = shipment.consolidatedId'
+      )
+      .leftJoin(
+        'consolidated',
+        'chargeConsolidated',
+        'chargeConsolidated.id = chargeShipment.consolidatedId'
+      )
+
       .where('driver.id = :driverId', { driverId })
       .orderBy('dispatch.createdAt', 'DESC')
       .getMany();
@@ -1048,6 +1058,7 @@ export class PackageDispatchService {
 
   async findByDriverAndDateRange(
     driverId: string,
+    subsidiaryId: string,
     startDate: string,
     endDate: string
   ): Promise<PackageDispatch[]> {
@@ -1072,16 +1083,30 @@ export class PackageDispatchService {
       .leftJoinAndSelect('dispatch.routes', 'routes')
       .leftJoinAndSelect('dispatch.vehicle', 'vehicle')
       .leftJoinAndSelect('dispatch.subsidiary', 'subsidiary')
-
+  
       .leftJoinAndSelect('dispatch.history', 'history')
       .leftJoinAndSelect('history.shipment', 'shipment')
       .leftJoinAndSelect('history.chargeShipment', 'chargeShipment')
+
+      .leftJoinAndSelect('shipment.unloading', 'shipmentUnloading')
+      .leftJoinAndSelect('chargeShipment.unloading', 'chargeUnloading')
+      .leftJoin(
+        'consolidated',
+        'shipmentConsolidated',
+        'shipmentConsolidated.id = shipment.consolidatedId'
+      )
+      .leftJoin(
+        'consolidated',
+        'chargeConsolidated',
+        'chargeConsolidated.id = chargeShipment.consolidatedId'
+      )
 
       .where('driver.id = :driverId', { driverId })
       .andWhere('dispatch.createdAt BETWEEN :start AND :end', {
         start: startUtc,
         end: endUtc
       })
+      .andWhere('dispatch.subsidiaryId = :subsidiaryId', { subsidiaryId })
 
       .orderBy('dispatch.createdAt', 'DESC')
 
@@ -1089,6 +1114,7 @@ export class PackageDispatchService {
   }
 
   async findByDateRange(
+    subsidiaryId: string,
     startDate: string,
     endDate: string
   ): Promise<PackageDispatch[]> {
@@ -1105,6 +1131,8 @@ export class PackageDispatchService {
       .toUTC()
       .toJSDate();
 
+    console.log("🚀 ~ PackageDispatchService ~ findByDateRange ~ subsidiaryId:", subsidiaryId)
+    
     return this.packageDispatchRepository
       .createQueryBuilder('dispatch')
 
@@ -1116,10 +1144,11 @@ export class PackageDispatchService {
       .leftJoinAndSelect('history.shipment', 'shipment')
       .leftJoinAndSelect('history.chargeShipment', 'chargeShipment')
 
-      .andWhere('dispatch.createdAt BETWEEN :start AND :end', {
+      .where('dispatch.createdAt BETWEEN :start AND :end', {
         start: startUtc,
         end: endUtc
       })
+      .andWhere('dispatch.subsidiaryId = :subsidiaryId', { subsidiaryId })
       .orderBy('dispatch.createdAt', 'DESC')
       .getMany();
   }
@@ -1127,10 +1156,12 @@ export class PackageDispatchService {
   async findPakageDispatchByDriverAndDate(
     driverId: string,
     startDate: string,
-    endDate: string
+    endDate: string,
+    subsidiaryId: string
   ) {
     const dispatches = await this.findByDriverAndDateRange(
       driverId,
+      subsidiaryId,
       startDate,
       endDate
     );
@@ -1171,7 +1202,12 @@ export class PackageDispatchService {
 
     // ========= 🔥 MAP =========
 
-    const mapShipment = async (shipment: any, dispatch: any, isCharge: boolean) => {
+    const mapShipment = async (
+      shipment: any,
+      dispatch: any,
+      isCharge: boolean
+    ) => {
+
       const driverName = dispatch?.drivers?.length
         ? dispatch.drivers[0].name
         : null;
@@ -1186,6 +1222,16 @@ export class PackageDispatchService {
 
       const dexCode = await getDexCode(shipment.id, shipment.status);
 
+      // 🔥 detectar unloading correcto
+      const unloading = isCharge
+        ? shipment.chargeUnloading
+        : shipment.shipmentUnloading;
+
+      // 🔥 detectar consolidated correcto
+      const consolidated = isCharge
+        ? shipment.chargeConsolidated
+        : shipment.shipmentConsolidated;
+
       return {
         shipmentData: {
           id: shipment.id,
@@ -1194,20 +1240,31 @@ export class PackageDispatchService {
           commitDateTime: shipment.commitDateTime,
           ubication,
           warehouse: shipment.subsidiary?.name ?? 'SIN SUCURSAL',
-          unloading: shipment.unloading
+
+          unloading: unloading
             ? {
-                trackingNumber: shipment.unloading.trackingNumber,
-                date: shipment.unloading.date,
+                trackingNumber: unloading.trackingNumber,
+                date: unloading.date,
               }
             : null,
-          consolidated: null, // 👈 ya no existe aquí
+
+          // 🔥 YA FUNCIONA
+          consolidated: consolidated
+            ? {
+                id: consolidated.id,
+                // agrega lo que ocupes aquí
+              }
+            : null,
+
           destination: shipment.recipientCity || null,
+
           payment: shipment.payment
             ? {
                 type: shipment.payment.type,
                 amount: +shipment.payment.amount,
               }
             : null,
+
           createdDate: shipment.createdAt,
           recipientName: shipment.recipientName,
           recipientAddress: shipment.recipientAddress,
@@ -1218,6 +1275,7 @@ export class PackageDispatchService {
           dexCode,
           isCharge,
         },
+
         packageDispatch: dispatch
           ? {
               id: dispatch.id,
@@ -1226,12 +1284,14 @@ export class PackageDispatchService {
               status: dispatch.status,
               driver: driverName,
               route,
+
               vehicle: dispatch.vehicle
                 ? {
                     name: dispatch.vehicle.name || null,
                     plateNumber: dispatch.vehicle.plateNumber || null,
                   }
                 : null,
+
               subsidiary: dispatch.subsidiary
                 ? {
                     id: dispatch.subsidiary.id,
@@ -1265,9 +1325,11 @@ export class PackageDispatchService {
 
   async findPakageDispatchByDateRange(
     startDate: string,
-    endDate: string
+    endDate: string,
+    subsidiaryId: string
   ) {
     const dispatches = await this.findByDateRange(
+      subsidiaryId,
       startDate,
       endDate
     );
@@ -1308,7 +1370,12 @@ export class PackageDispatchService {
 
     // ========= 🔥 MAP =========
 
-    const mapShipment = async (shipment: any, dispatch: any, isCharge: boolean) => {
+    const mapShipment = async (
+      shipment: any,
+      dispatch: any,
+      isCharge: boolean
+    ) => {
+
       const driverName = dispatch?.drivers?.length
         ? dispatch.drivers[0].name
         : null;
@@ -1323,6 +1390,16 @@ export class PackageDispatchService {
 
       const dexCode = await getDexCode(shipment.id, shipment.status);
 
+      // 🔥 detectar unloading correcto
+      const unloading = isCharge
+        ? shipment.chargeUnloading
+        : shipment.shipmentUnloading;
+
+      // 🔥 detectar consolidated correcto
+      const consolidated = isCharge
+        ? shipment.chargeConsolidated
+        : shipment.shipmentConsolidated;
+
       return {
         shipmentData: {
           id: shipment.id,
@@ -1331,20 +1408,31 @@ export class PackageDispatchService {
           commitDateTime: shipment.commitDateTime,
           ubication,
           warehouse: shipment.subsidiary?.name ?? 'SIN SUCURSAL',
-          unloading: shipment.unloading
+
+          unloading: unloading
             ? {
-                trackingNumber: shipment.unloading.trackingNumber,
-                date: shipment.unloading.date,
+                trackingNumber: unloading.trackingNumber,
+                date: unloading.date,
               }
             : null,
-          consolidated: null, // 👈 ya no existe aquí
+
+          // 🔥 YA FUNCIONA
+          consolidated: consolidated
+            ? {
+                id: consolidated.id,
+                // agrega lo que ocupes aquí
+              }
+            : null,
+
           destination: shipment.recipientCity || null,
+
           payment: shipment.payment
             ? {
                 type: shipment.payment.type,
                 amount: +shipment.payment.amount,
               }
             : null,
+
           createdDate: shipment.createdAt,
           recipientName: shipment.recipientName,
           recipientAddress: shipment.recipientAddress,
@@ -1355,6 +1443,7 @@ export class PackageDispatchService {
           dexCode,
           isCharge,
         },
+
         packageDispatch: dispatch
           ? {
               id: dispatch.id,
@@ -1363,12 +1452,14 @@ export class PackageDispatchService {
               status: dispatch.status,
               driver: driverName,
               route,
+
               vehicle: dispatch.vehicle
                 ? {
                     name: dispatch.vehicle.name || null,
                     plateNumber: dispatch.vehicle.plateNumber || null,
                   }
                 : null,
+
               subsidiary: dispatch.subsidiary
                 ? {
                     id: dispatch.subsidiary.id,
@@ -1400,5 +1491,285 @@ export class PackageDispatchService {
     return results;
   }
 
+  async generateDriverReportExcel(
+    startDate: string,
+    endDate: string,
+    subsidiaryId: string
+  ): Promise<Buffer> {
+
+    const startUtc = DateTime
+      .fromISO(startDate, { zone: 'America/Hermosillo' })
+      .startOf('day')
+      .toUTC()
+      .toJSDate();
+
+    const endUtc = DateTime
+      .fromISO(endDate, { zone: 'America/Hermosillo' })
+      .endOf('day')
+      .toUTC()
+      .toJSDate();
+
+    // ========= 🔥 QUERY ÚNICA OPTIMIZADA =========
+    const data = await this.packageDispatchRepository
+      .createQueryBuilder('dispatch')
+      .leftJoin('dispatch.drivers', 'driver') 
+      .leftJoin('dispatch.history', 'history')
+      .leftJoin('history.shipment', 'shipment')
+      .leftJoin('history.chargeShipment', 'chargeShipment')
+
+      .where('dispatch.createdAt BETWEEN :start AND :end', {
+        start: startUtc,
+        end: endUtc,
+      })
+      .andWhere('dispatch.subsidiaryId = :subsidiaryId', { subsidiaryId })
+
+      .select('driver.id', 'driverId')
+      .addSelect('driver.name', 'driverName')
+
+      // 🔥 1. TOTAL 
+      .addSelect(`
+        COUNT(
+          COALESCE(shipment.id, chargeShipment.id)
+        )
+      `, 'total')
+
+      // 🔥 2. ENTREGADOS
+      .addSelect(`
+        SUM(
+          CASE 
+            WHEN COALESCE(shipment.status, chargeShipment.status) = 'entregado'
+            THEN 1 ELSE 0 
+          END
+        )
+      `, 'delivered')
+
+      // 🔥 3. REGRESADOS (DEX)
+      .addSelect(`
+        SUM(
+          CASE 
+            WHEN COALESCE(shipment.status, chargeShipment.status) IN (
+              'no_entregado',
+              'rechazado',
+              'direccion_incorrecta',
+              'cliente_no_encontrado',
+              'cambio_fecha_solicitado'
+            )
+            THEN 1 ELSE 0 
+          END
+        )
+      `, 'returned')
+
+      // 🔥 4. SIN MOVIMIENTO (Pendientes, En Ruta, En Bodega)
+      .addSelect(`
+        SUM(
+          CASE 
+            WHEN COALESCE(shipment.status, chargeShipment.status) IN (
+              'en_ruta',
+              'en_bodega',
+              'pendiente'
+            )
+            THEN 1 ELSE 0 
+          END
+        )
+      `, 'pending')
+
+      .groupBy('driver.id')
+      .addGroupBy('driver.name')
+      .getRawMany();
+
+    // ========= 🔥 FORMATEO (Usando decimales para los %) =========
+    const formatted = data.map(r => {
+      const rawTotal = Number(r.total || 0);
+      const rawDelivered = Number(r.delivered || 0);
+      const rawReturned = Number(r.returned || 0);
+      const rawPending = Number(r.pending || 0);
+
+      return {
+        driverName: r.driverName || r.drivername || 'Sin Chofer Asignado', 
+        total: rawTotal,
+        delivered: rawDelivered,
+        returned: rawReturned,
+        pending: rawPending,
+        // Convertimos a base 1 (0.0 a 1.0) para que Excel aplique su formato nativo %
+        pctEff: rawTotal > 0 ? (rawDelivered / rawTotal) : 0,
+        pctRet: rawTotal > 0 ? (rawReturned / rawTotal) : 0,
+        pctPen: rawTotal > 0 ? (rawPending / rawTotal) : 0,
+      };
+    });
+
+    // ========= 📄 EXCEL TIPO DASHBOARD =========
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet('Eficiencia Operativa', {
+      views: [{ showGridLines: false }]
+    });
+
+    // 1. Configurar anchos de columna (Hasta la H)
+    sheet.getColumn('A').width = 32; // Chofer
+    sheet.getColumn('B').width = 14; // Total
+    sheet.getColumn('C').width = 14; // Entregados
+    sheet.getColumn('D').width = 14; // Regresados
+    sheet.getColumn('E').width = 16; // Sin Movimiento
+    sheet.getColumn('F').width = 16; // % Efectividad
+    sheet.getColumn('G').width = 16; // % Devueltos
+    sheet.getColumn('H').width = 18; // % Sin Movimiento
+
+    // 2. Título Principal
+    sheet.mergeCells('A1:H1');
+    const titleCell = sheet.getCell('A1');
+    titleCell.value = '📊 REPORTE EJECUTIVO DE EFICIENCIA OPERATIVA';
+    titleCell.font = { size: 16, bold: true, color: { argb: 'FFFFFFFF' } };
+    titleCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF0F172A' } }; // Slate 900
+    titleCell.alignment = { vertical: 'middle', horizontal: 'center' };
+    sheet.getRow(1).height = 35;
+
+    sheet.mergeCells('A2:H2');
+    const subtitleCell = sheet.getCell('A2');
+    subtitleCell.value = `Periodo Analizado: ${startDate.split('T')[0]} al ${endDate.split('T')[0]}`;
+    subtitleCell.font = { size: 11, italic: true, color: { argb: 'FF475569' } }; // Slate 600
+    subtitleCell.alignment = { vertical: 'middle', horizontal: 'center' };
+    sheet.getRow(2).height = 20;
+
+    // 3. Encabezados de Tabla (Fila 4)
+    const headerRow = sheet.getRow(4);
+    headerRow.values = [
+      'Chofer / Repartidor', 
+      'Total Asignados', 
+      'Entregados', 
+      'DEX (Devueltos)', 
+      'Sin Movimiento', 
+      '% Efectividad', 
+      '% Retorno (DEX)', 
+      '% Sin Movto.'
+    ];
+    headerRow.height = 25;
+    
+    headerRow.eachCell((cell) => {
+      cell.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 10 };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF2563EB' } }; // Blue 600
+      cell.alignment = { vertical: 'middle', horizontal: 'center' };
+      cell.border = {
+        top: { style: 'medium', color: { argb: 'FF1E3A8A' } },
+        bottom: { style: 'medium', color: { argb: 'FF1E3A8A' } },
+      };
+    });
+
+    // 4. Llenado de Datos con Estilos y Reglas
+    let currentRow = 5;
+    let sumTotal = 0, sumDelivered = 0, sumReturned = 0, sumPending = 0;
+
+    if (formatted.length > 0) {
+      formatted.forEach((row, index) => {
+        sumTotal += row.total;
+        sumDelivered += row.delivered;
+        sumReturned += row.returned;
+        sumPending += row.pending;
+
+        const dataRow = sheet.getRow(currentRow);
+        dataRow.values = [
+          row.driverName, 
+          row.total, 
+          row.delivered, 
+          row.returned, 
+          row.pending, 
+          row.pctEff, 
+          row.pctRet, 
+          row.pctPen
+        ];
+        dataRow.height = 20;
+
+        // Zebra Striping
+        const bgColor = (index % 2 === 0) ? 'FFFFFFFF' : 'FFF8FAFC'; 
+
+        dataRow.eachCell((cell, colNum) => {
+          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgColor } };
+          cell.border = { bottom: { style: 'hair', color: { argb: 'FFE2E8F0' } } };
+          cell.alignment = { vertical: 'middle', horizontal: colNum === 1 ? 'left' : 'center' };
+        });
+
+        // Formatos de Números Enteros
+        [2, 3, 4, 5].forEach(col => {
+          dataRow.getCell(col).numFmt = '#,##0';
+        });
+
+        // ======= SEMÁFORO % EFECTIVIDAD (Columna F / 6) =======
+        const effCell = dataRow.getCell(6);
+        effCell.numFmt = '0.0%'; 
+        effCell.font = { bold: true };
+        if (row.pctEff >= 0.90) effCell.font = { ...effCell.font, color: { argb: 'FF059669' } }; // Verde
+        else if (row.pctEff >= 0.75) effCell.font = { ...effCell.font, color: { argb: 'FFD97706' } }; // Naranja
+        else effCell.font = { ...effCell.font, color: { argb: 'FFE11D48' } }; // Rojo
+
+        // ======= SEMÁFORO % RETORNO / DEX (Columna G / 7) =======
+        const retCell = dataRow.getCell(7);
+        retCell.numFmt = '0.0%';
+        retCell.font = { bold: true };
+        if (row.pctRet <= 0.05) retCell.font = { ...retCell.font, color: { argb: 'FF059669' } }; // <=5% Verde
+        else if (row.pctRet <= 0.15) retCell.font = { ...retCell.font, color: { argb: 'FFD97706' } }; // <=15% Naranja
+        else retCell.font = { ...retCell.font, color: { argb: 'FFE11D48' } }; // >15% Rojo
+
+        // ======= ESTILO % SIN MOVIMIENTO (Columna H / 8) =======
+        const penCell = dataRow.getCell(8);
+        penCell.numFmt = '0.0%';
+        penCell.font = { color: { argb: 'FF64748B' } }; // Gris neutro
+
+        currentRow++;
+      });
+
+      // 5. Fila de Totales Globales
+      const totalsRow = sheet.getRow(currentRow);
+      const totalEff = sumTotal > 0 ? (sumDelivered / sumTotal) : 0;
+      const totalRet = sumTotal > 0 ? (sumReturned / sumTotal) : 0;
+      const totalPen = sumTotal > 0 ? (sumPending / sumTotal) : 0;
+      
+      totalsRow.values = [
+        'TOTALES GLOBALES', 
+        sumTotal, 
+        sumDelivered, 
+        sumReturned, 
+        sumPending, 
+        totalEff, 
+        totalRet, 
+        totalPen
+      ];
+      totalsRow.height = 25;
+      
+      totalsRow.eachCell((cell, colNum) => {
+        cell.font = { bold: true, size: 11, color: { argb: 'FF0F172A' } };
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE2E8F0' } };
+        cell.alignment = { vertical: 'middle', horizontal: colNum === 1 ? 'right' : 'center' };
+        cell.border = {
+          top: { style: 'double', color: { argb: 'FF94A3B8' } },
+          bottom: { style: 'medium', color: { argb: 'FF94A3B8' } },
+        };
+      });
+
+      [2, 3, 4, 5].forEach(col => { totalsRow.getCell(col).numFmt = '#,##0'; });
+      [6, 7, 8].forEach(col => { totalsRow.getCell(col).numFmt = '0.0%'; });
+      
+      // Semáforos Globales
+      const globalEff = totalsRow.getCell(6);
+      if (totalEff >= 0.90) globalEff.font = { ...globalEff.font, color: { argb: 'FF059669' } };
+      else if (totalEff >= 0.75) globalEff.font = { ...globalEff.font, color: { argb: 'FFD97706' } };
+      else globalEff.font = { ...globalEff.font, color: { argb: 'FFE11D48' } };
+
+      const globalRet = totalsRow.getCell(7);
+      if (totalRet <= 0.05) globalRet.font = { ...globalRet.font, color: { argb: 'FF059669' } };
+      else if (totalRet <= 0.15) globalRet.font = { ...globalRet.font, color: { argb: 'FFD97706' } };
+      else globalRet.font = { ...globalRet.font, color: { argb: 'FFE11D48' } };
+
+      // Activar autofiltro para la tabla
+      sheet.autoFilter = { from: 'A4', to: 'H4' };
+
+    } else {
+      sheet.mergeCells('A5:H5');
+      const emptyCell = sheet.getCell('A5');
+      emptyCell.value = 'No hay datos operativos registrados en este rango de fechas.';
+      emptyCell.font = { italic: true, color: { argb: 'FF94A3B8' } };
+      emptyCell.alignment = { vertical: 'middle', horizontal: 'center' };
+    }
+
+    const buffer = await workbook.xlsx.writeBuffer();
+    return buffer as unknown as Buffer;
+  }
 
 }

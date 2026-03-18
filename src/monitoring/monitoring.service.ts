@@ -132,14 +132,19 @@ export class MonitoringService {
     return this.inventoryService.downloadExcelReport(subsidiaryId, subsidiaryName);
   }
 
-  async findPakageDispatchByDriverAndDate(driverId: string, startDate: string, endDate: string) {
-    const packageDispatch = await this.packageDispatchService.findPakageDispatchByDriverAndDate(driverId, startDate, endDate);
+  async findPakageDispatchByDriverAndDate(driverId: string, startDate: string, endDate: string, subsidiaryId: string) {
+    const packageDispatch = await this.packageDispatchService.findPakageDispatchByDriverAndDate(driverId, startDate, endDate, subsidiaryId);
     return packageDispatch; 
   }
 
-  async findPakageDispatchByDateRange(startDate: string, endDate: string) {
-    const packageDispatch = await this.packageDispatchService.findPakageDispatchByDateRange(startDate, endDate);
+  async findPakageDispatchByDateRange(startDate: string, endDate: string, subsidiaryId: string) {
+    const packageDispatch = await this.packageDispatchService.findPakageDispatchByDateRange(startDate, endDate, subsidiaryId);
     return packageDispatch; 
+  }
+
+  async generateDriverReportExcel(startDate: string, endDate: string, subsidiaryId: string) {
+    const buffer = await this.packageDispatchService.generateDriverReportExcel(startDate, endDate, subsidiaryId);
+    return buffer;
   }
 
 }
