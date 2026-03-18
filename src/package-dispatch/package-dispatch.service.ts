@@ -10,13 +10,10 @@ import { Devolution } from 'src/entities/devolution.entity';
 import { MailService } from 'src/mail/mail.service';
 import { ShipmentStatusType } from 'src/common/enums/shipment-status-type.enum';
 import { FedexService } from 'src/shipments/fedex.service';
-import { FedexTrackingResponse } from 'src/shipments/dto/FedexTrackingCompleteInfo.dto';
-import { Priority } from 'src/common/enums/priority.enum';
-import { ShipmentType } from 'src/common/enums/shipment-type.enum';
 import { ShipmentsService } from 'src/shipments/shipments.service';
-import { fromZonedTime, toZonedTime } from 'date-fns-tz';
 import { PackageDispatchHistory } from 'src/entities/package-dispatch-history.entity';
 import { DateTime } from 'luxon';
+import * as ExcelJS from 'exceljs';
 
 @Injectable()
 export class PackageDispatchService {
@@ -1400,5 +1397,157 @@ export class PackageDispatchService {
     return results;
   }
 
+  async generateDriverReportExcel(
+    startDate: string,
+    endDate: string,
+    subsidiaryId: string
+  ): Promise<Buffer> {
+
+    // ========= 🔥 Convertir Hermosillo → UTC =========
+    const startUtc = DateTime
+      .fromISO(startDate, { zone: 'America/Hermosillo' })
+      .startOf('day')
+      .toUTC()
+      .toJSDate();
+
+    const endUtc = DateTime
+      .fromISO(endDate, { zone: 'America/Hermosillo' })
+      .endOf('day')
+      .toUTC()
+      .toJSDate();
+
+    // ========= 🔥 Shipments =========
+    const shipments = await this.shipmentRepository
+      .createQueryBuilder('shipment')
+      .leftJoin('shipment.packageDispatch', 'dispatch')
+      .leftJoin('dispatch.drivers', 'driver')
+      .where('dispatch.createdAt BETWEEN :start AND :end', {
+        start: startUtc,
+        end: endUtc,
+      })
+      .andWhere('shipment.subsidiaryId = :subsidiaryId', { subsidiaryId })
+      .select('driver.id', 'driverId')
+      .addSelect('driver.name', 'driverName')
+      .addSelect('COUNT(shipment.id)', 'total')
+      .addSelect(`
+        SUM(CASE WHEN shipment.status = 'entregado' THEN 1 ELSE 0 END)
+      `, 'delivered')
+      .addSelect(`
+        SUM(CASE 
+          WHEN shipment.status IN (
+            'no_entregado',
+            'rechazado',
+            'direccion_incorrecta',
+            'cliente_no_encontrado',
+            'cambio_fecha_solicitado'
+          )
+          THEN 1 ELSE 0 
+        END)
+      `, 'returned')
+      .groupBy('driver.id')
+      .getRawMany();
+
+    // ========= 🔥 ChargeShipments =========
+    const chargeShipments = await this.chargeShipmentRepository
+      .createQueryBuilder('shipment')
+      .leftJoin('shipment.packageDispatch', 'dispatch')
+      .leftJoin('dispatch.drivers', 'driver')
+      .where('dispatch.createdAt BETWEEN :start AND :end', {
+        start: startUtc,
+        end: endUtc,
+      })
+      .andWhere('shipment.subsidiaryId = :subsidiaryId', { subsidiaryId })
+      .select('driver.id', 'driverId')
+      .addSelect('driver.name', 'driverName')
+      .addSelect('COUNT(shipment.id)', 'total')
+      .addSelect(`
+        SUM(CASE WHEN shipment.status = 'entregado' THEN 1 ELSE 0 END)
+      `, 'delivered')
+      .addSelect(`
+        SUM(CASE 
+          WHEN shipment.status IN (
+            'no_entregado',
+            'rechazado',
+            'direccion_incorrecta',
+            'cliente_no_encontrado',
+            'cambio_fecha_solicitado'
+          )
+          THEN 1 ELSE 0 
+        END)
+      `, 'returned')
+      .groupBy('driver.id')
+      .getRawMany();
+
+    // ========= 🔥 Merge =========
+    const merged: Record<string, any> = {};
+
+    [...shipments, ...chargeShipments].forEach(row => {
+      if (!row.driverId) return;
+
+      if (!merged[row.driverId]) {
+        merged[row.driverId] = {
+          driverName: row.driverName,
+          total: 0,
+          delivered: 0,
+          returned: 0,
+        };
+      }
+
+      merged[row.driverId].total += Number(row.total);
+      merged[row.driverId].delivered += Number(row.delivered);
+      merged[row.driverId].returned += Number(row.returned);
+    });
+
+    // ========= 🔥 Calcular efectividad =========
+    Object.values(merged).forEach((r: any) => {
+      r.effectiveness = r.total
+        ? ((r.delivered / r.total) * 100).toFixed(2) + '%'
+        : '0%';
+    });
+
+    // ========= 📄 Crear Excel =========
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet('Reporte Choferes');
+
+    sheet.columns = [
+      { header: 'Chofer', key: 'driverName', width: 30 },
+      { header: 'Sacados', key: 'total', width: 15 },
+      { header: 'Entregados', key: 'delivered', width: 15 },
+      { header: 'Regresados', key: 'returned', width: 15 },
+      { header: '% Efectividad', key: 'effectiveness', width: 20 },
+    ];
+
+    // Header estilo
+    const headerRow = sheet.getRow(1);
+    headerRow.font = { bold: true };
+    headerRow.alignment = { vertical: 'middle', horizontal: 'center' };
+
+    // Agregar filas
+    Object.values(merged).forEach((row: any) => {
+      sheet.addRow(row);
+    });
+
+    // Bordes
+    sheet.eachRow((row) => {
+      row.eachCell((cell) => {
+        cell.border = {
+          top: { style: 'thin' },
+          left: { style: 'thin' },
+          bottom: { style: 'thin' },
+          right: { style: 'thin' },
+        };
+      });
+    });
+
+    // Auto filtro
+    sheet.autoFilter = {
+      from: 'A1',
+      to: 'E1',
+    };
+
+    // ========= 🔥 Return buffer =========
+    const buffer = await workbook.xlsx.writeBuffer();
+    return buffer as unknown as Buffer;
+  }
 
 }

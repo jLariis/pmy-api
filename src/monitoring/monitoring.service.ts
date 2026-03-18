@@ -142,4 +142,9 @@ export class MonitoringService {
     return packageDispatch; 
   }
 
+  async generateDriverReportExcel(startDate: string, endDate: string, subsidiaryId: string) {
+    const buffer = await this.packageDispatchService.generateDriverReportExcel(startDate, endDate, subsidiaryId);
+    return buffer;
+  }
+
 }

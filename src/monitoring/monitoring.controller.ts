@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete, Header, Query, Res } from '@nestjs/common';
+import { Controller, Get, Post, Body, Patch, Param, Delete, Header, Query, Res, StreamableFile } from '@nestjs/common';
 import { MonitoringService } from './monitoring.service';
 import { ApiTags } from '@nestjs/swagger';
 
@@ -127,6 +127,25 @@ export class MonitoringController {
         message: error.message
       });
     }
+  }
+
+  @Get('report/drivers')
+  async downloadReport(
+    @Query('startDate') startDate: string,
+    @Query('endDate') endDate: string,
+    @Query('subsidiaryId') subsidiaryId: string,
+  ): Promise<StreamableFile> {
+
+    const buffer = await this.monitoringService.generateDriverReportExcel(
+      startDate,
+      endDate, 
+      subsidiaryId
+    );
+
+    return new StreamableFile(buffer, {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      disposition: 'attachment; filename=reporte-choferes.xlsx',
+    });
   }
 
   
