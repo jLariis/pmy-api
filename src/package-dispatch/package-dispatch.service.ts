@@ -1491,7 +1491,7 @@ export class PackageDispatchService {
     return results;
   }
 
-  async generateDriverReportExcel(
+  async generateDriverReportExcelResp1803(
     startDate: string,
     endDate: string,
     subsidiaryId: string
@@ -1772,4 +1772,967 @@ export class PackageDispatchService {
     return buffer as unknown as Buffer;
   }
 
+  async generateDriverReportExcelResp2303(
+    startDate: string,
+    endDate: string,
+    subsidiaryId: string
+  ): Promise<Buffer> {
+
+    const startUtc = DateTime
+      .fromISO(startDate, { zone: 'America/Hermosillo' })
+      .startOf('day')
+      .toUTC()
+      .toJSDate();
+
+    const endUtc = DateTime
+      .fromISO(endDate, { zone: 'America/Hermosillo' })
+      .endOf('day')
+      .toUTC()
+      .toJSDate();
+
+    // =========================================================================
+    // 🔥 QUERY 1: RESUMEN EJECUTIVO (DASHBOARD)
+    // =========================================================================
+    const summaryQuery = this.packageDispatchRepository
+      .createQueryBuilder('dispatch')
+      .leftJoin('dispatch.drivers', 'driver') 
+      .leftJoin('dispatch.history', 'history')
+      .leftJoin('history.shipment', 'shipment')
+      .leftJoin('history.chargeShipment', 'chargeShipment')
+      .where('dispatch.createdAt BETWEEN :start AND :end', { start: startUtc, end: endUtc })
+      .andWhere('dispatch.subsidiaryId = :subsidiaryId', { subsidiaryId })
+      .select('driver.id', 'driverId')
+      .addSelect('driver.name', 'driverName')
+      
+      // Totales
+      .addSelect(`COUNT(COALESCE(shipment.id, chargeShipment.id))`, 'total')
+      .addSelect(`SUM(CASE WHEN COALESCE(shipment.status, chargeShipment.status) = 'entregado' THEN 1 ELSE 0 END)`, 'delivered')
+      
+      // DEX Total (Cualquier motivo de no entrega)
+      .addSelect(`SUM(CASE WHEN COALESCE(shipment.status, chargeShipment.status) IN ('no_entregado', 'rechazado', 'direccion_incorrecta', 'cliente_no_encontrado', 'cliente_no_disponible', 'cambio_fecha_solicitado') THEN 1 ELSE 0 END)`, 'returned')
+      
+      // 🔥 CONTEO DE DEX ESPECÍFICOS BASADO EN EL ESTATUS
+      // DEX03 = Dirección Incorrecta
+      .addSelect(`SUM(CASE WHEN COALESCE(shipment.status, chargeShipment.status) = 'direccion_incorrecta' THEN 1 ELSE 0 END)`, 'dex03')
+      // DEX07 = Rechazado
+      .addSelect(`SUM(CASE WHEN COALESCE(shipment.status, chargeShipment.status) = 'rechazado' THEN 1 ELSE 0 END)`, 'dex07')
+      // DEX08 = Cliente no disponible / no encontrado
+      .addSelect(`SUM(CASE WHEN COALESCE(shipment.status, chargeShipment.status) IN ('cliente_no_disponible', 'cliente_no_encontrado') THEN 1 ELSE 0 END)`, 'dex08')
+      
+      // Sin Movimiento (En Bodega, En Ruta, Pendiente)
+      .addSelect(`SUM(CASE WHEN COALESCE(shipment.status, chargeShipment.status) IN ('en_ruta', 'en_bodega', 'pendiente') THEN 1 ELSE 0 END)`, 'pending')
+      
+      .groupBy('driver.id')
+      .addGroupBy('driver.name');
+
+    // =========================================================================
+    // 🔥 QUERY 2: DETALLE DE PAQUETES (HOJA 2)
+    // =========================================================================
+    const detailsQuery = this.packageDispatchRepository
+      .createQueryBuilder('dispatch')
+      .leftJoin('dispatch.drivers', 'driver')
+      .leftJoin('dispatch.routes', 'route') 
+      .leftJoin('dispatch.subsidiary', 'subsidiary')
+      .leftJoin('dispatch.history', 'history')
+      .leftJoin('history.shipment', 'shipment')
+      .leftJoin('history.chargeShipment', 'chargeShipment')
+      .where('dispatch.createdAt BETWEEN :start AND :end', { start: startUtc, end: endUtc })
+      .andWhere('dispatch.subsidiaryId = :subsidiaryId', { subsidiaryId })
+      .andWhere('COALESCE(shipment.id, chargeShipment.id) IS NOT NULL')
+      .select([
+        'driver.name AS driverName',
+        'route.name AS routeName',
+        'subsidiary.name AS subsidiaryName',
+        'COALESCE(shipment.trackingNumber, chargeShipment.trackingNumber) AS tracking',
+        'COALESCE(shipment.status, chargeShipment.status) AS status',
+        
+        // 🔥 MAPEO AUTOMÁTICO DE CÓDIGO DEX EN LA HOJA DE DETALLES
+        `CASE 
+          WHEN COALESCE(shipment.status, chargeShipment.status) = 'direccion_incorrecta' THEN 'DEX03'
+          WHEN COALESCE(shipment.status, chargeShipment.status) = 'rechazado' THEN 'DEX07'
+          WHEN COALESCE(shipment.status, chargeShipment.status) IN ('cliente_no_disponible', 'cliente_no_encontrado') THEN 'DEX08'
+          WHEN COALESCE(shipment.status, chargeShipment.status) IN ('no_entregado', 'cambio_fecha_solicitado') THEN 'OTRO DEX'
+          ELSE '-' 
+        END AS exceptionCode`,
+        
+        'COALESCE(shipment.commitDateTime, chargeShipment.commitDateTime) AS commitDate',
+        'COALESCE(shipment.recipientZip, chargeShipment.recipientZip) AS cp',
+        'COALESCE(shipment.recipientName, chargeShipment.recipientName) AS recipient'
+      ])
+      .orderBy('driver.name', 'ASC')
+      .addOrderBy('route.name', 'ASC')
+      .addOrderBy('subsidiary.name', 'ASC');
+
+    // Ejecutamos ambas consultas simultáneamente
+    const [summaryData, detailsData] = await Promise.all([
+      summaryQuery.getRawMany(),
+      detailsQuery.getRawMany()
+    ]);
+
+    // =========================================================================
+    // 📄 CREACIÓN DEL WORKBOOK EXCEL
+    // =========================================================================
+    const workbook = new ExcelJS.Workbook();
+
+    // -------------------------------------------------------------------------
+    // HOJA 1: DASHBOARD EJECUTIVO
+    // -------------------------------------------------------------------------
+    const sheet1 = workbook.addWorksheet('Eficiencia Operativa', { views: [{ showGridLines: false }] });
+
+    sheet1.columns = [
+      { header: 'Chofer / Repartidor', key: 'driverName', width: 32 },
+      { header: 'Total Asignados', key: 'total', width: 15 },
+      { header: 'Entregados', key: 'delivered', width: 14 },
+      { header: 'DEX Total', key: 'returned', width: 12 },
+      { header: 'DEX 03 (Dir. Mal)', key: 'dex03', width: 15 },
+      { header: 'DEX 07 (Rechazo)', key: 'dex07', width: 16 },
+      { header: 'DEX 08 (No Disp.)', key: 'dex08', width: 16 },
+      { header: 'Sin Movimiento', key: 'pending', width: 15 },
+      { header: '% Efectividad', key: 'pctEff', width: 14 },
+      { header: '% Retorno', key: 'pctRet', width: 12 },
+    ];
+
+    sheet1.mergeCells('A1:J1');
+    const titleCell = sheet1.getCell('A1');
+    titleCell.value = '📊 REPORTE EJECUTIVO DE EFICIENCIA OPERATIVA';
+    titleCell.font = { size: 16, bold: true, color: { argb: 'FFFFFFFF' } };
+    titleCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF0F172A' } };
+    titleCell.alignment = { vertical: 'middle', horizontal: 'center' };
+    sheet1.getRow(1).height = 35;
+
+    sheet1.mergeCells('A2:J2');
+    sheet1.getCell('A2').value = `Periodo Analizado: ${startDate.split('T')[0]} al ${endDate.split('T')[0]}`;
+    sheet1.getCell('A2').font = { size: 11, italic: true, color: { argb: 'FF475569' } };
+    sheet1.getCell('A2').alignment = { vertical: 'middle', horizontal: 'center' };
+    sheet1.getRow(2).height = 20;
+
+    const headerRow1 = sheet1.getRow(4);
+    headerRow1.height = 25;
+    headerRow1.eachCell((cell) => {
+      cell.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 10 };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF2563EB' } };
+      cell.alignment = { vertical: 'middle', horizontal: 'center' };
+      cell.border = { top: { style: 'medium', color: { argb: 'FF1E3A8A' } }, bottom: { style: 'medium', color: { argb: 'FF1E3A8A' } } };
+    });
+
+    let row1Idx = 5;
+    let sTotal = 0, sDel = 0, sRet = 0, sD03 = 0, sD07 = 0, sD08 = 0, sPen = 0;
+
+    summaryData.forEach((r, index) => {
+      const rawTotal = Number(r.total || 0);
+      const rawDel = Number(r.delivered || 0);
+      const rawRet = Number(r.returned || 0);
+      const rawD03 = Number(r.dex03 || 0);
+      const rawD07 = Number(r.dex07 || 0);
+      const rawD08 = Number(r.dex08 || 0);
+      const rawPen = Number(r.pending || 0);
+
+      sTotal += rawTotal; sDel += rawDel; sRet += rawRet; sD03 += rawD03; sD07 += rawD07; sD08 += rawD08; sPen += rawPen;
+
+      const pctEff = rawTotal > 0 ? (rawDel / rawTotal) : 0;
+      const pctRet = rawTotal > 0 ? (rawRet / rawTotal) : 0;
+
+      const row = sheet1.getRow(row1Idx);
+      row.values = [
+        r.driverName || r.drivername || 'Sin Chofer', rawTotal, rawDel, rawRet, 
+        rawD03, rawD07, rawD08, rawPen,
+        pctEff, 
+        pctRet
+      ];
+      row.height = 20;
+
+      const bgColor = (index % 2 === 0) ? 'FFFFFFFF' : 'FFF8FAFC';
+      row.eachCell((cell, colNum) => {
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgColor } };
+        cell.border = { bottom: { style: 'hair', color: { argb: 'FFE2E8F0' } } };
+        cell.alignment = { vertical: 'middle', horizontal: colNum === 1 ? 'left' : 'center' };
+      });
+
+      [2,3,4,5,6,7,8].forEach(col => row.getCell(col).numFmt = '#,##0');
+      
+      const effCell = row.getCell(9);
+      effCell.numFmt = '0.0%'; effCell.font = { bold: true };
+      if (pctEff >= 0.90) effCell.font.color = { argb: 'FF059669' };
+      else if (pctEff >= 0.75) effCell.font.color = { argb: 'FFD97706' };
+      else effCell.font.color = { argb: 'FFE11D48' };
+
+      const retCell = row.getCell(10);
+      retCell.numFmt = '0.0%'; retCell.font = { bold: true };
+      if (pctRet <= 0.05) retCell.font.color = { argb: 'FF059669' };
+      else if (pctRet <= 0.15) retCell.font.color = { argb: 'FFD97706' };
+      else retCell.font.color = { argb: 'FFE11D48' };
+
+      row1Idx++;
+    });
+
+    if (summaryData.length > 0) {
+      const totalsRow = sheet1.getRow(row1Idx);
+      const globalEff = sTotal > 0 ? (sDel/sTotal) : 0;
+      const globalRet = sTotal > 0 ? (sRet/sTotal) : 0;
+
+      totalsRow.values = [ 'TOTALES GLOBALES', sTotal, sDel, sRet, sD03, sD07, sD08, sPen, globalEff, globalRet ];
+      totalsRow.height = 25;
+      totalsRow.eachCell((cell, colNum) => {
+        cell.font = { bold: true, size: 11, color: { argb: 'FF0F172A' } };
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE2E8F0' } };
+        cell.alignment = { vertical: 'middle', horizontal: colNum === 1 ? 'right' : 'center' };
+        cell.border = { top: { style: 'double', color: { argb: 'FF94A3B8' } }, bottom: { style: 'medium', color: { argb: 'FF94A3B8' } } };
+      });
+      [2,3,4,5,6,7,8].forEach(col => totalsRow.getCell(col).numFmt = '#,##0');
+      
+      const totalEffCell = totalsRow.getCell(9);
+      totalEffCell.numFmt = '0.0%';
+      if (globalEff >= 0.90) totalEffCell.font.color = { argb: 'FF059669' };
+      else if (globalEff >= 0.75) totalEffCell.font.color = { argb: 'FFD97706' };
+      else totalEffCell.font.color = { argb: 'FFE11D48' };
+
+      const totalRetCell = totalsRow.getCell(10);
+      totalRetCell.numFmt = '0.0%';
+      if (globalRet <= 0.05) totalRetCell.font.color = { argb: 'FF059669' };
+      else if (globalRet <= 0.15) totalRetCell.font.color = { argb: 'FFD97706' };
+      else totalRetCell.font.color = { argb: 'FFE11D48' };
+
+      sheet1.autoFilter = { from: 'A4', to: 'J4' };
+    }
+
+    // -------------------------------------------------------------------------
+    // HOJA 2: DETALLE DE PAQUETES
+    // -------------------------------------------------------------------------
+    const sheet2 = workbook.addWorksheet('Detalle de Paquetes', { views: [{ showGridLines: false }] });
+
+    sheet2.columns = [
+      { header: 'Chofer', key: 'driver', width: 25 },
+      { header: 'Ruta', key: 'route', width: 20 },
+      { header: 'Sucursal', key: 'subsidiary', width: 20 },
+      { header: 'Tracking', key: 'tracking', width: 22 },
+      { header: 'Estatus', key: 'status', width: 24 },
+      { header: 'Cód. DEX', key: 'dex', width: 12 },
+      { header: 'Fecha Commit', key: 'commit', width: 18 },
+      { header: 'C.P.', key: 'cp', width: 10 },
+      { header: 'Destinatario', key: 'recipient', width: 35 },
+    ];
+
+    const headerRow2 = sheet2.getRow(1);
+    headerRow2.height = 25;
+    headerRow2.eachCell((cell) => {
+      cell.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 10 };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF475569' } }; 
+      cell.alignment = { vertical: 'middle', horizontal: 'center' };
+      cell.border = { bottom: { style: 'medium', color: { argb: 'FF0F172A' } } };
+    });
+
+    detailsData.forEach((row, index) => {
+      const dataRow = sheet2.addRow({
+        driver: row.driverName || row.drivername || 'Sin Asignar',
+        route: row.routeName || row.routename || 'N/A',
+        subsidiary: row.subsidiaryName || row.subsidiaryname || 'N/A',
+        tracking: row.tracking,
+        status: (row.status || 'Desconocido').toUpperCase().replace(/_/g, ' '),
+        // Aquí leemos el exceptionCode que se generó en la consulta de Detalle con el CASE WHEN
+        dex: row.exceptionCode || row.exceptioncode || '-',
+        commit: row.commitDate ? new Date(row.commitDate).toLocaleDateString('es-MX') : 'Sin Fecha',
+        cp: row.cp || 'S/C',
+        recipient: row.recipient || 'Sin Nombre'
+      });
+
+      const bgColor = (index % 2 === 0) ? 'FFFFFFFF' : 'FFF8FAFC';
+      dataRow.eachCell((cell) => {
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgColor } };
+        cell.border = { bottom: { style: 'hair', color: { argb: 'FFE2E8F0' } } };
+        cell.alignment = { vertical: 'middle' };
+      });
+
+      // Centrar columnas clave
+      [4, 5, 6, 7, 8].forEach(col => { dataRow.getCell(col).alignment = { vertical: 'middle', horizontal: 'center' }; });
+      
+      // Pintar la etiqueta del código DEX en la Hoja 2 para que llame la atención
+      const dexCell = dataRow.getCell(6);
+      if (dexCell.value !== '-') {
+        dexCell.font = { bold: true, color: { argb: 'FFE11D48' } }; // Rojo si es DEX
+      }
+    });
+
+    if(detailsData.length > 0) {
+        sheet2.autoFilter = { from: 'A1', to: 'I1' }; 
+    }
+
+    const buffer = await workbook.xlsx.writeBuffer();
+    return buffer as unknown as Buffer;
+  }
+
+  async generateDriverReportExcelResp2303v02(
+    startDate: string,
+    endDate: string,
+    subsidiaryId: string
+  ): Promise<Buffer> {
+
+    const startUtc = DateTime
+      .fromISO(startDate, { zone: 'America/Hermosillo' })
+      .startOf('day')
+      .toUTC()
+      .toJSDate();
+
+    const endUtc = DateTime
+      .fromISO(endDate, { zone: 'America/Hermosillo' })
+      .endOf('day')
+      .toUTC()
+      .toJSDate();
+
+    // =========================================================================
+    // 🔥 QUERY 1: RESUMEN EJECUTIVO (DASHBOARD)
+    // =========================================================================
+    const summaryQuery = this.packageDispatchRepository
+      .createQueryBuilder('dispatch')
+      .leftJoin('dispatch.drivers', 'driver') 
+      .leftJoin('dispatch.history', 'history')
+      .leftJoin('history.shipment', 'shipment')
+      .leftJoin('history.chargeShipment', 'chargeShipment')
+      .where('dispatch.createdAt BETWEEN :start AND :end', { start: startUtc, end: endUtc })
+      .andWhere('dispatch.subsidiaryId = :subsidiaryId', { subsidiaryId })
+      .select('driver.id', 'driverId')
+      .addSelect('driver.name', 'driverName')
+      
+      // Totales
+      .addSelect(`COUNT(COALESCE(shipment.id, chargeShipment.id))`, 'total')
+      .addSelect(`SUM(CASE WHEN COALESCE(shipment.status, chargeShipment.status) = 'entregado' THEN 1 ELSE 0 END)`, 'delivered')
+      
+      // DEX Total (Cualquier motivo de no entrega, incluyendo cambios de fecha y devoluciones a fedex)
+      .addSelect(`SUM(CASE WHEN COALESCE(shipment.status, chargeShipment.status) IN (
+        'no_entregado', 
+        'rechazado', 
+        'direccion_incorrecta', 
+        'cliente_no_encontrado', 
+        'cliente_no_disponible', 
+        'cambio_fecha_solicitado') THEN 1 ELSE 0 END)`, 'returned')
+      
+      // Conteo de DEX Específicos
+      .addSelect(`SUM(CASE WHEN COALESCE(shipment.status, chargeShipment.status) = 'direccion_incorrecta' THEN 1 ELSE 0 END)`, 'dex03')
+      .addSelect(`SUM(CASE WHEN COALESCE(shipment.status, chargeShipment.status) = 'rechazado' THEN 1 ELSE 0 END)`, 'dex07')
+      .addSelect(`SUM(CASE WHEN COALESCE(shipment.status, chargeShipment.status) IN ('cliente_no_disponible', 'cliente_no_encontrado') THEN 1 ELSE 0 END)`, 'dex08')
+      
+      // Casos Especiales para el Cuadre
+      .addSelect(`SUM(CASE WHEN COALESCE(shipment.status, chargeShipment.status) = 'cambio_fecha_solicitado' THEN 1 ELSE 0 END)`, 'fechaRequested')
+      .addSelect(`SUM(CASE WHEN COALESCE(shipment.status, chargeShipment.status) = 'devuelto_a_fedex' THEN 1 ELSE 0 END)`, 'returnedFedex')
+      
+      // Sin Movimiento (En Bodega, En Ruta, Pendiente)
+      .addSelect(`SUM(CASE WHEN COALESCE(shipment.status, chargeShipment.status) IN ('en_ruta', 'en_bodega', 'pendiente') THEN 1 ELSE 0 END)`, 'pending')
+      
+      // 🔥 EL ATRAPA FUGAS: Estatus no mapeados arriba
+      .addSelect(`SUM(CASE WHEN COALESCE(shipment.status, chargeShipment.status) NOT IN (
+        'entregado', 'no_entregado', 'rechazado', 'direccion_incorrecta', 'cliente_no_encontrado', 
+        'cliente_no_disponible', 'cambio_fecha_solicitado', 'devuelto_a_fedex', 
+        'en_ruta', 'en_bodega', 'pendiente'
+      ) THEN 1 ELSE 0 END)`, 'unmapped')
+
+      .groupBy('driver.id')
+      .addGroupBy('driver.name');
+
+    // =========================================================================
+    // 🔥 QUERY 2: DETALLE DE PAQUETES (HOJA 2)
+    // =========================================================================
+    const detailsQuery = this.packageDispatchRepository
+      .createQueryBuilder('dispatch')
+      .leftJoin('dispatch.drivers', 'driver')
+      .leftJoin('dispatch.routes', 'route') 
+      .leftJoin('dispatch.subsidiary', 'subsidiary')
+      .leftJoin('dispatch.history', 'history')
+      .leftJoin('history.shipment', 'shipment')
+      .leftJoin('history.chargeShipment', 'chargeShipment')
+      .where('dispatch.createdAt BETWEEN :start AND :end', { start: startUtc, end: endUtc })
+      .andWhere('dispatch.subsidiaryId = :subsidiaryId', { subsidiaryId })
+      .andWhere('COALESCE(shipment.id, chargeShipment.id) IS NOT NULL')
+      .select([
+        'driver.name AS driverName',
+        'route.name AS routeName',
+        'subsidiary.name AS subsidiaryName',
+        'COALESCE(shipment.trackingNumber, chargeShipment.trackingNumber) AS tracking',
+        'COALESCE(shipment.status, chargeShipment.status) AS status',
+        
+        // Mapeo Automático de Código DEX
+        `CASE 
+          WHEN COALESCE(shipment.status, chargeShipment.status) = 'direccion_incorrecta' THEN 'DEX03'
+          WHEN COALESCE(shipment.status, chargeShipment.status) = 'rechazado' THEN 'DEX07'
+          WHEN COALESCE(shipment.status, chargeShipment.status) IN ('cliente_no_disponible', 'cliente_no_encontrado') THEN 'DEX08'
+          WHEN COALESCE(shipment.status, chargeShipment.status) = 'cambio_fecha_solicitado' THEN 'FECHA REQ'
+          WHEN COALESCE(shipment.status, chargeShipment.status) = 'devuelto_a_fedex' THEN 'DEV FDX'
+          WHEN COALESCE(shipment.status, chargeShipment.status) = 'no_entregado' THEN 'OTRO DEX'
+          ELSE '-' 
+        END AS exceptionCode`,
+        
+        'COALESCE(shipment.commitDateTime, chargeShipment.commitDateTime) AS commitDate',
+        'COALESCE(shipment.recipientZip, chargeShipment.recipientZip) AS cp',
+        'COALESCE(shipment.recipientName, chargeShipment.recipientName) AS recipient'
+      ])
+      .orderBy('driver.name', 'ASC')
+      .addOrderBy('route.name', 'ASC')
+      .addOrderBy('subsidiary.name', 'ASC');
+
+    // Ejecutamos ambas consultas simultáneamente
+    const [summaryData, detailsData] = await Promise.all([
+      summaryQuery.getRawMany(),
+      detailsQuery.getRawMany()
+    ]);
+
+    // =========================================================================
+    // 📄 CREACIÓN DEL WORKBOOK EXCEL
+    // =========================================================================
+    const workbook = new ExcelJS.Workbook();
+
+    // -------------------------------------------------------------------------
+    // HOJA 1: DASHBOARD EJECUTIVO
+    // -------------------------------------------------------------------------
+    const sheet1 = workbook.addWorksheet('Eficiencia Operativa', { views: [{ showGridLines: false }] });
+
+    // 1. Definimos solo los 'keys' y 'widths' (sin la propiedad 'header')
+    sheet1.columns = [
+      { key: 'driverName', width: 32 },
+      { key: 'total', width: 15 },
+      { key: 'delivered', width: 14 },
+      { key: 'returned', width: 12 },
+      { key: 'dex03', width: 15 },
+      { key: 'dex07', width: 16 },
+      { key: 'dex08', width: 16 },
+      { key: 'pending', width: 15 },
+      { key: 'fechaReq', width: 15 },
+      { key: 'retFdx', width: 15 },
+      { key: 'unmapped', width: 15 },
+      { key: 'pctEff', width: 14 },
+      { key: 'pctRet', width: 12 },
+    ];
+
+    // 2. Título (Fila 1)
+    sheet1.mergeCells('A1:M1');
+    const titleCell = sheet1.getCell('A1');
+    titleCell.value = '📊 REPORTE EJECUTIVO DE EFICIENCIA OPERATIVA';
+    titleCell.font = { size: 16, bold: true, color: { argb: 'FFFFFFFF' } };
+    titleCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF0F172A' } };
+    titleCell.alignment = { vertical: 'middle', horizontal: 'center' };
+    sheet1.getRow(1).height = 35;
+
+    // 3. Subtítulo (Fila 2)
+    sheet1.mergeCells('A2:M2');
+    sheet1.getCell('A2').value = `Periodo Analizado: ${startDate.split('T')[0]} al ${endDate.split('T')[0]}`;
+    sheet1.getCell('A2').font = { size: 11, italic: true, color: { argb: 'FF475569' } };
+    sheet1.getCell('A2').alignment = { vertical: 'middle', horizontal: 'center' };
+    sheet1.getRow(2).height = 20;
+
+    // 4. 🔥 AHORA SÍ: Escribimos los encabezados explícitamente en la Fila 4
+    const headerRow1 = sheet1.getRow(4);
+    headerRow1.values = [
+      'Chofer / Repartidor', 'Total Asignados', 'Entregados', 'DEX Total', 
+      'DEX 03 (Dir. Mal)', 'DEX 07 (Rechazo)', 'DEX 08 (No Disp.)', 
+      'Sin Movimiento', 'Cambio Fecha', 'Dev. FedEx', 'Otros (Fugas)', 
+      '% Efectividad', '% Retorno'
+    ];
+    
+    headerRow1.height = 25;
+    headerRow1.eachCell((cell) => {
+      cell.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 10 };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF2563EB' } };
+      cell.alignment = { vertical: 'middle', horizontal: 'center' };
+      cell.border = { top: { style: 'medium', color: { argb: 'FF1E3A8A' } }, bottom: { style: 'medium', color: { argb: 'FF1E3A8A' } } };
+    });
+
+    let row1Idx = 5;
+    let sTotal = 0, sDel = 0, sRet = 0, sD03 = 0, sD07 = 0, sD08 = 0, sPen = 0;
+    let sFechaReq = 0, sRetFdx = 0, sUnmapped = 0;
+
+    summaryData.forEach((r, index) => {
+      const rawTotal = Number(r.total || 0);
+      const rawDel = Number(r.delivered || 0);
+      const rawRet = Number(r.returned || 0);
+      const rawD03 = Number(r.dex03 || 0);
+      const rawD07 = Number(r.dex07 || 0);
+      const rawD08 = Number(r.dex08 || 0);
+      const rawPen = Number(r.pending || 0);
+      const rawFechaReq = Number(r.fecharequested || r.fechaRequested || 0);
+      const rawRetFdx = Number(r.returnedfedex || r.returnedFedex || 0);
+      const rawUnmapped = Number(r.unmapped || 0);
+
+      sTotal += rawTotal; sDel += rawDel; sRet += rawRet; sD03 += rawD03; sD07 += rawD07; sD08 += rawD08; sPen += rawPen;
+      sFechaReq += rawFechaReq; sRetFdx += rawRetFdx; sUnmapped += rawUnmapped;
+
+      const pctEff = rawTotal > 0 ? (rawDel / rawTotal) : 0;
+      const pctRet = rawTotal > 0 ? (rawRet / rawTotal) : 0;
+
+      const row = sheet1.getRow(row1Idx);
+      row.values = [
+        r.driverName || r.drivername || 'Sin Chofer', rawTotal, rawDel, rawRet, 
+        rawD03, rawD07, rawD08, rawPen, rawFechaReq, rawRetFdx, rawUnmapped,
+        pctEff, pctRet
+      ];
+      row.height = 20;
+
+      const bgColor = (index % 2 === 0) ? 'FFFFFFFF' : 'FFF8FAFC';
+      row.eachCell((cell, colNum) => {
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgColor } };
+        cell.border = { bottom: { style: 'hair', color: { argb: 'FFE2E8F0' } } };
+        cell.alignment = { vertical: 'middle', horizontal: colNum === 1 ? 'left' : 'center' };
+      });
+
+      // Formato de números para las columnas B hasta K
+      [2,3,4,5,6,7,8,9,10,11].forEach(col => row.getCell(col).numFmt = '#,##0');
+      
+      // Columna 12: % Efectividad
+      const effCell = row.getCell(12);
+      effCell.numFmt = '0.0%'; effCell.font = { bold: true };
+      if (pctEff >= 0.90) effCell.font.color = { argb: 'FF059669' };
+      else if (pctEff >= 0.75) effCell.font.color = { argb: 'FFD97706' };
+      else effCell.font.color = { argb: 'FFE11D48' };
+
+      // Columna 13: % Retorno
+      const retCell = row.getCell(13);
+      retCell.numFmt = '0.0%'; retCell.font = { bold: true };
+      if (pctRet <= 0.05) retCell.font.color = { argb: 'FF059669' };
+      else if (pctRet <= 0.15) retCell.font.color = { argb: 'FFD97706' };
+      else retCell.font.color = { argb: 'FFE11D48' };
+
+      row1Idx++;
+    });
+
+    if (summaryData.length > 0) {
+      const totalsRow = sheet1.getRow(row1Idx);
+      const globalEff = sTotal > 0 ? (sDel/sTotal) : 0;
+      const globalRet = sTotal > 0 ? (sRet/sTotal) : 0;
+
+      totalsRow.values = [ 'TOTALES GLOBALES', sTotal, sDel, sRet, sD03, sD07, sD08, sPen, sFechaReq, sRetFdx, sUnmapped, globalEff, globalRet ];
+      totalsRow.height = 25;
+      totalsRow.eachCell((cell, colNum) => {
+        cell.font = { bold: true, size: 11, color: { argb: 'FF0F172A' } };
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE2E8F0' } };
+        cell.alignment = { vertical: 'middle', horizontal: colNum === 1 ? 'right' : 'center' };
+        cell.border = { top: { style: 'double', color: { argb: 'FF94A3B8' } }, bottom: { style: 'medium', color: { argb: 'FF94A3B8' } } };
+      });
+      
+      [2,3,4,5,6,7,8,9,10,11].forEach(col => totalsRow.getCell(col).numFmt = '#,##0');
+      
+      const totalEffCell = totalsRow.getCell(12);
+      totalEffCell.numFmt = '0.0%';
+      if (globalEff >= 0.90) totalEffCell.font.color = { argb: 'FF059669' };
+      else if (globalEff >= 0.75) totalEffCell.font.color = { argb: 'FFD97706' };
+      else totalEffCell.font.color = { argb: 'FFE11D48' };
+
+      const totalRetCell = totalsRow.getCell(13);
+      totalRetCell.numFmt = '0.0%';
+      if (globalRet <= 0.05) totalRetCell.font.color = { argb: 'FF059669' };
+      else if (globalRet <= 0.15) totalRetCell.font.color = { argb: 'FFD97706' };
+      else totalRetCell.font.color = { argb: 'FFE11D48' };
+
+      sheet1.autoFilter = { from: 'A4', to: 'M4' };
+    }
+
+    // -------------------------------------------------------------------------
+    // HOJA 2: DETALLE DE PAQUETES
+    // -------------------------------------------------------------------------
+    const sheet2 = workbook.addWorksheet('Detalle de Paquetes', { views: [{ showGridLines: false }] });
+
+    sheet2.columns = [
+      { header: 'Chofer', key: 'driver', width: 25 },
+      { header: 'Ruta', key: 'route', width: 20 },
+      { header: 'Sucursal', key: 'subsidiary', width: 20 },
+      { header: 'Tracking', key: 'tracking', width: 22 },
+      { header: 'Estatus', key: 'status', width: 24 },
+      { header: 'Cód. DEX', key: 'dex', width: 14 },
+      { header: 'Fecha Commit', key: 'commit', width: 18 },
+      { header: 'C.P.', key: 'cp', width: 10 },
+      { header: 'Destinatario', key: 'recipient', width: 35 },
+    ];
+
+    const headerRow2 = sheet2.getRow(1);
+    headerRow2.height = 25;
+    headerRow2.eachCell((cell) => {
+      cell.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 10 };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF475569' } }; 
+      cell.alignment = { vertical: 'middle', horizontal: 'center' };
+      cell.border = { bottom: { style: 'medium', color: { argb: 'FF0F172A' } } };
+    });
+
+    detailsData.forEach((row, index) => {
+      const dataRow = sheet2.addRow({
+        driver: row.driverName || row.drivername || 'Sin Asignar',
+        route: row.routeName || row.routename || 'N/A',
+        subsidiary: row.subsidiaryName || row.subsidiaryname || 'N/A',
+        tracking: row.tracking,
+        status: (row.status || 'Desconocido').toUpperCase().replace(/_/g, ' '),
+        dex: row.exceptionCode || row.exceptioncode || '-',
+        commit: row.commitDate ? new Date(row.commitDate).toLocaleDateString('es-MX') : 'Sin Fecha',
+        cp: row.cp || 'S/C',
+        recipient: row.recipient || 'Sin Nombre'
+      });
+
+      const bgColor = (index % 2 === 0) ? 'FFFFFFFF' : 'FFF8FAFC';
+      dataRow.eachCell((cell) => {
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgColor } };
+        cell.border = { bottom: { style: 'hair', color: { argb: 'FFE2E8F0' } } };
+        cell.alignment = { vertical: 'middle' };
+      });
+
+      [4, 5, 6, 7, 8].forEach(col => { dataRow.getCell(col).alignment = { vertical: 'middle', horizontal: 'center' }; });
+      
+      const dexCell = dataRow.getCell(6);
+      if (dexCell.value !== '-') {
+        dexCell.font = { bold: true, color: { argb: 'FFE11D48' } }; 
+      }
+    });
+
+    if(detailsData.length > 0) {
+        sheet2.autoFilter = { from: 'A1', to: 'I1' }; 
+    }
+
+    const buffer = await workbook.xlsx.writeBuffer();
+    return buffer as unknown as Buffer;
+  }
+
+  async generateDriverReportExcel(
+    startDate: string,
+    endDate: string,
+    subsidiaryId: string
+  ): Promise<Buffer> {
+
+    const startUtc = DateTime
+      .fromISO(startDate, { zone: 'America/Hermosillo' })
+      .startOf('day')
+      .toUTC()
+      .toJSDate();
+
+    const endUtc = DateTime
+      .fromISO(endDate, { zone: 'America/Hermosillo' })
+      .endOf('day')
+      .toUTC()
+      .toJSDate();
+
+    // =========================================================================
+    // 🚨 CONFIGURACIÓN DEL SUBQUERY (VIAJE EN EL TIEMPO PARA DEX REAL)
+    // Nota: Ajusta los nombres de las columnas en comillas si tu BD usa 
+    // snake_case (ej. 'shipment_id' en vez de '"shipmentId"').
+    // =========================================================================
+    const TBL_SHIPMENT_STATUS = 'shipment_status';
+    
+    // 🔥 CORRECCIÓN PARA MYSQL: Usar backticks (`) en lugar de comillas dobles (")
+    const COL_SHIPMENT_ID = '`shipmentId`'; 
+    const COL_CREATED_AT = '`createdAt`';   
+
+    const effectiveStatusSql = `
+      CASE 
+        WHEN COALESCE(shipment.status, chargeShipment.status) IN ('devuelto_a_fedex', 'retorno_abandono_fedex') THEN 
+          COALESCE(
+            (
+              SELECT ss.status 
+              FROM ${TBL_SHIPMENT_STATUS} ss 
+              WHERE ss.${COL_SHIPMENT_ID} = COALESCE(shipment.id, chargeShipment.id) 
+                AND ss.status IN ('direccion_incorrecta', 'rechazado', 'cliente_no_disponible', 'cliente_no_encontrado')
+              ORDER BY ss.${COL_CREATED_AT} DESC 
+              LIMIT 1
+            ), 
+            COALESCE(shipment.status, chargeShipment.status)
+          )
+        ELSE COALESCE(shipment.status, chargeShipment.status)
+      END
+    `;
+
+    // =========================================================================
+    // 🔥 QUERY 1: RESUMEN EJECUTIVO (DASHBOARD)
+    // =========================================================================
+    const summaryQuery = this.packageDispatchRepository
+      .createQueryBuilder('dispatch')
+      .leftJoin('dispatch.drivers', 'driver') 
+      .leftJoin('dispatch.history', 'history')
+      .leftJoin('history.shipment', 'shipment')
+      .leftJoin('history.chargeShipment', 'chargeShipment')
+      .where('dispatch.createdAt BETWEEN :start AND :end', { start: startUtc, end: endUtc })
+      .andWhere('dispatch.subsidiaryId = :subsidiaryId', { subsidiaryId })
+      .select('driver.id', 'driverId')
+      .addSelect('driver.name', 'driverName')
+      
+      // Totales
+      .addSelect(`COUNT(COALESCE(shipment.id, chargeShipment.id))`, 'total')
+      .addSelect(`SUM(CASE WHEN ${effectiveStatusSql} = 'entregado' THEN 1 ELSE 0 END)`, 'delivered')
+      
+      // DEX Total
+      .addSelect(`SUM(CASE WHEN ${effectiveStatusSql} IN ('no_entregado', 'rechazado', 'direccion_incorrecta', 'cliente_no_encontrado', 'cliente_no_disponible', 'cambio_fecha_solicitado', 'devuelto_a_fedex', 'retorno_abandono_fedex') THEN 1 ELSE 0 END)`, 'returned')
+      
+      // 🔥 Conteo Específico de DEX (Ahora tomará el DEX real gracias al effectiveStatusSql)
+      .addSelect(`SUM(CASE WHEN ${effectiveStatusSql} = 'direccion_incorrecta' THEN 1 ELSE 0 END)`, 'dex03')
+      .addSelect(`SUM(CASE WHEN ${effectiveStatusSql} = 'rechazado' THEN 1 ELSE 0 END)`, 'dex07')
+      .addSelect(`SUM(CASE WHEN ${effectiveStatusSql} IN ('cliente_no_disponible', 'cliente_no_encontrado') THEN 1 ELSE 0 END)`, 'dex08')
+      
+      // Casos Especiales para el Cuadre
+      .addSelect(`SUM(CASE WHEN ${effectiveStatusSql} = 'cambio_fecha_solicitado' THEN 1 ELSE 0 END)`, 'fechaRequested')
+      
+      // FÍSICAMENTE Devueltos (Mantenemos esta métrica original para que sepas cuántos terminaron en FedEx)
+      .addSelect(`SUM(CASE WHEN COALESCE(shipment.status, chargeShipment.status) IN ('devuelto_a_fedex', 'retorno_abandono_fedex') THEN 1 ELSE 0 END)`, 'returnedFedex')
+      
+      // Sin Movimiento
+      .addSelect(`SUM(CASE WHEN ${effectiveStatusSql} IN ('en_ruta', 'en_bodega', 'pendiente') THEN 1 ELSE 0 END)`, 'pending')
+      
+      // El atrapa fugas
+      .addSelect(`SUM(CASE WHEN ${effectiveStatusSql} NOT IN (
+        'entregado', 'no_entregado', 'rechazado', 'direccion_incorrecta', 'cliente_no_encontrado', 
+        'cliente_no_disponible', 'cambio_fecha_solicitado', 'devuelto_a_fedex', 'retorno_abandono_fedex',
+        'en_ruta', 'en_bodega', 'pendiente'
+      ) THEN 1 ELSE 0 END)`, 'unmapped')
+
+      .groupBy('driver.id')
+      .addGroupBy('driver.name');
+
+    // =========================================================================
+    // 🔥 QUERY 2: DETALLE DE PAQUETES (HOJA 2)
+    // =========================================================================
+    const detailsQuery = this.packageDispatchRepository
+      .createQueryBuilder('dispatch')
+      .leftJoin('dispatch.drivers', 'driver')
+      .leftJoin('dispatch.routes', 'route') 
+      .leftJoin('dispatch.subsidiary', 'subsidiary')
+      .leftJoin('dispatch.history', 'history')
+      .leftJoin('history.shipment', 'shipment')
+      .leftJoin('history.chargeShipment', 'chargeShipment')
+      .where('dispatch.createdAt BETWEEN :start AND :end', { start: startUtc, end: endUtc })
+      .andWhere('dispatch.subsidiaryId = :subsidiaryId', { subsidiaryId })
+      .andWhere('COALESCE(shipment.id, chargeShipment.id) IS NOT NULL')
+      .select([
+        'driver.name AS driverName',
+        'route.name AS routeName',
+        'subsidiary.name AS subsidiaryName',
+        'COALESCE(shipment.trackingNumber, chargeShipment.trackingNumber) AS tracking',
+        
+        // Estatus normal y Estatus "Real"
+        'COALESCE(shipment.status, chargeShipment.status) AS status',
+        `(${effectiveStatusSql}) AS realstatus`, 
+        
+        // Mapeo Automático de Código DEX usando el REAL STATUS
+        `CASE 
+          WHEN (${effectiveStatusSql}) = 'direccion_incorrecta' THEN 'DEX03'
+          WHEN (${effectiveStatusSql}) = 'rechazado' THEN 'DEX07'
+          WHEN (${effectiveStatusSql}) IN ('cliente_no_disponible', 'cliente_no_encontrado') THEN 'DEX08'
+          WHEN (${effectiveStatusSql}) = 'cambio_fecha_solicitado' THEN 'FECHA REQ'
+          WHEN (${effectiveStatusSql}) IN ('devuelto_a_fedex', 'retorno_abandono_fedex') THEN 'DEV/ABANDONO'
+          WHEN (${effectiveStatusSql}) = 'no_entregado' THEN 'OTRO DEX'
+          ELSE '-' 
+        END AS exceptionCode`,
+        
+        'COALESCE(shipment.commitDateTime, chargeShipment.commitDateTime) AS commitDate',
+        'COALESCE(shipment.recipientZip, chargeShipment.recipientZip) AS cp',
+        'COALESCE(shipment.recipientName, chargeShipment.recipientName) AS recipient'
+      ])
+      .orderBy('driver.name', 'ASC')
+      .addOrderBy('route.name', 'ASC')
+      .addOrderBy('subsidiary.name', 'ASC');
+
+    const [summaryData, detailsData] = await Promise.all([
+      summaryQuery.getRawMany(),
+      detailsQuery.getRawMany()
+    ]);
+
+    // =========================================================================
+    // 📄 CREACIÓN DEL WORKBOOK EXCEL
+    // =========================================================================
+    const workbook = new ExcelJS.Workbook();
+
+    // -------------------------------------------------------------------------
+    // HOJA 1: DASHBOARD EJECUTIVO
+    // -------------------------------------------------------------------------
+    const sheet1 = workbook.addWorksheet('Eficiencia Operativa', { views: [{ showGridLines: false }] });
+
+    // Definimos solo las llaves y anchos, quitamos 'header' para no sobreescribir la fila 1
+    sheet1.columns = [
+      { key: 'driverName', width: 32 },
+      { key: 'total', width: 15 },
+      { key: 'delivered', width: 14 },
+      { key: 'returned', width: 12 },
+      { key: 'dex03', width: 15 },
+      { key: 'dex07', width: 16 },
+      { key: 'dex08', width: 16 },
+      { key: 'pending', width: 15 },
+      { key: 'fechaReq', width: 15 },
+      { key: 'retFdx', width: 15 },
+      { key: 'unmapped', width: 15 },
+      { key: 'pctEff', width: 14 },
+      { key: 'pctRet', width: 12 },
+    ];
+
+    sheet1.mergeCells('A1:M1');
+    const titleCell = sheet1.getCell('A1');
+    titleCell.value = '📊 REPORTE EJECUTIVO DE EFICIENCIA OPERATIVA';
+    titleCell.font = { size: 16, bold: true, color: { argb: 'FFFFFFFF' } };
+    titleCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF0F172A' } };
+    titleCell.alignment = { vertical: 'middle', horizontal: 'center' };
+    sheet1.getRow(1).height = 35;
+
+    sheet1.mergeCells('A2:M2');
+    sheet1.getCell('A2').value = `Periodo Analizado: ${startDate.split('T')[0]} al ${endDate.split('T')[0]}`;
+    sheet1.getCell('A2').font = { size: 11, italic: true, color: { argb: 'FF475569' } };
+    sheet1.getCell('A2').alignment = { vertical: 'middle', horizontal: 'center' };
+    sheet1.getRow(2).height = 20;
+
+    // AHORA SÍ, escribimos los encabezados en la Fila 4
+    const headerRow1 = sheet1.getRow(4);
+    headerRow1.values = [
+      'Chofer / Repartidor', 'Total Asignados', 'Entregados', 'DEX Total', 
+      'DEX 03 (Dir. Mal)', 'DEX 07 (Rechazo)', 'DEX 08 (No Disp.)', 
+      'Sin Movimiento', 'Cambio Fecha', 'Dev. FedEx', 'Otros (Fugas)', 
+      '% Efectividad', '% Retorno'
+    ];
+    headerRow1.height = 25;
+    headerRow1.eachCell((cell) => {
+      cell.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 10 };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF2563EB' } };
+      cell.alignment = { vertical: 'middle', horizontal: 'center' };
+      cell.border = { top: { style: 'medium', color: { argb: 'FF1E3A8A' } }, bottom: { style: 'medium', color: { argb: 'FF1E3A8A' } } };
+    });
+
+    let row1Idx = 5;
+    let sTotal = 0, sDel = 0, sRet = 0, sD03 = 0, sD07 = 0, sD08 = 0, sPen = 0;
+    let sFechaReq = 0, sRetFdx = 0, sUnmapped = 0;
+
+    summaryData.forEach((r, index) => {
+      const rawTotal = Number(r.total || 0);
+      const rawDel = Number(r.delivered || 0);
+      const rawRet = Number(r.returned || 0);
+      const rawD03 = Number(r.dex03 || 0);
+      const rawD07 = Number(r.dex07 || 0);
+      const rawD08 = Number(r.dex08 || 0);
+      const rawPen = Number(r.pending || 0);
+      const rawFechaReq = Number(r.fecharequested || r.fechaRequested || 0);
+      const rawRetFdx = Number(r.returnedfedex || r.returnedFedex || 0);
+      const rawUnmapped = Number(r.unmapped || 0);
+
+      sTotal += rawTotal; sDel += rawDel; sRet += rawRet; sD03 += rawD03; sD07 += rawD07; sD08 += rawD08; sPen += rawPen;
+      sFechaReq += rawFechaReq; sRetFdx += rawRetFdx; sUnmapped += rawUnmapped;
+
+      const pctEff = rawTotal > 0 ? (rawDel / rawTotal) : 0;
+      const pctRet = rawTotal > 0 ? (rawRet / rawTotal) : 0;
+
+      const row = sheet1.getRow(row1Idx);
+      row.values = [
+        r.driverName || r.drivername || 'Sin Chofer', rawTotal, rawDel, rawRet, 
+        rawD03, rawD07, rawD08, rawPen, rawFechaReq, rawRetFdx, rawUnmapped,
+        pctEff, pctRet
+      ];
+      row.height = 20;
+
+      const bgColor = (index % 2 === 0) ? 'FFFFFFFF' : 'FFF8FAFC';
+      row.eachCell((cell, colNum) => {
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgColor } };
+        cell.border = { bottom: { style: 'hair', color: { argb: 'FFE2E8F0' } } };
+        cell.alignment = { vertical: 'middle', horizontal: colNum === 1 ? 'left' : 'center' };
+      });
+
+      [2,3,4,5,6,7,8,9,10,11].forEach(col => row.getCell(col).numFmt = '#,##0');
+      
+      const effCell = row.getCell(12);
+      effCell.numFmt = '0.0%'; effCell.font = { bold: true };
+      if (pctEff >= 0.90) effCell.font.color = { argb: 'FF059669' };
+      else if (pctEff >= 0.75) effCell.font.color = { argb: 'FFD97706' };
+      else effCell.font.color = { argb: 'FFE11D48' };
+
+      const retCell = row.getCell(13);
+      retCell.numFmt = '0.0%'; retCell.font = { bold: true };
+      if (pctRet <= 0.05) retCell.font.color = { argb: 'FF059669' };
+      else if (pctRet <= 0.15) retCell.font.color = { argb: 'FFD97706' };
+      else retCell.font.color = { argb: 'FFE11D48' };
+
+      row1Idx++;
+    });
+
+    if (summaryData.length > 0) {
+      const totalsRow = sheet1.getRow(row1Idx);
+      const globalEff = sTotal > 0 ? (sDel/sTotal) : 0;
+      const globalRet = sTotal > 0 ? (sRet/sTotal) : 0;
+
+      totalsRow.values = [ 'TOTALES GLOBALES', sTotal, sDel, sRet, sD03, sD07, sD08, sPen, sFechaReq, sRetFdx, sUnmapped, globalEff, globalRet ];
+      totalsRow.height = 25;
+      totalsRow.eachCell((cell, colNum) => {
+        cell.font = { bold: true, size: 11, color: { argb: 'FF0F172A' } };
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE2E8F0' } };
+        cell.alignment = { vertical: 'middle', horizontal: colNum === 1 ? 'right' : 'center' };
+        cell.border = { top: { style: 'double', color: { argb: 'FF94A3B8' } }, bottom: { style: 'medium', color: { argb: 'FF94A3B8' } } };
+      });
+      
+      [2,3,4,5,6,7,8,9,10,11].forEach(col => totalsRow.getCell(col).numFmt = '#,##0');
+      
+      const totalEffCell = totalsRow.getCell(12);
+      totalEffCell.numFmt = '0.0%';
+      if (globalEff >= 0.90) totalEffCell.font.color = { argb: 'FF059669' };
+      else if (globalEff >= 0.75) totalEffCell.font.color = { argb: 'FFD97706' };
+      else totalEffCell.font.color = { argb: 'FFE11D48' };
+
+      const totalRetCell = totalsRow.getCell(13);
+      totalRetCell.numFmt = '0.0%';
+      if (globalRet <= 0.05) totalRetCell.font.color = { argb: 'FF059669' };
+      else if (globalRet <= 0.15) totalRetCell.font.color = { argb: 'FFD97706' };
+      else totalRetCell.font.color = { argb: 'FFE11D48' };
+
+      sheet1.autoFilter = { from: 'A4', to: 'M4' };
+    }
+
+    // -------------------------------------------------------------------------
+    // HOJA 2: DETALLE DE PAQUETES
+    // -------------------------------------------------------------------------
+    const sheet2 = workbook.addWorksheet('Detalle de Paquetes', { views: [{ showGridLines: false }] });
+
+    sheet2.columns = [
+      { header: 'Chofer', key: 'driver', width: 25 },
+      { header: 'Ruta', key: 'route', width: 20 },
+      { header: 'Sucursal', key: 'subsidiary', width: 20 },
+      { header: 'Tracking', key: 'tracking', width: 22 },
+      { header: 'Estatus', key: 'status', width: 35 }, // Lo amplié un poco para el nuevo texto
+      { header: 'Cód. DEX', key: 'dex', width: 14 },
+      { header: 'Fecha Commit', key: 'commit', width: 18 },
+      { header: 'C.P.', key: 'cp', width: 10 },
+      { header: 'Destinatario', key: 'recipient', width: 35 },
+    ];
+
+    const headerRow2 = sheet2.getRow(1);
+    headerRow2.height = 25;
+    headerRow2.eachCell((cell) => {
+      cell.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 10 };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF475569' } }; 
+      cell.alignment = { vertical: 'middle', horizontal: 'center' };
+      cell.border = { bottom: { style: 'medium', color: { argb: 'FF0F172A' } } };
+    });
+
+    detailsData.forEach((row, index) => {
+      // 🔥 MAGIA VISUAL: Si el estatus es devuelto, le mostramos al usuario cuál era su DEX oculto
+      const statusRaw = row.status || 'desconocido';
+      const realStatusRaw = row.realstatus || row.realStatus || statusRaw;
+      
+      let displayStatus = statusRaw.toUpperCase().replace(/_/g, ' ');
+      if ((statusRaw === 'devuelto_a_fedex' || statusRaw === 'retorno_abandono_fedex') && realStatusRaw !== statusRaw) {
+        displayStatus = `${displayStatus} (Era: ${realStatusRaw.toUpperCase().replace(/_/g, ' ')})`;
+      }
+
+      const dataRow = sheet2.addRow({
+        driver: row.driverName || row.drivername || 'Sin Asignar',
+        route: row.routeName || row.routename || 'N/A',
+        subsidiary: row.subsidiaryName || row.subsidiaryname || 'N/A',
+        tracking: row.tracking,
+        status: displayStatus,
+        dex: row.exceptionCode || row.exceptioncode || '-',
+        commit: row.commitDate ? new Date(row.commitDate).toLocaleDateString('es-MX') : 'Sin Fecha',
+        cp: row.cp || 'S/C',
+        recipient: row.recipient || 'Sin Nombre'
+      });
+
+      const bgColor = (index % 2 === 0) ? 'FFFFFFFF' : 'FFF8FAFC';
+      dataRow.eachCell((cell) => {
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgColor } };
+        cell.border = { bottom: { style: 'hair', color: { argb: 'FFE2E8F0' } } };
+        cell.alignment = { vertical: 'middle' };
+      });
+
+      [4, 5, 6, 7, 8].forEach(col => { dataRow.getCell(col).alignment = { vertical: 'middle', horizontal: 'center' }; });
+      
+      const dexCell = dataRow.getCell(6);
+      if (dexCell.value !== '-') {
+        dexCell.font = { bold: true, color: { argb: 'FFE11D48' } }; 
+      }
+    });
+
+    if(detailsData.length > 0) {
+        sheet2.autoFilter = { from: 'A1', to: 'I1' }; 
+    }
+
+    const buffer = await workbook.xlsx.writeBuffer();
+    return buffer as unknown as Buffer;
+  }
 }

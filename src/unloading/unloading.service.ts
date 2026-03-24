@@ -14,6 +14,7 @@ import { ShipmentStatusType } from 'src/common/enums/shipment-status-type.enum';
 import { UnloadingReportDto } from './dto/unloading-report.dto';
 import { ShipmentsService } from 'src/shipments/shipments.service';
 import { fromZonedTime } from 'date-fns-tz';
+import { ValidationPayloadDto } from './dto/validate-payload.dto';
 
 
 @Injectable()
@@ -821,7 +822,7 @@ export class UnloadingService {
     return { validatedShipments, consolidateds: consolidatedsToValidate };
   }
 
-  async validateTrackingNumbers(
+  async validateTrackingNumbers2303(
     trackingNumbers: string[],
     subsidiaryId?: string
   ): Promise<{
@@ -942,6 +943,174 @@ export class UnloadingService {
         console.log(`🏷️ ${c.typeCode} ${c.id}: ${c.added.length} added, ${c.notFound.length} notFound`);
       });
     }
+
+    return { validatedShipments, consolidateds: consolidatedsToValidate };
+  }
+
+  async validateTrackingNumbers(
+    payload: ValidationPayloadDto[],
+    subsidiaryId?: string
+  ): Promise<{
+    validatedShipments: (ValidatedUnloadingDto & { isCharge?: boolean })[];
+    consolidateds: ConsolidatedsDto;
+  }> {
+    console.log('\n=====================================================');
+    console.log(`📥 [INICIO] Validación de paquetes | Sucursal: ${subsidiaryId || 'N/A'}`);
+    console.log(`📦 Total recibidos en el payload: ${payload?.length || 0}`);
+
+    if (!payload || payload.length === 0) {
+      console.log('⚠️ Payload vacío. Retornando consolidados vacíos.');
+      console.log('=====================================================\n');
+      const emptyConsolidateds = await this.getConsolidateToStartUnloading(subsidiaryId);
+      return { validatedShipments: [], consolidateds: emptyConsolidateds };
+    }
+
+    // 1️⃣ Separar los paquetes cacheados de los que necesitan consulta a la base de datos
+    const cachedPackages = payload.filter(p => p.isAlreadyValidated);
+    
+    // Extraer y limpiar solo los tracking numbers NUEVOS para el query
+    const newTrackingsToQuery = [...new Set(
+      payload
+        .filter(p => !p.isAlreadyValidated)
+        .map(p => p.trackingNumber?.trim().toUpperCase())
+        .filter(tn => tn && tn.length > 0)
+    )];
+
+    console.log(`🧠 En Caché (se saltarán la DB): ${cachedPackages.length}`);
+    console.log(`🔍 Nuevos (requieren ir a la DB): ${newTrackingsToQuery.length}`);
+    if (newTrackingsToQuery.length > 0) {
+      console.log(`   -> Trackings a buscar:`, newTrackingsToQuery);
+    }
+
+    // 2️⃣ Obtener datos (Consulta dinámica)
+    let shipments = [];
+    let chargeShipments = [];
+    let consolidatedsToValidate;
+
+    if (newTrackingsToQuery.length > 0) {
+      console.log(`⏳ Consultando repositorios...`);
+      [shipments, chargeShipments, consolidatedsToValidate] = await Promise.all([
+        this.shipmentRepository.find({
+          where: { trackingNumber: In(newTrackingsToQuery), status: Not(ShipmentStatusType.DEVUELTO_A_FEDEX) },
+          select: ['id', 'trackingNumber', 'commitDateTime', 'createdAt', 'consolidatedId', 'status', 'recipientName', 'recipientAddress', 'recipientPhone', 'recipientZip', 'priority', 'isHighValue'],
+          order: { createdAt: 'DESC' },
+        }),
+        this.chargeShipmentRepository.find({
+          where: { trackingNumber: In(newTrackingsToQuery), status: Not(ShipmentStatusType.DEVUELTO_A_FEDEX) },
+          select: ['id', 'trackingNumber', 'commitDateTime', 'createdAt', 'consolidatedId', 'status', 'recipientName', 'recipientAddress', 'recipientPhone', 'recipientZip', 'priority', 'isHighValue'],
+          order: { createdAt: 'DESC' },
+        }),
+        this.getConsolidateToStartUnloading(subsidiaryId)
+      ]);
+      console.log(`📊 Resultados DB -> Shipments normales: ${shipments.length} | ChargeShipments: ${chargeShipments.length}`);
+    } else {
+      console.log(`⚡ Consulta a repositorios omitida (todos venían en memoria)`);
+      consolidatedsToValidate = await this.getConsolidateToStartUnloading(subsidiaryId);
+    }
+
+    // 3️⃣ Mapas para búsqueda rápida de los paquetes NUEVOS
+    const shipmentsMap = this.createMostRecentMap(shipments);
+    const chargeMap = this.createMostRecentMap(chargeShipments);
+
+    // 4️⃣ Preparar el diccionario de consolidados
+    const allConsolidateds: ConsolidatedItemDto[] = Object.values(consolidatedsToValidate).flat() as ConsolidatedItemDto[];
+    const consolidatedById = new Map<string, ConsolidatedItemDto>();
+    
+    for (const consolidated of allConsolidateds) {
+      consolidated.added = [];
+      consolidated.notFound = [];
+      consolidatedById.set(consolidated.id, consolidated);
+    }
+
+    // 5️⃣ Consolidar TODOS los paquetes
+    const validatedShipments: (ValidatedUnloadingDto & { isCharge?: boolean })[] = [];
+    const validShipmentsOnly = [];
+    const processedTrackings = new Set<string>();
+
+    // 🕵️ Objetos para el reporte final de logs
+    const reporte = {
+      validosCache: [] as string[],
+      validosDB: [] as string[],
+      invalidos: [] as string[]
+    };
+
+    for (const item of payload) {
+      const rawTn = typeof item === 'string' ? item : item?.trackingNumber;
+      if (!rawTn) continue;
+
+      const tn = rawTn.trim().toUpperCase();
+      if (processedTrackings.has(tn)) continue;
+      processedTrackings.add(tn);
+
+      let isValid = false;
+      let isCharge = false;
+      let record: any = null;
+
+      if (typeof item !== 'string' && item.isAlreadyValidated) {
+        // 🟢 USAR MEMORIA
+        isValid = item.isValid;
+        isCharge = item.isCharge;
+        record = item; 
+        
+        // Agregar al reporte
+        if (isValid) reporte.validosCache.push(tn);
+        else reporte.invalidos.push(tn);
+
+      } else {
+        // 🔵 USAR BASE DE DATOS
+        const shipmentRecord = shipmentsMap.get(tn);
+        const chargeRecord = chargeMap.get(tn);
+        
+        isValid = !!(shipmentRecord || chargeRecord);
+        isCharge = !shipmentRecord && !!chargeRecord;
+        record = shipmentRecord || chargeRecord;
+
+        // Agregar al reporte
+        if (isValid) reporte.validosDB.push(tn);
+        else reporte.invalidos.push(tn);
+      }
+
+      const validated: ValidatedUnloadingDto & { isCharge?: boolean } = {
+        trackingNumber: tn,
+        isValid,
+        isCharge,
+        consolidatedId: record?.consolidatedId,
+        recipientName: record?.recipientName,
+        recipientAddress: record?.recipientAddress,
+        recipientPhone: record?.recipientPhone,
+        recipientZip: record?.recipientZip,
+        priority: record?.priority,
+        isHighValue: record?.isHighValue,
+        payment: record?.payment,
+        commitDateTime: record?.commitDateTime,
+      };
+
+      validatedShipments.push(validated);
+
+      if (isValid && record?.consolidatedId) {
+        validShipmentsOnly.push(validated);
+        const consolidated = consolidatedById.get(record.consolidatedId);
+        if (consolidated) {
+          consolidated.added.push({
+            trackingNumber: validated.trackingNumber,
+            recipientName: validated.recipientName,
+            recipientAddress: validated.recipientAddress,
+            recipientPhone: validated.recipientPhone,
+            recipientZip: validated.recipientZip,
+          });
+        }
+      }
+    }
+
+    // 6️⃣ Calcular notFound
+    await this.calculateNotFoundFromConsolidates(allConsolidateds, validShipmentsOnly);
+
+    // 📢 IMPRIMIR REPORTE FINAL
+    console.log('\n📋 --- RESUMEN DE VALIDACIÓN ---');
+    console.log(`✅ Válidos rescatados de Caché (${reporte.validosCache.length}):`, reporte.validosCache);
+    console.log(`✅ Válidos encontrados en DB (${reporte.validosDB.length}):`, reporte.validosDB);
+    console.log(`❌ Inválidos / No encontrados (${reporte.invalidos.length}):`, reporte.invalidos);
+    console.log('=====================================================\n');
 
     return { validatedShipments, consolidateds: consolidatedsToValidate };
   }

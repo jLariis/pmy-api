@@ -592,5 +592,36 @@ export class ShipmentsController {
     const parsedDate = dayjs(date).toDate();
     return await this.shipmentsService.findNonDeliveredShipments(subsidiaryId, parsedDate);
   }
+
+  @Post('check-44-status')
+  async checkStatus44ForShipments(@Body('trackingNumbers') trackingNumbers: string[]) {
+    
+    // 1. Validación de la entrada
+    if (!trackingNumbers || !Array.isArray(trackingNumbers) || trackingNumbers.length === 0) {
+      throw new BadRequestException('Se requiere una lista válida y no vacía de números de rastreo (trackingNumbers).');
+    }
+
+    try {
+      // 2. Ejecutar el método directamente con la lista recibida
+      const results = await this.shipmentsService.check44ByTrackingNumbers(trackingNumbers);
+
+      // 3. Contar los que dieron positivo para el estatus 44
+      const shipmentsWith44 = results.filter(r => r.has44);
+
+      // 4. Retornar la respuesta estructurada
+      return {
+        success: true,
+        message: 'Verificación de estatus 44 completada',
+        totalReceived: trackingNumbers.length,
+        totalWith44: shipmentsWith44.length,
+        data: results, 
+      };
+
+    } catch (error) {
+      // Manejo de errores
+      this.logger.error(`Error verificando estatus 44 para la lista proporcionada: ${error.message}`, error.stack);
+      throw new InternalServerErrorException('Ocurrió un problema interno al verificar los estatus en FedEx.');
+    }
+  }
 }
 
