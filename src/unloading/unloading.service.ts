@@ -1070,7 +1070,8 @@ export class UnloadingService {
         else reporte.invalidos.push(tn);
       }
 
-      const validated: ValidatedUnloadingDto & { isCharge?: boolean } = {
+      const validated: ValidatedUnloadingDto & { isCharge?: boolean, id: string } = {
+        id: record?.id,
         trackingNumber: tn,
         isValid,
         isCharge,
