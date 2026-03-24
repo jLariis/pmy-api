@@ -1,10 +1,11 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete, UploadedFile, UseInterceptors, BadRequestException, UploadedFiles, Query } from '@nestjs/common';
+import { Controller, Get, Post, Body, Patch, Param, Delete, UploadedFile, UseInterceptors, BadRequestException, UploadedFiles, Query, ParseArrayPipe } from '@nestjs/common';
 import { UnloadingService } from './unloading.service';
 import { CreateUnloadingDto } from './dto/create-unloading.dto';
 import { UpdateUnloadingDto } from './dto/update-unloading.dto';
 import { FilesInterceptor } from '@nestjs/platform-express';
 import { ApiTags, ApiBearerAuth, ApiOperation, ApiConsumes, ApiBody, ApiResponse, ApiQuery } from '@nestjs/swagger';
 import { ValidateTrackingNumbersDto } from './dto/validate-tracking-numbers.dto';
+import { ValidationPayloadDto } from './dto/validate-payload.dto';
 
 @ApiTags('unloadings')
 @ApiBearerAuth()
@@ -138,13 +139,26 @@ export class UnloadingController {
     return this.unloadingService.findAll();
   }
 
-  @Post('validate-tracking-numbers')
+   /*** Respaldo por si algo falla 23-03 */
+  /*@Post('validate-tracking-numbers')
     validateTrackingNumbers(
       @Body() body: ValidateTrackingNumbersDto
     ) {
       const { trackingNumbers, subsidiaryId } = body;
       return this.unloadingService.validateTrackingNumbers(trackingNumbers, subsidiaryId);
-    }
+    }*/
+
+  @Post('validate-tracking-numbers')
+  validateTrackingNumbers(
+    @Body(
+      'trackingNumbers', 
+      new ParseArrayPipe({ items: ValidationPayloadDto, optional: true }) // 🚀 LA MAGIA ESTÁ AQUÍ
+    ) 
+    trackingNumbers: ValidationPayloadDto[] = [], // ✅ Pon el nuevo DTO
+    @Body('subsidiaryId') subsidiaryId?: string,
+  ) {
+    return this.unloadingService.validateTrackingNumbers(trackingNumbers, subsidiaryId);
+  }
 
   @Patch(':id')
   update(@Param('id') id: string, @Body() updateUnloadingDto: UpdateUnloadingDto) {

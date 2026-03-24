@@ -7,6 +7,7 @@ export class ValidatedUnloadingDto {
     commitDateTime?: Date
     consNumber?: string
     consolidated?: Consolidated
+    consolidatedId?: string;
     isHighValue?: boolean
     priority?: Priority
     recipientAddress?: string
