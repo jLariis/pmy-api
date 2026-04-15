@@ -30,6 +30,9 @@ export class ExpensesService {
         subsidiary: {
           id: subsidiaryId
         }
+      },
+      order: {
+        date: 'DESC'
       }
     });
 

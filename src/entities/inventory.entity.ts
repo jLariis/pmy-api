@@ -3,6 +3,7 @@ import { Shipment } from "./shipment.entity";
 import { ChargeShipment } from "./charge-shipment.entity";
 import { Subsidiary } from "./subsidiary.entity";
 import { InventoryType } from "src/common/enums/inventory-type.enum";
+import { User } from "./user.entity";
 
 @Entity('inventory')
 export class Inventory {
@@ -40,6 +41,13 @@ export class Inventory {
 
     @Column({ type: 'enum', enum: InventoryType, nullable: true , default: InventoryType.INITIAL})
     type: InventoryType | null;
+    
+    @ManyToOne(() => User, { nullable: true })
+    @JoinColumn({ name: 'createdById' })
+    createdBy: User;
+
+    @Column({ nullable: true })
+    createdById: string;
 
     @BeforeInsert()
     setDefaults() {

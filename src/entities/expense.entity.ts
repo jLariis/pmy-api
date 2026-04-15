@@ -9,6 +9,8 @@ import {
 } from 'typeorm';
 import { Subsidiary } from './subsidiary.entity';
 import { ExpenseCategory } from '../common/enums/category-enum';
+import { User } from './user.entity';
+import { Vehicle } from './vehicle.entity';
 
 @Entity('expense')
 export class Expense {
@@ -52,6 +54,20 @@ export class Expense {
 
   @Column({ type: 'datetime', nullable: true })
   updatedAt: Date;
+
+  @ManyToOne(() => User, { nullable: true })
+  @JoinColumn({ name: 'createdById' })
+  createdBy: User;
+
+  @ManyToOne(() => Vehicle, { nullable: true })
+  @JoinColumn({ name: 'vehicleId' })
+  vehicle: Vehicle;
+
+  @Column({ nullable: true })
+  createdById: string;
+
+  @Column({ nullable: true })
+  vehicleId: string;
 
   @BeforeInsert()
   setCreatedAt() {

@@ -11,6 +11,7 @@ import {
 import { VehicleStatus } from '../common/enums/vehicle-status-enum';
 import { Subsidiary } from './subsidiary.entity';
 import { VehicleTypeEnum } from 'src/common/enums/vehicle-type.enum';
+import { User } from './user.entity';
 
 @Entity('vehicle')
 export class Vehicle {
@@ -76,6 +77,13 @@ export class Vehicle {
 
   @Column({ type: 'datetime', nullable: true })
   updatedAt: Date;
+
+  @ManyToOne(() => User, { nullable: true })
+  @JoinColumn({ name: 'createdById' })
+  createdBy: User;
+
+  @Column({ nullable: true })
+  createdById: string;
 
   @BeforeInsert()
   setCreatedAt() {
