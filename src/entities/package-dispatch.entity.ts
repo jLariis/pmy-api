@@ -8,6 +8,7 @@ import { Vehicle } from "./vehicle.entity";
 import { ChargeShipment } from "./charge-shipment.entity";
 import { RouteClosure } from "./route-closure.entity";
 import { PackageDispatchHistory } from "./package-dispatch-history.entity";
+import { User } from "./user.entity";
 
 @Entity('package_dispatch')
 export class PackageDispatch {
@@ -78,8 +79,12 @@ export class PackageDispatch {
   @Column({ type: 'timestamp', nullable: true })
   updatedAt: Date | null;
 
+  @ManyToOne(() => User, { nullable: true })
+  @JoinColumn({ name: 'createdById' })
+  createdBy: User;
+
   @Column({ nullable: true })
-  createdBy: string;
+  createdById: string;
 
   @BeforeInsert()
   setDefaults() {

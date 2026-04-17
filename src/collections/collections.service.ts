@@ -187,7 +187,7 @@ export class CollectionsService {
          * OC: Order Created / Pickup confirmed (En ciertos servicios internacionales)
          * IT: In Transit (Si ya está en tránsito, obviamente ya se recolectó)
          */
-        const SUCCESS_CODES = ['PU', 'DP', 'AR', 'OC', 'IT'];
+        const SUCCESS_CODES = ['PU'];
 
         // Buscamos el primer evento que coincida con nuestra lista de éxito
         // Usamos .reverse() porque queremos el evento más reciente que confirme la posesión
@@ -205,6 +205,7 @@ export class CollectionsService {
 
         // Opcional: Si no hay evento en el historial, pero el estatus actual dice que ya está en camino
         const currentStatus = trackResult?.latestStatusDetail?.code;
+
         if (currentStatus && SUCCESS_CODES.includes(currentStatus)) {
             return {
                 isPickUp: true,

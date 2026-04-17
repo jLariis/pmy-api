@@ -4,7 +4,10 @@ import {
   PrimaryGeneratedColumn,
   BeforeInsert,
   BeforeUpdate,
+  JoinColumn,
+  ManyToOne,
 } from 'typeorm';
+import { User } from './user.entity';
 
 @Entity('subsidiary')
 export class Subsidiary {
@@ -64,6 +67,13 @@ export class Subsidiary {
 
   @Column({ type: 'datetime', nullable: true })
   updatedAt: Date;
+
+  @ManyToOne(() => User, { nullable: true })
+  @JoinColumn({ name: 'createdById' })
+  createdBy: User;
+
+  @Column({ nullable: true })
+  createdById: string;
 
   @BeforeInsert()
   setCreatedAt() {

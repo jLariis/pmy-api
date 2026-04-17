@@ -3,6 +3,7 @@ import { ChargeShipment } from "./charge-shipment.entity";
 import { Shipment } from "./shipment.entity";
 import { Vehicle } from "./vehicle.entity";
 import { Subsidiary } from "./subsidiary.entity";
+import { User } from "./user.entity";
 
 @Entity('unloading')
 export class Unloading {
@@ -37,6 +38,13 @@ export class Unloading {
 
     @Column({ type: 'timestamp', default: () => 'CURRENT_TIMESTAMP' })
     createdAt: Date;
+
+    @ManyToOne(() => User, { nullable: true })
+    @JoinColumn({ name: 'createdById' })
+    createdBy: User;
+
+    @Column({ nullable: true })
+    createdById: string;
 
     @BeforeInsert()
       setDefaults() {

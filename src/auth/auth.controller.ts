@@ -1,8 +1,7 @@
-import { Body, Controller, Inject, Logger, Post, Request, UseGuards, LoggerService  } from '@nestjs/common';
+import { Controller, Inject, Logger, Post, Request, UseGuards, LoggerService  } from '@nestjs/common';
 import { AuthService } from './auth.service';
-import { ApiBasicAuth, ApiBearerAuth, ApiBody, ApiHeader, ApiResponse, ApiTags } from '@nestjs/swagger';
+import { ApiBasicAuth, ApiBearerAuth, ApiBody, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { LocalAuthGuard } from './guards/local-auth.guard';
-import { ChangePasswordDto } from "./dto/change-password.dto";
 import { Public } from './decorators/decorators/public-decorator';
 import { AppController } from "../app.controller";
 import { AuthDto } from './dto/AuthDto';
@@ -10,14 +9,13 @@ import { JwtAuthGuard } from './guards/jwt-auth.guard';
 
 @ApiTags('auth')
 @Controller('auth')
+@Public()
 export class AuthController {
     constructor(
         private authService: AuthService,
         @Inject(Logger) private readonly logger: LoggerService
     ) { }
 
-    
-    @Public()
     @UseGuards(LocalAuthGuard)
     @ApiBasicAuth()
     @ApiResponse({ status: 200, description: 'Correct credentials' })
@@ -25,6 +23,7 @@ export class AuthController {
     @ApiBody({ type: AuthDto})
     @Post('token')
     async login(@Request() req) {
+        console.log("BODY:", req.body);
         this.logger.log('Calling login()', AppController.name);
         return this.authService.login(req.user);
     }

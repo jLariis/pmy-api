@@ -1,6 +1,7 @@
 import { Column, Entity, JoinColumn, ManyToOne, PrimaryGeneratedColumn } from 'typeorm';
 import { Subsidiary } from './subsidiary.entity';
 import { StatusEnum } from 'src/common/enums/status.enum';
+import { User } from './user.entity';
 
 @Entity('driver')
 export class Driver {
@@ -29,6 +30,13 @@ export class Driver {
     default: StatusEnum.ACTIVE,
   })
   status: StatusEnum;
+
+  @ManyToOne(() => User, { nullable: true })
+  @JoinColumn({ name: 'createdById' })
+  createdBy: User;
+
+  @Column({ nullable: true })
+  createdById: string;
 
   @Column({ type: 'datetime', default: () => 'CURRENT_TIMESTAMP' })
   createdAt: Date;

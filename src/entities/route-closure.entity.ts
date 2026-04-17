@@ -46,12 +46,6 @@ export class RouteClosure {
     @JoinColumn({ name: 'package_dispatch_id' })
     packageDispatch: PackageDispatch;
 
-    @ManyToOne(() => User, { 
-        nullable: true,
-    })
-    @JoinColumn({ name: 'created_by_user_id' })
-    createdBy: User;
-
     @Column({type: 'json'})
     collections: string[];
 
@@ -64,6 +58,13 @@ export class RouteClosure {
     @ManyToOne(() => Subsidiary, { nullable: true })
     @JoinColumn({ name: 'subsidiaryId' })
     subsidiary: Subsidiary | null;
+
+    @ManyToOne(() => User, { nullable: true })
+    @JoinColumn({ name: 'createdById' })
+    createdBy: User;
+
+    @Column({ nullable: true })
+    createdById: string;
 
     @BeforeInsert()
     setDefaults() {

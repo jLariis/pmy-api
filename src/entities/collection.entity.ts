@@ -25,11 +25,11 @@ export class Collection {
   createdAt: Date;
 
   @ManyToOne(() => ReturningHistory, returningHistory => returningHistory.devolutions, {
-          nullable: true,
-          onDelete: 'SET NULL',
-      })
-      @JoinColumn({ name: 'returningHistoryId' })
-      returningHistory?: ReturningHistory;
+    nullable: true,
+    onDelete: 'SET NULL',
+  })
+  @JoinColumn({ name: 'returningHistoryId' })
+  returningHistory?: ReturningHistory;
 
   @BeforeInsert()
   setDefaults() {
