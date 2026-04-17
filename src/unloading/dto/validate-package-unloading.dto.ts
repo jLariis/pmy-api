@@ -1,6 +1,6 @@
 import { Priority } from "src/common/enums/priority.enum"
 import { ShipmentStatusType } from "src/common/enums/shipment-status-type.enum"
-import { Consolidated, Subsidiary, Charge, Shipment, Payment } from "src/entities"
+import { Consolidated, Subsidiary, Charge, Payment } from "src/entities"
 
 export class ValidatedUnloadingDto {
     trackingNumber: string
