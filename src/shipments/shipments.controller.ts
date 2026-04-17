@@ -325,6 +325,7 @@ export class ShipmentsController {
       },
     },
   })
+  
   async uploadDhlFile(
     @UploadedFiles()
     files: {
@@ -427,7 +428,6 @@ export class ShipmentsController {
         },
       },
     })
-    //@UseGuards(JwtAuthGuard)
     validateTracking(@UploadedFile() file: Express.Multer.File/*, @Request() req*/) {
       //console.log("🚀 ~ ShipmentsController ~ validateTracking ~ req:", req)
       return this.shipmentsService.validateDataforTracking(file);
