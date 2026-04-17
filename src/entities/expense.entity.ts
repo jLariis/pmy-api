@@ -11,6 +11,7 @@ import { Subsidiary } from './subsidiary.entity';
 import { ExpenseCategory } from '../common/enums/category-enum';
 import { User } from './user.entity';
 import { Vehicle } from './vehicle.entity';
+import { Frequency } from 'src/common/enums/frequency-enum';
 
 @Entity('expense')
 export class Expense {
@@ -68,6 +69,13 @@ export class Expense {
 
   @Column({ nullable: true })
   vehicleId: string;
+
+  @Column({
+    type: 'enum',
+    enum: Frequency,
+    nullable: true,
+  })
+  frequency?: Frequency;
 
   @BeforeInsert()
   setCreatedAt() {

@@ -27,6 +27,7 @@ import { RouteclosureModule } from './routeclosure/routeclosure.module';
 import { InventoriesModule } from './inventories/inventories.module';
 import { MonitoringModule } from './monitoring/monitoring.module';
 import { PickUpModule } from './pick-up/pick-up.module';
+import { JwtAuthGuard } from './auth/guards/jwt-auth.guard';
 
 @Module({
   imports: [
@@ -81,6 +82,7 @@ import { PickUpModule } from './pick-up/pick-up.module';
   providers: [
     Logger,
     AppService,
+    { provide: 'APP_GUARD', useClass: JwtAuthGuard },
   ],
 })
 export class AppModule {}
