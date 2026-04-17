@@ -17,10 +17,11 @@ import { UnloadingService } from 'src/unloading/unloading.service';
 import { Unloading } from 'src/entities/unloading.entity';
 import { InventoriesService } from 'src/inventories/inventories.service';
 import { Inventory } from 'src/entities/inventory.entity';
+import { PackageDispatchHistory } from 'src/entities/package-dispatch-history.entity';
 
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Shipment, ChargeShipment, Consolidated, Subsidiary, PackageDispatch, Devolution, RouteClosure, Income, Charge, ShipmentStatus, ForPickUp, Unloading, Inventory])],
+  imports: [TypeOrmModule.forFeature([Shipment, ChargeShipment, Consolidated, Subsidiary, PackageDispatch, Devolution, RouteClosure, Income, Charge, ShipmentStatus, ForPickUp, Unloading, Inventory, PackageDispatchHistory])],
   controllers: [MonitoringController],
   providers: [
     MonitoringService, 

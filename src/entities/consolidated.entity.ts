@@ -1,6 +1,7 @@
 import { BeforeInsert, Column, Entity, Index, JoinColumn, ManyToOne, PrimaryGeneratedColumn } from 'typeorm';
 import { Subsidiary } from './subsidiary.entity';
 import { ConsolidatedType } from '../common/enums/consolidated-type.enum';
+import { User } from './user.entity';
 
 @Entity('consolidated')
 export class Consolidated {
@@ -36,6 +37,13 @@ export class Consolidated {
 
   @Column({ type: 'datetime', default: () => 'CURRENT_TIMESTAMP' })
   createdAt: Date;
+
+  @ManyToOne(() => User, { nullable: true })
+  @JoinColumn({ name: 'createdById' })
+  createdBy: User;
+
+  @Column({ nullable: true })
+  createdById: string;
 
   @BeforeInsert()
   setDefaults() {

@@ -36,84 +36,11 @@ export class PackageDispatchService {
     private readonly shipmentService: ShipmentsService,
     @InjectRepository(ShipmentStatus)
     private readonly shipmentStatusRepository: Repository<ShipmentStatus>,
+    @InjectRepository(PackageDispatchHistory)
+    private readonly packageDispatchHistoryRepository: Repository<PackageDispatchHistory>,
     private readonly dataSource: DataSource,
 
-  ){
-
-  }
-
-  async createResp2801(dto: CreatePackageDispatchDto): Promise<PackageDispatch> {
-    const allShipmentIds = dto.shipments;
-
-    // 1. Buscar en shipmentRepository
-    const shipments = await this.shipmentRepository.find({
-      where: { id: In(allShipmentIds) },
-    });
-
-    const foundShipmentIds = shipments.map(s => s.id);
-    const missingIds = allShipmentIds.filter(id => !foundShipmentIds.includes(id));
-
-    // 2. Buscar los faltantes en chargeShipmentRepository
-    const chargeShipments = await this.chargeShipmentRepository.find({
-      where: { id: In(missingIds) },
-    });
-
-    const foundChargeShipmentIds = chargeShipments.map(s => s.id);
-    const stillMissing = missingIds.filter(id => !foundChargeShipmentIds.includes(id));
-
-    if (stillMissing.length > 0) {
-      throw new Error(`Algunos IDs de envíos no fueron encontrados: ${stillMissing.join(', ')}`);
-    }
-
-    // 3. Crear el despacho
-    const newPackageDispatch = this.packageDispatchRepository.create({
-      routes: dto.routes || [],
-      drivers: dto.drivers || [],
-      vehicle: dto.vehicle,
-      subsidiary: dto.subsidiary,
-      kms: dto.kms
-    });
-
-    const savedDispatch = await this.packageDispatchRepository.save(newPackageDispatch);
-
-    // 4. Relacionar y ACTUALIZAR ESTATUS (Shipments)
-    if (shipments.length > 0) {
-      await Promise.all([
-        // Relación
-        this.shipmentRepository
-          .createQueryBuilder()
-          .relation(PackageDispatch, 'shipments')
-          .of(savedDispatch)
-          .add(shipments),
-        
-        // Actualización de Estatus Masiva
-        this.shipmentRepository.update(
-          { id: In(foundShipmentIds) },
-          { status: ShipmentStatusType.EN_RUTA } // Asegúrate de tener este Enum importado
-        )
-      ]);
-    }
-
-    // 5. Relacionar y ACTUALIZAR ESTATUS (ChargeShipments)
-    if (chargeShipments.length > 0) {
-      await Promise.all([
-        // Relación
-        this.chargeShipmentRepository
-          .createQueryBuilder()
-          .relation(PackageDispatch, 'chargeShipments')
-          .of(savedDispatch)
-          .add(chargeShipments),
-
-        // Actualización de Estatus Masiva
-        this.chargeShipmentRepository.update(
-          { id: In(foundChargeShipmentIds) },
-          { status: ShipmentStatusType.EN_RUTA }
-        )
-      ]);
-    }
-
-    return savedDispatch;
-  }
+  ){ }
 
   async create(dto: CreatePackageDispatchDto): Promise<PackageDispatch> {
     const allShipmentIds = dto.shipments;
@@ -367,45 +294,6 @@ export class PackageDispatchService {
     return `This action returns all packageDispatch`;
   }
 
-  async findBySubsidiaryResp(subsidiaryId: string) {
-    const qb = this.packageDispatchRepository
-      .createQueryBuilder('dispatch')
-      .leftJoinAndSelect('dispatch.subsidiary', 'subsidiary')
-      .leftJoinAndSelect('dispatch.vehicle', 'vehicle')
-      .leftJoinAndSelect('dispatch.drivers', 'drivers')
-      .leftJoinAndSelect('dispatch.routes', 'routes')
-      .leftJoinAndSelect('dispatch.shipments', 'shipments')
-      .leftJoinAndSelect('dispatch.chargeShipments', 'chargeShipments')
-      .where('subsidiary.id = :subsidiaryId', { subsidiaryId })
-      .orderBy('dispatch.createdAt', 'DESC');
-
-    const dispatches = await qb.getMany();
-
-    // Transformamos los datos según lo que necesitas
-    return dispatches.map((dispatch) => ({
-      id: dispatch.id,
-      trackingNumber: dispatch.trackingNumber,
-      createdAt: dispatch.createdAt,
-      status: dispatch.status,
-      vehicle: dispatch.vehicle
-        ? {
-            name: dispatch.vehicle.name,
-            plateNumber: dispatch.vehicle.plateNumber,
-          }
-        : null,
-      subsidiary: dispatch.subsidiary
-        ? {
-            id: dispatch.subsidiary.id,
-            name: dispatch.subsidiary.name,
-          }
-        : null,
-      driver: dispatch.drivers?.length ? dispatch.drivers[0].name : null, // 👈 primer conductor
-      route: dispatch.routes?.length ? dispatch.routes[0].name : null, // 👈 primera ruta
-      normalPackages: dispatch.shipments?.length || 0, // 👈 Shipments
-      f2Packages: dispatch.chargeShipments?.length || 0, // 👈 ChargeShipments
-    }));
-  }
-
   async findBySubsidiary(subsidiaryId: string) {
     // Calcular la fecha límite (15 días antes de hoy)
     const fiveDaysAgo = new Date();
@@ -507,7 +395,7 @@ export class PackageDispatchService {
   }
 
   /** Para monitoreo */
-  async findShipmentsByDispatchId(dispatchId: string) {
+  async findShipmentsByDispatchIdResp1604(dispatchId: string) {
     console.log(`\nBuscando envíos para dispatchId: ${dispatchId}`);
 
     // === 1. BUSCAR SHIPMENTS ===
@@ -689,9 +577,252 @@ export class PackageDispatchService {
     return result;
   }
 
+  async findShipmentsByDispatchId(dispatchId: string) {
+    console.log(`\nBuscando envíos para dispatchId: ${dispatchId}`);
 
-  findOne(id: string) {
-    return `This action returns a #${id} packageDispatch`;
+    // === 1. BUSCAR HISTORIAL CON TODAS LAS RELACIONES (UN SOLO QUERY PRINCIPAL) ===
+    const dispatchHistory = await this.packageDispatchHistoryRepository.find({
+      where: { dispatch: { id: dispatchId } },
+      relations: [
+        // Relaciones del Dispatch Principal
+        'dispatch',
+        'dispatch.drivers',
+        'dispatch.vehicle',
+        'dispatch.subsidiary',
+
+        // Relaciones del Shipment Normal
+        'shipment',
+        'shipment.unloading',
+        'shipment.unloading.subsidiary',
+        'shipment.payment',
+        'shipment.subsidiary',
+
+        // Relaciones del Charge Shipment
+        'chargeShipment',
+        'chargeShipment.payment',
+        'chargeShipment.unloading'
+      ]
+    });
+
+    if (!dispatchHistory || dispatchHistory.length === 0) {
+      return [];
+    }
+
+    // === 2. EXTRAER DATA DE LOS RESULTADOS DEL JOIN ===
+    
+    // Obtenemos el objeto dispatch desde el primer registro del historial
+    const packageDispatch = dispatchHistory[0].dispatch;
+    if (!packageDispatch) return [];
+
+    const driverName = packageDispatch.drivers?.[0]?.name ?? null;
+
+    // Filtramos y extraemos los arrays de shipments reales
+    const shipments = dispatchHistory
+      .filter(h => h.shipment)
+      .map(h => h.shipment)
+      // Opcional: ordenar en memoria si lo necesitas
+      .sort((a, b) => b.commitDateTime?.getTime() - a.commitDateTime?.getTime());
+
+    const chargeShipments = dispatchHistory
+      .filter(h => h.chargeShipment)
+      .map(h => h.chargeShipment);
+
+    // === 3. CONSOLIDADOS (Esto se mantiene igual) ===
+    const allConsolidatedIds = Array.from(
+      new Set([
+        ...shipments.map(s => s.consolidatedId).filter(Boolean),
+        ...chargeShipments.map(s => s.consolidatedId).filter(Boolean),
+      ])
+    );
+
+    const consolidatedMap = new Map<string, { consNumber: string; date: Date }>();
+
+    if (allConsolidatedIds.length > 0) {
+      const list = await this.consolidatedRepository.find({
+        where: { id: In(allConsolidatedIds) },
+        select: ['id', 'consNumber', 'createdAt'],
+      });
+      list.forEach(c =>
+        consolidatedMap.set(c.id, { consNumber: c.consNumber, date: c.createdAt })
+      );
+    }
+
+    // ================================
+    // FUNCIONES NUEVAS
+    // ================================
+
+    // 1. DaysInWarehouse (solo EN_RUTA)
+    const calcDaysInWarehouse = (createdAt: Date, status: string) => {
+      //if (status !== 'entre') return "N/A";
+      const today = new Date();
+      const created = new Date(createdAt);
+      const diff = Math.floor((today.getTime() - created.getTime()) / (1000 * 60 * 60 * 24));
+      return diff;
+    };
+
+    // ========= 🔥 Helper: obtener dexCode =========
+    const getDexCode = async (shipmentId: string, status: string) => {
+      const rejectedStatuses = [
+        'rechazado',
+        'no_entregado',
+        'direccion_incorrecta',
+        'cliente_no_encontrado',
+        'cambio_fecha_solicitado'
+      ];
+
+      if (!rejectedStatuses.includes(status)) {
+        return null;
+      }
+
+      const row = await this.shipmentStatusRepository
+        .createQueryBuilder('ss')
+        .select('ss.exceptionCode', 'exceptionCode')
+        .where('ss.shipmentId = :shipmentId', { shipmentId })
+        .orderBy('ss.createdAt', 'DESC')
+        .limit(1)
+        .getRawOne();
+
+      return row?.exceptionCode ?? null;
+    };
+
+    // ================================
+    // MAPEO
+    // ================================
+    const mapShipment = async (shipment: any, isCharge: boolean) => {
+
+      const consolidated = shipment.consolidatedId
+        ? consolidatedMap.get(shipment.consolidatedId) || null
+        : null;
+
+      const daysInWarehouse = calcDaysInWarehouse(
+        shipment.createdAt,
+        shipment.status
+      );
+
+      const dexCode = await getDexCode(shipment.id, shipment.status);
+
+      return {
+        shipmentData: {
+          id: shipment.id,
+          trackingNumber: shipment.trackingNumber,
+          shipmentStatus: shipment.status,
+
+          commitDateTime: shipment.commitDateTime,
+          ubication: 'EN RUTA',
+
+          unloading: shipment.unloading
+            ? {
+                trackingNumber: shipment.unloading.trackingNumber,
+                date: shipment.unloading.date,
+              }
+            : null,
+
+          consolidated,
+
+          destination: shipment.recipientCity || null,
+          createdDate: shipment.createdAt,
+
+          recipientName: shipment.recipientName,
+          recipientAddress: shipment.recipientAddress,
+          recipientPhone: shipment.recipientPhone,
+          recipientZip: shipment.recipientZip,
+
+          shipmentType: shipment.shipmentType,
+
+          daysInWareHouse: daysInWarehouse,
+          dexCode, 
+
+          payment: shipment.payment
+            ? { amount: +shipment.payment.amount, type: shipment.payment.type }
+            : null,
+
+          isCharge,
+        },
+
+        packageDispatch: {
+          id: packageDispatch.id,
+          trackingNumber: packageDispatch.trackingNumber,
+          createdAt: packageDispatch.createdAt,
+          status: packageDispatch.status,
+          driver: driverName,
+          vehicle: packageDispatch.vehicle
+            ? {
+                name: packageDispatch.vehicle.name || null,
+                plateNumber: packageDispatch.vehicle.plateNumber || null,
+              }
+            : null,
+          subsidiary: packageDispatch.subsidiary
+            ? {
+                id: packageDispatch.subsidiary.id,
+                name: packageDispatch.subsidiary.name,
+              }
+            : null,
+        },
+      };
+    };
+
+    const result = [
+      ...(await Promise.all(shipments.map(s => mapShipment(s, false)))),
+      ...(await Promise.all(chargeShipments.map(cs => mapShipment(cs, true)))),
+    ];
+
+    return result;
+  }
+
+
+  async findOne(id: string) {
+    console.log("🚀 ~ PackageDispatchService ~ findOne ~ id:", id);
+
+    // === 1. BUSCAR EL DISPATCH PRINCIPAL ===
+    // Traemos la información central de la salida
+    const dispatch = await this.packageDispatchRepository.findOne({
+      where: { id },
+      relations: [
+        'drivers',
+        'vehicle',
+        'subsidiary',
+        'routes' // Agregado porque tu vista de React lo mapea (dispatch.routes)
+      ]
+    });
+
+    if (!dispatch) {
+      throw new NotFoundException(`No se encontró el dispatch con ID: ${id}`);
+      // o puedes retornar null dependiendo de cómo manejes tus controladores
+    }
+
+    // === 2. BUSCAR LOS ENVÍOS DESDE EL HISTORIAL ===
+    // Usamos el repositorio del historial para buscar todo lo relacionado a este dispatch
+    const dispatchHistory = await this.packageDispatchHistoryRepository.find({
+      where: { dispatch: { id } },
+      relations: [
+        'shipment',
+        'shipment.payment',
+        'shipment.unloading',
+        // Puedes agregar más relaciones aquí si tu UI requiere datos específicos anidados
+        'chargeShipment',
+        'chargeShipment.payment',
+        'chargeShipment.unloading'
+      ]
+    });
+
+    // === 3. EXTRAER Y FILTRAR ===
+    // Separamos los shipments normales de los chargeShipments, omitiendo los nulos
+    const shipments = dispatchHistory
+      .map(history => history.shipment)
+      .filter(Boolean);
+
+    const chargeShipments = dispatchHistory
+      .map(history => history.chargeShipment)
+      .filter(Boolean);
+
+    // === 4. RETORNAR EL OBJETO ARMADO ===
+    // Devolvemos el dispatch original pero le incrustamos los arreglos de envíos
+    // Esto hace match perfecto con tu interface PackageDispatch en el frontend
+    return {
+      ...dispatch,
+      shipments,
+      chargeShipments
+    };
   }
 
   update(id: string, updatePackageDispatchDto: UpdatePackageDispatchDto) {
