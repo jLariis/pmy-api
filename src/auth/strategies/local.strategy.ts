@@ -18,12 +18,12 @@ export class LocalStrategy extends PassportStrategy(Strategy) {
     }
 
     async validate(email: string, password: string): Promise<any> {
-        console.log("📩 EMAIL:", email);
-        console.log("🔑 PASSWORD:", password);
+        //console.log("📩 EMAIL:", email);
+        //console.log("🔑 PASSWORD:", password);
 
         const user = await this.authService.validateUser(email, password);
 
-        console.log("👤 USER:", user);
+        //console.log("👤 USER:", user);
         
         if (!user) {
             throw new BusinessException(
