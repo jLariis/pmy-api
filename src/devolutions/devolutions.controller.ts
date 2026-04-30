@@ -2,8 +2,9 @@ import { Controller, Get, Post, Body, Param, UploadedFiles, BadRequestException,
 import { DevolutionsService } from './devolutions.service';
 import { CreateDevolutionDto } from './dto/create-devolution.dto';
 import { FilesInterceptor } from '@nestjs/platform-express';
-import { ApiOperation, ApiConsumes, ApiBody } from '@nestjs/swagger';
+import { ApiOperation, ApiConsumes, ApiBody, ApiTags } from '@nestjs/swagger';
 
+@ApiTags('devolutions')
 @Controller('devolutions')
 export class DevolutionsController {
   constructor(private readonly devolutionsService: DevolutionsService) {}

@@ -14,7 +14,6 @@ import { addDays, differenceInDays, endOfToday, format, isSameDay, parse, parseI
 import { ShipmentType } from 'src/common/enums/shipment-type.enum';
 import { Consolidated, Income, Payment, Subsidiary } from 'src/entities';
 import { PaymentStatus } from 'src/common/enums/payment-status.enum';
-import { DHLService } from './dto/dhl.service';
 import { DhlShipmentDto } from './dto/dhl/dhl-shipment.dto';
 import { FedExScanEventDto, FedExTrackingResponseDto } from './dto/fedex/fedex-tracking-response.dto';
 import { SubsidiariesService } from 'src/subsidiaries/subsidiaries.service';
@@ -30,7 +29,7 @@ import { IncomeSourceType } from 'src/common/enums/income-source-type.enum';
 import { GetShipmentKpisDto } from './dto/get-shipment-kpis.dto';
 import { ConsolidatedService } from 'src/consolidated/consolidated.service';
 import { ConsolidatedType } from 'src/common/enums/consolidated-type.enum';
-import { fromZonedTime, toDate, toZonedTime } from 'date-fns-tz';
+import { formatInTimeZone, fromZonedTime, toDate, toZonedTime } from 'date-fns-tz';
 import { MailService } from 'src/mail/mail.service';
 import { SubsidiaryRules } from './dto/subsidiary-rules';
 import { ForPickUp } from 'src/entities/for-pick-up.entity';
@@ -51,6 +50,7 @@ import { Unloading } from 'src/entities/unloading.entity';
 import * as dayjs from 'dayjs';
 import * as isoWeek from 'dayjs/plugin/isoWeek';
 import { ReturnValidationDto } from './dto/returning-validation.dto';
+import { DhlService } from './dhl.service';
 
 dayjs.extend(isoWeek);
 
@@ -89,7 +89,7 @@ export class ShipmentsService {
     @InjectRepository(ForPickUp)
     private forPickUpRepository: Repository<ForPickUp>,
     private readonly fedexService: FedexService,
-    private readonly dhlService: DHLService,
+    private readonly dhlService: DhlService,
     private readonly subsidiaryService: SubsidiariesService,
     @Inject(forwardRef(() => ConsolidatedService))
     private readonly consolidatedService: ConsolidatedService,
@@ -2337,202 +2337,6 @@ export class ShipmentsService {
 
  /*** */ 
 
-
-  private async processShipmentResp1902(
-    shipment: ParsedShipmentDto,
-    predefinedSubsidiary: Subsidiary,
-    consolidated: Consolidated,
-    result: any,
-    shipmentsWithError: any,
-    batchNumber: number,
-    shipmentIndex: number,
-    processedTrackingNumbers: Set<string>,
-    shipmentsToGenerateIncomes: { shipment: Shipment; timestamp: Date; exceptionCode: string | undefined }[],
-    consolidatedId: string
-  ): Promise<void> {
-    const trackingNumber = shipment.trackingNumber?.toString().trim();
-    
-    if (!trackingNumber) {
-      throw new BadRequestException(`Fila ${shipmentIndex} (Lote ${batchNumber}): Guía vacía.`);
-    }
-
-    // 1. Duplicados
-    if (processedTrackingNumbers.has(trackingNumber) || await this.existShipment(trackingNumber, consolidatedId)) {
-      result.duplicated++;
-      result.duplicatedTrackings.push(shipment);
-      processedTrackingNumbers.add(trackingNumber);
-      return;
-    }
-    processedTrackingNumbers.add(trackingNumber);
-
-    // 2. Consulta FedEx con Selector de Generación (Anti-Gemelo Malvado)
-    let fedexShipmentData: FedExTrackingResponseDto;
-    try {
-      fedexShipmentData = await this.trackPackageWithRetry(trackingNumber);
-    } catch (err) {
-      throw new InternalServerErrorException(`Error FedEx guía ${trackingNumber}: ${err.message}`);
-    }
-
-    let allTrackResults = fedexShipmentData.output.completeTrackResults[0].trackResults || [];
-    
-    // =================================================================================
-    // 🛡️ CORRECCIÓN 1: SELECTOR DE GENERACIÓN (Jerarquía de UniqueID)
-    // =================================================================================
-    if (allTrackResults.length > 1) {
-        allTrackResults.sort((a, b) => {
-            // Extraemos la secuencia numérica del inicio del UniqueID (ej: 2461089000)
-            const seqA = parseInt(a.trackingNumberInfo?.trackingNumberUniqueId?.split('~')[0] || '0');
-            const seqB = parseInt(b.trackingNumberInfo?.trackingNumberUniqueId?.split('~')[0] || '0');
-
-            // La secuencia más alta es SIEMPRE la más reciente (la nueva vida de la guía)
-            if (seqA !== seqB) return seqB - seqA;
-
-            // Respaldo por fecha solo si los IDs son idénticos (muy raro)
-            const timeA = new Date(a.scanEvents?.[0]?.date || 0).getTime();
-            const timeB = new Date(b.scanEvents?.[0]?.date || 0).getTime();
-            return timeB - timeA;
-        });
-
-        const winner = allTrackResults[0];
-        this.logger.log(`[${trackingNumber}] 🚀 Selector de Generación: Elegido ID ${winner.trackingNumberInfo.trackingNumberUniqueId} (Secuencia Mayor).`);
-            }
-
-    const trackResult = allTrackResults[0]; 
-    const scanEvents = trackResult?.scanEvents || [];
-    const lsdHeader = trackResult?.latestStatusDetail;
-
-    // 3. Fechas (TimeZone Hermosillo)
-    let finalCommitDate: Date;
-    if (shipment.commitDate && shipment.commitTime) {
-      try {
-        const timeZone = 'America/Hermosillo';
-        finalCommitDate = toDate(`${shipment.commitDate}T${shipment.commitTime}`, { timeZone });
-      } catch (e) { /* ignore */ }
-    }
-    if (!finalCommitDate || isNaN(finalCommitDate.getTime())) {
-      const rawFedexDate = trackResult?.standardTransitTimeWindow?.window?.ends;
-      if (rawFedexDate) finalCommitDate = parse(rawFedexDate, "yyyy-MM-dd'T'HH:mm:ssXXX", new Date());
-    }
-    if (!finalCommitDate || isNaN(finalCommitDate.getTime())) finalCommitDate = new Date();
-
-    try {
-      const newShipment = new Shipment();
-      newShipment.trackingNumber = trackingNumber;
-      newShipment.shipmentType = ShipmentType.FEDEX;
-      newShipment.recipientName = shipment.recipientName || 'N/A';
-      newShipment.recipientAddress = shipment.recipientAddress || 'N/A';
-      newShipment.recipientCity = shipment.recipientCity || predefinedSubsidiary.name;
-      newShipment.recipientZip = shipment.recipientZip || 'N/A';
-      newShipment.recipientPhone = shipment.recipientPhone || 'N/A';
-      newShipment.priority = getPriority(finalCommitDate);
-      newShipment.commitDateTime = finalCommitDate;
-      newShipment.consNumber = consolidated.consNumber || '';
-      newShipment.receivedByName = trackResult?.deliveryDetails?.receivedByName || '';
-      newShipment.fedexUniqueId = trackResult?.trackingNumberInfo?.trackingNumberUniqueId || null;
-      newShipment.carrierCode = trackResult?.trackingNumberInfo?.carrierCode || null;
-      newShipment.createdAt = new Date();
-      newShipment.subsidiary = predefinedSubsidiary;
-      newShipment.consolidatedId = consolidated.id; 
-
-      // 4. Procesar Historial (Mapea todos los eventos sin ignorar nada)
-      const histories = await this.processFedexScanEventsToStatuses(scanEvents, newShipment);
-
-      // =================================================================================
-      // 🛡️ SECCIÓN 5: LÓGICA DE CONSENSO (HEADER + HISTORIA)
-      // =================================================================================
-      
-      // Peso de estatus para decisión
-      const getWeight = (status: any) => {
-          if (status === ShipmentStatusType.ENTREGADO || status === ShipmentStatusType.ENTREGADO_POR_FEDEX) return 10;
-          if ([ShipmentStatusType.RECHAZADO, ShipmentStatusType.DIRECCION_INCORRECTA, ShipmentStatusType.CLIENTE_NO_DISPONIBLE, ShipmentStatusType.RETORNO_ABANDONO_FEDEX, ShipmentStatusType.LLEGADO_DESPUES].includes(status)) return 5;
-          if (status !== ShipmentStatusType.DESCONOCIDO && status !== ShipmentStatusType.PENDIENTE && status !== ShipmentStatusType.EN_TRANSITO) return 1;
-          return 0;
-      };
-
-      // A. Estatus del Header
-      const headerStatus = mapFedexStatusToLocalStatus(lsdHeader?.derivedCode || lsdHeader?.code || '', lsdHeader?.ancillaryDetails?.[0]?.reason);
-      
-      // B. Estatus de la Historia (El más pesado manda)
-      let historyStatus = ShipmentStatusType.PENDIENTE;
-      let historyWeight = -1;
-      
-      if (histories && histories.length > 0) {
-          histories.forEach(h => {
-              const w = getWeight(h.status);
-              if (w >= historyWeight) {
-                  historyStatus = h.status as any;
-                  historyWeight = w;
-              }
-          });
-      }
-
-      // C. Decisión: Si la historia tiene algo más específico (Peso >), corrige al Header
-      let finalStatus = (historyWeight > getWeight(headerStatus)) ? historyStatus : headerStatus;
-
-      // D. Supremacía de Entrega (DL en cualquier lado es final)
-      if (lsdHeader?.code === 'DL' || lsdHeader?.derivedCode === 'DL' || scanEvents.some(e => e.derivedStatusCode === 'DL')) {
-          finalStatus = ShipmentStatusType.ENTREGADO;
-      }
-
-      // E. Reseteo de Re-ingreso: Si es un paquete nuevo pero FedEx da DL viejo, forzamos PENDIENTE
-      // (Se detecta porque el UniqueID es mayor al que tendríamos pero el estatus es viejo)
-      if (finalStatus === ShipmentStatusType.ENTREGADO && scanEvents.length <= 1) {
-          finalStatus = ShipmentStatusType.PENDIENTE;
-      }
-
-      newShipment.status = finalStatus as any;
-
-      if (histories && histories.length > 0) {
-        histories.forEach(h => { h.shipment = undefined; });
-        newShipment.statusHistory = histories;
-      }
-
-      // 8. Lógica de Pagos (Original)
-      if (shipment.payment) {
-        const amountMatch = shipment.payment.match(/([0-9]+(?:\.[0-9]+)?)/);
-        if (amountMatch) {
-          const amount = parseFloat(amountMatch[1]);
-          const typeMatch = shipment.payment.match(/^(COD|FTC|ROD)/);
-          if (!isNaN(amount) && amount > 0) {
-            newShipment.payment = {
-              amount,
-              type: typeMatch ? typeMatch[1] : null,
-              status: finalStatus === ShipmentStatusType.ENTREGADO ? PaymentStatus.PAID : PaymentStatus.PENDING
-            } as any;
-          }
-        }
-      }
-
-      // 9. Validación de Incomes (Original)
-      if ([ShipmentStatusType.ENTREGADO, ShipmentStatusType.NO_ENTREGADO, ShipmentStatusType.RECHAZADO].includes(finalStatus as any)) {
-        const matchedHistory = histories?.find(h => h.status === finalStatus);
-        const validation = await this.applyIncomeValidationRules(
-          newShipment,
-          finalStatus as any,
-          histories?.map(h => h.exceptionCode).filter(Boolean) || [],
-          histories || [],
-          trackingNumber,
-          matchedHistory?.timestamp || new Date()
-        );
-
-        if (validation.isValid) {
-          shipmentsToGenerateIncomes.push({
-            shipment: newShipment,
-            timestamp: validation.timestamp,
-            exceptionCode: matchedHistory?.exceptionCode,
-          });
-        }
-      }
-
-      this.shipmentBatch.push(newShipment);
-      result.saved++;
-
-    } catch (err) {
-      this.logger.error(`❌ Error guía ${trackingNumber}: ${err.message}`);
-      throw err;
-    }
-}
-
   private async processShipment(
     shipment: ParsedShipmentDto,
     predefinedSubsidiary: Subsidiary,
@@ -2920,51 +2724,205 @@ export class ShipmentsService {
                   continue;
               }
 
+              // 1. Hacemos el tracking a DHL con el AWB del DTO
+              this.logger.log(`Consultando API de DHL para AWB: ${dto.awb}`);
+              const trackData = await this.dhlService.trackPackage(dto.awb);
+
+              // 2. Imprimimos los datos que retorna DHL (útil para que veas la estructura en tu consola y sepas qué mapear)
+              this.logger.debug(`Datos recibidos de DHL para ${dto.awb}: ${JSON.stringify(trackData, null, 2)}`);
+
+              // 3. Pasamos tanto el dto original (del TXT) como los datos de rastreo (de la API)
+              // Nota: Necesitarás modificar la firma de createShipmentFromDhlDto para que acepte este segundo parámetro.
               await this.createShipmentFromDhlDto(dto);
+              
               results.success++;
               this.logger.log(`Envío ${dto.awb} guardado correctamente`);
           } catch (error) {
               results.errors++;
-              this.logger.error(`Error guardando ${dto.awb}: ${error.message}`);
+              this.logger.error(`Error procesando/rastreando el AWB ${dto.awb}: ${error.message}`);
           }
       }
 
       return results;
+  }
+
+    private calculatePriority(commitDate: Date): Priority {
+      const today = new Date();
+      today.setHours(0, 0, 0, 0); // Normalizamos 'hoy' a medianoche
+      
+      const targetDate = new Date(commitDate);
+      targetDate.setHours(0, 0, 0, 0); // Normalizamos el 'commitDate' a medianoche
+
+      // Calculamos la diferencia en milisegundos y la pasamos a días
+      const diffTime = targetDate.getTime() - today.getTime();
+      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+
+      if (diffDays <= 0) {
+        // Vence hoy o ya está vencido
+        return Priority.ALTA;
+      } else if (diffDays > 0 && diffDays <= 3) {
+        // Vence mañana o dentro de los próximos 3 días
+        return Priority.MEDIA;
+      } else {
+        // Vence en más de 3 días
+        return Priority.BAJA;
+      }
     }
 
-    async processDhlExcelFiel(file: Express.Multer.File) {
+    async processDhlExcelFile(
+      file: Express.Multer.File,
+      subsidiaryId: string,
+      consDate: Date | string | null,
+      userId?: string,
+      consNumber?: string
+    ) {
       if (!file) throw new BadRequestException('No file uploaded');
 
       const { buffer, originalname } = file;
+      const timeZone = 'America/Hermosillo'; // Tu zona horaria base
+
+      console.log(`🚀 [DHL Import] Iniciando procesamiento del archivo: ${originalname}`);
 
       if (!originalname.match(/\.(csv|xlsx?)$/i)) {
         throw new BadRequestException('Unsupported file type');
       }
 
+      // 1. Read and parse the Excel file
       const workbook = XLSX.read(buffer, { type: 'buffer' });
       const sheet = workbook.Sheets[workbook.SheetNames[0]];
+      const parsedShipments = parseDynamicSheetDHL(sheet);
 
-      const shipments = parseDynamicSheetDHL(sheet);
+      console.log(`📊 [DHL Import] Paquetes extraídos del Excel: ${parsedShipments ? parsedShipments.length : 0}`);
 
-      for(const {trackingNumber, recipientAddress, recipientAddress2, commitDate} of shipments) {
-        let shipmentToUpdate = await this.shipmentRepository.findOneBy({
-          trackingNumber,
-          recipientAddress
-        })
-
-        const [fecha, hora] = commitDate.split(' ');
-
-        if(shipmentToUpdate) {
-          shipmentToUpdate.commitDateTime = fecha; //Faltaría agregarle la hora
-          shipmentToUpdate.recipientAddress = recipientAddress + " " + recipientAddress2;
-          await this.shipmentRepository.save(shipmentToUpdate);
-        }
-
+      if (!parsedShipments || parsedShipments.length === 0) {
+        throw new BadRequestException('The file does not contain valid shipments');
       }
 
-      console.log("🚀 ~ ShipmentsService ~ processDhlExcelFiel ~ shipments:", shipments)
+      // 2. Fetch the subsidiary to get its name for the recipientCity
+      const subsidiary = await this.subsidiaryRepository.findOneBy({ id: subsidiaryId });
+      if (!subsidiary) {
+        console.error(`❌ [DHL Import] Sucursal no encontrada con ID: ${subsidiaryId}`);
+        throw new BadRequestException('Subsidiary not found');
+      }
+      const subsidiaryCityName = subsidiary.name;
+      console.log(`🏢 [DHL Import] Sucursal asignada: ${subsidiaryCityName}`);
 
-      return shipments;
+      // 3. Generate consNumber con fecha en America/Hermosillo
+      let finalConsNumber = consNumber;
+      if (!finalConsNumber || finalConsNumber.trim() === '') {
+        const now = new Date();
+        const dateStringForCons = formatInTimeZone(now, timeZone, 'yyyyMMdd');
+        finalConsNumber = `DHL-${dateStringForCons}`;
+      }
+
+      // 3.5 Manejo de fecha del consolidado (forzando horas a 0 en Hermosillo)
+      let finalConsDate: Date;
+      if (consDate) {
+        const dateString = typeof consDate === 'string' ? consDate : consDate.toISOString();
+        const [year, month, day] = dateString.split('T')[0].split('-');
+        finalConsDate = new Date(Number(year), Number(month) - 1, Number(day), 0, 0, 0, 0);
+      } else {
+        const now = new Date();
+        finalConsDate = toZonedTime(now, timeZone);
+        finalConsDate.setHours(0, 0, 0, 0);
+      }
+
+      // 4. Create the Consolidated record
+      const consolidated = this.consolidatedRepository.create({
+        date: finalConsDate,
+        type: ConsolidatedType.ORDINARIA,
+        carrier: ShipmentType.DHL,
+        numberOfPackages: parsedShipments.length,
+        subsidiary: { id: subsidiaryId } as Subsidiary,
+        isCompleted: false,
+        createdById: userId,
+        consNumber: finalConsNumber,
+      });
+
+      try {
+        const savedConsolidated = await this.consolidatedRepository.save(consolidated);
+        console.log(`📁 [DHL Import] Consolidado guardado correctamente con ID: ${savedConsolidated.id} y consNumber: ${finalConsNumber}`);
+
+        const processedShipments: Shipment[] = [];
+
+        // 5. Unconditionally create new shipments linked to the new consolidated
+        for (const [index, data] of parsedShipments.entries()) {
+          const { 
+            trackingNumber, recipientAddress, recipientAddress2, 
+            commitDate, recipientName, recipientZip, recipientPhone 
+          } = data;
+
+          // Handle commit date parsing safely and force to 21:00 UTC
+          let finalCommitDateTime = new Date();
+          let calculatedPriority = Priority.BAJA;
+
+          if (commitDate) {
+            const rawDate = new Date(commitDate);
+            
+            if (!isNaN(rawDate.getTime())) {
+              // Extraemos YYYY-MM-DD aislando la fecha de la zona horaria para evitar el desfase de 1 día
+              const dateString = typeof commitDate === 'string' && commitDate.includes('-')
+                ? commitDate.split('T')[0]
+                : rawDate.toISOString().split('T')[0];
+                
+              const [year, month, day] = dateString.split('-');
+              
+              // Construimos la fecha forzando UTC puro
+              // Date.UTC(año, mes [0-11], día, hora, minuto, segundo, milisegundo)
+              // 21 = 9:00 PM
+              finalCommitDateTime = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day), 21, 0, 0, 0));
+              calculatedPriority = this.calculatePriority(finalCommitDateTime);
+            } else {
+              // Fallback si el string no es una fecha válida
+              const now = new Date();
+              finalCommitDateTime = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 21, 0, 0, 0));
+            }
+          } else {
+            // Fallback si no viene fecha en el archivo
+            const now = new Date();
+            finalCommitDateTime = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 21, 0, 0, 0));
+          }
+
+          const fullAddress = `${recipientAddress || ''} ${recipientAddress2 || ''}`.trim();
+
+          // Create new shipment directly
+          const newShipment = this.shipmentRepository.create({
+            trackingNumber,
+            shipmentType: ShipmentType.DHL,
+            recipientName: recipientName || '-',
+            recipientAddress: fullAddress || '-',
+            recipientCity: subsidiaryCityName, 
+            recipientZip: recipientZip || '-',
+            recipientPhone: recipientPhone || '-',
+            commitDateTime: finalCommitDateTime,
+            status: ShipmentStatusType.PENDIENTE,
+            priority: calculatedPriority, 
+            consolidatedId: savedConsolidated.id,
+            consNumber: finalConsNumber,
+            subsidiary: { id: subsidiaryId } as Subsidiary,
+          });
+
+          try {
+            const saved = await this.shipmentRepository.save(newShipment);
+            processedShipments.push(saved);
+            console.log(`✅ [DHL Import] [${index + 1}/${parsedShipments.length}] Paquete guardado: ${trackingNumber} - Prioridad: ${calculatedPriority}`);
+          } catch (dbError: any) {
+            console.error(`❌ [DHL Import] Error al guardar el paquete ${trackingNumber}:`, dbError.message);
+          }
+        }
+
+        console.log(`🎉 [DHL Import] Proceso completado. Total de paquetes guardados: ${processedShipments.length}`);
+
+        return {
+          success: true,
+          consolidated: savedConsolidated,
+          totalProcessed: processedShipments.length,
+        };
+
+      } catch (consError: any) {
+        console.error(`❌ [DHL Import] Error crítico al guardar el consolidado:`, consError.message);
+        throw new InternalServerErrorException('Error al guardar el registro consolidado');
+      }
     }
 
     private async createShipmentFromDhlDto(dto: DhlShipmentDto): Promise<Shipment> {
@@ -7066,7 +7024,7 @@ export class ShipmentsService {
         }));
 
         await Promise.all(tasks);
-    }
+      }
 
       async processMasterFedexUpdateResp1604(shipmentsToUpdate: Shipment[]) {
         this.logger.log(`💎 Master Update (Titanium - Shield & Income Edition): Procesando ${shipmentsToUpdate.length} guías...`);

@@ -9,15 +9,15 @@ import { MailService } from 'src/mail/mail.service';
 import { FedexService } from 'src/shipments/fedex.service';
 import { ShipmentsService } from 'src/shipments/shipments.service';
 import { ForPickUp } from 'src/entities/for-pick-up.entity';
-import { DHLService } from 'src/shipments/dto/dhl.service';
 import { SubsidiariesService } from 'src/subsidiaries/subsidiaries.service';
 import { ConsolidatedService } from 'src/consolidated/consolidated.service';
 import { Unloading } from 'src/entities/unloading.entity';
 import { PackageDispatchHistory } from 'src/entities/package-dispatch-history.entity';
+import { DhlService } from 'src/shipments/dhl.service';
 
 @Module({
   imports: [TypeOrmModule.forFeature([PackageDispatch, Shipment, ChargeShipment, Subsidiary, Consolidated, Devolution, Income, Charge, ShipmentStatus, ForPickUp, Unloading, PackageDispatchHistory])], // Add your entities here
   controllers: [PackageDispatchController],
-  providers: [PackageDispatchService, MailService, FedexService, ShipmentsService, DHLService, SubsidiariesService, ConsolidatedService],
+  providers: [PackageDispatchService, MailService, FedexService, ShipmentsService, DhlService, SubsidiariesService, ConsolidatedService],
 })
 export class PackageDispatchModule {}

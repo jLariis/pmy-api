@@ -232,7 +232,7 @@ export function parseDynamicHighValue(sheet: XLSX.Sheet) {
     return highValueShipments;
 }
 
-export function parseDynamicSheetDHL(sheet: XLSX.Sheet) {
+export function parseDynamicSheetDHLResp2904(sheet: XLSX.Sheet) {
     const allRows: any[][] = XLSX.utils.sheet_to_json(sheet, {
         header: 1,
         range: 0,
@@ -256,6 +256,46 @@ export function parseDynamicSheetDHL(sheet: XLSX.Sheet) {
             recipientZip: row[headerMap['recipientZip']],
             commitDate: row[headerMap['commitDate']]
         }
+    });
+}
+
+export function parseDynamicSheetDHL(sheet: XLSX.Sheet) {
+    const allRows: any[][] = XLSX.utils.sheet_to_json(sheet, {
+        header: 1,
+        range: 0,
+        blankrows: false,
+        raw: false // raw: false para tratar fechas y teléfonos como strings
+    });
+
+    const { map: headerMap, headerRowIndex } = getHeaderIndexMap(sheet, 20, true);
+    
+    console.log("🚀 ~ parseDynamicSheetDHL ~ headerMap:", headerMap);
+
+    const dataRows = allRows.slice(headerRowIndex + 1);
+
+    return dataRows.map(row => {
+        // Función segura para extraer datos: 
+        // Primero busca la llave en inglés (que vemos en tu log), 
+        // y si por alguna razón falla, busca la palabra en español como respaldo.
+        const getValue = (enKey: string, esKey: string) => {
+            let index = headerMap[enKey];
+            if (index === undefined) index = headerMap[esKey];
+            
+            return index !== undefined ? row[index] : undefined;
+        };
+
+        return {
+            trackingNumber: getValue('trackingNumber', 'GUIA'),
+            recipientName: getValue('recipientName', 'NOMBRE'),
+            recipientAddress: getValue('recipientAddress', 'DIRECCION'),
+            recipientAddress2: getValue('recipientAddress2', 'DIRECCION 2') || '',
+            recipientZip: getValue('recipientZip', 'CP'),
+            recipientPhone: getValue('recipientPhone', 'CEL'),
+            commitDate: getValue('commitDate', 'VENCIMIENTO')
+        };
+    }).filter(dto => {
+        // Evitamos que devuelva filas vacías si alguien coloreó celdas al final del Excel
+        return dto.trackingNumber && String(dto.trackingNumber).trim() !== '';
     });
 }
 

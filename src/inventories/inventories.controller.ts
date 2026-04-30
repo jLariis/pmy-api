@@ -3,9 +3,10 @@ import { InventoriesService } from './inventories.service';
 import { CreateInventoryDto } from './dto/create-inventory.dto';
 import { UpdateInventoryDto } from './dto/update-inventory.dto';
 import { FilesInterceptor } from '@nestjs/platform-express';
-import { ApiOperation, ApiConsumes, ApiBody } from '@nestjs/swagger';
+import { ApiOperation, ApiConsumes, ApiBody, ApiTags } from '@nestjs/swagger';
 import { ValidateTrackingNumbersDto } from 'src/unloading/dto/validate-tracking-numbers.dto';
 
+@ApiTags('inventories')
 @Controller('inventories')
 export class InventoriesController {
   constructor(private readonly inventoriesService: InventoriesService) {}

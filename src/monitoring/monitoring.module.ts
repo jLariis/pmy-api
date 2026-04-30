@@ -11,13 +11,13 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { Shipment, ChargeShipment, Consolidated, Subsidiary, Devolution, Income, Charge, ShipmentStatus } from 'src/entities';
 import { RouteClosure } from 'src/entities/route-closure.entity';
 import { ForPickUp } from 'src/entities/for-pick-up.entity';
-import { DHLService } from 'src/shipments/dto/dhl.service';
 import { SubsidiariesService } from 'src/subsidiaries/subsidiaries.service';
 import { UnloadingService } from 'src/unloading/unloading.service';
 import { Unloading } from 'src/entities/unloading.entity';
 import { InventoriesService } from 'src/inventories/inventories.service';
 import { Inventory } from 'src/entities/inventory.entity';
 import { PackageDispatchHistory } from 'src/entities/package-dispatch-history.entity';
+import { DhlService } from 'src/shipments/dhl.service';
 
 
 @Module({
@@ -27,7 +27,7 @@ import { PackageDispatchHistory } from 'src/entities/package-dispatch-history.en
     MonitoringService, 
     FedexService, 
     SubsidiariesService, 
-    DHLService, 
+    DhlService, 
     MailService, 
     PackageDispatchService, 
     ShipmentsService, 

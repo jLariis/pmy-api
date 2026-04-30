@@ -2,6 +2,7 @@ import { BeforeInsert, Column, Entity, Index, JoinColumn, ManyToOne, PrimaryGene
 import { Subsidiary } from './subsidiary.entity';
 import { ConsolidatedType } from '../common/enums/consolidated-type.enum';
 import { User } from './user.entity';
+import { ShipmentType } from 'src/common/enums/shipment-type.enum';
 
 @Entity('consolidated')
 export class Consolidated {
@@ -28,6 +29,13 @@ export class Consolidated {
 
   @Column()
   isCompleted: boolean;
+
+  @Column({
+    type: 'enum',
+    enum: ShipmentType,
+    default: ShipmentType.FEDEX
+  })
+  carrier: ShipmentType;
 
   @Column({ nullable: true })
   consNumber: string;
