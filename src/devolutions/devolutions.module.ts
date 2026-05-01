@@ -8,15 +8,15 @@ import { MailService } from 'src/mail/mail.service';
 import { ShipmentsService } from 'src/shipments/shipments.service';
 import { ForPickUp } from 'src/entities/for-pick-up.entity';
 import { FedexService } from 'src/shipments/fedex.service';
-import { DHLService } from 'src/shipments/dto/dhl.service';
 import { SubsidiariesService } from 'src/subsidiaries/subsidiaries.service';
 import { ConsolidatedService } from 'src/consolidated/consolidated.service';
 import { PackageDispatch } from 'src/entities/package-dispatch.entity';
 import { Unloading } from 'src/entities/unloading.entity';
+import { DhlService } from 'src/shipments/dhl.service';
 
 @Module({
   imports: [TypeOrmModule.forFeature([Devolution, Shipment, ShipmentStatus, Subsidiary, Income, Charge, ChargeShipment, Consolidated, ForPickUp, PackageDispatch, Unloading])],
   controllers: [DevolutionsController],
-  providers: [DevolutionsService, MailService, FedexService, DHLService, SubsidiariesService, ConsolidatedService, ShipmentsService],
+  providers: [DevolutionsService, MailService, FedexService, DhlService, SubsidiariesService, ConsolidatedService, ShipmentsService],
 })
 export class DevolutionsModule {}

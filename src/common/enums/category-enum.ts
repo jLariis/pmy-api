@@ -9,4 +9,5 @@ export enum ExpenseCategory {
   Mantenimiento= "Mantenimiento",
   Impuestos    = "Impuestos",
   Seguros      = "Seguros",
+  Viaticos     = "Viáticos"
 }

@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Param, UseGuards, UseInterceptors, UploadedFile, BadRequestException, InternalServerErrorException, Request, UploadedFiles, Query, Body, Logger, Res, HttpStatus, HttpCode, HttpException, ParseBoolPipe } from '@nestjs/common';
+import { Controller, Get, Post, Param, UseGuards, UseInterceptors, UploadedFile, BadRequestException, InternalServerErrorException, Request, UploadedFiles, Query, Body, Logger, Res, HttpStatus, HttpCode, HttpException, ParseBoolPipe, Req } from '@nestjs/common';
 import { ShipmentsService } from './shipments.service';
 import { ApiBadRequestResponse, ApiBearerAuth, ApiBody, ApiConsumes, ApiOkResponse, ApiOperation, ApiProduces, ApiProperty, ApiQuery, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from 'src/auth/guards/jwt-auth.guard';
@@ -301,55 +301,69 @@ export class ShipmentsController {
   }
 
   @Post('upload-dhl')
-  @UseInterceptors(
-    FileFieldsInterceptor([
-      { name: 'excelFile', maxCount: 1 },
-      { name: 'txtFile', maxCount: 1 },
-    ]),
-  )
-  @ApiOperation({ summary: 'Subir archivo txt y Excel para procesar' })
+  @UseInterceptors(FileInterceptor('file'))
+  @ApiOperation({ summary: 'Subir archivo Excel para procesar envíos de DHL' })
   @ApiConsumes('multipart/form-data')
   @ApiBody({
-    description: 'Archivos Excel y TXT',
+    description: 'Archivo Excel y datos adicionales para el consolidado',
     schema: {
       type: 'object',
       properties: {
-        excelFile: {
+        file: {
           type: 'string',
           format: 'binary',
         },
-        txtFile: {
+        subsidiaryId: {
           type: 'string',
-          format: 'binary',
+          description: 'ID de la sucursal',
         },
+        consDate: {
+          type: 'string',
+          description: 'Fecha del consolidado (opcional)',
+          nullable: true,
+        },
+        consNumber: {
+          type: 'string',
+          description: 'Número de consolidado (opcional)',
+          nullable: true,
+        }
       },
+      required: ['file', 'subsidiaryId'] // El archivo y la sucursal son obligatorios
     },
   })
-  
   async uploadDhlFile(
-    @UploadedFiles()
-    files: {
-      excelFile?: Express.Multer.File[];
-      txtFile?: Express.Multer.File[];
-    },
+    @UploadedFile() file: Express.Multer.File,
+    @Body('subsidiaryId') subsidiaryId: string,
+    @Body('consDate') consDate?: string,
+    @Body('consNumber') consNumber?: string,
+    @Req() req?: any // Inyectamos la request para obtener el usuario autenticado
   ) {
-    const excelFile = files.excelFile?.[0];
-    const txtFile = files.txtFile?.[0];
-
-    if (!excelFile || !txtFile) {
-      throw new BadRequestException('Ambos archivos son requeridos');
+    
+    // Validación básica desde el controlador
+    if (!subsidiaryId) {
+      throw new BadRequestException('El subsidiaryId es requerido para procesar el archivo.');
     }
 
     try {
-      const fileContent = txtFile.buffer.toString('utf-8');
-      const result = await this.shipmentsService.processDhlTxtFile(fileContent);
-      const updateShipments = await this.shipmentsService.processDhlExcelFiel(excelFile);
+      // Obtenemos el ID del usuario si tienes un Guard de autenticación (ej. JWT)
+      // Ajusta 'req.user.id' dependiendo de cómo guardes el usuario en tu request
+      const userId = req?.user?.userId;
+
+      console.log("🚀 ~ ShipmentsController ~ uploadDhlFile ~ userId:", userId)
+
+      // Llamamos al nuevo método del servicio con todos sus parámetros
+      const result = await this.shipmentsService.processDhlExcelFile(
+        file,
+        subsidiaryId,
+        consDate,
+        userId,
+        consNumber
+      );
 
       return {
         success: true,
-        message: 'Archivo DHL procesado correctamente',
+        message: 'Archivo DHL procesado y consolidado creado correctamente',
         ...result,
-        ...updateShipments,
       };
     } catch (error) {
       if (error instanceof BadRequestException) {
@@ -357,7 +371,7 @@ export class ShipmentsController {
       }
       throw new InternalServerErrorException({
         errorId: 'DHL_UPLOAD_ERROR',
-        message: 'Error al procesar los archivos DHL',
+        message: 'Error al procesar el archivo Excel de DHL',
         details: error.message,
       });
     }

@@ -8,14 +8,14 @@ import { MailService } from 'src/mail/mail.service';
 import { ShipmentsService } from 'src/shipments/shipments.service';
 import { ForPickUp } from 'src/entities/for-pick-up.entity';
 import { FedexService } from 'src/shipments/fedex.service';
-import { DHLService } from 'src/shipments/dto/dhl.service';
 import { SubsidiariesService } from 'src/subsidiaries/subsidiaries.service';
 import { ConsolidatedService } from 'src/consolidated/consolidated.service';
 import { PackageDispatch } from 'src/entities/package-dispatch.entity';
+import { DhlService } from 'src/shipments/dhl.service';
 
 @Module({
   imports: [TypeOrmModule.forFeature([Unloading, Shipment, ChargeShipment, Consolidated, Charge, Income, Subsidiary, ShipmentStatus, ForPickUp, PackageDispatch])],
   controllers: [UnloadingController],
-  providers: [UnloadingService, MailService, ShipmentsService, FedexService, DHLService, SubsidiariesService, ConsolidatedService],
+  providers: [UnloadingService, MailService, ShipmentsService, FedexService, DhlService, SubsidiariesService, ConsolidatedService],
 })
 export class UnloadingModule {}

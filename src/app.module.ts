@@ -28,6 +28,8 @@ import { InventoriesModule } from './inventories/inventories.module';
 import { MonitoringModule } from './monitoring/monitoring.module';
 import { PickUpModule } from './pick-up/pick-up.module';
 import { JwtAuthGuard } from './auth/guards/jwt-auth.guard';
+import { ResportsModule } from './resports/resports.module';
+import { WarehouseModule } from './warehouse/warehouse.module';
 
 @Module({
   imports: [
@@ -76,7 +78,9 @@ import { JwtAuthGuard } from './auth/guards/jwt-auth.guard';
     RouteclosureModule,
     InventoriesModule,
     MonitoringModule,
-    PickUpModule
+    PickUpModule,
+    ResportsModule,
+    WarehouseModule
   ],
   controllers: [AppController],
   providers: [
