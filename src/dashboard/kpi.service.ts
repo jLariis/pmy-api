@@ -225,7 +225,6 @@ export class KpiService {
     return result.sort((a, b) => (b.averageEfficiency || 0) - (a.averageEfficiency || 0));;
   }
 
-
   async getSubsidiariesKpisResp2104(startDate: string, endDate: string, subsidiaryIds: string[]) {
     // Convertir fechas ISO 8601 a objetos Date
     const startDateObj = startOfDay(new Date(startDate));
@@ -434,16 +433,21 @@ export class KpiService {
   }
 
   async getSubsidiariesKpis(startDate: string, endDate: string, subsidiaryIds?: string[]) {
-    const startDateObj = startOfDay(new Date(startDate));
-    const endDateObj = endOfDay(new Date(endDate));
+    // 1. Manejo de fechas en Zona Horaria Hermosillo (UTC-7 constante)
+    const baseStartDate = startDate.split('T')[0];
+    const baseEndDate = endDate.split('T')[0];
+
+    const startDateObj = new Date(`${baseStartDate}T00:00:00.000-07:00`);
+    const endDateObj = new Date(`${baseEndDate}T23:59:59.999-07:00`);
 
     if (isNaN(startDateObj.getTime()) || isNaN(endDateObj.getTime())) {
       throw new Error('Invalid date format. Please use ISO 8601 format (e.g., YYYY-MM-DD).');
     }
 
-    // Calculamos los días del rango para el prorrateo (+1 para incluir el día actual)
-    const daysInDateRange = differenceInDays(endDateObj, startDateObj) + 1;
-    this.logger.log(`Fetching Optimized KPIs: ${startDate} to ${endDate} (${daysInDateRange} days)`);
+    const msPerDay = 1000 * 60 * 60 * 24;
+    const daysInDateRange = Math.floor((endDateObj.getTime() - startDateObj.getTime()) / msPerDay) + 1;
+    
+    this.logger.log(`Fetching Optimized KPIs: ${baseStartDate} to ${baseEndDate} (${daysInDateRange} days) in Hermosillo TZ`);
 
     // 1. Obtener las sucursales base
     const subsidiariesQuery = this.subsidiaryRepository.createQueryBuilder('subsidiary');
@@ -452,7 +456,6 @@ export class KpiService {
     }
     const subsidiaries = await subsidiariesQuery.getMany();
 
-    // Filtro reutilizable para los QueryBuilders
     const hasSubsidiaryFilter = subsidiaryIds?.length > 0;
     const subsidiaryCondition = hasSubsidiaryFilter ? 'subsidiaryId IN (:...subsidiaryIds)' : '1=1';
 
@@ -465,7 +468,7 @@ export class KpiService {
       consolidatedStats
     ] = await Promise.all([
       
-      // -- A. ESTADÍSTICAS DE ENVÍOS (Ahora incluye los códigos de excepción) --
+      // -- A. ESTADÍSTICAS DE ENVÍOS --
       this.shipmentRepository.createQueryBuilder('shipment')
         .select('shipment.subsidiaryId', 'subsidiaryId')
         .addSelect('COUNT(shipment.id)', 'total')
@@ -490,7 +493,7 @@ export class KpiService {
         .groupBy('charge.subsidiaryId')
         .getRawMany(),
 
-      // -- C. ESTADÍSTICAS DE GASTOS (Agrupados por sucursal y frecuencia) --
+      // -- C. ESTADÍSTICAS DE GASTOS --
       this.expenseRepository.createQueryBuilder('expense')
         .select('expense.subsidiaryId', 'subsidiaryId')
         .addSelect('expense.frequency', 'frequency')
@@ -524,7 +527,6 @@ export class KpiService {
 
     // 3. MAPEAR LOS RESULTADOS A LA ESTRUCTURA FINAL
     const result = subsidiaries.map((subsidiary) => {
-      // Extraer datos pre-calculados o usar default {} si no hay movimientos
       const sStats = shipmentStats.find(s => s.subsidiaryId === subsidiary.id) || {};
       const cStats = chargeStats.find(c => c.subsidiaryId === subsidiary.id) || {};
       const iStats = incomeStats.find(i => i.subsidiaryId === subsidiary.id) || {};
@@ -539,32 +541,25 @@ export class KpiService {
       const totalCharges = Number(cStats.totalCharges || 0);
       const totalRevenue = Number(iStats.totalRevenue || 0);
 
-      // Desglose de Códigos de Excepción directamente de SQL
       const code07 = Number(sStats.code07 || 0);
       const code08 = Number(sStats.code08 || 0);
       const code03 = Number(sStats.code03 || 0);
-      const noEntregadoBase = Number(sStats.noEntregadoBase || 0); // Por si aún usas el estado general
+      const noEntregadoBase = Number(sStats.noEntregadoBase || 0); 
       
       const totalUndelivered = code07 + code08 + code03 + noEntregadoBase;
 
-      // Cálculo de Gastos Prorrateados
       const subExpenses = expenseStats.filter(e => e.subsidiaryId === subsidiary.id);
       const totalExpenses = subExpenses.reduce((sum, e) => {
         const rawAmount = Number(e.totalAmount || 0);
         const txCount = Number(e.txCount || 1);
 
-        // 1. Gastos Únicos o Diarios:
         if (e.frequency === Frequency.UNIQUE || e.frequency === Frequency.DIARIO) {
           return sum + rawAmount;
         }
 
-        // 2. Gastos Fijos (Semanal, Mensual, Anual):
         const baseAmountPerTx = rawAmount / txCount;
-        
-        // Calculamos el costo por día de ese gasto base
         const dailyExpense = this.calculateDailyExpense(baseAmountPerTx, e.frequency);
         
-        // Multiplicamos por los días filtrados
         return sum + (dailyExpense * daysInDateRange);
       }, 0);
 
@@ -602,7 +597,22 @@ export class KpiService {
       };
     });
 
-    return result.sort((a, b) => (b.averageEfficiency || 0) - (a.averageEfficiency || 0));
+    const sortedSubsidiaries = result.sort((a, b) => (b.averageEfficiency || 0) - (a.averageEfficiency || 0));
+
+    // 4. CALCULAR TOTALES GENERALES DE TODA LA EMPRESA
+    const generalTotalIncome = sortedSubsidiaries.reduce((sum, sub) => sum + sub.totalRevenue, 0);
+    const generalTotalExpenses = sortedSubsidiaries.reduce((sum, sub) => sum + sub.totalExpenses, 0);
+    const generalTotalProfit = generalTotalIncome - generalTotalExpenses;
+
+    // 5. REGRESAMOS EL ARREGLO COMO ANTES, PERO INYECTAMOS EL SUMARIO EN CADA ELEMENTO
+    return sortedSubsidiaries.map(sub => ({
+      ...sub,
+      generalSummary: {
+        totalIncome: generalTotalIncome,
+        totalExpenses: generalTotalExpenses,
+        totalProfit: generalTotalProfit
+      }
+    }));
   }
 
   private calculateDailyExpense(amount: number, frequency: string): number {

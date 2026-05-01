@@ -16,30 +16,48 @@ export class ResportsService {
   ) {}
 
   public async generateIncomeStatementReport(
-    subsidiaryId: string,
+    subsidiaryIds: string[],
     startDate: string | Date,
     endDate: string | Date,
   ): Promise<ExcelJS.Buffer> {
-    const parsedStartDate = new Date(startDate);
-    const parsedEndDate = new Date(endDate);
+    
+    // Aplicamos la misma corrección de zona horaria (Hermosillo UTC-7) para evitar desfases
+    const baseStartDate = startDate.toString().split('T')[0];
+    const baseEndDate = endDate.toString().split('T')[0];
+    const parsedStartDate = new Date(`${baseStartDate}T00:00:00.000-07:00`);
+    const parsedEndDate = new Date(`${baseEndDate}T23:59:59.999-07:00`);
 
-    // 1. OBTENCIÓN DEL NOMBRE DE LA SUCURSAL
-    const subsidiary = await this.subsidiaryRepository.findOne({
-      where: { id: subsidiaryId },
-      select: ['name'],
-    });
-    const subsidiaryName = subsidiary?.name || 'Sucursal Desconocida';
+    // 1. OBTENCIÓN DE NOMBRES DE LAS SUCURSALES
+    const subsidiariesQuery = this.subsidiaryRepository.createQueryBuilder('subsidiary');
+    
+    // Si subsidiaryIds está vacío (gracias al blindaje del controller), ignora este WHERE
+    if (subsidiaryIds && subsidiaryIds.length > 0) {
+      subsidiariesQuery.where('subsidiary.id IN (:...subsidiaryIds)', { subsidiaryIds });
+    }
+    const subsidiaries = await subsidiariesQuery.select(['subsidiary.name']).getMany();
+    
+    let subsidiaryName = 'TODAS LAS SUCURSALES';
+    if (subsidiaries.length > 0 && subsidiaryIds && subsidiaryIds.length > 0) {
+      const names = subsidiaries.map(s => s.name).join(', ');
+      // Si el nombre concatenado es muy largo, usamos un título genérico
+      subsidiaryName = names.length > 60 ? 'MÚLTIPLES SUCURSALES' : names;
+    }
+
+    // Filtro dinámico para ingresos y egresos
+    const hasSubsidiaryFilter = subsidiaryIds && subsidiaryIds.length > 0;
+    const subsidiaryCondition = hasSubsidiaryFilter ? 'income.subsidiaryId IN (:...subsidiaryIds)' : '1=1';
+    const expenseSubsidiaryCondition = hasSubsidiaryFilter ? 'expense.subsidiaryId IN (:...subsidiaryIds)' : '1=1';
 
     // 2. OBTENCIÓN DE DATOS DE INGRESOS Y EGRESOS
     const allIncomes = await this.incomeRepository
       .createQueryBuilder('income')
-      .where('income.subsidiaryId = :subsidiaryId', { subsidiaryId })
+      .where(subsidiaryCondition, { subsidiaryIds })
       .andWhere('income.date >= :start AND income.date <= :end', { start: parsedStartDate, end: parsedEndDate })
       .getMany();
 
     const allExpenses = await this.expenseRepository
       .createQueryBuilder('expense')
-      .where('expense.subsidiaryId = :subsidiaryId', { subsidiaryId })
+      .where(expenseSubsidiaryCondition, { subsidiaryIds })
       .andWhere('expense.date >= :start AND expense.date <= :end', { start: parsedStartDate, end: parsedEndDate })
       .getMany();
 
@@ -94,11 +112,11 @@ export class ResportsService {
     ];
     mainSheet.columns = columns;
 
-    // Encabezado con Nombre de Sucursal
+    // Encabezado con Nombre de Sucursal(es)
     const totalCols = columns.length;
     mainSheet.mergeCells(1, 1, 1, totalCols);
     const titleCell = mainSheet.getCell(1, 1);
-    titleCell.value = `ESTADO DE RESULTADOS - SUCURSAL: ${subsidiaryName.toUpperCase()}`;
+    titleCell.value = `ESTADO DE RESULTADOS - ${subsidiaryName.toUpperCase()}`;
     titleCell.font = { size: 16, bold: true, color: { argb: headerBlue } };
     titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
 
@@ -176,7 +194,7 @@ export class ResportsService {
     this.styleSectionHeader(detailSheet.getRow(1), headerBlue, white);
 
     allIncomes.forEach(i => {
-      this.styleDetailedRow(detailSheet.addRow([i.date, i.trackingNumber || 'N/A', 'INGRESO', i.sourceType, '', i.cost]));
+      this.styleDetailedRow(detailSheet.addRow([i.date, (i as any).trackingNumber || 'N/A', 'INGRESO', i.sourceType, '', i.cost]));
     });
 
     allExpenses.forEach(e => {
@@ -186,7 +204,7 @@ export class ResportsService {
     detailSheet.autoFilter = 'A1:F1';
 
     // =========================================================================
-    // HOJA 3: DASHBOARD INDICADORES (CON PRIORITY FIX)
+    // HOJA 3: DASHBOARD INDICADORES
     // =========================================================================
     const dashSheet = workbook.addWorksheet('Dashboard');
     dashSheet.columns = [{ width: 35 }, { width: 20 }, { width: 35 }, { width: 20 }];
