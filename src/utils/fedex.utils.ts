@@ -30,6 +30,10 @@ export function mapFedexStatusToLocalStatus(derivedStatusCode: string, exception
       case '08D': return ShipmentStatusType.NO_ENTREGADO;
       case '72': return ShipmentStatusType.CLIENTE_NO_DISPONIBLE;
       case '31': return ShipmentStatusType.LLEGADO_DESPUES;
+      case '84': return ShipmentStatusType.DEMORA_EN_ENTREGA;
+      case '42': return ShipmentStatusType.EMPRESA_CERRADA;
+      case '93': return ShipmentStatusType.OTRO;
+      default: break; // Si el código de excepción no coincide, se continúa con el mapeo por derived status
   
     }
   }

@@ -67,13 +67,31 @@ async function bootstrap() {
   app.useGlobalFilters(new CustomExceptionFilter());
   app.useGlobalPipes(new ValidationPipe());
 
-  // ✅ CORS DEFINITIVO
+  // ✅ CORS BIEN CONFIGURADO
+  const allowedOrigins = [
+    'http://localhost:3000',
+    'http://localhost:4000', 
+    'http://127.0.0.1:4000',
+    'https://pc4gjn47-3000.usw3.devtunnels.ms',
+    'https://pc4gjn47-4000.usw3.devtunnels.ms'
+  ];
+
   app.enableCors({
     origin: (origin, callback) => {
-      // Permitir requests sin origin (Postman, apps nativas, Electron, etc.)
+      // Permitir requests sin origin (Postman, mobile, etc.)
       if (!origin) return callback(null, true);
 
-      // ✅ Solo Vercel del proyecto app-pmy
+      // Exact match (local)
+      if (allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+
+      // Devtunnels (dinámico)
+      if (origin.includes('devtunnels.ms')) {
+        return callback(null, true);
+      }
+
+      // Vercel (tu app)
       if (
         origin.endsWith('.vercel.app') &&
         origin.includes('app-pmy')
@@ -81,25 +99,24 @@ async function bootstrap() {
         return callback(null, true);
       }
 
-      // Desarrollo / apps locales / nativas
+      // Apps nativas
       if (
-        origin.includes('localhost') ||
         origin.startsWith('file://') ||
-        origin.includes('187.137.167.95') ||
         origin.startsWith('app://') ||
         origin.startsWith('capacitor://')
       ) {
         return callback(null, true);
       }
 
-      return callback(new Error(`CORS blocked for origin: ${origin}`));
+      // ❗ No lanzar error (esto rompía tu CORS)
+      return callback(null, false);
     },
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
     allowedHeaders: [
       'Content-Type',
       'Authorization',
       'Accept',
-      'X-Requested-With'
+      'X-Requested-With',
     ],
     credentials: true,
     optionsSuccessStatus: 204,
