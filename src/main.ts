@@ -73,7 +73,8 @@ async function bootstrap() {
     'http://localhost:4000', 
     'http://127.0.0.1:4000',
     'https://pc4gjn47-3000.usw3.devtunnels.ms',
-    'https://pc4gjn47-4000.usw3.devtunnels.ms'
+    'https://pc4gjn47-4000.usw3.devtunnels.ms',
+    'http://187.137.164.211:3000',
   ];
 
   app.enableCors({
@@ -121,7 +122,7 @@ async function bootstrap() {
     credentials: true,
     preflightContinue: false,
     optionsSuccessStatus: 204
-  });*/
+  });
 
   await app.listen(port);
 }
