@@ -30,6 +30,7 @@ import { PickUpModule } from './pick-up/pick-up.module';
 import { JwtAuthGuard } from './auth/guards/jwt-auth.guard';
 import { ResportsModule } from './resports/resports.module';
 import { WarehouseModule } from './warehouse/warehouse.module';
+import { TransferModule } from './transfer/transfer.module';
 
 @Module({
   imports: [
@@ -80,7 +81,8 @@ import { WarehouseModule } from './warehouse/warehouse.module';
     MonitoringModule,
     PickUpModule,
     ResportsModule,
-    WarehouseModule
+    WarehouseModule,
+    TransferModule
   ],
   controllers: [AppController],
   providers: [

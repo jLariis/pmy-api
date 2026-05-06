@@ -61,7 +61,6 @@ export class Income {
   @JoinColumn({ name: 'chargeId' })
   charge?: Charge;
 
-
   @Column({ type: 'datetime' })
   date: Date;
 
