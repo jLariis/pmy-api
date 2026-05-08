@@ -102,7 +102,8 @@ export class ConsolidatedService {
         subsidiary: {
           id: true,
           name: true,
-        }
+        },
+        carrier: true
       },
       where: {
         subsidiary: {

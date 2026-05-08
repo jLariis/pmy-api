@@ -158,6 +158,8 @@ export const headerAliases: Record<string, string> = {
     'telefono': 'recipientPhone',
     'celular': 'recipientPhone',
     'phonenumber': 'recipientPhone',
+    'cel': 'recipientPhone',
+    'tel': 'recipientPhone',
     
     // Payment/COD
     'cod': 'cod',
