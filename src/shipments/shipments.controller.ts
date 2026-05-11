@@ -14,6 +14,7 @@ import { UploadShipmentDto } from './dto/upload-shipment.dto';
 import { Response } from 'express';
 import * as dayjs from 'dayjs'; 
 import { UniversalAuditDto } from './dto/audit-entity-type.dto';
+import { BusinessException } from 'src/common/business.exception';
 
 @ApiTags('shipments')
 @ApiBearerAuth()
@@ -366,7 +367,7 @@ export class ShipmentsController {
         ...result,
       };
     } catch (error) {
-      if (error instanceof BadRequestException) {
+      if (error instanceof BusinessException) {
         throw error;
       }
       throw new InternalServerErrorException({

@@ -5,18 +5,19 @@ export type ErrorDomain = 'exercise-api' | 'generic';
 export class BusinessException extends Error {
     public readonly id: string;
     public readonly timestamp: Date;
+    public readonly metadata?: any; // 👈 NUEVA PROPIEDAD
 
     constructor(
         public readonly domain: ErrorDomain,
-        // TODO: message should receive array of strings
         public readonly message: string,
-        // TODO: apiMessage should receive array of strings
         public readonly apiMessage: string,
         public readonly status: HttpStatus,
+        metadata?: any // 👈 NUEVO PARÁMETRO OPCIONAL
     ) {
         super(message);
         this.id = BusinessException.genId();
         this.timestamp = new Date();
+        this.metadata = metadata; // 👈 ASIGNACIÓN
     }
 
     private static genId(length = 16): string {

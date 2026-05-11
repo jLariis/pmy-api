@@ -1,4 +1,4 @@
-import { BadRequestException, forwardRef, Inject, Injectable, InternalServerErrorException, Logger } from '@nestjs/common';
+import { BadRequestException, forwardRef, HttpStatus, Inject, Injectable, InternalServerErrorException, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Between, Brackets, EntityManager, In, Repository } from 'typeorm';
 import { Shipment } from 'src/entities/shipment.entity';
@@ -51,6 +51,7 @@ import * as dayjs from 'dayjs';
 import * as isoWeek from 'dayjs/plugin/isoWeek';
 import { ReturnValidationDto } from './dto/returning-validation.dto';
 import { DhlService } from './dhl.service';
+import { BusinessException } from 'src/common/business.exception';
 
 dayjs.extend(isoWeek);
 
@@ -3111,7 +3112,7 @@ export class ShipmentsService {
       }
     }
 
-    async processDhlExcelFile(
+    async processDhlExcelFileResp1005(
       file: Express.Multer.File,
       subsidiaryId: string,
       consDate: Date | string | null,
@@ -3264,6 +3265,199 @@ export class ShipmentsService {
       } catch (consError: any) {
         console.error(`❌ [DHL Import] Error crítico al guardar el consolidado:`, consError.message);
         throw new InternalServerErrorException('Error al guardar el registro consolidado');
+      }
+    }
+
+    async processDhlExcelFile(
+      file: Express.Multer.File,
+      subsidiaryId: string,
+      consDate: Date | string | null,
+      userId?: string,
+      consNumber?: string
+    ) {
+      if (!file) {
+        throw new BusinessException('generic', 'No se ha subido ningún archivo.', 'E', HttpStatus.BAD_REQUEST);
+      }
+
+      const { buffer, originalname } = file;
+      const timeZone = 'America/Hermosillo'; // Tu zona horaria base
+
+      console.log(`🚀 [DHL Import] Iniciando procesamiento del archivo: ${originalname}`);
+
+      if (!originalname.match(/\.(csv|xlsx?)$/i)) {
+        throw new BusinessException('generic', 'Tipo de archivo no soportado. Sube un .csv o .xlsx', 'E', HttpStatus.BAD_REQUEST);
+      }
+
+      // 1. Read and parse the Excel file
+      const workbook = XLSX.read(buffer, { type: 'buffer' });
+      const sheet = workbook.Sheets[workbook.SheetNames[0]];
+      const parsedShipments = parseDynamicSheetDHL(sheet);
+
+      console.log(`📊 [DHL Import] Paquetes extraídos del Excel: ${parsedShipments ? parsedShipments.length : 0}`);
+
+      if (!parsedShipments || parsedShipments.length === 0) {
+        throw new BusinessException('generic', 'El archivo está vacío o no contiene paquetes válidos.', 'E', HttpStatus.BAD_REQUEST);
+      }
+
+      // =========================================================================
+      // 🚀 VALIDACIÓN DE CABECERAS PARA EL FRONTEND
+      // =========================================================================
+      const columnMapping: Record<string, string> = {
+        'trackingNumber': 'Guía',
+        'recipientName': 'Nombre',
+        'recipientAddress': 'Dirección',
+        'recipientZip': 'CP',
+        'recipientPhone': 'Teléfono / Celular',
+        'commitDate': 'Fecha'
+      };
+
+      // Obtenemos las llaves técnicas (trackingNumber, recipientName, etc.)
+      const requiredColumns = Object.keys(columnMapping); 
+      const firstShipment = parsedShipments[0];
+      
+      // 2. Filtramos cuáles de esas llaves técnicas faltan o son undefined
+      const missingTechnicalColumns = requiredColumns.filter(col => 
+        !(col in firstShipment) || firstShipment[col] === undefined
+      );
+      
+      // 3. Si hay columnas faltantes, las "traducimos" usando el diccionario
+      if (missingTechnicalColumns.length > 0) {
+        const missingFriendlyNames = missingTechnicalColumns.map(col => columnMapping[col]);
+
+        throw new BusinessException(
+          'generic',
+          `El archivo no tiene el formato correcto. Faltan cabeceras obligatorias o están vacías: ${missingFriendlyNames.join(', ')}`,
+          `El archivo no tiene el formato correcto. Faltan cabeceras obligatorias o están vacías: ${missingFriendlyNames.join(', ')}`, 
+          HttpStatus.BAD_REQUEST,
+          { missingColumns: missingFriendlyNames } // 👈 Ahora manda ["Guía", "Dirección"] en vez de ["trackingNumber", "recipientAddress"]
+        );
+      }
+          // =========================================================================
+
+      // 2. Fetch the subsidiary to get its name for the recipientCity
+      const subsidiary = await this.subsidiaryRepository.findOneBy({ id: subsidiaryId });
+      if (!subsidiary) {
+        console.error(`❌ [DHL Import] Sucursal no encontrada con ID: ${subsidiaryId}`);
+        throw new BusinessException('generic', 'Sucursal no encontrada', 'E', HttpStatus.BAD_REQUEST);
+      }
+      
+      const subsidiaryCityName = subsidiary.name;
+      console.log(`🏢 [DHL Import] Sucursal asignada: ${subsidiaryCityName}`);
+
+      // 3. Generate consNumber con fecha en America/Hermosillo
+      let finalConsNumber = consNumber;
+      if (!finalConsNumber || finalConsNumber.trim() === '') {
+        const now = new Date();
+        const dateStringForCons = formatInTimeZone(now, timeZone, 'yyyyMMdd');
+        finalConsNumber = `DHL-${dateStringForCons}`;
+      }
+
+      // 3.5 Manejo de fecha del consolidado (forzando horas a 0 en Hermosillo)
+      let finalConsDate: Date;
+      if (consDate) {
+        const dateString = typeof consDate === 'string' ? consDate : consDate.toISOString();
+        const [year, month, day] = dateString.split('T')[0].split('-');
+        finalConsDate = new Date(Number(year), Number(month) - 1, Number(day), 0, 0, 0, 0);
+      } else {
+        const now = new Date();
+        finalConsDate = toZonedTime(now, timeZone);
+        finalConsDate.setHours(0, 0, 0, 0);
+      }
+
+      // 4. Create the Consolidated record
+      const consolidated = this.consolidatedRepository.create({
+        date: finalConsDate,
+        type: ConsolidatedType.ORDINARIA,
+        carrier: ShipmentType.DHL,
+        numberOfPackages: parsedShipments.length,
+        subsidiary: { id: subsidiaryId } as Subsidiary,
+        isCompleted: false,
+        createdById: userId,
+        consNumber: finalConsNumber,
+      });
+
+      try {
+        const savedConsolidated = await this.consolidatedRepository.save(consolidated);
+        console.log(`📁 [DHL Import] Consolidado guardado correctamente con ID: ${savedConsolidated.id} y consNumber: ${finalConsNumber}`);
+
+        const processedShipments: Shipment[] = [];
+
+        // 5. Unconditionally create new shipments linked to the new consolidated
+        for (const [index, data] of parsedShipments.entries()) {
+          const { 
+            trackingNumber, recipientAddress, recipientAddress2, 
+            commitDate, recipientName, recipientZip, recipientPhone 
+          } = data;
+
+          let finalCommitDateTime = new Date();
+          let calculatedPriority = Priority.BAJA;
+
+          if (commitDate) {
+            const rawDate = new Date(commitDate);
+            
+            if (!isNaN(rawDate.getTime())) {
+              // Extraemos YYYY-MM-DD aislando la fecha de la zona horaria
+              const dateString = typeof commitDate === 'string' && commitDate.includes('-')
+                ? commitDate.split('T')[0]
+                : rawDate.toISOString().split('T')[0];
+                
+              const [year, month, day] = dateString.split('-');
+              
+              // Construimos la fecha forzando UTC puro e inyectando las 21:00 hrs
+              finalCommitDateTime = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day), 21, 0, 0, 0));
+              calculatedPriority = this.calculatePriority(finalCommitDateTime);
+            } else {
+              const now = new Date();
+              finalCommitDateTime = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 21, 0, 0, 0));
+            }
+          } else {
+            const now = new Date();
+            finalCommitDateTime = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 21, 0, 0, 0));
+          }
+
+          const fullAddress = `${recipientAddress || ''} ${recipientAddress2 || ''}`.trim();
+
+          const newShipment = this.shipmentRepository.create({
+            trackingNumber,
+            shipmentType: ShipmentType.DHL,
+            recipientName: recipientName || '-',
+            recipientAddress: fullAddress || '-',
+            recipientCity: subsidiaryCityName, 
+            recipientZip: recipientZip || '-',
+            recipientPhone: recipientPhone || '-',
+            commitDateTime: finalCommitDateTime,
+            status: ShipmentStatusType.PENDIENTE,
+            priority: calculatedPriority, 
+            consolidatedId: savedConsolidated.id,
+            consNumber: finalConsNumber,
+            subsidiary: { id: subsidiaryId } as Subsidiary,
+          });
+
+          try {
+            const saved = await this.shipmentRepository.save(newShipment);
+            processedShipments.push(saved);
+            console.log(`✅ [DHL Import] [${index + 1}/${parsedShipments.length}] Paquete guardado: ${trackingNumber}`);
+          } catch (dbError: any) {
+            console.error(`❌ [DHL Import] Error al guardar el paquete ${trackingNumber}:`, dbError.message);
+          }
+        }
+
+        console.log(`🎉 [DHL Import] Proceso completado. Total de paquetes guardados: ${processedShipments.length}`);
+
+        return {
+          success: true,
+          consolidated: savedConsolidated,
+          totalProcessed: processedShipments.length,
+        };
+
+      } catch (consError: any) {
+        console.error(`❌ [DHL Import] Error crítico al guardar el consolidado:`, consError.message);
+        throw new BusinessException(
+          'generic', 
+          'Error al guardar el registro consolidado', 
+          'E', 
+          HttpStatus.INTERNAL_SERVER_ERROR
+        );
       }
     }
 
