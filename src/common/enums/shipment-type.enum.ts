@@ -1,4 +1,5 @@
 export enum ShipmentType {
   FEDEX = 'fedex',
-  DHL = 'dhl'
+  DHL = 'dhl',
+  OTHER = 'other'
 }

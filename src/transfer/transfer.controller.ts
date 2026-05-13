@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Body, Param, Req } from '@nestjs/common';
+import { Controller, Get, Post, Body, Param, Req, Query } from '@nestjs/common';
 import { TransferService } from './transfer.service';
 import { CreateTransferDto } from './dto/create-transfer.dto';
 import { ApiTags } from '@nestjs/swagger';
@@ -17,6 +17,11 @@ export class TransferController {
   @Get()
   findAll() {
     return this.transferService.findAll();
+  }
+
+  @Get()
+  findAllBySubsidiary(@Query('subsidiaryId') subsidiaryId: string) {
+    return this.transferService.findBySubsidiary(subsidiaryId);
   }
 
   @Get(':id')

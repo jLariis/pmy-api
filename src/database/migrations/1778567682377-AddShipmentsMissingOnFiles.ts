@@ -1,0 +1,122 @@
+import { MigrationInterface, QueryRunner } from "typeorm";
+
+export class AddShipmentsMissingOnFiles1778567682377 implements MigrationInterface {
+    name = 'AddShipmentsMissingOnFiles1778567682377'
+
+    public async up(queryRunner: QueryRunner): Promise<void> {
+        await queryRunner.query(`DROP INDEX \`FK_d4be62f1cecf4f38cf6d33afcc3\` ON \`subsidiary\``);
+        await queryRunner.query(`DROP INDEX \`FK_e49ed03cdca420d7c5080c78554\` ON \`vehicle\``);
+        await queryRunner.query(`DROP INDEX \`FK_7b03b2b5cf31160aa6f63742168\` ON \`charge\``);
+        await queryRunner.query(`DROP INDEX \`FK_1817f64bd1501f8aff5acdc5ec0\` ON \`driver\``);
+        await queryRunner.query(`DROP INDEX \`FK_483b0bbe46bd94edc2e6711730b\` ON \`route\``);
+        await queryRunner.query(`DROP INDEX \`IDX_dbcc468aa22a0f853dd0851197\` ON \`shipment_status\``);
+        await queryRunner.query(`DROP INDEX \`IDX_shipment_status_chargeShipmentId\` ON \`shipment_status\``);
+        await queryRunner.query(`DROP INDEX \`idx_shipment_fedex_unique_id\` ON \`shipment\``);
+        await queryRunner.query(`DROP INDEX \`FK_de2791ebd738e12f070995b5151\` ON \`package_dispatch\``);
+        await queryRunner.query(`DROP INDEX \`idx_charge_shipment_fedex_unique_id\` ON \`charge_shipment\``);
+        await queryRunner.query(`DROP INDEX \`FK_aa5e7f930c7dfd614242847d3e4\` ON \`unloading\``);
+        await queryRunner.query(`DROP INDEX \`FK_85fb920d5a3549fa15a28f4a7da\` ON \`consolidated\``);
+        await queryRunner.query(`DROP INDEX \`FK_a35b2af7fa30e71e4229e3d4e22\` ON \`inventory\``);
+        await queryRunner.query(`CREATE TABLE \`shipment_not_in_files\` (\`id\` varchar(36) NOT NULL, \`trackingNumber\` varchar(255) NOT NULL, \`subsidiaryId\` varchar(255) NULL, \`createdAt\` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (\`id\`)) ENGINE=InnoDB`);
+        await queryRunner.query(`ALTER TABLE \`subsidiary\` DROP COLUMN \`createdById\``);
+        await queryRunner.query(`ALTER TABLE \`subsidiary\` ADD \`createdById\` varchar(255) NULL`);
+        await queryRunner.query(`ALTER TABLE \`vehicle\` DROP COLUMN \`createdById\``);
+        await queryRunner.query(`ALTER TABLE \`vehicle\` ADD \`createdById\` varchar(255) NULL`);
+        await queryRunner.query(`ALTER TABLE \`charge\` DROP COLUMN \`createdById\``);
+        await queryRunner.query(`ALTER TABLE \`charge\` ADD \`createdById\` varchar(255) NULL`);
+        await queryRunner.query(`ALTER TABLE \`driver\` DROP COLUMN \`createdById\``);
+        await queryRunner.query(`ALTER TABLE \`driver\` ADD \`createdById\` varchar(255) NULL`);
+        await queryRunner.query(`ALTER TABLE \`route\` DROP COLUMN \`createdById\``);
+        await queryRunner.query(`ALTER TABLE \`route\` ADD \`createdById\` varchar(255) NULL`);
+        await queryRunner.query(`ALTER TABLE \`shipment_status\` CHANGE \`status\` \`status\` enum ('recoleccion', 'recibido_en_bodega', 'pendiente', 'en_ruta', 'en_transito', 'entregado', 'no_entregado', 'desconocido', 'rechazado', 'devuelto_a_fedex', 'es_ocurre', 'en_bodega', 'retorno_abandono_fedex', 'estacion_fedex', 'llegado_despues', 'direccion_incorrecta', 'cliente_no_disponible', 'cambio_fecha_solicitado', 'acargo_de_fedex', 'entregado_por_fedex', 'demora_en_entrega', 'empresa_cerrada', 'otro') NOT NULL`);
+        await queryRunner.query(`ALTER TABLE \`shipment\` CHANGE \`status\` \`status\` enum ('recoleccion', 'recibido_en_bodega', 'pendiente', 'en_ruta', 'en_transito', 'entregado', 'no_entregado', 'desconocido', 'rechazado', 'devuelto_a_fedex', 'es_ocurre', 'en_bodega', 'retorno_abandono_fedex', 'estacion_fedex', 'llegado_despues', 'direccion_incorrecta', 'cliente_no_disponible', 'cambio_fecha_solicitado', 'acargo_de_fedex', 'entregado_por_fedex', 'demora_en_entrega', 'empresa_cerrada', 'otro') NOT NULL DEFAULT 'pendiente'`);
+        await queryRunner.query(`ALTER TABLE \`route_closure\` DROP COLUMN \`createdById\``);
+        await queryRunner.query(`ALTER TABLE \`route_closure\` ADD \`createdById\` varchar(255) NULL`);
+        await queryRunner.query(`ALTER TABLE \`package_dispatch\` DROP COLUMN \`createdById\``);
+        await queryRunner.query(`ALTER TABLE \`package_dispatch\` ADD \`createdById\` varchar(255) NULL`);
+        await queryRunner.query(`ALTER TABLE \`charge_shipment\` CHANGE \`status\` \`status\` enum ('recoleccion', 'recibido_en_bodega', 'pendiente', 'en_ruta', 'en_transito', 'entregado', 'no_entregado', 'desconocido', 'rechazado', 'devuelto_a_fedex', 'es_ocurre', 'en_bodega', 'retorno_abandono_fedex', 'estacion_fedex', 'llegado_despues', 'direccion_incorrecta', 'cliente_no_disponible', 'cambio_fecha_solicitado', 'acargo_de_fedex', 'entregado_por_fedex', 'demora_en_entrega', 'empresa_cerrada', 'otro') NOT NULL DEFAULT 'pendiente'`);
+        await queryRunner.query(`ALTER TABLE \`unloading\` DROP COLUMN \`createdById\``);
+        await queryRunner.query(`ALTER TABLE \`unloading\` ADD \`createdById\` varchar(255) NULL`);
+        await queryRunner.query(`ALTER TABLE \`expense\` CHANGE \`category\` \`category\` enum ('Nómina', 'Renta', 'Recarga', 'Peajes', 'Servicios', 'Combustible', 'Otros gastos', 'Mantenimiento', 'Impuestos', 'Seguros', 'Viáticos') NULL`);
+        await queryRunner.query(`ALTER TABLE \`consolidated\` DROP COLUMN \`createdById\``);
+        await queryRunner.query(`ALTER TABLE \`consolidated\` ADD \`createdById\` varchar(255) NULL`);
+        await queryRunner.query(`ALTER TABLE \`inventory\` DROP COLUMN \`createdById\``);
+        await queryRunner.query(`ALTER TABLE \`inventory\` ADD \`createdById\` varchar(255) NULL`);
+        await queryRunner.query(`CREATE INDEX \`IDX_4e4bfa8e796759fa76fad57e2a\` ON \`shipment\` (\`fedexUniqueId\`)`);
+        await queryRunner.query(`CREATE INDEX \`IDX_5a2f2667643784401963f80bfe\` ON \`charge_shipment\` (\`fedexUniqueId\`)`);
+        await queryRunner.query(`ALTER TABLE \`subsidiary\` ADD CONSTRAINT \`FK_d4be62f1cecf4f38cf6d33afcc3\` FOREIGN KEY (\`createdById\`) REFERENCES \`user\`(\`id\`) ON DELETE NO ACTION ON UPDATE NO ACTION`);
+        await queryRunner.query(`ALTER TABLE \`vehicle\` ADD CONSTRAINT \`FK_e49ed03cdca420d7c5080c78554\` FOREIGN KEY (\`createdById\`) REFERENCES \`user\`(\`id\`) ON DELETE NO ACTION ON UPDATE NO ACTION`);
+        await queryRunner.query(`ALTER TABLE \`charge\` ADD CONSTRAINT \`FK_7b03b2b5cf31160aa6f63742168\` FOREIGN KEY (\`createdById\`) REFERENCES \`user\`(\`id\`) ON DELETE NO ACTION ON UPDATE NO ACTION`);
+        await queryRunner.query(`ALTER TABLE \`driver\` ADD CONSTRAINT \`FK_1817f64bd1501f8aff5acdc5ec0\` FOREIGN KEY (\`createdById\`) REFERENCES \`user\`(\`id\`) ON DELETE NO ACTION ON UPDATE NO ACTION`);
+        await queryRunner.query(`ALTER TABLE \`route\` ADD CONSTRAINT \`FK_483b0bbe46bd94edc2e6711730b\` FOREIGN KEY (\`createdById\`) REFERENCES \`user\`(\`id\`) ON DELETE NO ACTION ON UPDATE NO ACTION`);
+        await queryRunner.query(`ALTER TABLE \`shipment_status\` ADD CONSTRAINT \`FK_c4c10ab5eb0356cb21ba6fa3d00\` FOREIGN KEY (\`chargeShipmentId\`) REFERENCES \`charge_shipment\`(\`id\`) ON DELETE CASCADE ON UPDATE NO ACTION`);
+        await queryRunner.query(`ALTER TABLE \`route_closure\` ADD CONSTRAINT \`FK_07b28397771c15567596d4a83e7\` FOREIGN KEY (\`createdById\`) REFERENCES \`user\`(\`id\`) ON DELETE NO ACTION ON UPDATE NO ACTION`);
+        await queryRunner.query(`ALTER TABLE \`package_dispatch\` ADD CONSTRAINT \`FK_de2791ebd738e12f070995b5151\` FOREIGN KEY (\`createdById\`) REFERENCES \`user\`(\`id\`) ON DELETE NO ACTION ON UPDATE NO ACTION`);
+        await queryRunner.query(`ALTER TABLE \`unloading\` ADD CONSTRAINT \`FK_aa5e7f930c7dfd614242847d3e4\` FOREIGN KEY (\`createdById\`) REFERENCES \`user\`(\`id\`) ON DELETE NO ACTION ON UPDATE NO ACTION`);
+        await queryRunner.query(`ALTER TABLE \`consolidated\` ADD CONSTRAINT \`FK_85fb920d5a3549fa15a28f4a7da\` FOREIGN KEY (\`createdById\`) REFERENCES \`user\`(\`id\`) ON DELETE NO ACTION ON UPDATE NO ACTION`);
+        await queryRunner.query(`ALTER TABLE \`for-pick-up\` ADD CONSTRAINT \`FK_bc5566207f982fcbb4018f0b77a\` FOREIGN KEY (\`createdById\`) REFERENCES \`user\`(\`id\`) ON DELETE NO ACTION ON UPDATE NO ACTION`);
+        await queryRunner.query(`ALTER TABLE \`for-pick-up\` ADD CONSTRAINT \`FK_41154efaa448aa36a6ad30b8b00\` FOREIGN KEY (\`shipmentId\`) REFERENCES \`shipment\`(\`id\`) ON DELETE NO ACTION ON UPDATE NO ACTION`);
+        await queryRunner.query(`ALTER TABLE \`for-pick-up\` ADD CONSTRAINT \`FK_5f9e2a64cc20ff109057a5ed8bb\` FOREIGN KEY (\`chargeShipmentId\`) REFERENCES \`charge_shipment\`(\`id\`) ON DELETE NO ACTION ON UPDATE NO ACTION`);
+        await queryRunner.query(`ALTER TABLE \`shipment_not_in_files\` ADD CONSTRAINT \`FK_85bf85a5de1bbcc0893b9e79bee\` FOREIGN KEY (\`subsidiaryId\`) REFERENCES \`subsidiary\`(\`id\`) ON DELETE NO ACTION ON UPDATE NO ACTION`);
+        await queryRunner.query(`ALTER TABLE \`inventory\` ADD CONSTRAINT \`FK_a35b2af7fa30e71e4229e3d4e22\` FOREIGN KEY (\`createdById\`) REFERENCES \`user\`(\`id\`) ON DELETE NO ACTION ON UPDATE NO ACTION`);
+    }
+
+    public async down(queryRunner: QueryRunner): Promise<void> {
+        await queryRunner.query(`ALTER TABLE \`inventory\` DROP FOREIGN KEY \`FK_a35b2af7fa30e71e4229e3d4e22\``);
+        await queryRunner.query(`ALTER TABLE \`shipment_not_in_files\` DROP FOREIGN KEY \`FK_85bf85a5de1bbcc0893b9e79bee\``);
+        await queryRunner.query(`ALTER TABLE \`for-pick-up\` DROP FOREIGN KEY \`FK_5f9e2a64cc20ff109057a5ed8bb\``);
+        await queryRunner.query(`ALTER TABLE \`for-pick-up\` DROP FOREIGN KEY \`FK_41154efaa448aa36a6ad30b8b00\``);
+        await queryRunner.query(`ALTER TABLE \`for-pick-up\` DROP FOREIGN KEY \`FK_bc5566207f982fcbb4018f0b77a\``);
+        await queryRunner.query(`ALTER TABLE \`consolidated\` DROP FOREIGN KEY \`FK_85fb920d5a3549fa15a28f4a7da\``);
+        await queryRunner.query(`ALTER TABLE \`unloading\` DROP FOREIGN KEY \`FK_aa5e7f930c7dfd614242847d3e4\``);
+        await queryRunner.query(`ALTER TABLE \`package_dispatch\` DROP FOREIGN KEY \`FK_de2791ebd738e12f070995b5151\``);
+        await queryRunner.query(`ALTER TABLE \`route_closure\` DROP FOREIGN KEY \`FK_07b28397771c15567596d4a83e7\``);
+        await queryRunner.query(`ALTER TABLE \`shipment_status\` DROP FOREIGN KEY \`FK_c4c10ab5eb0356cb21ba6fa3d00\``);
+        await queryRunner.query(`ALTER TABLE \`route\` DROP FOREIGN KEY \`FK_483b0bbe46bd94edc2e6711730b\``);
+        await queryRunner.query(`ALTER TABLE \`driver\` DROP FOREIGN KEY \`FK_1817f64bd1501f8aff5acdc5ec0\``);
+        await queryRunner.query(`ALTER TABLE \`charge\` DROP FOREIGN KEY \`FK_7b03b2b5cf31160aa6f63742168\``);
+        await queryRunner.query(`ALTER TABLE \`vehicle\` DROP FOREIGN KEY \`FK_e49ed03cdca420d7c5080c78554\``);
+        await queryRunner.query(`ALTER TABLE \`subsidiary\` DROP FOREIGN KEY \`FK_d4be62f1cecf4f38cf6d33afcc3\``);
+        await queryRunner.query(`DROP INDEX \`IDX_5a2f2667643784401963f80bfe\` ON \`charge_shipment\``);
+        await queryRunner.query(`DROP INDEX \`IDX_4e4bfa8e796759fa76fad57e2a\` ON \`shipment\``);
+        await queryRunner.query(`ALTER TABLE \`inventory\` DROP COLUMN \`createdById\``);
+        await queryRunner.query(`ALTER TABLE \`inventory\` ADD \`createdById\` varchar(36) NULL`);
+        await queryRunner.query(`ALTER TABLE \`consolidated\` DROP COLUMN \`createdById\``);
+        await queryRunner.query(`ALTER TABLE \`consolidated\` ADD \`createdById\` varchar(36) NULL`);
+        await queryRunner.query(`ALTER TABLE \`expense\` CHANGE \`category\` \`category\` enum ('Combustible', 'Impuestos', 'Mantenimiento', 'Nómina', 'Otros gastos', 'Peajes', 'Permiso de carga', 'Recarga', 'Renta', 'Seguros', 'Servicios', 'Viáticos', 'Vuelos') NULL`);
+        await queryRunner.query(`ALTER TABLE \`unloading\` DROP COLUMN \`createdById\``);
+        await queryRunner.query(`ALTER TABLE \`unloading\` ADD \`createdById\` varchar(36) NULL`);
+        await queryRunner.query(`ALTER TABLE \`charge_shipment\` CHANGE \`status\` \`status\` enum ('recoleccion', 'recibido_en_bodega', 'pendiente', 'en_ruta', 'en_transito', 'entregado', 'no_entregado', 'desconocido', 'rechazado', 'devuelto_a_fedex', 'es_ocurre', 'en_bodega', 'estacion_fedex', 'llegado_despues', 'direccion_incorrecta', 'cliente_no_disponible', 'cambio_fecha_solicitado', 'acargo_de_fedex', 'entregado_por_fedex', 'retorno_abandono_fedex') NOT NULL DEFAULT 'pendiente'`);
+        await queryRunner.query(`ALTER TABLE \`package_dispatch\` DROP COLUMN \`createdById\``);
+        await queryRunner.query(`ALTER TABLE \`package_dispatch\` ADD \`createdById\` varchar(36) NULL`);
+        await queryRunner.query(`ALTER TABLE \`route_closure\` DROP COLUMN \`createdById\``);
+        await queryRunner.query(`ALTER TABLE \`route_closure\` ADD \`createdById\` varchar(36) NULL`);
+        await queryRunner.query(`ALTER TABLE \`shipment\` CHANGE \`status\` \`status\` enum ('recoleccion', 'recibido_en_bodega', 'pendiente', 'en_ruta', 'en_transito', 'entregado', 'no_entregado', 'desconocido', 'rechazado', 'devuelto_a_fedex', 'es_ocurre', 'en_bodega', 'estacion_fedex', 'llegado_despues', 'direccion_incorrecta', 'cliente_no_disponible', 'cambio_fecha_solicitado', 'acargo_de_fedex', 'entregado_por_fedex', 'retorno_abandono_fedex', 'demora_en_entrega', 'empresa_cerrada') NOT NULL`);
+        await queryRunner.query(`ALTER TABLE \`shipment_status\` CHANGE \`status\` \`status\` enum ('recoleccion', 'recibido_en_bodega', 'pendiente', 'en_ruta', 'en_transito', 'entregado', 'no_entregado', 'desconocido', 'rechazado', 'devuelto_a_fedex', 'es_ocurre', 'en_bodega', 'retenido_por_fedex', 'estacion_fedex', 'llegado_despues', 'direccion_incorrecta', 'cliente_no_disponible', 'cambio_fecha_solicitado', 'acargo_de_fedex', 'entregado_por_fedex', 'retorno_abandono_fedex', 'demora_en_entrega', 'empresa_cerrada') NOT NULL`);
+        await queryRunner.query(`ALTER TABLE \`route\` DROP COLUMN \`createdById\``);
+        await queryRunner.query(`ALTER TABLE \`route\` ADD \`createdById\` varchar(36) NULL`);
+        await queryRunner.query(`ALTER TABLE \`driver\` DROP COLUMN \`createdById\``);
+        await queryRunner.query(`ALTER TABLE \`driver\` ADD \`createdById\` varchar(36) NULL`);
+        await queryRunner.query(`ALTER TABLE \`charge\` DROP COLUMN \`createdById\``);
+        await queryRunner.query(`ALTER TABLE \`charge\` ADD \`createdById\` varchar(36) NULL`);
+        await queryRunner.query(`ALTER TABLE \`vehicle\` DROP COLUMN \`createdById\``);
+        await queryRunner.query(`ALTER TABLE \`vehicle\` ADD \`createdById\` varchar(36) NULL`);
+        await queryRunner.query(`ALTER TABLE \`subsidiary\` DROP COLUMN \`createdById\``);
+        await queryRunner.query(`ALTER TABLE \`subsidiary\` ADD \`createdById\` varchar(36) NULL`);
+        await queryRunner.query(`DROP TABLE \`shipment_not_in_files\``);
+        await queryRunner.query(`CREATE INDEX \`FK_a35b2af7fa30e71e4229e3d4e22\` ON \`inventory\` (\`createdById\`)`);
+        await queryRunner.query(`CREATE INDEX \`FK_85fb920d5a3549fa15a28f4a7da\` ON \`consolidated\` (\`createdById\`)`);
+        await queryRunner.query(`CREATE INDEX \`FK_aa5e7f930c7dfd614242847d3e4\` ON \`unloading\` (\`createdById\`)`);
+        await queryRunner.query(`CREATE INDEX \`idx_charge_shipment_fedex_unique_id\` ON \`charge_shipment\` (\`fedexUniqueId\`)`);
+        await queryRunner.query(`CREATE INDEX \`FK_de2791ebd738e12f070995b5151\` ON \`package_dispatch\` (\`createdById\`)`);
+        await queryRunner.query(`CREATE INDEX \`idx_shipment_fedex_unique_id\` ON \`shipment\` (\`fedexUniqueId\`)`);
+        await queryRunner.query(`CREATE INDEX \`IDX_shipment_status_chargeShipmentId\` ON \`shipment_status\` (\`chargeShipmentId\`)`);
+        await queryRunner.query(`CREATE INDEX \`IDX_dbcc468aa22a0f853dd0851197\` ON \`shipment_status\` (\`shipmentId\`)`);
+        await queryRunner.query(`CREATE INDEX \`FK_483b0bbe46bd94edc2e6711730b\` ON \`route\` (\`createdById\`)`);
+        await queryRunner.query(`CREATE INDEX \`FK_1817f64bd1501f8aff5acdc5ec0\` ON \`driver\` (\`createdById\`)`);
+        await queryRunner.query(`CREATE INDEX \`FK_7b03b2b5cf31160aa6f63742168\` ON \`charge\` (\`createdById\`)`);
+        await queryRunner.query(`CREATE INDEX \`FK_e49ed03cdca420d7c5080c78554\` ON \`vehicle\` (\`createdById\`)`);
+        await queryRunner.query(`CREATE INDEX \`FK_d4be62f1cecf4f38cf6d33afcc3\` ON \`subsidiary\` (\`createdById\`)`);
+    }
+
+}

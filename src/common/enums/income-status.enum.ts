@@ -2,5 +2,8 @@ export enum IncomeStatus {
     ENTREGADO = 'entregado',
     RECHAZADO = 'rechazado',
     NO_ENTREGADO = 'no_entregado',
-    CLIENTE_NO_DISPONIBLE_3RA_VISITA = 'cliente_no_disponible_3ra_visita'
+    CLIENTE_NO_DISPONIBLE_3RA_VISITA = 'cliente_no_disponible_3ra_visita',
+    TYCO = 'tyco',
+    AEROPUERTO = 'aeropuerto',
+    TRASLADO_ESPECIAL = 'traslado_especial',
 }

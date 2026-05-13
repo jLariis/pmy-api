@@ -7,13 +7,14 @@ import { ValidateTrackingsForClosureDto } from './dto/validate-trackings-for-clo
 import { PackageDispatch } from 'src/entities/package-dispatch.entity';
 import { ValidatedPackageDispatchDto } from 'src/package-dispatch/dto/validated-package-dispatch.dto';
 import { ShipmentStatusType } from 'src/common/enums/shipment-status-type.enum';
-import { ShipmentStatus, Collection, Shipment, Income, ChargeShipment } from 'src/entities';
+import { ShipmentStatus, Collection, Shipment, Income, ChargeShipment, ShipmentNotInFiles } from 'src/entities';
 import { DispatchStatus } from 'src/common/enums/dispatch-enum';
 import { MailService } from 'src/mail/mail.service';
 import { fromZonedTime } from 'date-fns-tz';
 import { ShipmentType } from 'src/common/enums/shipment-type.enum';
 import { IncomeStatus } from 'src/common/enums/income-status.enum';
 import { IncomeSourceType } from 'src/common/enums/income-source-type.enum';
+import { FedexService } from 'src/shipments/fedex.service';
 
 @Injectable()
 export class RouteclosureService {
@@ -25,250 +26,10 @@ export class RouteclosureService {
     @InjectRepository(PackageDispatch)
     private readonly packageDispatchRepository: Repository<PackageDispatch>,
     @InjectRepository(Income)
-    private readonly incomeRepository: Repository<Income>,
     private readonly mailService: MailService,
+    private readonly fedexService: FedexService,
     private readonly dataSource: DataSource
   ) {}
-
-  async createResp0805(createRouteclosureDto: CreateRouteclosureDto) {
-    const queryRunner = this.dataSource.createQueryRunner();
-    await queryRunner.connect();
-    await queryRunner.startTransaction();
-
-    try {
-      this.logger.log('🟡 [RouteClosure] Iniciando proceso de cierre de ruta...');
-
-      // 1. Validar el Despacho
-      const packageDispatch = await queryRunner.manager.findOne(PackageDispatch, {
-        where: { id: createRouteclosureDto.packageDispatch.id },
-        relations: ['subsidiary'],
-      });
-
-      if (!packageDispatch) {
-        throw new BadRequestException(`El despacho con ID ${createRouteclosureDto.packageDispatch.id} no existe.`);
-      }
-
-      // 2. Actualizar estado del Despacho
-      packageDispatch.status = DispatchStatus.COMPLETADA;
-      packageDispatch.closedAt = new Date();
-      await queryRunner.manager.save(PackageDispatch, packageDispatch);
-
-      // 3. Preparar datos para RouteClosure
-      // Según tu entidad, 'collections' es string[] (JSON en la BD)
-      // Aseguramos que si vienen objetos, solo guardemos el string del tracking
-      const trackingNumbers = createRouteclosureDto.collections.map(item => 
-        typeof item === 'string' ? item : (item as any).trackingNumber
-      );
-
-      const newRouteClosure = queryRunner.manager.create(RouteClosure, {
-        ...createRouteclosureDto,
-        collections: trackingNumbers, // Se guarda como JSON en la tabla route_closure
-        subsidiary: packageDispatch.subsidiary,
-      });
-
-      const savedClosure = await queryRunner.manager.save(RouteClosure, newRouteClosure);
-
-      // 4. Crear registros independientes en la tabla 'Collection'
-      if (trackingNumbers.length > 0) {
-        const now = new Date();
-        const utcDate = fromZonedTime(now, 'America/Hermosillo');
-        const collectionsToInsert = trackingNumbers.map(tn => {
-          return queryRunner.manager.create(Collection, {
-            trackingNumber: tn,
-            subsidiary: packageDispatch.subsidiary,
-            status: 'COLECTADO_EN_CIERRE', // O el status que prefieras por defecto
-            isPickUp: true,
-            createdAt: utcDate // Fecha Hermosillo
-          });
-        });
-
-        await queryRunner.manager.save(Collection, collectionsToInsert);
-        this.logger.log(`🟢 Se insertaron ${collectionsToInsert.length} registros en la tabla Collection.`);
-      }
-
-
-
-      // 5. Finalizar transacción
-      await queryRunner.commitTransaction();
-      this.logger.log(`✅ Cierre de ruta completado con éxito: ${savedClosure.id}`);
-
-      return savedClosure;
-
-    } catch (error) {
-      // Revertir todo si algo falla
-      await queryRunner.rollbackTransaction();
-      this.logger.error(`🔴 Error en RouteClosure: ${error.message}`);
-      throw new InternalServerErrorException(`Error al procesar el cierre: ${error.message}`);
-    } finally {
-      // Liberar conexión
-      await queryRunner.release();
-    }
-  }
-
-  async createResp0805_2(createRouteclosureDto: CreateRouteclosureDto) {
-    const queryRunner = this.dataSource.createQueryRunner();
-    await queryRunner.connect();
-    await queryRunner.startTransaction();
-
-    try {
-      this.logger.log('🟡 [RouteClosure] Iniciando proceso de cierre de ruta...');
-
-      // 1. Validar el Despacho
-      const packageDispatch = await queryRunner.manager.findOne(PackageDispatch, {
-        where: { id: createRouteclosureDto.packageDispatch.id },
-        relations: ['subsidiary'],
-      });
-
-      if (!packageDispatch) {
-        throw new BadRequestException(`El despacho con ID ${createRouteclosureDto.packageDispatch.id} no existe.`);
-      }
-
-      // 2. Actualizar estado del Despacho
-      packageDispatch.status = DispatchStatus.COMPLETADA;
-      packageDispatch.closedAt = new Date();
-      await queryRunner.manager.save(PackageDispatch, packageDispatch);
-
-      // 3. Preparar datos para RouteClosure
-      const trackingNumbers = createRouteclosureDto.collections.map(item => 
-        typeof item === 'string' ? item : (item as any).trackingNumber
-      );
-
-      const newRouteClosure = queryRunner.manager.create(RouteClosure, {
-        ...createRouteclosureDto,
-        collections: trackingNumbers,
-        subsidiary: packageDispatch.subsidiary,
-      });
-
-      const savedClosure = await queryRunner.manager.save(RouteClosure, newRouteClosure);
-
-      // 4. Crear registros independientes en la tabla 'Collection'
-      if (trackingNumbers.length > 0) {
-        const now = new Date();
-        const utcDate = fromZonedTime(now, 'America/Hermosillo');
-        const collectionsToInsert = trackingNumbers.map(tn => {
-          return queryRunner.manager.create(Collection, {
-            trackingNumber: tn,
-            subsidiary: packageDispatch.subsidiary,
-            status: 'COLECTADO_EN_CIERRE', 
-            isPickUp: true,
-            createdAt: utcDate
-          });
-        });
-
-        await queryRunner.manager.save(Collection, collectionsToInsert);
-        this.logger.log(`🟢 [RouteClosure] Se insertaron ${collectionsToInsert.length} registros en la tabla Collection.`);
-      }
-
-      // ==========================================
-      // 5. PROCESAR PAQUETES DHL (Cobros y Estatus)
-      // ==========================================
-      this.logger.log('🟡 [RouteClosure] Evaluando paquetes DHL para actualización e ingresos...');
-      const currentDatetime = new Date().toISOString().slice(0, 19).replace('T', ' ');
-
-      const packagesToProcess = [
-        ...createRouteclosureDto.podPackages.map(pkg => ({
-          id: typeof pkg === 'string' ? pkg : (pkg as any).id,
-          status: (pkg as any).status,
-          isDelivered: true,
-        })),
-        ...createRouteclosureDto.returnedPackages.map(pkg => ({
-          id: typeof pkg === 'string' ? pkg : (pkg as any).id,
-          status: (pkg as any).status,
-          isDelivered: false,
-        }))
-      ];
-
-      let processedDhlCount = 0;
-
-      for (const item of packagesToProcess) {
-        if (!item.id) continue;
-
-        // IMPORTANTE: Se añade la relación 'subsidiary' para poder leer dhlCostPackage
-        const pPackage = await queryRunner.manager.findOne(Shipment, { 
-          where: { id: item.id },
-          relations: ['subsidiary'] 
-        });
-        
-        if (pPackage && pPackage.shipmentType === ShipmentType.DHL) {
-          processedDhlCount++;
-          const finalStatus = item.status || pPackage.status; 
-          
-          // 5.1 Validar si el Income ya existe para evitar duplicidad
-          const existingIncome = await queryRunner.manager.findOne(Income, {
-            where: {
-              trackingNumber: pPackage.trackingNumber,
-              sourceType: IncomeSourceType.SHIPMENT
-            }
-          });
-
-          if (existingIncome) {
-            this.logger.warn(`⚠️ [RouteClosure] El ingreso para el tracking DHL ${pPackage.trackingNumber} ya existe. Omitiendo cobro.`);
-          } else {
-            // 5.2 Lógica de cobro y códigos de no entrega
-            let chargeCost = false;
-            let nonDeliveryStatusCode = null; // Variable para almacenar el código '07', '03', etc.
-            
-            const incomeType = item.isDelivered ? IncomeStatus.ENTREGADO : IncomeStatus.NO_ENTREGADO;
-
-            if (item.isDelivered) {
-              chargeCost = true;
-            } else {
-              // Diccionario de códigos para paquetes no entregados
-              const nonDeliveryCodes: Record<string, string> = {
-                [ShipmentStatusType.RECHAZADO]: '07',
-                [ShipmentStatusType.DIRECCION_INCORRECTA]: '03',
-                [ShipmentStatusType.CLIENTE_NO_DISPONIBLE]: '08',
-              };
-              
-              // Si el estatus final está en nuestro diccionario, asignamos el código y marcamos para cobro
-              if (nonDeliveryCodes[finalStatus]) {
-                chargeCost = true;
-                nonDeliveryStatusCode = nonDeliveryCodes[finalStatus];
-              }
-            }
-
-            const calculatedCost = chargeCost ? (pPackage.subsidiary?.dhlCostPackage ?? 0) : 0;
-
-            const newIncome = queryRunner.manager.create(Income, {
-              trackingNumber: pPackage.trackingNumber,
-              subsidiary: pPackage.subsidiary, 
-              shipmentType: pPackage.shipmentType,
-              cost: calculatedCost,
-              incomeType: incomeType, 
-              nonDeliveryStatus: nonDeliveryStatusCode, // <--- Aquí inyectamos el nuevo código
-              isGrouped: false,
-              sourceType: IncomeSourceType.SHIPMENT,
-              shipment: pPackage,
-              date: currentDatetime 
-            });
-
-            await queryRunner.manager.save(Income, newIncome);
-            this.logger.log(`🟢 [RouteClosure] Ingreso creado para DHL ${pPackage.trackingNumber} | Tipo: ${incomeType} | Costo: $${calculatedCost} | Código DEX: ${nonDeliveryStatusCode || 'N/A'}`);
-          }
-
-          // 5.3 Actualizar el Shipment con su estatus EXACTO (independientemente de si el cobro existía o no)
-          await queryRunner.manager.update(Shipment, { id: item.id }, { status: finalStatus });  
-        }
-      }
-
-      this.logger.log(`🟢 [RouteClosure] Se procesaron y actualizaron ${processedDhlCount} paquetes de DHL.`);
-
-      // 6. Finalizar transacción
-      await queryRunner.commitTransaction();
-      this.logger.log(`✅ [RouteClosure] Cierre de ruta completado con éxito: ${savedClosure.id}`);
-
-      return savedClosure;
-
-    } catch (error) {
-      // Revertir absolutamente todo (Collections, RouteClosure, Incomes y Shipments) si algo falla
-      await queryRunner.rollbackTransaction();
-      this.logger.error(`🔴 [RouteClosure] Error crítico procesando el cierre: ${error.message}`, error.stack);
-      throw new InternalServerErrorException(`Error al procesar el cierre: ${error.message}`);
-    } finally {
-      // Liberar conexión siempre
-      await queryRunner.release();
-    }
-  }
 
   async create(createRouteclosureDto: CreateRouteclosureDto) {
     const queryRunner = this.dataSource.createQueryRunner();
@@ -298,16 +59,23 @@ export class RouteclosureService {
         typeof item === 'string' ? item : (item as any).trackingNumber
       );
 
-      // =====================================================================
-      // 🛡️ SOLUCIÓN FK: Filtramos los arreglos usando la propiedad isCharge
-      // Evitamos que los ChargeShipments rompan la tabla intermedia de Shipments
-      // =====================================================================
+      // Filtramos los arreglos usando la propiedad isCharge para evitar errores de FK
+      // 1. Filtramos los POD: Solo dejamos lo que NO es Charge y NO es No VAN
       const validPodShipments = createRouteclosureDto.podPackages
-        .filter(pkg => !(pkg as any).isCharge)
+        .filter(pkg => {
+          const isCharge = (pkg as any).isCharge;
+          const isNoVan = typeof (pkg as any).id === 'string' && (pkg as any).id.startsWith('novan-');
+          // SOLO permitimos los que existen en la tabla 'shipment'
+          return !isCharge && !isNoVan;
+        })
         .map(pkg => ({ id: typeof pkg === 'string' ? pkg : (pkg as any).id }));
 
       const validReturnedShipments = createRouteclosureDto.returnedPackages
-        .filter(pkg => !(pkg as any).isCharge)
+        .filter(pkg => {
+          const isCharge = (pkg as any).isCharge;
+          const isNoVan = typeof (pkg as any).id === 'string' && (pkg as any).id.startsWith('novan-');
+          return !isCharge && !isNoVan;
+        })
         .map(pkg => ({ id: typeof pkg === 'string' ? pkg : (pkg as any).id }));
 
       const newRouteClosure = queryRunner.manager.create(RouteClosure, {
@@ -319,6 +87,29 @@ export class RouteclosureService {
       });
 
       const savedClosure = await queryRunner.manager.save(RouteClosure, newRouteClosure);
+
+      // =====================================================================
+      // 🛡️ GUARDAR PAQUETES NO VAN (ShipmentNotInFiles)
+      // =====================================================================
+      if (createRouteclosureDto.noVanPackages && createRouteclosureDto.noVanPackages.length > 0) {
+        this.logger.log(`🟡 [RouteClosure] Registrando ${createRouteclosureDto.noVanPackages.length} paquetes No VAN...`);
+        
+        const noVanEntities = createRouteclosureDto.noVanPackages.map(pkg => {
+          // Extraemos el tracking independientemente de si pkg viene como objeto o string (por seguridad)
+          const tNumber = typeof pkg === 'string' ? pkg : (pkg as any).trackingNumber;
+
+          return queryRunner.manager.create(ShipmentNotInFiles, {
+            trackingNumber: tNumber,
+            subsidiary: packageDispatch.subsidiary,
+            subsidiaryId: packageDispatch.subsidiary.id
+          });
+        });
+
+        // Faltaría agregar el ingreso de los paquetes que cumplan como lo hace para agregar los de DHL
+
+        await queryRunner.manager.save(ShipmentNotInFiles, noVanEntities);
+        this.logger.log(`🟢 [RouteClosure] ${noVanEntities.length} registros insertados en shipment_not_in_files.`);
+      }
 
       // 4. Crear registros independientes en la tabla 'Collection'
       if (trackingNumbers.length > 0) {
@@ -344,7 +135,6 @@ export class RouteclosureService {
       this.logger.log('🟡 [RouteClosure] Evaluando paquetes DHL para actualización e ingresos...');
       const currentDatetime = new Date().toISOString().slice(0, 19).replace('T', ' ');
 
-      // Unificamos entregados y no entregados para evaluarlos en un solo ciclo
       const packagesToProcess = [
         ...createRouteclosureDto.podPackages.map(pkg => ({
           id: typeof pkg === 'string' ? pkg : (pkg as any).id,
@@ -367,7 +157,6 @@ export class RouteclosureService {
 
         let pPackage = null;
 
-        // Buscamos en la tabla correcta dependiendo de si es un ChargeShipment o no
         if (item.isCharge) {
           pPackage = await queryRunner.manager.findOne(ChargeShipment, { 
             where: { id: item.id },
@@ -380,12 +169,10 @@ export class RouteclosureService {
           });
         }
         
-        // 🛡️ AQUÍ ESTÁ LA MAGIA: Solo entra si es DHL. FedEx se ignora por completo.
         if (pPackage && pPackage.shipmentType === ShipmentType.DHL) {
           processedDhlCount++;
           const finalStatus = item.status || pPackage.status; 
           
-          // 5.1 Validar si el Income ya existe
           const existingIncome = await queryRunner.manager.findOne(Income, {
             where: {
               trackingNumber: pPackage.trackingNumber,
@@ -396,7 +183,6 @@ export class RouteclosureService {
           if (existingIncome) {
             this.logger.warn(`⚠️ [RouteClosure] El ingreso para el tracking DHL ${pPackage.trackingNumber} ya existe. Omitiendo cobro.`);
           } else {
-            // 5.2 Lógica de cobro y asignación de códigos DEX para no entregados
             let chargeCost = false;
             let nonDeliveryStatusCode = null;
             
@@ -433,10 +219,8 @@ export class RouteclosureService {
             });
 
             await queryRunner.manager.save(Income, newIncome);
-            this.logger.log(`🟢 [RouteClosure] Ingreso creado para DHL ${pPackage.trackingNumber} | Tipo: ${incomeType} | Costo: $${calculatedCost} | Código DEX: ${nonDeliveryStatusCode || 'N/A'}`);
           }
 
-          // 5.3 Actualizamos el estatus en la tabla que le corresponda
           if (item.isCharge) {
             await queryRunner.manager.update(ChargeShipment, { id: item.id }, { status: finalStatus });  
           } else {
@@ -445,7 +229,7 @@ export class RouteclosureService {
         }
       }
 
-      this.logger.log(`🟢 [RouteClosure] Se procesaron y actualizaron ${processedDhlCount} paquetes de DHL.`);
+      this.logger.log(`🟢 [RouteClosure] Se procesaron ${processedDhlCount} paquetes de DHL.`);
 
       // 6. Finalizar transacción
       await queryRunner.commitTransaction();
@@ -454,12 +238,10 @@ export class RouteclosureService {
       return savedClosure;
 
     } catch (error) {
-      // Revertir absolutamente todo si algo falla para no dejar datos corruptos
       await queryRunner.rollbackTransaction();
       this.logger.error(`🔴 [RouteClosure] Error crítico procesando el cierre: ${error.message}`, error.stack);
       throw new InternalServerErrorException(`Error al procesar el cierre: ${error.message}`);
     } finally {
-      // Liberar conexión siempre
       await queryRunner.release();
     }
   }
@@ -584,6 +366,122 @@ export class RouteclosureService {
 
     return { validatedPackages, podPackages };
   }
+
+  async validateTrackingNumbersNoVan(noVanTrackingNumbers: string[]) {
+    const queryRunner = this.dataSource.createQueryRunner();
+    await queryRunner.connect();
+
+    try {
+      return await Promise.all(
+        noVanTrackingNumbers.map(async (tn) => {
+          // 1. Obtener el mejor estatus de FedEx con arbitraje Header vs Scans
+          const fedexStatus = await this.getBestFedexStatus(tn);
+          
+          // 2. Buscar en BD local para metadata (isCharge)
+          const dbInfo = await this.findPackageInLocalDB(queryRunner, tn);
+
+          const isValid = !!fedexStatus || !!dbInfo;
+
+          // 3. Normalización de estatus (Traducción a "entregado")
+          let rawStatus = (fedexStatus || dbInfo?.status || 'NOT_FOUND').toLowerCase();
+          
+          if (rawStatus.includes('delivered') || rawStatus.includes('delivery')) {
+            rawStatus = 'Entregado';
+          }
+
+          return {
+            trackingNumber: tn,
+            isValid,
+            status: rawStatus,
+            isCharge: dbInfo?.isCharge || false,
+            reason: isValid ? null : 'Guía no encontrada en FedEx ni en Sistema'
+          };
+        })
+      );
+    } finally {
+      await queryRunner.release();
+    }
+  }
+
+  private async getBestFedexStatus(trackingNumber: string): Promise<string | null> {
+    try {
+      let response = await this.fedexService.trackPackage(trackingNumber);
+      let results = response?.output?.completeTrackResults?.[0]?.trackResults || [];
+
+      // 1. Manejo de reintentos
+      const isLabelOnly = results.some(r => r.latestStatusDetail?.code === 'OC' && (r.scanEvents?.length || 0) <= 1);
+      if (results.length === 0 || isLabelOnly) {
+        const retry = await this.fedexService.trackPackage(trackingNumber, undefined);
+        results = retry?.output?.completeTrackResults?.[0]?.trackResults || results;
+      }
+
+      if (results.length === 0) return null;
+
+      // 2. Selección de la generación (UniqueID)
+      if (results.length > 1) {
+        results.sort((a, b) => {
+          const seqA = parseInt(a.trackingNumberInfo?.trackingNumberUniqueId?.split('~')[0] || '0');
+          const seqB = parseInt(b.trackingNumberInfo?.trackingNumberUniqueId?.split('~')[0] || '0');
+          return seqB - seqA;
+        });
+      }
+
+      const winner = results[0];
+
+      // =================================================================================
+      // 🛡️ EXTRACCIÓN DE ESTATUS Y CÓDIGOS DE EXCEPCIÓN
+      // =================================================================================
+      
+      // Obtenemos los scans ordenados para tener la "verdad" del terreno
+      const scans = winner.scanEvents || [];
+      const sortedScans = [...scans].sort((a, b) => 
+        new Date(b.date).getTime() - new Date(a.date).getTime()
+      );
+      const latestScan = sortedScans[0];
+
+      // Datos del Header
+      const headerCode = winner.latestStatusDetail?.code; // Ej: "DE"
+      const headerDesc = (winner.latestStatusDetail?.description || '').trim();
+
+      // Si es una excepción ("DE" - Delivery Exception), buscamos el código específico (07, 03, etc.)
+      if (headerCode === 'DE' || latestScan?.eventType === 'DE') {
+        // Prioridad 1: Código en el Scan más reciente
+        // Prioridad 2: Motivo en Ancillary Details del Header
+        const specificCode = latestScan?.exceptionCode || winner.latestStatusDetail?.ancillaryDetails?.[0]?.reason;
+        
+        if (specificCode) {
+          this.logger.log(`[NoVan:${trackingNumber}] Excepción detectada. Código: ${specificCode}`);
+          return `DEX ${specificCode}`; // Retornamos "DEX 07", "DEX 03", etc.
+        }
+      }
+
+      // --- ARBITRAJE ESTÁNDAR SI NO ES EXCEPCIÓN ---
+      const headerStatus = (winner.latestStatusDetail?.statusByLocale || winner.latestStatusDetail?.description || '').trim();
+      const scanStatus = (latestScan?.derivedStatus || latestScan?.eventDescription || '').trim();
+
+      if (scanStatus && headerStatus.toLowerCase() !== scanStatus.toLowerCase()) {
+        return scanStatus;
+      }
+
+      return headerStatus || scanStatus || 'UNKNOWN';
+
+    } catch (error) {
+      this.logger.error(`[NoVan:${trackingNumber}] Error en arbitraje: ${error.message}`);
+      return null;
+    }
+  }
+
+  private async findPackageInLocalDB(queryRunner: any, tn: string) {
+    const tables = ['shipment', 'charge_shipment'];
+    for (const table of tables) {
+      const res = await queryRunner.query(
+        `SELECT status FROM ${table} WHERE trackingNumber = ? ORDER BY createdAt DESC LIMIT 1`,
+        [tn]
+      );
+      if (res.length > 0) return { status: res[0].status, isCharge: table === 'charge_shipment' };
+    }
+    return null;
+}
 
   async sendByEmail(pdfFile: Express.Multer.File, excelFile: Express.Multer.File, routeClosureId: string){
     const routeClosure = await this.routeClouseRepository.findOne(

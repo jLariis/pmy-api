@@ -3,4 +3,7 @@ export enum IncomeSourceType {
   COLLECTION = 'collection',
   CHARGE = 'charge',
   MANUAL = 'manual',
+  TYCO = 'tyco',
+  AEROPUERTO = 'aeropuerto',
+  SPECIAL_TRANSFER = 'special_transfer',
 }

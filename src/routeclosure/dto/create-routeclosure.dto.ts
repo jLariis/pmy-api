@@ -10,4 +10,5 @@ export class CreateRouteclosureDto {
     createdBy: User;
     actualKms: string;
     collections: string[];
+    noVanPackages: string[];
 }

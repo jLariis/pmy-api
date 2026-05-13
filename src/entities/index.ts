@@ -21,3 +21,5 @@ export * from './package-dispatch-history.entity';
 export * from './unloading.entity';
 export * from './for-pick-up.entity';
 export * from './charge-shipment.entity';
+export * from './transfer.entity';
+export * from './shipment-not-in-files.entity';

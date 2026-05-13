@@ -36,6 +36,14 @@ export class RouteclosureController {
     return this.routeclosureService.validateTrackingNumbersForClosure(validateTrackingForClosure);
   }
 
+  @Post('validateNoVanTrackings')
+  validateNoVanTrackings(
+    @Body('noVanTrackingNumbers') noVanTrackingNumbers: string[]
+  ) {
+    console.log("🚀 ~ RouteclosureController ~ validateNoVanTrackings ~ noVanTrackingNumbers:", noVanTrackingNumbers)
+    return this.routeclosureService.validateTrackingNumbersNoVan(noVanTrackingNumbers);
+  }
+
   @Post('upload')
     @UseInterceptors(FilesInterceptor('files'))
     @ApiOperation({ summary: 'Subir archivo Pdf y enviar por correo' })
