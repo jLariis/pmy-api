@@ -10,7 +10,7 @@ export class TransferController {
 
   @Post()
   create(@Body() createTransferDto: CreateTransferDto, @Req() req: any) {
-    const userId = req.userId || null; 
+    const userId = req.user.userId || null; 
     return this.transferService.create(createTransferDto, userId);
   }
 

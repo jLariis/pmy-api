@@ -62,6 +62,30 @@ export class Subsidiary {
   })
   chargeCost: number;
 
+  @Column({
+    type: 'decimal',
+    precision: 10,
+    scale: 2,
+    default: 0.00,
+  })
+  tycoAmount: number;
+
+  @Column({
+    type: 'decimal',
+    precision: 10,
+    scale: 2,
+    default: 0.00,
+  })
+  airportAmount: number;
+
+  @Column({
+    type: 'decimal',
+    precision: 10,
+    scale: 2,
+    default: 0.00,
+  })
+  secondAbordAmount: number;
+
   @Column({ type: 'datetime', default: () => 'CURRENT_TIMESTAMP' })
   createdAt: Date;
 

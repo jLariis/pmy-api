@@ -2,7 +2,7 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository } from 'typeorm';
 import { CreateTransferDto } from './dto/create-transfer.dto';
-import { Income, Transfer } from 'src/entities';
+import { Income, Subsidiary, Transfer } from 'src/entities';
 import { IncomeSourceType, IncomeStatus, ShipmentType, TransferType } from 'src/common/enums';
 
 @Injectable()
@@ -19,56 +19,67 @@ export class TransferService {
     await queryRunner.startTransaction();
 
     try {
-      // 1. Crear y guardar el traslado DENTRO de la transacción      
-      console.log("🚀 ~ TransferService ~ create ~ createTransferDto:", createTransferDto)
+      console.log("🚀 ~ TransferService ~ create ~ createTransferDto:", createTransferDto);
+      
+      const subsidiary = await queryRunner.manager.findOne(Subsidiary, { where: { id: createTransferDto.originId } });
 
-      const transfer = queryRunner.manager.create(Transfer, {
-        ...createTransferDto,
-        createdById: userId,
-      });
-      const savedTransfer = await queryRunner.manager.save(transfer);
+      // 1. Determine Base Amount and Types
+      let baseAmount = Number(createTransferDto.amount) || 4689.45; 
+      let sourceType = IncomeSourceType.SPECIAL_TRANSFER;
+      let incomeType = IncomeStatus.TRASLADO_ESPECIAL;
 
-      // 2. Definir valores por defecto (Comportamiento para "OTHER" o "Especial")
-      let finalAmount = createTransferDto.amount || 0; 
-      let sourceType = IncomeSourceType.SPECIAL_TRANSFER; // Valor por defecto
-      let incomeType = IncomeStatus.TRASLADO_ESPECIAL; // Valor por defecto
-
-      // 3. Sobrescribir si es Tyco o Aeropuerto
       if (createTransferDto.transferType === TransferType.TYCO) {
-        finalAmount = 2500;
+        baseAmount = Number(subsidiary?.tycoAmount) || baseAmount;
         sourceType = IncomeSourceType.TYCO;
         incomeType = IncomeStatus.TYCO;
       } else if (createTransferDto.transferType === TransferType.AEROPUERTO) {
-        finalAmount = 3500;
+        baseAmount = Number(subsidiary?.airportAmount) || 4689.45; 
         sourceType = IncomeSourceType.AEROPUERTO;
         incomeType = IncomeStatus.AEROPUERTO;
       }
 
-      // 4. Crear y guardar el ingreso DENTRO de la transacción
+      // 2. Determine Extra Costs
+      const extraAmount = Number(createTransferDto.extraAmount) || 0;
+      let secondAboardAmount = 0;
+
+      if (createTransferDto.secondAbord) {
+        secondAboardAmount = Number(subsidiary?.secondAbordAmount) || 559.71;
+        createTransferDto.secondAboardAmount = secondAboardAmount;
+      }
+
+      // 3. Explicit Mathematical Sum
+      createTransferDto.totalAmount = baseAmount + extraAmount + secondAboardAmount;
+
+      // 4. Save Transfer
+      const transfer = queryRunner.manager.create(Transfer, {
+        ...createTransferDto,
+        createdById: userId,
+      });
+
+      const savedTransfer = await queryRunner.manager.save(transfer);
+      
+      // 5. Save Income
       const newIncome = queryRunner.manager.create(Income, {
         subsidiary: { id: createTransferDto.originId }, 
         shipmentType: ShipmentType.OTHER, 
-        cost: finalAmount,
+        cost: createTransferDto.totalAmount, 
         incomeType: incomeType,
         isGrouped: false,
         sourceType: sourceType,
-        date: new Date(), 
+        date: createTransferDto.transferDate, // Usamos la fecha del traslado
       });
 
       await queryRunner.manager.save(newIncome);
 
-      // 5. Confirmar transacción si todo salió bien
       await queryRunner.commitTransaction();
       
       return savedTransfer;
 
     } catch (error) {
-      // Si algo falla (ej. base de datos caída), deshacemos TODOS los cambios
       await queryRunner.rollbackTransaction();
-      console.error("Error al crear el traslado:", error);
-      throw error; // Relanzamos el error para que NestJS responda con un 500 o 400
+      console.error("Error creating transfer:", error);
+      throw error; 
     } finally {
-      // SIEMPRE liberar la conexión, haya sido exitoso o fallido
       await queryRunner.release();
     }
   }

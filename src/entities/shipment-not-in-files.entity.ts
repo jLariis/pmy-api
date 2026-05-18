@@ -1,5 +1,6 @@
 import { Column, Entity, JoinColumn, ManyToOne, PrimaryGeneratedColumn } from "typeorm";
 import { Subsidiary } from "./subsidiary.entity";
+import { PackageDispatch } from "./package-dispatch.entity";
 
 
 @Entity('shipment_not_in_files')
@@ -16,6 +17,13 @@ export class ShipmentNotInFiles {
 
     @Column({ nullable: true })
     subsidiaryId: string;
+
+    @ManyToOne(() => PackageDispatch, { nullable: true })
+    @JoinColumn({ name: 'dispatchId' })
+    dispatch: PackageDispatch;
+
+    @Column({ nullable: true })
+    dispatchId: string;
 
     @Column({ type: 'datetime', default: () => 'CURRENT_TIMESTAMP' })
     createdAt: Date;

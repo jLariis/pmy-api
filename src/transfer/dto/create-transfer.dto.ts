@@ -1,4 +1,5 @@
-import { IsString, IsOptional, IsNumber, IsUUID } from 'class-validator';
+import { Type } from 'class-transformer';
+import { IsString, IsOptional, IsNumber, IsUUID, IsBoolean, IsDate } from 'class-validator';
 
 export class CreateTransferDto {
   @IsUUID()
@@ -15,6 +16,25 @@ export class CreateTransferDto {
 
   @IsString()
   transferType: string;
+
+  @Type(() => Date)
+  @IsDate()
+  transferDate: Date;
+
+  @IsBoolean()
+  @IsOptional()
+  secondAbord?: boolean;
+
+  @IsNumber()
+  @IsOptional()
+  secondAboardAmount?: number;
+
+  @IsNumber()
+  @IsOptional()
+  extraAmount?: number;
+  
+  @IsNumber()
+  totalAmount: number;
 
   @IsString()
   @IsOptional()

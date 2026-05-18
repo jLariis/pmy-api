@@ -101,7 +101,8 @@ export class RouteclosureService {
           return queryRunner.manager.create(ShipmentNotInFiles, {
             trackingNumber: tNumber,
             subsidiary: packageDispatch.subsidiary,
-            subsidiaryId: packageDispatch.subsidiary.id
+            subsidiaryId: packageDispatch.subsidiary.id,
+            dispatchId: packageDispatch.id,
           });
         });
 
