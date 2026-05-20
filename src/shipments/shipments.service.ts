@@ -3719,40 +3719,6 @@ export class ShipmentsService {
 
 
   /****** Métodos para el cron que valida los envios y actualiza los status ******************/
-    async getShipmentsToValidateResp2901(): Promise<Shipment[]> {
-      this.logger.log(`🔍 Iniciando getShipmentsToValidate con estatus de excepción`);
-      try {
-        const query = this.shipmentRepository
-          .createQueryBuilder('shipment')
-          .leftJoinAndSelect('shipment.payment', 'payment')
-          .leftJoinAndSelect('shipment.subsidiary', 'subsidiary')
-          .where('LOWER(shipment.shipmentType) = LOWER(:type)', { type: ShipmentType.FEDEX })
-          .andWhere(new Brackets(qb => {
-            qb.where('LOWER(shipment.status) IN (:...statuses)', {
-              statuses: [
-                String(ShipmentStatusType.PENDIENTE).toLowerCase(),
-                String(ShipmentStatusType.EN_RUTA).toLowerCase(),
-                String(ShipmentStatusType.DESCONOCIDO).toLowerCase(),
-                String(ShipmentStatusType.EN_BODEGA).toLowerCase(), // <--- Código 67
-                String(ShipmentStatusType.DIRECCION_INCORRECTA).toLowerCase(), // <--- Código 03, A12, A13
-                String(ShipmentStatusType.CLIENTE_NO_DISPONIBLE).toLowerCase(), // <--- Código 08, 71, 72
-                String(ShipmentStatusType.ESTACION_FEDEX).toLowerCase(), // <--- Paquetes en Ocurre/Sucursal
-              ]
-            })
-            .orWhere('LOWER(shipment.status) = :ne', { 
-              ne: String(ShipmentStatusType.NO_ENTREGADO).toLowerCase() 
-            });
-          }));
-
-        const shipments = await query.getMany();
-        this.logger.log(`📦 Se encontraron ${shipments.length} envíos.`);
-        return shipments;
-      } catch (err) {
-        this.logger.error(`❌ Error en getShipmentsToValidate: ${err.message}`);
-        return [];
-      }
-    }
-
     async getShipmentsToValidate(): Promise<Shipment[]> {
       this.logger.log(`🔍 Iniciando getShipmentsToValidate...`);
       
@@ -3773,6 +3739,7 @@ export class ShipmentsService {
           ShipmentStatusType.ESTACION_FEDEX,
           ShipmentStatusType.RECHAZADO,
           ShipmentStatusType.LLEGADO_DESPUES,
+          ShipmentStatusType.CAMBIO_FECHA_SOLICITADO,
           ShipmentStatusType.NO_ENTREGADO // Lo agregué al array para simplificar el OR
         ].map(s => String(s).toLowerCase());
 
@@ -3802,7 +3769,7 @@ export class ShipmentsService {
     }
 
     async getSimpleChargeShipments(): Promise<ChargeShipment[]> {
-            this.logger.log(`🔍 Iniciando Charge Shipments to validate...`);
+      this.logger.log(`🔍 Iniciando Charge Shipments to validate...`);
       
       // 1. FECHA DE CORTE: Seguridad contra guías recicladas.
       // Solo nos interesan envíos creados en los últimos 6 meses.
@@ -3819,6 +3786,7 @@ export class ShipmentsService {
           ShipmentStatusType.DIRECCION_INCORRECTA,
           ShipmentStatusType.CLIENTE_NO_DISPONIBLE,
           ShipmentStatusType.LLEGADO_DESPUES,
+          ShipmentStatusType.CAMBIO_FECHA_SOLICITADO,
           ShipmentStatusType.ESTACION_FEDEX,
           ShipmentStatusType.NO_ENTREGADO // Lo agregué al array para simplificar el OR
         ].map(s => String(s).toLowerCase());
