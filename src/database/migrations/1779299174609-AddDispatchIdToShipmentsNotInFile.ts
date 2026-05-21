@@ -27,5 +27,4 @@ export class AddDispatchIdToShipmentsNotInFile1779299174609 implements Migration
         await queryRunner.query(`ALTER TABLE \`shipment_not_in_files\` ADD CONSTRAINT \`FK_shipment_not_in_files_subsidiary\` FOREIGN KEY (\`subsidiaryId\`) REFERENCES \`subsidiary\`(\`id\`) ON DELETE SET NULL ON UPDATE CASCADE`);
         
     }
-
 }

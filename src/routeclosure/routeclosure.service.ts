@@ -103,6 +103,7 @@ export class RouteclosureService {
             subsidiary: packageDispatch.subsidiary,
             subsidiaryId: packageDispatch.subsidiary.id,
             dispatchId: packageDispatch.id,
+            routeClosureId: savedClosure.id,
           });
         });
 

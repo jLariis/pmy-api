@@ -21,6 +21,7 @@ export enum ShipmentStatusType {
   ENTREGADO_POR_FEDEX = 'entregado_por_fedex', // ED o DL después de un OD}
   DEMORA_EN_ENTREGA = 'demora_en_entrega', // DEX84 o STAT84
   EMPRESA_CERRADA = 'empresa_cerrada', // STAT42
+  NO_SE_PUDO_RECOLECTAR_EL_COBRO = 'no_se_pudo_recolectar_el_cobro', // DEX93
   OTRO = 'otro' // DEX93 falta definir
   //17 - 17 - A request was made to change this delivery date.
   //84

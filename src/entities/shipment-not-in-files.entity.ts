@@ -1,6 +1,7 @@
 import { Column, Entity, JoinColumn, ManyToOne, PrimaryGeneratedColumn } from "typeorm";
 import { Subsidiary } from "./subsidiary.entity";
 import { PackageDispatch } from "./package-dispatch.entity";
+import { RouteClosure } from "./route-closure.entity";
 
 
 @Entity('shipment_not_in_files')
@@ -24,6 +25,13 @@ export class ShipmentNotInFiles {
 
     @Column({ nullable: true })
     dispatchId: string;
+
+    @ManyToOne(() => RouteClosure, { nullable: true })
+    @JoinColumn({ name: 'routeClosureId' })
+    routeClosure: RouteClosure;
+
+    @Column({ nullable: true })
+    routeClosureId: string;
 
     @Column({ type: 'datetime', default: () => 'CURRENT_TIMESTAMP' })
     createdAt: Date;

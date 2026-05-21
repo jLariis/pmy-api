@@ -68,6 +68,6 @@ export class RouteClosure {
 
     @BeforeInsert()
     setDefaults() {
-       this.createdAt = new Date();
+        this.createdAt = new Date();
     }
 }
