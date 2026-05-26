@@ -8,6 +8,7 @@ import {
   ManyToOne,
 } from 'typeorm';
 import { User } from './user.entity';
+import { Zone } from './zone.entity';
 
 @Entity('subsidiary')
 export class Subsidiary {
@@ -98,6 +99,16 @@ export class Subsidiary {
 
   @Column({ nullable: true })
   createdById: string;
+
+  @Column({type: 'bit', default: false})
+  isWarehouse: boolean;
+
+  @ManyToOne(() => Zone, { nullable: true })
+  @JoinColumn({ name: 'zoneId' })
+  zone: Zone;
+  
+  @Column({ nullable: true })
+  zoneId: string;
 
   @BeforeInsert()
   setCreatedAt() {

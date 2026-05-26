@@ -1,4 +1,4 @@
-import { Driver, PackageDispatch, Subsidiary, User, Vehicle } from './'; // Ajusta tus imports
+import { Driver, Subsidiary, User, Vehicle } from './'; // Ajusta tus imports
 import { Column, Entity, Index, JoinColumn, JoinTable, ManyToMany, ManyToOne, PrimaryGeneratedColumn } from 'typeorm';
 
 @Entity('transfer')

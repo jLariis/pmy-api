@@ -23,3 +23,6 @@ export * from './for-pick-up.entity';
 export * from './charge-shipment.entity';
 export * from './transfer.entity';
 export * from './shipment-not-in-files.entity';
+export * from './warehouse-receiving.entity';
+export * from './shipment-remittance.entity';
+export * from './zone.entity';

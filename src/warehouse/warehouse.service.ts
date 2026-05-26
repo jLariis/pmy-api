@@ -1,11 +1,12 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, InternalServerErrorException } from '@nestjs/common';
 import { CreateWarehouseDto } from './dto/create-warehouse.dto';
 import { UpdateWarehouseDto } from './dto/update-warehouse.dto';
-import { ChargeShipment, Shipment } from 'src/entities';
-import { Repository } from 'typeorm';
+import { ChargeShipment, Shipment, ShipmentRemittance, WarehouseReceiving } from 'src/entities';
+import { In, Repository } from 'typeorm';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ScannedShipment } from './dto/scanned-shipment.dto';
 import { PaymentTypeEnum } from 'src/common/enums/payment-type.enum';
+import { ShipmentStatusType } from 'src/common/enums';
 
 @Injectable()
 export class WarehouseService {
@@ -14,11 +15,67 @@ export class WarehouseService {
     private readonly shipmentRepository: Repository<Shipment>,
     @InjectRepository(ChargeShipment)
     private readonly chargeShipmentRepository: Repository<ChargeShipment>,
-
+    @InjectRepository(WarehouseReceiving)
+    private readonly warehouseReceivingRepository: Repository<WarehouseReceiving>,
+    // 1. Inyectamos el nuevo repositorio de Remesas
+    @InjectRepository(ShipmentRemittance)
+    private readonly shipmentRemittanceRepository: Repository<ShipmentRemittance>,
   ) {}
 
-  create(createWarehouseDto: CreateWarehouseDto) {
-    return 'This action adds a new warehouse';
+  async create(createWarehouseDto: CreateWarehouseDto, userId?: string) {
+    console.log("🚀 ~ WarehouseService ~ create ~ createWarehouseDto:", createWarehouseDto);
+
+    try {
+      // 1. Guardar la información de la entrada a bodega en bd
+      const newReceiving = this.warehouseReceivingRepository.create({
+        warehouseId: createWarehouseDto.warehouse,
+        shipments: createWarehouseDto.shipments,
+        vehicle: createWarehouseDto.vehicle ? { id: createWarehouseDto.vehicle } as any : null,
+        drivers: createWarehouseDto.drivers && createWarehouseDto.drivers.length > 0 
+          ? createWarehouseDto.drivers.map(driverId => ({ id: driverId } as any))
+          : [],
+        createdBy: userId ? { id: userId } as any : null,
+      });
+
+      const savedReceiving = await this.warehouseReceivingRepository.save(newReceiving);
+
+      // 2. Extraer los IDs de todos los paquetes recibidos en el DTO
+      const shipmentIds = createWarehouseDto.shipments.map(shipment => shipment.id);
+
+      // 3. Ponemos todos los paquetes en estado "en bodega" y los asociamos a la entrada
+      if (shipmentIds.length > 0) {
+        await this.shipmentRepository.update(
+          { id: In(shipmentIds) }, 
+          {
+            status: ShipmentStatusType.EN_BODEGA, 
+          }
+        );
+      }
+
+      // 4. Extraer y guardar las remesas (piezas de DHL u otros)
+      // Mapeamos el arreglo anidado de envíos para extraer todas las piezas en un arreglo plano
+      const remittancesData = createWarehouseDto.shipments.flatMap(shipment => 
+        // Verificamos si vienen remesas desde el DTO del frontend
+        (shipment.remittances || []).map(remittance => ({
+          pieceTrackingNumber: remittance.pieceTrackingNumber,
+          shipmentId: remittance.shipmentId,
+          status: ShipmentStatusType.EN_BODEGA, // Asumimos que al llegar a bodega, la remesa también está en ese estado
+          warehouseReceivingId: savedReceiving.id, // Asociamos la remesa con la entrada a bodega recién creada
+        }))
+      );
+
+      // Si hay piezas para guardar, hacemos un insert masivo
+      if (remittancesData.length > 0) {
+        const newRemittances = this.shipmentRemittanceRepository.create(remittancesData);
+        await this.shipmentRemittanceRepository.save(newRemittances);
+      }
+
+      return savedReceiving;
+
+    } catch (error) {
+      console.error("Error al procesar la entrada a bodega:", error);
+      throw new InternalServerErrorException("No se pudo procesar la entrada a bodega, verifique los datos.");
+    }
   }
 
   findAll() {
@@ -56,7 +113,7 @@ export class WarehouseService {
           priority: true,
           status: true,
           subsidiary: { id: true, name: true},
-          payment: { id: true, amount: true, type: true } // Ajusta si tus columnas se llaman diferente
+          payment: { id: true, amount: true, type: true } 
         },
         relations: ['subsidiary', 'payment']
       }),
@@ -72,7 +129,7 @@ export class WarehouseService {
           priority: true,
           status: true,
           subsidiary: { id: true, name: true },
-          payment: { id: true, amount: true, type: true } // Ajusta si tus columnas se llaman diferente
+          payment: { id: true, amount: true, type: true } 
         },
         relations: ['subsidiary', 'payment']
       })
@@ -89,7 +146,7 @@ export class WarehouseService {
       };
     }
 
-    // 3. Evaluamos las reglas de negocio con la nueva nomenclatura
+    // 3. Evaluamos las reglas de negocio
     const isCharge = !!chargeShipment; 
     const hasPayment = !!foundPackage.payment;
     
