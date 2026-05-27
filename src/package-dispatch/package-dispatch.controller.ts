@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete, UseInterceptors, UploadedFile, BadRequestException, UploadedFiles } from '@nestjs/common';
+import { Controller, Get, Post, Body, Patch, Param, Delete, UseInterceptors, UploadedFile, BadRequestException, UploadedFiles, Req } from '@nestjs/common';
 import { PackageDispatchService } from './package-dispatch.service';
 import { CreatePackageDispatchDto } from './dto/create-package-dispatch.dto';
 import { UpdatePackageDispatchDto } from './dto/update-package-dispatch.dto';
@@ -26,9 +26,10 @@ export class PackageDispatchController {
   }
 
   @Post()
-  create(@Body() createPackageDispatchDto: CreatePackageDispatchDto) {
+  create(@Body() createPackageDispatchDto: CreatePackageDispatchDto, @Req() req: any) {
+    const userId = req.user?.userId;
     console.log("🚀 ~ PackageDispatchController ~ create ~ createPackageDispatchDto:", createPackageDispatchDto)
-    return this.packageDispatchService.create(createPackageDispatchDto);
+    return this.packageDispatchService.create(createPackageDispatchDto, userId);
   }
 
   @Get()

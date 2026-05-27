@@ -31,6 +31,7 @@ import { JwtAuthGuard } from './auth/guards/jwt-auth.guard';
 import { ResportsModule } from './resports/resports.module';
 import { WarehouseModule } from './warehouse/warehouse.module';
 import { TransferModule } from './transfer/transfer.module';
+import { ZoneModule } from './zone/zone.module';
 
 @Module({
   imports: [
@@ -82,7 +83,8 @@ import { TransferModule } from './transfer/transfer.module';
     PickUpModule,
     ResportsModule,
     WarehouseModule,
-    TransferModule
+    TransferModule,
+    ZoneModule
   ],
   controllers: [AppController],
   providers: [

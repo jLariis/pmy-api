@@ -2,7 +2,11 @@ import { Body, Controller, Get, HttpCode, HttpStatus, Post, Query, Req } from '@
 import { WarehouseService } from './warehouse.service';
 import { ScannedShipment } from './dto/scanned-shipment.dto';
 import { CreateWarehouseDto } from './dto/create-warehouse.dto';
+import { CreateOutboundDto } from './dto/create-outbound.dto';
+import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 
+@ApiTags('warehouses')
+@ApiBearerAuth()
 @Controller('warehouse')
 export class WarehouseController {
   constructor(private readonly warehouseService: WarehouseService) {}
@@ -23,8 +27,15 @@ export class WarehouseController {
 
   @Post()
   create(@Body() createWarehouseDto: CreateWarehouseDto, @Req() req) {
-    const userId = req.user?.userId; // Asegúrate de que tu sistema de autenticación adjunte el usuario al request
+    const userId = req.user?.userId;
 
     return this.warehouseService.create(createWarehouseDto, userId);
+  }
+
+  @Post('outbound')
+  createOutbound(@Body() createOutboundDto: CreateOutboundDto, @Req() req) {
+    const userId = req.user?.userId;
+
+    return this.warehouseService.outbound(createOutboundDto, userId);
   }
 }

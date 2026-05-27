@@ -42,7 +42,7 @@ export class PackageDispatchService {
 
   ){ }
 
-  async create(dto: CreatePackageDispatchDto): Promise<PackageDispatch> {
+  async create(dto: CreatePackageDispatchDto, userId: string): Promise<PackageDispatch> {
     const allShipmentIds = dto.shipments;
     const queryRunner = this.dataSource.createQueryRunner();
 
@@ -76,6 +76,7 @@ export class PackageDispatchService {
         vehicle: dto.vehicle,
         subsidiary: dto.subsidiary,
         kms: dto.kms,
+        createdBy: userId ? { id: userId } : null,
       });
 
       const savedDispatch = await queryRunner.manager.save(newDispatch);
