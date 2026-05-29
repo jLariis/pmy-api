@@ -115,6 +115,10 @@ export class Shipment {
   @Column({ type: 'varchar', length: 50, nullable: true})
   carrierCode: string;
 
+  @Index()
+  @Column({ type: 'varchar', length: 255, nullable: true })
+  dhlUniqueId: string;
+
   @BeforeInsert()
   setDefaults() {
     this.createdAt = new Date(); // Fecha en UTC (asegúrate de que el servidor esté en UTC)

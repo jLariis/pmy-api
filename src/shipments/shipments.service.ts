@@ -3137,9 +3137,12 @@ export class ShipmentsService {
 
 
   /********************  DHL ********************/
-    async processDhlTxtFile(fileContent: string): Promise<{ success: number; errors: number }> {
+    async processDhlTxtFile(fileContent: string) {
       const shipmentsDto = this.dhlService.parseDhlText(fileContent);
-      let results = { success: 0, errors: 0 };
+      
+      return shipmentsDto;
+
+      /*let results = { success: 0, errors: 0 };
 
       for (const dto of shipmentsDto) {
           try {
@@ -3173,7 +3176,7 @@ export class ShipmentsService {
           }
       }
 
-      return results;
+      return results;*/
   }
 
     private calculatePriority(commitDate: Date): Priority {
@@ -3234,12 +3237,14 @@ export class ShipmentsService {
       // 🚀 VALIDACIÓN DE CABECERAS PARA EL FRONTEND
       // =========================================================================
       const columnMapping: Record<string, string> = {
-        'trackingNumber': 'Guía',
+        'trackingNumber': 'AWB Maestro',
+        'dhlUniqueId': 'PID (Pieza)',
         'recipientName': 'Nombre',
         'recipientAddress': 'Dirección',
+        'recipientCity': 'Ciudad',
         'recipientZip': 'CP',
-        'recipientPhone': 'Teléfono / Celular',
-        'commitDate': 'Fecha'
+        'recipientPhone': 'Teléfono',
+        'commitDate': 'Vencimiento'
       };
 
       // Obtenemos las llaves técnicas (trackingNumber, recipientName, etc.)
@@ -3285,6 +3290,7 @@ export class ShipmentsService {
 
       // 3.5 Manejo de fecha del consolidado (forzando horas a 0 en Hermosillo)
       let finalConsDate: Date;
+      
       if (consDate) {
         const dateString = typeof consDate === 'string' ? consDate : consDate.toISOString();
         const [year, month, day] = dateString.split('T')[0].split('-');
@@ -3315,41 +3321,27 @@ export class ShipmentsService {
 
         // 5. Unconditionally create new shipments linked to the new consolidated
         for (const [index, data] of parsedShipments.entries()) {
+          console.log("🚀 ~ ShipmentsService ~ processDhlExcelFile ~ data:", data)
+          
           const { 
-            trackingNumber, recipientAddress, recipientAddress2, 
-            commitDate, recipientName, recipientZip, recipientPhone 
+            trackingNumber, 
+            dhlUniqueId, // Extraemos el PID de DHL
+            recipientAddress, 
+            commitDate, 
+            recipientName, 
+            recipientZip, 
+            recipientPhone 
           } = data;
 
-          let finalCommitDateTime = new Date();
-          let calculatedPriority = Priority.BAJA;
+          // Centralizamos la lógica de fechas en el nuevo método
+          const finalCommitDateTime = this.parseAndFormatCommitDate(commitDate);
+          const calculatedPriority = this.calculatePriority(finalCommitDateTime);
 
-          if (commitDate) {
-            const rawDate = new Date(commitDate);
-            
-            if (!isNaN(rawDate.getTime())) {
-              // Extraemos YYYY-MM-DD aislando la fecha de la zona horaria
-              const dateString = typeof commitDate === 'string' && commitDate.includes('-')
-                ? commitDate.split('T')[0]
-                : rawDate.toISOString().split('T')[0];
-                
-              const [year, month, day] = dateString.split('-');
-              
-              // Construimos la fecha forzando UTC puro e inyectando las 21:00 hrs
-              finalCommitDateTime = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day), 21, 0, 0, 0));
-              calculatedPriority = this.calculatePriority(finalCommitDateTime);
-            } else {
-              const now = new Date();
-              finalCommitDateTime = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 21, 0, 0, 0));
-            }
-          } else {
-            const now = new Date();
-            finalCommitDateTime = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 21, 0, 0, 0));
-          }
-
-          const fullAddress = `${recipientAddress || ''} ${recipientAddress2 || ''}`.trim();
+          const fullAddress = `${recipientAddress || ''}`.trim();
 
           const newShipment = this.shipmentRepository.create({
             trackingNumber,
+            dhlUniqueId,
             shipmentType: ShipmentType.DHL,
             recipientName: recipientName || '-',
             recipientAddress: fullAddress || '-',
@@ -3390,6 +3382,51 @@ export class ShipmentsService {
           HttpStatus.INTERNAL_SERVER_ERROR
         );
       }
+    }
+
+    private parseAndFormatCommitDate(commitDate: any): Date {
+      // Definimos el fallback por defecto (Hoy a las 21:00 UTC)
+      const now = new Date();
+      const fallbackDate = new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate(), 21, 0, 0, 0));
+
+      if (!commitDate) return fallbackDate;
+
+      const str = String(commitDate).trim().toLowerCase();
+      const currentYear = now.getFullYear();
+
+      // 1. Formato de Excel corto: "30-may", "01-jun", "30/may"
+      const monthMap: Record<string, number> = {
+        'ene': 0, 'jan': 0, 'feb': 1, 'mar': 2, 'abr': 3, 'apr': 3, 
+        'may': 4, 'jun': 5, 'jul': 6, 'ago': 7, 'aug': 7, 
+        'sep': 8, 'oct': 9, 'nov': 10, 'dic': 11, 'dec': 11
+      };
+      
+      const ddMmmMatch = str.match(/^(\d{1,2})[-\/]([a-z]{3})/);
+      if (ddMmmMatch && monthMap[ddMmmMatch[2]] !== undefined) {
+        return new Date(Date.UTC(currentYear, monthMap[ddMmmMatch[2]], parseInt(ddMmmMatch[1], 10), 21, 0, 0, 0));
+      }
+
+      // 2. Formato de BD (ISO): "YYYY-MM-DD" o "YYYY/MM/DD" (Ej: 2026-05-30)
+      const yyyyMmDdMatch = str.match(/^(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})/);
+      if (yyyyMmDdMatch) {
+        return new Date(Date.UTC(parseInt(yyyyMmDdMatch[1], 10), parseInt(yyyyMmDdMatch[2], 10) - 1, parseInt(yyyyMmDdMatch[3], 10), 21, 0, 0, 0));
+      }
+
+      // 3. Formato Local: "DD/MM/YYYY" o "DD-MM-YYYY" (Ej: 30/05/2026)
+      const ddMmYyyyMatch = str.match(/^(\d{1,2})[-\/](\d{1,2})[-\/](\d{4})/);
+      if (ddMmYyyyMatch) {
+        return new Date(Date.UTC(parseInt(ddMmYyyyMatch[3], 10), parseInt(ddMmYyyyMatch[2], 10) - 1, parseInt(ddMmYyyyMatch[1], 10), 21, 0, 0, 0));
+      }
+
+      // 4. Último recurso (Dejamos que JS intente leerlo)
+      const parsedFallback = new Date(str);
+      if (!isNaN(parsedFallback.getTime())) {
+        let y = parsedFallback.getFullYear();
+        if (y < 2020) y = currentYear; // Protegemos contra años erróneos (como 2001)
+        return new Date(Date.UTC(y, parsedFallback.getMonth(), parsedFallback.getDate(), 21, 0, 0, 0));
+      }
+
+      return fallbackDate;
     }
 
     private async createShipmentFromDhlDto(dto: DhlShipmentDto): Promise<Shipment> {

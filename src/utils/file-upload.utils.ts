@@ -284,7 +284,29 @@ export function parseDynamicSheetDHL(sheet: XLSX.Sheet) {
             return index !== undefined ? row[index] : undefined;
         };
 
+
         return {
+            // Mapeo ajustado a los encabezados del nuevo CSV exportado
+            trackingNumber: getValue('trackingNumber', 'AWB Maestro'),
+            
+            // Mapeamos el identificador único (PID/JD) a la propiedad dhlUniqueId
+            dhlUniqueId: getValue('dhlUniqueId', 'PID (Pieza)'), 
+            
+            recipientName: getValue('recipientName', 'Nombre'),
+            
+            // Aquí mapeamos la columna 'Dirección' que unimos en el export
+            recipientAddress: getValue('recipientAddress', 'Dirección'),
+            
+            // Si el Excel tiene columnas separadas para ciudad, etc.
+            recipientCity: getValue('recipientCity', 'Ciudad'),
+            recipientZip: getValue('recipientZip', 'CP'),
+            recipientPhone: getValue('recipientPhone', 'Teléfono'),
+            
+            // Mapeo de la columna que el usuario llenará manualmente
+            commitDate: getValue('commitDate', 'Vencimiento (Commit Date)')
+        };
+
+        /*return {
             trackingNumber: getValue('trackingNumber', 'GUIA'),
             recipientName: getValue('recipientName', 'NOMBRE'),
             recipientAddress: getValue('recipientAddress', 'DIRECCION'),
@@ -292,7 +314,7 @@ export function parseDynamicSheetDHL(sheet: XLSX.Sheet) {
             recipientZip: getValue('recipientZip', 'CP'),
             recipientPhone: getValue('recipientPhone', 'CEL'),
             commitDate: getValue('commitDate', 'VENCIMIENTO')
-        };
+        };*/
     }).filter(dto => {
         // Evitamos que devuelva filas vacías si alguien coloreó celdas al final del Excel
         return dto.trackingNumber && String(dto.trackingNumber).trim() !== '';

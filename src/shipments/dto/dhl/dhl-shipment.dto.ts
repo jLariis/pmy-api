@@ -1,8 +1,6 @@
-import { DhlPartyDto } from "./dhl-party.dto";
-import { DhlTrackingEventDto } from "./dhl-tracking-event.dto";
-
 export interface DhlShipmentDto {
   awb: string;
+  pid?: string; // <-- Nueva propiedad para almacenar el JD / JJD específico de la pieza
   origin: string;
   destination: string;
   shipmentTime: string;
@@ -25,6 +23,7 @@ export interface DhlShipmentDto {
     phone: string;
     reference?: string;
   };
+  remesas?: string[]; 
   events?: {
     awbPid: string;
     origin?: string;

@@ -98,6 +98,8 @@ export const headerAliases: Record<string, string> = {
     'hwbno': 'trackingNumber',
     'númerodeseguimiento': 'trackingNumber',
     'guia': 'trackingNumber',
+    'awbmaster': 'trackingNumber',
+    'awbmaestro': 'trackingNumber',
 
     // Recipient Name
     'recipname': 'recipientName',
@@ -115,6 +117,7 @@ export const headerAliases: Record<string, string> = {
     'address': 'recipientAddress',
     'direccion': 'recipientAddress',
     'domicilio': 'recipientAddress',
+    'direccin': 'recipientAddress',
     
     // Recipient Address 2
     'rcvraddr2': 'recipientAddress2', // "rcvr addr 2" → "rcvraddr2"
@@ -145,6 +148,7 @@ export const headerAliases: Record<string, string> = {
     'fecha': 'commitDate',
     'fechacompromiso': 'commitDate',
     'fechaentrega': 'commitDate',
+    'vencimiento': 'commitDate',
     
     // Commit Time
     'committime': 'commitTime',
@@ -160,6 +164,7 @@ export const headerAliases: Record<string, string> = {
     'phonenumber': 'recipientPhone',
     'cel': 'recipientPhone',
     'tel': 'recipientPhone',
+    'telfono': 'recipientPhone',
     
     // Payment/COD
     'cod': 'cod',
@@ -168,6 +173,12 @@ export const headerAliases: Record<string, string> = {
     'contraentrega': 'cod',
     'pagocontraentrega': 'cod',
     'pago': 'cod',
+
+    //PID (Pieza) - SOLO versiones normalizadas en KEYS
+    'dhluniqueid': 'dhlUniqueId',
+    'pid': 'dhlUniqueId',
+    'pieza': 'dhlUniqueId',
+    'pidpieza': 'dhlUniqueId',
     
     // Additional fields - NORMALIZAR
     'lastcommscanupdate': 'cod', // "last comm scan update" → "lastcommscanupdate"

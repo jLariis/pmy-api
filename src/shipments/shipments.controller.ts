@@ -378,6 +378,90 @@ export class ShipmentsController {
     }
   }
 
+  @Post('process-dhl-txt-file')
+  @UseInterceptors(FileInterceptor('file'))
+  @ApiOperation({ summary: 'Procesar envíos de DHL desde archivo de texto (TXT)' })
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    description: 'Archivo TXT con los datos de DHL y datos adicionales para el consolidado',
+    schema: {
+      type: 'object',
+      properties: {
+        file: {
+          type: 'string',
+          format: 'binary',
+          description: 'Archivo .txt descargado o guardado con los datos crudos',
+        },
+        /*subsidiaryId: {
+          type: 'string',
+          description: 'ID de la sucursal',
+        },
+        consDate: {
+          type: 'string',
+          description: 'Fecha del consolidado (opcional)',
+          nullable: true,
+        },
+        consNumber: {
+          type: 'string',
+          description: 'Número de consolidado (opcional)',
+          nullable: true,
+        }*/
+      },
+      required: ['file'] // Solo el archivo es obligatorio para esta prueba
+    },
+  })
+  async processDhlTxtFile(
+    @UploadedFile() file: Express.Multer.File,
+    /*@Body('subsidiaryId') subsidiaryId: string,
+    @Body('consDate') consDate?: string,
+    @Body('consNumber') consNumber?: string,
+    @Req() req?: any // Inyectamos la request para obtener el usuario autenticado*/
+  ) {
+    
+    // Validación básica para asegurar que el archivo fue subido
+    if (!file) {
+      throw new BadRequestException('El archivo TXT es requerido.');
+    }
+
+    // Validación básica de la sucursal (comentada por ahora)
+    /*if (!subsidiaryId) {
+      throw new BadRequestException('El subsidiaryId es requerido para procesar los datos.');
+    }*/
+
+    try {
+      //const userId = req?.user?.userId;
+      //console.log("🚀 ~ ShipmentsController ~ processDhlTxtFile ~ userId:", userId)
+
+      // 1. Extraemos el texto crudo del buffer del archivo subido
+      const text = file.buffer.toString('utf-8');
+
+      // Validación para asegurar que el archivo no venga vacío
+      if (!text || text.trim() === '') {
+        throw new BadRequestException('El archivo TXT está vacío.');
+      }
+
+      // 2. Llamamos al método del servicio pasando el string ya decodificado
+      const result = await this.shipmentsService.processDhlTxtFile(text);
+
+      
+      return result;
+      
+      /*return {
+        success: true,
+        message: 'Archivo TXT de DHL procesado correctamente',
+        ...result, // Desestructura el summary y los results para tu datatable
+      };*/
+    } catch (error) {
+      if (error instanceof BusinessException) {
+        throw error;
+      }
+      throw new InternalServerErrorException({
+        errorId: 'DHL_FILE_PROCESS_ERROR',
+        message: 'Error al procesar el archivo TXT de DHL',
+        details: error.message,
+      });
+    }
+  }
   
   @Get('kpis')
   async getKPIs(
