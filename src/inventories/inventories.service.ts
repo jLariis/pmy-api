@@ -506,7 +506,6 @@ export class InventoriesService {
       throw err;
     }
 
-
     try {
       return await this.mailService.sendHighPriorityInventoryEmail(
         file, 

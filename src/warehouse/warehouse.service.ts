@@ -1,12 +1,17 @@
 import { BadRequestException, Injectable, InternalServerErrorException, Logger } from '@nestjs/common';
 import { CreateWarehouseDto } from './dto/create-warehouse.dto';
-import { ChargeShipment, PackageDispatch, PackageDispatchHistory, Shipment, ShipmentRemittance, ShipmentStatus, WarehouseOutbound, WarehouseReceiving } from 'src/entities';
+import { ChargeShipment, PackageDispatch, PackageDispatchHistory, Shipment, ShipmentRemittance, ShipmentStatus, Subsidiary, WarehouseOutbound, WarehouseReceiving } from 'src/entities';
 import { DataSource, In, QueryRunner, Repository } from 'typeorm';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ScannedShipment } from './dto/scanned-shipment.dto';
 import { PaymentTypeEnum } from 'src/common/enums/payment-type.enum';
 import { ShipmentStatusType } from 'src/common/enums';
 import { CreateOutboundDto } from './dto/create-outbound.dto';
+import { MailService } from 'src/mail/mail.service';
+import { format } from 'node_modules/date-fns-tz/dist/cjs/format';
+import { toZonedTime } from 'node_modules/date-fns-tz/dist/cjs/toZonedTime';
+import axios from 'axios';
+import { PostalCodeResponse } from './dto/postal-code-response';
 
 @Injectable()
 export class WarehouseService {
@@ -23,7 +28,10 @@ export class WarehouseService {
     private readonly shipmentRemittanceRepository: Repository<ShipmentRemittance>,
     @InjectRepository(PackageDispatch)
     private readonly packageDispatchRepository: Repository<PackageDispatch>,
-    private readonly dataSource: DataSource, // <-- Agregado para manejar las transacciones
+    @InjectRepository(WarehouseOutbound)
+    private readonly warehouseOutboundRepository: Repository<WarehouseOutbound>,
+    private readonly dataSource: DataSource,
+    private readonly mailService: MailService,
   ) {}
 
   async create(createWarehouseDto: CreateWarehouseDto, userId?: string) {
@@ -81,34 +89,43 @@ export class WarehouseService {
   }
 
   async validateTrackingNumber(
-    trackingNumber: string,
+    trackingNumber: string, // Recibe el código escaneado (Tracking o UniqueID)
     subsidiaryId?: string
   ): Promise<ScannedShipment | { isValid: false; trackingNumber: string; reason: string }> {
     
     // 1. Buscamos en ambas tablas simultáneamente e incluimos la relación 'payment'
     const [shipment, chargeShipment] = await Promise.all([
       this.shipmentRepository.findOne({
-        where: { trackingNumber },
+        where: [
+          { trackingNumber: trackingNumber },
+          { dhlUniqueId: trackingNumber }
+        ],
         select: {
           id: true,
           trackingNumber: true,
           shipmentType: true,
+          recipientName: true,
+          recipientAddress: true,
           recipientZip: true,
           commitDateTime: true,
           isHighValue: true,
           priority: true,
           status: true,
+          dhlUniqueId: true,
           subsidiary: { id: true, name: true},
           payment: { id: true, amount: true, type: true } 
         },
         relations: ['subsidiary', 'payment']
       }),
+      
       this.chargeShipmentRepository.findOne({
-        where: { trackingNumber },
+        where: { trackingNumber: trackingNumber },
         select: {
           id: true,
           trackingNumber: true,
           shipmentType: true,
+          recipientName: true,
+          recipientAddress: true,
           recipientZip: true,
           commitDateTime: true,
           isHighValue: true,
@@ -132,6 +149,16 @@ export class WarehouseService {
       };
     }
 
+    /** Para cuando tengamos ya todo guardado en Bodega Obregon, los paquetes se puedan separar 
+     * por ciudad usando el código postal.
+     * 
+    */
+    if(foundPackage.recipientZip) {
+      const city = await this.getCityFromZipCode(foundPackage.recipientZip);
+      console.log("🚀 ~ WarehouseService ~ validateTrackingNumber ~ city:", city)
+    }
+
+
     // 3. Evaluamos las reglas de negocio
     const isCharge = !!chargeShipment; 
     const hasPayment = !!foundPackage.payment;
@@ -140,13 +167,15 @@ export class WarehouseService {
     const paymentAmount = foundPackage.payment?.amount || 0;
     const paymentType = foundPackage.payment?.type as PaymentTypeEnum;
 
-    // 4. Retorno del objeto que cumple exactamente con tu clase ScannedShipment
+    // 4. Retorno del objeto asegurando los tipos
     return {
       id: foundPackage.id,
       trackingNumber: foundPackage.trackingNumber,
       shipmentType: foundPackage.shipmentType,
+      recipientName: foundPackage.recipientName,
+      recipientAddress: foundPackage.recipientAddress,
       recipientZip: foundPackage.recipientZip,
-      subsidiary: foundPackage.subsidiary|| null,
+      subsidiary: foundPackage.subsidiary || null,
       commitDateTime: foundPackage.commitDateTime,
       isHighValue: foundPackage.isHighValue,
       priority: foundPackage.priority,
@@ -155,6 +184,7 @@ export class WarehouseService {
       hasPayment,
       paymentAmount,
       paymentType,
+      dhlUniqueId: shipment?.dhlUniqueId || undefined, 
     };
   }
 
@@ -375,5 +405,126 @@ export class WarehouseService {
         .where('pieceTrackingNumber IN (:...pieceTrackingNumbers)', { pieceTrackingNumbers })
         .execute();
     }
+  }
+
+  async sendEmailNotification(
+    file: Express.Multer.File, 
+    excelFile: Express.Multer.File, 
+    subsidiaryName: string, 
+    type: 'inbound' | 'outbound',
+    id: string,
+  ) {
+    const timeZone = 'America/Hermosillo'; 
+
+    let info: WarehouseReceiving | WarehouseOutbound = null;
+    let destinationSubsidiary: Subsidiary = null;
+    
+    if (!file || !excelFile) {
+      this.logger.warn(`No se proporcionaron ambos archivos para la notificación de ${type} a bodega. ID: ${id}`);
+      return;
+    }
+
+    if(type === 'inbound') {
+      info = await this.warehouseReceivingRepository.findOneBy({ id });
+    } else {
+      info = await this.warehouseOutboundRepository.findOneBy({ id });
+    }
+
+    if(!info) {
+      this.logger.warn(`No se encontró la información de ${type} a bodega para el ID proporcionado: ${id}`);
+      return;
+    }
+
+    this.logger.debug(`Información de ${type} a bodega para email: ${JSON.stringify(info)}`);
+
+    const warehouse = await this.dataSource.getRepository(Subsidiary).findOneBy({ id: info.warehouseId });
+
+    if (!warehouse) {
+      this.logger.warn(`No se encontró la sucursal para el ID proporcionado en ${type} a bodega: ${info.warehouseId}`);
+      return;
+    }
+
+    if (type === 'outbound') {
+      const outboundInfo = info as WarehouseOutbound;
+      
+      if (outboundInfo.destinationId) {
+        destinationSubsidiary = await this.dataSource.getRepository(Subsidiary).findOneBy({ 
+          id: outboundInfo.destinationId 
+        });
+      }
+    }
+
+    const attachments = [
+      {
+        filename: file.originalname,
+        content: file.buffer
+      },
+      {
+        filename: excelFile.originalname,
+        content: excelFile.buffer
+      }
+    ]
+
+    const now = new Date();
+    const zonedDate = toZonedTime(now, timeZone);
+    const formattedDate = format(zonedDate, "dd-MM-yyyy");   
+ 
+    const subject = `Notificación de ${type === 'inbound' ? 'Entrada' : 'Salida'} a Bodega - ${subsidiaryName}`;
+    const htmlContent = `
+      <div style="font-family: Arial, sans-serif; color: #2c3e50; max-width: 800px; margin: auto;">
+        <h2 style="border-bottom: 3px solid #3498db; padding-bottom: 8px;">
+          📦 Notificación de ${type === 'inbound' ? 'Entrada' : 'Salida'} a Bodega
+        </h2>
+
+        <p>
+          Se ha generado un nuevo reporte de <strong>${type === 'inbound' ? 'Entrada' : 'Salida'}</strong> para la sucursal <strong>${subsidiaryName}</strong>.
+        </p>
+
+        <p><strong>Fecha y hora:</strong> ${format(toZonedTime(info.createdAt, timeZone), 'dd/MM/yyyy hh:mm aa')}</p>
+      
+        <p style="margin-top: 20px;">
+          Puede consultar más detalles en el sistema en la sección de ${type === 'inbound' ? 'Entradas' : 'Salidas'} a Bodega o descargar los archivos adjuntos.
+          <a href="https://app-pmy.vercel.app/" target="_blank" style="color: #2980b9; text-decoration: none;">
+            https://app-pmy.vercel.app/
+          </a>
+        </p>
+
+        <hr style="margin: 30px 0; border: none; border-top: 1px solid #eee;" />
+
+        <p style="font-size: 0.9em; color: #7f8c8d;">
+          Este correo fue enviado automáticamente por el sistema.<br />
+          Por favor, no responda a este mensaje.
+        </p>
+      </div>
+    `;
+
+    try { 
+      await this.mailService.sendEmailNotification({
+        to: [
+          warehouse.officeEmail, 
+          warehouse.officeEmailToCopy]
+        .filter(email => email), 
+        subject,
+        htmlContent,
+        attachments
+      });
+    } catch (error) {
+      this.logger.error(`Error al enviar correo de notificación para ${type} a bodega. ID: ${id}`, error.stack);
+    }
+  }
+
+
+  private async getCityFromZipCode(zip: string): Promise<string | null> {
+    const { data } = await axios.get<PostalCodeResponse>(
+      `https://mexico-api.devaleff.com/api/codigo-postal/${zip}`
+    );
+
+    const location = data.data.at(0);
+
+    if (!location) {
+      return null;
+    }
+
+    return location.d_ciudad.trim() || location.D_mnpio.trim();
   }
 }

@@ -7,6 +7,8 @@ export class ScannedShipment {
   id: string;
   trackingNumber: string;
   shipmentType: ShipmentType;
+  recipientName: string;
+  recipientAddress: string;
   recipientZip: string;
   subsidiary: Subsidiary | null;
   commitDateTime: Date;
@@ -17,4 +19,5 @@ export class ScannedShipment {
   hasPayment: boolean;
   paymentAmount: number;
   paymentType: PaymentTypeEnum
+  dhlUniqueId?: string;
 };

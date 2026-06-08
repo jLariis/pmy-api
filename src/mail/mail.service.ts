@@ -11,6 +11,14 @@ import { Inventory } from 'src/entities/inventory.entity';
 import { Subsidiary } from 'src/entities';
 import { ConfigService } from '@nestjs/config';
 
+interface SendEmailOptions {
+  to: string | string[];
+  cc?: string | string[];
+  subject: string
+  htmlContent: string;
+  attachments?: { filename: string; content: Buffer }[];
+}
+
 @Injectable()
 export class MailService {
   constructor(
@@ -24,7 +32,7 @@ export class MailService {
    */
   private applyDevFilters(to: string | string[], cc?: string | string[]) {
     const isDev = this.configService.get('NODE_ENV') === 'dev';
-    const systemsEmail = 'sistemas@paqueteriaymensajeriadelyaqui.com';
+    const systemsEmail = 'javier.rappaz@gmail.com';
 
     if (isDev) {
       return {
@@ -602,4 +610,23 @@ export class MailService {
       throw error;
     }
   }
+
+  async sendEmailNotification(options: SendEmailOptions, isDev: boolean = false) { 
+    try {
+      const { to, cc } = this.applyDevFilters(options.to, options.cc);
+
+      await this.mailerService.sendMail({
+        to: to,
+        cc: cc,
+        subject: options.subject,
+        html: options.htmlContent,
+        attachments: options.attachments,
+      });
+
+    } catch (error) {
+      console.error('Error al enviar correo:', error);
+      throw error;
+    }
+  }
+
 }
