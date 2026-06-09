@@ -9,6 +9,7 @@ export class ScannedShipment {
   shipmentType: ShipmentType;
   recipientName: string;
   recipientAddress: string;
+  recipientPhone: string;
   recipientZip: string;
   subsidiary: Subsidiary | null;
   commitDateTime: Date;

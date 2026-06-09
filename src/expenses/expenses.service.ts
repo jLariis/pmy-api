@@ -40,7 +40,8 @@ export class ExpensesService {
       },
       order: {
         date: 'DESC'
-      }
+      },
+      relations: ['vehicle']
     });
 
     return expenses;
@@ -62,7 +63,7 @@ export class ExpensesService {
   }
 
   async remove(id: string) {
-    return `This action removes a #${id} expense`;
+    return await this.expenseRepository.delete(id);
   }
 
   async importFromExcel(file: Express.Multer.File, subsidiaryId: string, userId: string) {
