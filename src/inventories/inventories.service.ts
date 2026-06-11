@@ -52,26 +52,11 @@ export class InventoriesService {
     private readonly dataSource: DataSource
   ){}
 
-  async create1002(createInventoryDto: CreateInventoryDto) {
-    const { inventoryDate, shipments, chargeShipments, subsidiary } = createInventoryDto;
-
-    // Buscar entidades .findBy({ id: In([1, 2, 3]) })
-    const shipmentsToSave = await this.shipmentRepository.findBy({id: In(shipments)});
-    const chargeShipmentsToSave = await this.chargeShipmentRepository.findBy({id: In(chargeShipments)});
-    const subsidiaryObj = await this.subsidiaryRepository.findOneBy({ id: subsidiary.id });
-
-    const newInventory = this.inventoryRepository.create({
-      inventoryDate,
-      shipments: shipmentsToSave,
-      chargeShipments: chargeShipmentsToSave,
-      subsidiary: subsidiaryObj,
-    });
-
-    return await this.inventoryRepository.save(newInventory);
-  }
 
   async create(createInventoryDto: CreateInventoryDto) {
     const { inventoryDate, shipments, chargeShipments, subsidiary } = createInventoryDto;
+    
+    console.log("🚀 ~ InventoriesService ~ create ~ subsidiary:", subsidiary)
     
     const queryRunner = this.dataSource.createQueryRunner();
     await queryRunner.connect();
@@ -88,6 +73,8 @@ export class InventoriesService {
       const subsidiaryObj = await queryRunner.manager.findOneBy(Subsidiary, { 
         id: subsidiary.id 
       });
+      
+      console.log("🚀 ~ InventoriesService ~ create ~ subsidiaryObj:", subsidiaryObj)
 
       if (!subsidiaryObj) {
         throw new Error(`La sucursal con ID ${subsidiary.id} no existe.`);
@@ -479,8 +466,15 @@ export class InventoriesService {
   }
 
   async sendByEmail(file: Express.Multer.File, excelFile: Express.Multer.File, subsidiaryName: string, inventoryId: string) {
+    // Guarda crítica: con inventoryId vacío, TypeORM ignora la condición `id`
+    // y devuelve un inventario arbitrario (el primero de la tabla), provocando
+    // que el correo se envíe a la sucursal equivocada.
+    if (!inventoryId) {
+      throw new NotFoundException('inventoryId es requerido para enviar el correo de inventario.');
+    }
+
     const inventory = await this.inventoryRepository.findOne(
-      { 
+      {
         where: {id: inventoryId},
         relations: [
           'subsidiary', 

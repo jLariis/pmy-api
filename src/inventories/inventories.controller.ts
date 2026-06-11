@@ -56,7 +56,7 @@ export class InventoriesController {
             type: 'string',
             example: 'Cd. Obregon'
           },
-          packageDispatchId: {
+          inventoryId: {
             type: 'string',
             example: '6076326c-f6f6-4004-825d-5419a4e6412f'
           }
@@ -66,8 +66,13 @@ export class InventoriesController {
   sendEmail(
     @UploadedFiles() files: Express.Multer.File[],
     @Body('subsidiaryName') subsidiaryName: string,
-    @Body('packageDispatchId') packageDispatchId: string
+    @Body('inventoryId') inventoryId: string
   ) {
+    // El id es obligatorio: de él se resuelve la sucursal destinataria del correo.
+    if (!inventoryId) {
+      throw new BadRequestException('Falta el inventoryId para enviar el correo de inventario.');
+    }
+
     // Validate that both files are present
     if (!files || files.length !== 2) {
       throw new BadRequestException('Se esperan exactamente dos archivos: un PDF y un Excel.');
@@ -83,6 +88,6 @@ export class InventoriesController {
       throw new BadRequestException('Se requiere un archivo PDF y un archivo Excel.');
     }
 
-    return this.inventoriesService.sendByEmail(pdfFile, excelFile, subsidiaryName, packageDispatchId)
+    return this.inventoriesService.sendByEmail(pdfFile, excelFile, subsidiaryName, inventoryId)
   }
 }
