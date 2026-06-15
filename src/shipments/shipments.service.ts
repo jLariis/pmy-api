@@ -3885,9 +3885,30 @@ export class ShipmentsService {
     }
 
     async getShipmentDetailsByTrackingNumber(trackingNumber: string): Promise<SearchShipmentDto | null> {
-      // Buscar todos los shipments con ese trackingNumber y ordenar por fecha más reciente
+      
+      // 1. Generar tracking alternativo para casos de DHL (JJD vs JD)
+      let alternateTrackingNumber: string | undefined;
+      if (trackingNumber.startsWith('JJD')) {
+          alternateTrackingNumber = trackingNumber.substring(1); // Se convierte en "JD..."
+      } else if (trackingNumber.startsWith('JD')) {
+          alternateTrackingNumber = 'J' + trackingNumber; // Se convierte en "JJD..."
+      }
+
+      // 2. Arreglo con los trackings que vamos a buscar
+      const trackingNumbersToSearch = [trackingNumber];
+      if (alternateTrackingNumber) {
+          trackingNumbersToSearch.push(alternateTrackingNumber);
+      }
+
+      // 3. Construir condiciones para la búsqueda de envíos normales (Incluimos dhlUniqueId por consistencia)
+      const shipmentWhereConditions = trackingNumbersToSearch.flatMap(tn => [
+          { trackingNumber: tn },
+          { dhlUniqueId: tn }
+      ]);
+
+      // Buscar todos los shipments con esos trackings y ordenar por fecha más reciente
       const shipments = await this.shipmentRepository.find({
-          where: { trackingNumber },
+          where: shipmentWhereConditions,
           relations: [
               'packageDispatch',
               'packageDispatch.drivers',
@@ -3899,7 +3920,7 @@ export class ShipmentsService {
           order: { commitDateTime: 'DESC' }
       });
 
-      // Buscar también los chargeShipments
+      // Buscar también los chargeShipments usando el operador IN para múltiples trackings
       const chargeShipments = await this.chargeShipmentRepository
           .createQueryBuilder('chargeShipment')
           .leftJoinAndSelect('chargeShipment.payment', 'payment')
@@ -3909,7 +3930,7 @@ export class ShipmentsService {
           .leftJoinAndSelect('unloading.subsidiary', 'unloadingSubsidiary')
           .leftJoinAndSelect('chargeShipment.charge', 'charge')
           .leftJoinAndSelect('chargeShipment.subsidiary', 'subsidiary')
-          .where('chargeShipment.trackingNumber = :trackingNumber', { trackingNumber })
+          .where('chargeShipment.trackingNumber IN (:...trackings)', { trackings: trackingNumbersToSearch })
           .orderBy('chargeShipment.commitDateTime', 'DESC')
           .getMany();
 
@@ -3928,7 +3949,7 @@ export class ShipmentsService {
       // Combinar y tomar el más reciente
       const allShipments = [...shipments, ...chargeShipments];
       if (allShipments.length === 0) {
-          console.log(`❌ No se encontró el envío con trackingNumber: ${trackingNumber}`);
+          console.log(`❌ No se encontró el envío con trackingNumber (ni sus variantes): ${trackingNumber}`);
           return null;
       }
 
@@ -3946,6 +3967,7 @@ export class ShipmentsService {
       const isChargeShipment = 'charge' in targetShipment;
       
       // Crear objeto base de respuesta
+      // Nota: Devolvemos el tracking original que se encontró en la BD (targetShipment.trackingNumber)
       const response: SearchShipmentDto = {
           trackingNumber: targetShipment.trackingNumber,
           commitDateTime: targetShipment.commitDateTime?.toISOString?.() || '',
@@ -3960,7 +3982,8 @@ export class ShipmentsService {
               type: targetShipment.payment?.type,
               amount: targetShipment.payment?.amount ?? 0
           },
-          status: packageDispatch ? 'En ruta' : 'En bodega',
+          status:  targetShipment.status,//packageDispatch ? 'En ruta' : 'En bodega',
+          shipmentType: targetShipment.shipmentType,
           subsidiary: targetShipment.subsidiary?.name || 'Desconocida',
           unloading: {
               id: unloading?.id || '',

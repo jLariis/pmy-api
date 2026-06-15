@@ -152,15 +152,31 @@ export class MailService {
       `${packageDispatch.subsidiary.officeEmailToCopy}, sistemas@paqueteriaymensajeriadelyaqui.com`
     );
 
+    const driverName = packageDispatch.drivers?.[0]?.name ?? 'Sin chofer';
+
+    // Versión en texto plano (evita que el correo HTML-only se marque como spam).
+    const textContent = [
+      `Reporte de Salida a Ruta - Sucursal ${subsidiaryName}`,
+      ``,
+      `Unidad: ${packageDispatch.vehicle?.name ?? 'N/A'}`,
+      `Fecha y hora: ${format(toZonedTime(packageDispatch.createdAt, timeZone), 'dd/MM/yyyy hh:mm aa')}`,
+      `Responsable(s): ${drivers}`,
+      `Ruta(s): ${routes}`,
+      `Numero de seguimiento: ${packageDispatch.trackingNumber}`,
+      ``,
+      `Se adjunta el detalle de los paquetes (PDF y Excel).`,
+      `Mas informacion en: https://app-pmy.vercel.app/`,
+    ].join('\n');
+
     try {
       await this.mailerService.sendMail({
         to,
         cc,
-        //subject: `🚚 Salida a Ruta ${formattedDate} de ${subsidiaryName}`,
-        subject: `🚚 SALIDA ${packageDispatch.drivers[0].name.toLocaleUpperCase()} ${formattedDate}`,
+        // Asunto en caja normal y sin emoji: las MAYÚSCULAS sostenidas y los
+        // emojis suben el puntaje de spam del filtro de contenido.
+        subject: `Salida a ruta - ${driverName} - ${formattedDate}`,
+        text: textContent,
         html: htmlContent,
-        headers: {
-        },
         attachments: attachments
       })
 

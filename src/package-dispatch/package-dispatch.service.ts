@@ -42,6 +42,25 @@ export class PackageDispatchService {
 
   ){ }
 
+  /**
+   * Ordena envíos por código postal del destinatario (recipientZip) para que la
+   * "salida a ruta" salga ordenada por CP. CP mexicano = 5 dígitos; los registros
+   * sin CP van al final. No muta el arreglo original.
+   */
+  private sortByRecipientZip<T extends { recipientZip?: string }>(items: T[] = []): T[] {
+    return [...items].sort((a, b) => {
+      const za = (a?.recipientZip ?? '').toString().trim();
+      const zb = (b?.recipientZip ?? '').toString().trim();
+      if (!za && !zb) return 0;
+      if (!za) return 1;
+      if (!zb) return -1;
+      const na = Number(za);
+      const nb = Number(zb);
+      if (!Number.isNaN(na) && !Number.isNaN(nb)) return na - nb;
+      return za.localeCompare(zb);
+    });
+  }
+
   async create(dto: CreatePackageDispatchDto, userId: string): Promise<PackageDispatch> {
     const allShipmentIds = dto.shipments;
     const queryRunner = this.dataSource.createQueryRunner();
@@ -221,7 +240,7 @@ export class PackageDispatchService {
     };
   }
 
-  async validateTrackingNumber(
+  async validateTrackingNumberResp1306(
     trackingNumber: string,
     subsidiaryId?: string
   ): Promise<ValidatedPackageDispatchDto & { isCharge?: boolean; consolidated?: Consolidated }> {
@@ -273,6 +292,95 @@ export class PackageDispatchService {
       };
     }
 
+    const consolidated = await this.consolidatedRepository.findOne({
+      where: { id: shipment.consolidatedId },
+    });
+
+    const validatedShipment = await this.validatePackage(
+      {
+        ...shipment,
+        isValid: false,
+      },
+      subsidiaryId
+    );
+
+    return {
+      ...validatedShipment,
+      consolidated,
+    };
+  }
+
+  async validateTrackingNumber(
+    trackingNumber: string,
+    subsidiaryId?: string
+  ): Promise<ValidatedPackageDispatchDto & { isCharge?: boolean; consolidated?: Consolidated }> {
+    
+    // 1. Generar variantes para el tracking (JJD vs JD)
+    let alternateTrackingNumber: string | undefined;
+    if (trackingNumber.startsWith('JJD')) {
+      alternateTrackingNumber = trackingNumber.substring(1);
+    } else if (trackingNumber.startsWith('JD')) {
+      alternateTrackingNumber = 'J' + trackingNumber;
+    }
+
+    const trackingsToSearch = alternateTrackingNumber 
+      ? [trackingNumber, alternateTrackingNumber] 
+      : [trackingNumber];
+
+    // 2. Definir condiciones de búsqueda: trackingNumber OR dhlUniqueId
+    // TypeORM permite pasar un array al 'where' para hacer un OR implícito
+    const findConditions = trackingsToSearch.flatMap(tn => [
+      { trackingNumber: tn },
+      { dhlUniqueId: tn }
+    ]);
+
+    const findConditionsCharge = trackingsToSearch.flatMap(tn => [
+      { trackingNumber: tn }
+    ]);
+
+    // 3. Buscar en shipmentRepository
+    const shipment = await this.shipmentRepository.findOne({
+      where: findConditions,
+      relations: ['subsidiary', 'statusHistory', 'payment'],
+      order: { createdAt: 'DESC' }
+    });
+
+    if (!shipment) {
+      // 4. Si no está en shipments, buscar en chargeShipmentRepository
+      const chargeShipment = await this.chargeShipmentRepository.findOne({
+        where: findConditionsCharge,
+        relations: ['subsidiary', 'charge', 'payment'],
+        order: { createdAt: 'DESC' }
+      });
+
+      if (!chargeShipment) {
+        // 5. Recurrir a FedEx si no existe en ninguna base de datos
+        const result = await this.fedexService.completePackageInfo(trackingNumber);
+        
+        return {
+          trackingNumber,
+          isValid: false,
+          reason: 'No se encontraron datos para el tracking number en la base de datos',
+          subsidiary: null,
+          status: null,
+        };
+      }
+
+      const validatedCharge = await this.validatePackage(
+        {
+          ...chargeShipment,
+          isValid: false,
+        },
+        subsidiaryId
+      );
+
+      return {
+        ...validatedCharge,
+        isCharge: true,
+      };
+    }
+
+    // 6. Si encontramos el envío normal
     const consolidated = await this.consolidatedRepository.findOne({
       where: { id: shipment.consolidatedId },
     });
@@ -818,11 +926,12 @@ export class PackageDispatchService {
 
     // === 4. RETORNAR EL OBJETO ARMADO ===
     // Devolvemos el dispatch original pero le incrustamos los arreglos de envíos
-    // Esto hace match perfecto con tu interface PackageDispatch en el frontend
+    // (ordenados por código postal). Esto hace match perfecto con tu interface
+    // PackageDispatch en el frontend.
     return {
       ...dispatch,
-      shipments,
-      chargeShipments
+      shipments: this.sortByRecipientZip(shipments),
+      chargeShipments: this.sortByRecipientZip(chargeShipments)
     };
   }
 
@@ -1124,6 +1233,10 @@ export class PackageDispatchService {
     if (!packageDispatch) {
       throw new NotFoundException('Package dispatch not found'); // Mejor usar la excepción de Nest
     }
+
+    // Ordenar los envíos por código postal para la salida a ruta.
+    packageDispatch.shipments = this.sortByRecipientZip(packageDispatch.shipments);
+    packageDispatch.chargeShipments = this.sortByRecipientZip(packageDispatch.chargeShipments);
 
     return packageDispatch;
   }

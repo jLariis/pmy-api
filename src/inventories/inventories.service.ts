@@ -2,9 +2,11 @@ import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { CreateInventoryDto } from './dto/create-inventory.dto';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Inventory } from 'src/entities/inventory.entity';
-import { DataSource, In, Not, Repository } from 'typeorm';
+import { Between, DataSource, In, Not, Repository } from 'typeorm';
+import { PaginatedResult, parsePagination, resolveDateRange } from 'src/common/pagination.util';
 import { ChargeShipment, Consolidated, Shipment, ShipmentStatus, Subsidiary } from 'src/entities';
 import { ValidatedPackageDispatchDto } from 'src/package-dispatch/dto/validated-package-dispatch.dto';
+import { ValidationPayloadDto } from 'src/unloading/dto/validate-payload.dto';
 import { MailService } from 'src/mail/mail.service';
 import { ShipmentStatusType } from 'src/common/enums/shipment-status-type.enum';
 import * as ExcelJS from 'exceljs';
@@ -263,7 +265,7 @@ export class InventoriesService {
     };
   }
 
-  async validateTrackingNumbers(
+  async validateTrackingNumbersResp1306(
     trackingNumbers: string[],
     subsidiaryId?: string
   ): Promise<{
@@ -323,22 +325,220 @@ export class InventoriesService {
     return { validatedShipments };
   }
 
-  async findAll(subsidiaryId: string) {
-    return await this.inventoryRepository.find({
-      where: {
-        subsidiary: {
-          id: subsidiaryId
-        }
-      },
-      order: {
-        inventoryDate: 'DESC'
-      },
-      relations: ['subsidiary', 'shipments', 'chargeShipments']
+  /**
+   * Validación incremental "en vivo".
+   *
+   * El frontend manda TODO lo escaneado, pero marca con `isAlreadyValidated`
+   * lo que ya validó antes (trae su data en el payload). Aquí solo consultamos
+   * la BD para los NUEVOS, así cada escaneo responde al instante en vez de
+   * revalidar toda la lista.
+   *
+   * Además, cuando un trackingNumber/dhlUniqueId existe varias veces en BD se
+   * conserva SIEMPRE el registro más reciente (createMostRecentLookup).
+   */
+  async validateTrackingNumbers(
+    payload: ValidationPayloadDto[],
+    subsidiaryId?: string
+  ): Promise<{
+    validatedShipments: (ValidatedPackageDispatchDto & { isCharge?: boolean })[];
+  }> {
+    if (!payload || payload.length === 0) {
+      return { validatedShipments: [] };
+    }
+
+    // 1. Solo los NUEVOS van a la BD; los ya validados se reusan del payload (caché).
+    const newItems = payload.filter(p => !p.isAlreadyValidated && p.trackingNumber);
+
+    // 2. Variantes JJD/JD + búsqueda por dhlUniqueId, solo para los nuevos.
+    const searchSet = new Set<string>();
+    const originalToVariants = new Map<string, string[]>();
+    for (const { trackingNumber: tn } of newItems) {
+      const variants = [tn];
+      if (tn.startsWith('JJD')) variants.push(tn.substring(1));
+      else if (tn.startsWith('JD')) variants.push('J' + tn);
+      variants.forEach(v => searchSet.add(v));
+      originalToVariants.set(tn, variants);
+    }
+
+    // 3. Consulta única solo de los nuevos.
+    let shipments: Shipment[] = [];
+    let chargeShipments: ChargeShipment[] = [];
+    if (searchSet.size > 0) {
+      const allToSearch = Array.from(searchSet);
+      [shipments, chargeShipments] = await Promise.all([
+        this.shipmentRepository.find({
+          where: [
+            { trackingNumber: In(allToSearch), status: Not(ShipmentStatusType.DEVUELTO_A_FEDEX) },
+            { dhlUniqueId: In(allToSearch), status: Not(ShipmentStatusType.DEVUELTO_A_FEDEX) },
+          ],
+          relations: ['subsidiary', 'payment'],
+          order: { createdAt: 'DESC' },
+        }),
+        this.chargeShipmentRepository.find({
+          where: { trackingNumber: In(allToSearch), status: Not(ShipmentStatusType.DEVUELTO_A_FEDEX) },
+          relations: ['subsidiary', 'payment'],
+          order: { createdAt: 'DESC' },
+        }),
+      ]);
+    }
+
+    // 4. Mapas que conservan SIEMPRE el registro más reciente (por trackingNumber y dhlUniqueId).
+    const shipmentsMap = this.createMostRecentLookup(shipments);
+    const chargeMap = this.createMostRecentLookup(chargeShipments);
+
+    // 5. Armar la respuesta en el ORDEN del payload, deduplicando escaneos repetidos.
+    const validatedShipments: (ValidatedPackageDispatchDto & { isCharge?: boolean })[] = [];
+    const processed = new Set<string>();
+
+    for (const item of payload) {
+      const tn = item.trackingNumber?.trim();
+      if (!tn) continue;
+
+      const key = tn.toUpperCase();
+      if (processed.has(key)) continue; // mismo escaneo repetido -> uno solo
+      processed.add(key);
+
+      // 🟢 Cacheado: reusar lo ya validado (no toca BD).
+      if (item.isAlreadyValidated) {
+        validatedShipments.push({ ...(item as any) });
+        continue;
+      }
+
+      // 🔵 Nuevo: buscar por variante (más reciente).
+      const variants = originalToVariants.get(item.trackingNumber) || [item.trackingNumber];
+      let matchedShipment: any = null;
+      let matchedCharge: any = null;
+      for (const v of variants) {
+        const vk = v.toUpperCase();
+        if (shipmentsMap.has(vk)) { matchedShipment = shipmentsMap.get(vk); break; }
+        if (chargeMap.has(vk)) { matchedCharge = chargeMap.get(vk); break; }
+      }
+
+      if (matchedShipment) {
+        const validated = await this.validatePackage({ ...matchedShipment, isValid: false }, subsidiaryId);
+        validatedShipments.push({ ...validated, isCharge: false });
+      } else if (matchedCharge) {
+        const validatedCharge = await this.validatePackage({ ...matchedCharge, isValid: false }, subsidiaryId);
+        validatedShipments.push({ ...validatedCharge, isCharge: true });
+      } else {
+        validatedShipments.push({
+          trackingNumber: tn,
+          isValid: false,
+          reason: 'No se encontraron datos para el tracking number en la base de datos',
+          subsidiary: null,
+          status: null,
+        });
+      }
+    }
+
+    return { validatedShipments };
+  }
+
+  /**
+   * Indexa por trackingNumber Y dhlUniqueId (en mayúsculas) conservando siempre
+   * el registro con createdAt más reciente. Resuelve "tomar el más nuevo" cuando
+   * un mismo número aparece varias veces en BD.
+   */
+  private createMostRecentLookup<T extends { trackingNumber?: string; dhlUniqueId?: string; createdAt?: Date }>(
+    items: T[]
+  ): Map<string, T> {
+    const map = new Map<string, T>();
+    const put = (raw: string | undefined, item: T) => {
+      if (!raw) return;
+      const key = raw.trim().toUpperCase();
+      const existing = map.get(key);
+      if (!existing || new Date(item.createdAt).getTime() > new Date(existing.createdAt).getTime()) {
+        map.set(key, item);
+      }
+    };
+    for (const item of items) {
+      put(item.trackingNumber, item);
+      put((item as any).dhlUniqueId, item);
+    }
+    return map;
+  }
+
+  async findAll(
+    subsidiaryId: string,
+    opts: {
+      page?: string | number;
+      limit?: string | number;
+      from?: string;
+      to?: string;
+      search?: string;
+      type?: string;
+    } = {},
+  ): Promise<PaginatedResult<any>> {
+    const { start, end } = resolveDateRange(opts.from, opts.to);
+    const { page, limit, skip } = parsePagination(opts.page, opts.limit);
+    const search = (opts.search || '').trim();
+    const type = opts.type && opts.type !== 'all' ? opts.type : undefined;
+
+    // Filtros comunes (semana + búsqueda + tipo). NO carga relaciones pesadas:
+    // los paquetes se devuelven como conteo y el detalle se pide aparte por id.
+    const applyFilters = <T extends import('typeorm').SelectQueryBuilder<Inventory>>(qb: T): T => {
+      qb.where('subsidiary.id = :subsidiaryId', { subsidiaryId })
+        .andWhere('inventory.inventoryDate BETWEEN :start AND :end', { start, end });
+      if (search) qb.andWhere('inventory.trackingNumber LIKE :search', { search: `%${search}%` });
+      if (type) qb.andWhere('inventory.type = :type', { type });
+      return qb;
+    };
+
+    const total = await applyFilters(
+      this.inventoryRepository.createQueryBuilder('inventory').leftJoin('inventory.subsidiary', 'subsidiary'),
+    ).getCount();
+
+    const { entities, raw } = await applyFilters(
+      this.inventoryRepository
+        .createQueryBuilder('inventory')
+        .leftJoin('inventory.subsidiary', 'subsidiary')
+        .leftJoin('inventory.shipments', 'shipments')
+        .leftJoin('inventory.chargeShipments', 'chargeShipments'),
+    )
+      .select([
+        'inventory.id',
+        'inventory.trackingNumber',
+        'inventory.inventoryDate',
+        'inventory.createdAt',
+        'inventory.type',
+        'subsidiary.id',
+        'subsidiary.name',
+      ])
+      .addSelect('COUNT(DISTINCT shipments.id)', 'shipmentsCount')
+      .addSelect('COUNT(DISTINCT chargeShipments.id)', 'chargeShipmentsCount')
+      .groupBy('inventory.id')
+      .addGroupBy('subsidiary.id')
+      .orderBy('inventory.inventoryDate', 'DESC')
+      .offset(skip)
+      .limit(limit)
+      .getRawAndEntities();
+
+    const data = entities.map((inv) => {
+      const r = raw.find((x) => x.inventory_id === inv.id);
+      const sc = Number(r?.shipmentsCount || 0);
+      const cc = Number(r?.chargeShipmentsCount || 0);
+      return { ...inv, shipmentsCount: sc, chargeShipmentsCount: cc, totalPackages: sc + cc };
     });
+
+    return { data, total, page, limit, totalPages: Math.max(1, Math.ceil(total / limit)) };
   }
 
   async findOne(id: string) {
-    return await this.inventoryRepository.findOneBy({id});
+    return await this.inventoryRepository.findOneBy({ id });
+  }
+
+  /** Inventario completo (con paquetes) para el detalle / exportación. */
+  async findOneFull(id: string) {
+    return await this.inventoryRepository.findOne({
+      where: { id },
+      relations: [
+        'subsidiary',
+        'shipments',
+        'shipments.payment',
+        'chargeShipments',
+        'chargeShipments.payment',
+      ],
+    });
   }
 
   async getPriorityPackages(inventory: Inventory) {

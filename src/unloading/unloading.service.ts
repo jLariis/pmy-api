@@ -4,6 +4,7 @@ import { UpdateUnloadingDto } from './dto/update-unloading.dto';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Unloading } from 'src/entities/unloading.entity';
 import { Between, DataSource, In, MoreThanOrEqual, Not, Repository } from 'typeorm';
+import { PaginatedResult, parsePagination, resolveDateRange } from 'src/common/pagination.util';
 import { Charge, ChargeShipment, Consolidated, Shipment, ShipmentStatus } from 'src/entities';
 import { ValidatedPackageDispatchDto } from 'src/package-dispatch/dto/validated-package-dispatch.dto';
 import { ValidatedUnloadingDto } from './dto/validate-package-unloading.dto';
@@ -1784,19 +1785,32 @@ export class UnloadingService {
     return results;
   }
 
-  async findAllBySubsidiary(subsidiaryId: string) {
+  async findAllBySubsidiary(
+    subsidiaryId: string,
+    opts: { page?: string | number; limit?: string | number; from?: string; to?: string; search?: string } = {},
+  ): Promise<PaginatedResult<any>> {
+    const { start, end } = resolveDateRange(opts.from, opts.to);
+    const { page, limit, skip } = parsePagination(opts.page, opts.limit);
+    const search = (opts.search || '').trim();
+
+    // Conteo total exacto (sin joins de colección, para no inflar el COUNT).
+    const countQb = this.unloadingRepository
+      .createQueryBuilder('unloading')
+      .leftJoin('unloading.subsidiary', 'subsidiary')
+      .where('subsidiary.id = :subsidiaryId', { subsidiaryId })
+      .andWhere('unloading.createdAt BETWEEN :start AND :end', { start, end });
+    if (search) countQb.andWhere('unloading.trackingNumber LIKE :search', { search: `%${search}%` });
+    const total = await countQb.getCount();
+
     const qb = this.unloadingRepository.createQueryBuilder('unloading')
-      // Relaciones directas (Eager-like)
       .leftJoinAndSelect('unloading.vehicle', 'vehicle')
       .leftJoinAndSelect('unloading.subsidiary', 'subsidiary')
-      
-      // Relaciones inversas para el conteo
-      // 'unloading.shipments' usa la relación que definiste en la entidad
       .leftJoin('unloading.shipments', 'shipments')
       .leftJoin('unloading.chargeShipments', 'chargeShipments')
-      
       .where('subsidiary.id = :subsidiaryId', { subsidiaryId })
-      
+      .andWhere('unloading.createdAt BETWEEN :start AND :end', { start, end });
+    if (search) qb.andWhere('unloading.trackingNumber LIKE :search', { search: `%${search}%` });
+    qb
       .select([
         'unloading.id',
         'unloading.trackingNumber',
@@ -1810,33 +1824,39 @@ export class UnloadingService {
         'subsidiary.id',
         'subsidiary.name',
       ])
-      // Usamos DISTINCT porque al tener dos leftJoin de colecciones, 
-      // las filas se multiplican en el SQL plano (Producto Cartesiano)
       .addSelect('COUNT(DISTINCT shipments.id)', 'shipmentsCount')
       .addSelect('COUNT(DISTINCT chargeShipments.id)', 'chargeShipmentsCount')
-      
       .groupBy('unloading.id')
       .addGroupBy('vehicle.id')
       .addGroupBy('subsidiary.id')
-      
-      .orderBy('unloading.createdAt', 'DESC');
+      .orderBy('unloading.createdAt', 'DESC')
+      .offset(skip)
+      .limit(limit);
 
     const { entities, raw } = await qb.getRawAndEntities();
 
-    return entities.map((unloading, index) => {
-      // Buscamos la fila raw correspondiente a esta entidad
-      // TypeORM suele usar el alias "unloading_id" en el objeto raw
+    const data = entities.map((unloading) => {
       const rawData = raw.find(r => r.unloading_id === unloading.id);
+      const sc = rawData ? Number(rawData.shipmentsCount) : 0;
+      const cc = rawData ? Number(rawData.chargeShipmentsCount) : 0;
+      return { ...unloading, shipments: sc, chargeShipments: cc, totalPackages: sc + cc };
+    });
 
-      return {
-        ...unloading,
-        shipments: rawData ? Number(rawData.shipmentsCount) : 0,
-        chargeShipments: rawData ? Number(rawData.chargeShipmentsCount) : 0,
-        // Opcional: para tu interfaz de frontend
-        totalPackages: rawData 
-          ? Number(rawData.shipmentsCount) + Number(rawData.chargeShipmentsCount) 
-          : 0
-      };
+    return { data, total, page, limit, totalPages: Math.max(1, Math.ceil(total / limit)) };
+  }
+
+  /** Desembarque completo (con paquetes) para el detalle / exportación. */
+  async findOneWithPackages(id: string) {
+    return await this.unloadingRepository.findOne({
+      where: { id },
+      relations: [
+        'vehicle',
+        'subsidiary',
+        'shipments',
+        'shipments.payment',
+        'chargeShipments',
+        'chargeShipments.payment',
+      ],
     });
   }
 

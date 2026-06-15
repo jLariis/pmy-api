@@ -1,3 +1,4 @@
+import { ShipmentType } from "src/common/enums";
 import { ConsolidatedType } from "src/common/enums/consolidated-type.enum";
 import { PaymentTypeEnum } from "src/common/enums/payment-type.enum";
 import { Priority } from "src/common/enums/priority.enum";
@@ -17,6 +18,7 @@ export class SearchShipmentDto {
         amount: number;
     };
     status: string;
+    shipmentType: ShipmentType;
     subsidiary: string;
     unloading: {
         id: string;

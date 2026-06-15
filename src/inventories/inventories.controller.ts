@@ -1,10 +1,10 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete, BadRequestException, UploadedFiles, UseInterceptors } from '@nestjs/common';
+import { Controller, Get, Post, Body, Patch, Param, Delete, BadRequestException, UploadedFiles, UseInterceptors, ParseArrayPipe, Query } from '@nestjs/common';
 import { InventoriesService } from './inventories.service';
 import { CreateInventoryDto } from './dto/create-inventory.dto';
 import { UpdateInventoryDto } from './dto/update-inventory.dto';
 import { FilesInterceptor } from '@nestjs/platform-express';
 import { ApiOperation, ApiConsumes, ApiBody, ApiTags } from '@nestjs/swagger';
-import { ValidateTrackingNumbersDto } from 'src/unloading/dto/validate-tracking-numbers.dto';
+import { ValidationPayloadDto } from 'src/unloading/dto/validate-payload.dto';
 
 @ApiTags('inventories')
 @Controller('inventories')
@@ -17,15 +17,22 @@ export class InventoriesController {
     return this.inventoriesService.create(createInventoryDto);
   }
 
-  @Get(':subsidiaryId')
-  findAll(@Param('subsidiaryId') subsidiaryId: string) {
-    console.log("🚀 ~ InventoriesController ~ findAll ~ subsidiaryId:", subsidiaryId)
-    return this.inventoriesService.findAll(subsidiaryId);
+  @Get('detail/:id')
+  findOneFull(@Param('id') id: string) {
+    return this.inventoriesService.findOneFull(id);
   }
 
-  @Get(':id')
-  findOne(@Param('id') id: string) {
-    return this.inventoriesService.findOne(id);
+  @Get(':subsidiaryId')
+  findAll(
+    @Param('subsidiaryId') subsidiaryId: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+    @Query('search') search?: string,
+    @Query('type') type?: string,
+  ) {
+    return this.inventoriesService.findAll(subsidiaryId, { page, limit, from, to, search, type });
   }
 
   @Get('validate/:trackingNumber')
@@ -34,8 +41,14 @@ export class InventoriesController {
   }
 
   @Post('validate-tracking-numbers')
-  validateTrackingNumbers(@Body() body: ValidateTrackingNumbersDto) {
-    const { trackingNumbers, subsidiaryId } = body;
+  validateTrackingNumbers(
+    @Body(
+      'trackingNumbers',
+      new ParseArrayPipe({ items: ValidationPayloadDto, optional: true }),
+    )
+    trackingNumbers: ValidationPayloadDto[] = [],
+    @Body('subsidiaryId') subsidiaryId?: string,
+  ) {
     return this.inventoriesService.validateTrackingNumbers(trackingNumbers, subsidiaryId);
   }
 

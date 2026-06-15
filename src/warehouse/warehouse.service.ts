@@ -142,7 +142,7 @@ export class WarehouseService {
     }
   }
 
-  async validateTrackingNumber(
+  async validateTrackingNumberResp1306(
     trackingNumber: string, // Recibe el código escaneado (Tracking o UniqueID)
     subsidiaryId?: string,
   ): Promise<
@@ -225,6 +225,132 @@ export class WarehouseService {
     return {
       id: foundPackage.id,
       trackingNumber: foundPackage.trackingNumber,
+      shipmentType: foundPackage.shipmentType,
+      recipientName: foundPackage.recipientName,
+      recipientAddress: foundPackage.recipientAddress,
+      recipientZip: foundPackage.recipientZip,
+      recipientPhone: (foundPackage as any).recipientPhone,
+      subsidiary: foundPackage.subsidiary || null,
+      commitDateTime: foundPackage.commitDateTime,
+      isHighValue: foundPackage.isHighValue,
+      priority: foundPackage.priority,
+      status: String(foundPackage.status),
+      isCharge,
+      hasPayment,
+      paymentAmount,
+      paymentType,
+      dhlUniqueId: shipment?.dhlUniqueId || undefined,
+    };
+  }
+
+  async validateTrackingNumber(
+    trackingNumber: string, // Recibe el código escaneado (Tracking o UniqueID)
+    subsidiaryId?: string,
+  ): Promise<
+    ScannedShipment | { isValid: false; trackingNumber: string; reason: string }
+  > {
+    
+    // Generar tracking alternativo para casos borde de DHL (JJD vs JD)
+    let alternateTrackingNumber: string | undefined;
+    if (trackingNumber.startsWith('JJD')) {
+      alternateTrackingNumber = trackingNumber.substring(1); // Se convierte en "JD..."
+    } else if (trackingNumber.startsWith('JD')) {
+      alternateTrackingNumber = 'J' + trackingNumber; // Se convierte en "JJD..."
+    }
+
+    // Construir dinámicamente las condiciones de búsqueda (OR)
+    const shipmentWhereConditions: any[] = [
+      { trackingNumber: trackingNumber },
+      { dhlUniqueId: trackingNumber },
+    ];
+
+    const chargeWhereConditions: any[] = [
+      { trackingNumber: trackingNumber }
+    ];
+
+    // Si existe una variante, la agregamos a las condiciones de búsqueda
+    if (alternateTrackingNumber) {
+      shipmentWhereConditions.push({ trackingNumber: alternateTrackingNumber });
+      shipmentWhereConditions.push({ dhlUniqueId: alternateTrackingNumber });
+      chargeWhereConditions.push({ trackingNumber: alternateTrackingNumber });
+    }
+
+    // 1. Buscamos en ambas tablas simultáneamente e incluimos la relación 'payment'
+    const [shipment, chargeShipment] = await Promise.all([
+      this.shipmentRepository.findOne({
+        where: shipmentWhereConditions,
+        select: {
+          id: true,
+          trackingNumber: true,
+          shipmentType: true,
+          recipientName: true,
+          recipientAddress: true,
+          recipientZip: true,
+          recipientPhone: true,
+          commitDateTime: true,
+          isHighValue: true,
+          priority: true,
+          status: true,
+          dhlUniqueId: true,
+          subsidiary: { id: true, name: true },
+          payment: { id: true, amount: true, type: true },
+        },
+        relations: ['subsidiary', 'payment'],
+      }),
+
+      this.chargeShipmentRepository.findOne({
+        where: chargeWhereConditions,
+        select: {
+          id: true,
+          trackingNumber: true,
+          shipmentType: true,
+          recipientName: true,
+          recipientAddress: true,
+          recipientZip: true,
+          recipientPhone: true,
+          commitDateTime: true,
+          isHighValue: true,
+          priority: true,
+          status: true,
+          subsidiary: { id: true, name: true },
+          payment: { id: true, amount: true, type: true },
+        },
+        relations: ['subsidiary', 'payment'],
+      }),
+    ]);
+
+    const foundPackage = shipment || chargeShipment;
+
+    // 2. Si no existe en la base de datos (ni el original ni la variante), retornamos error
+    if (!foundPackage) {
+      return {
+        trackingNumber,
+        isValid: false,
+        reason: 'El paquete no existe en el sistema local',
+      };
+    }
+
+    /** Para cuando tengamos ya todo guardado en Bodega Obregon, los paquetes se puedan separar
+     * por ciudad usando el código postal.
+     */
+    // if (foundPackage.recipientZip) {
+    //   const city = await this.getCityFromZipCode(foundPackage.recipientZip);
+    // }
+
+    // 3. Evaluamos las reglas de negocio
+    const isCharge = !!chargeShipment;
+    const hasPayment = !!foundPackage.payment;
+
+    // Asignamos valores por defecto seguros en caso de que no haya pago
+    const paymentAmount = foundPackage.payment?.amount || 0;
+    const paymentType = foundPackage.payment?.type as PaymentTypeEnum;
+
+    // 4. Retorno del objeto asegurando los tipos
+    // NOTA: Devolvemos foundPackage.trackingNumber para que el frontend 
+    // reciba exactamente el código con el que se guardó en BD.
+    return {
+      id: foundPackage.id,
+      trackingNumber: foundPackage.trackingNumber, 
       shipmentType: foundPackage.shipmentType,
       recipientName: foundPackage.recipientName,
       recipientAddress: foundPackage.recipientAddress,

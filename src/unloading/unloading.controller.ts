@@ -130,8 +130,20 @@ export class UnloadingController {
   }
 
   @Get('subsidiary/:subsidiaryId')
-  findBySubsidiary(@Param('subsidiaryId') subsidiaryId: string) {
-    return this.unloadingService.findAllBySubsidiary(subsidiaryId);
+  findBySubsidiary(
+    @Param('subsidiaryId') subsidiaryId: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+    @Query('search') search?: string,
+  ) {
+    return this.unloadingService.findAllBySubsidiary(subsidiaryId, { page, limit, from, to, search });
+  }
+
+  @Get('detail/:id')
+  findOneWithPackages(@Param('id') id: string) {
+    return this.unloadingService.findOneWithPackages(id);
   }
 
   @Get()
