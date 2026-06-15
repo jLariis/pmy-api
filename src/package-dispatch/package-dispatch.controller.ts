@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete, UseInterceptors, UploadedFile, BadRequestException, UploadedFiles, Req } from '@nestjs/common';
+import { Controller, Get, Post, Body, Patch, Param, Delete, UseInterceptors, UploadedFile, BadRequestException, UploadedFiles, Req, Query } from '@nestjs/common';
 import { PackageDispatchService } from './package-dispatch.service';
 import { CreatePackageDispatchDto } from './dto/create-package-dispatch.dto';
 import { UpdatePackageDispatchDto } from './dto/update-package-dispatch.dto';
@@ -38,8 +38,15 @@ export class PackageDispatchController {
   }
 
   @Get('subsidiary/:subsidiaryId')
-  findBySubsidiary(@Param('subsidiaryId') subsidiaryId: string) {
-    return this.packageDispatchService.findAllBySubsidiary(subsidiaryId);
+  findBySubsidiary(
+    @Param('subsidiaryId') subsidiaryId: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+    @Query('search') search?: string,
+  ) {
+    return this.packageDispatchService.findAllBySubsidiary(subsidiaryId, { page, limit, from, to, search });
   }
 
   @Get(':id')

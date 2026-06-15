@@ -14,6 +14,7 @@ import { ShipmentsService } from 'src/shipments/shipments.service';
 import { PackageDispatchHistory } from 'src/entities/package-dispatch-history.entity';
 import { DateTime } from 'luxon';
 import * as ExcelJS from 'exceljs';
+import { PaginatedResult, parsePagination, resolveDateRange } from 'src/common/pagination.util';
 
 @Injectable()
 export class PackageDispatchService {
@@ -62,7 +63,14 @@ export class PackageDispatchService {
   }
 
   async create(dto: CreatePackageDispatchDto, userId: string): Promise<PackageDispatch> {
-    const allShipmentIds = dto.shipments;
+    // Saneamos los IDs: quitamos vacíos/nulos y duplicados para no provocar
+    // un 400 espurio ("No se encontraron los IDs") por basura del payload.
+    const allShipmentIds = Array.from(new Set((dto.shipments || []).filter(Boolean)));
+
+    if (allShipmentIds.length === 0) {
+      throw new BadRequestException('No se recibieron paquetes para la salida a ruta.');
+    }
+
     const queryRunner = this.dataSource.createQueryRunner();
 
     await queryRunner.connect();
@@ -449,15 +457,42 @@ export class PackageDispatchService {
     }));
   }
 
-  async findAllBySubsidiary(subsidiaryId: string) {
-    const qb = this.packageDispatchRepository
-      .createQueryBuilder('pd')
-      .leftJoin('pd.subsidiary', 'subsidiary')
-      .leftJoin('pd.routes', 'routes')
-      .leftJoin('pd.vehicle', 'vehicle')
-      .leftJoin('pd.shipments', 'shipments')
-      .leftJoin('pd.chargeShipments', 'chargeShipments')
-      .where('subsidiary.id = :subsidiaryId', { subsidiaryId })
+  async findAllBySubsidiary(
+    subsidiaryId: string,
+    opts: {
+      page?: string | number;
+      limit?: string | number;
+      from?: string;
+      to?: string;
+      search?: string;
+    } = {},
+  ): Promise<PaginatedResult<any>> {
+    const { start, end } = resolveDateRange(opts.from, opts.to);
+    const { page, limit, skip } = parsePagination(opts.page, opts.limit);
+    const search = (opts.search || '').trim();
+
+    // Filtros comunes (semana + búsqueda). No carga relaciones pesadas:
+    // los paquetes se devuelven como conteo y el detalle se pide aparte por id.
+    const applyFilters = <T extends import('typeorm').SelectQueryBuilder<PackageDispatch>>(qb: T): T => {
+      qb.where('subsidiary.id = :subsidiaryId', { subsidiaryId })
+        .andWhere('pd.createdAt BETWEEN :start AND :end', { start, end });
+      if (search) qb.andWhere('pd.trackingNumber LIKE :search', { search: `%${search}%` });
+      return qb;
+    };
+
+    const total = await applyFilters(
+      this.packageDispatchRepository.createQueryBuilder('pd').leftJoin('pd.subsidiary', 'subsidiary'),
+    ).getCount();
+
+    const { entities, raw } = await applyFilters(
+      this.packageDispatchRepository
+        .createQueryBuilder('pd')
+        .leftJoin('pd.subsidiary', 'subsidiary')
+        .leftJoin('pd.routes', 'routes')
+        .leftJoin('pd.vehicle', 'vehicle')
+        .leftJoin('pd.shipments', 'shipments')
+        .leftJoin('pd.chargeShipments', 'chargeShipments'),
+    )
       .select([
         'pd.id',
         'pd.trackingNumber',
@@ -483,24 +518,26 @@ export class PackageDispatchService {
       .addGroupBy('subsidiary.id')
       .addGroupBy('routes.id')
       .addGroupBy('vehicle.id')
-      .orderBy('pd.createdAt', 'DESC');
+      .orderBy('pd.createdAt', 'DESC')
+      .offset(skip)
+      .limit(limit)
+      .getRawAndEntities();
 
-    const { entities, raw } = await qb.getRawAndEntities();
-
-    // --- CAMBIO AQUÍ ---
-    return entities.map((pd) => {
-      // Buscamos en el array 'raw' la fila que tenga el ID de este despacho
-      // TypeORM suele nombrar el ID en raw como 'pd_id' (por el alias pd)
+    const data = entities.map((pd) => {
+      // TypeORM nombra el ID en raw como 'pd_id' (por el alias pd).
       const rawData = raw.find(r => r.pd_id === pd.id);
-
+      const sc = Number(rawData?.shipmentsCount || 0);
+      const cc = Number(rawData?.chargeShipmentsCount || 0);
       return {
         ...pd,
         driverName: rawData?.driverName ?? null,
-        totalPackages: rawData 
-          ? Number(rawData.shipmentsCount) + Number(rawData.chargeShipmentsCount) 
-          : 0,
+        shipmentsCount: sc,
+        chargeShipmentsCount: cc,
+        totalPackages: sc + cc,
       };
     });
+
+    return { data, total, page, limit, totalPages: Math.max(1, Math.ceil(total / limit)) };
   }
 
   /** Para monitoreo */
