@@ -31,6 +31,114 @@ export class KpiService {
     private expenseRepository: Repository<Expense>,
   ) {}
 
+  // ===================== Welcome Dashboard (resumen de inicio) =====================
+
+  /** Estatus "activos" (no entregados/devueltos) para vencimientos y pendientes. */
+  private readonly WELCOME_ACTIVE_STATUSES = [
+    ShipmentStatusType.PENDIENTE,
+    ShipmentStatusType.EN_RUTA,
+    ShipmentStatusType.EN_BODEGA,
+    ShipmentStatusType.RECIBIDO_EN_BODEGA,
+    ShipmentStatusType.EN_TRANSITO,
+    ShipmentStatusType.RECOLECCION,
+    ShipmentStatusType.DESCONOCIDO,
+  ];
+
+  private static readonly STATUS_LABELS: Record<string, string> = {
+    pendiente: 'Pendiente',
+    en_ruta: 'En ruta',
+    en_bodega: 'En bodega',
+    recibido_en_bodega: 'Recibido en bodega',
+    en_transito: 'En tránsito',
+    recoleccion: 'Recolección',
+    desconocido: 'Desconocido',
+  };
+
+  /** Inicio/fin del día de HOY en Hermosillo (UTC-7), expresado en UTC. */
+  private hermosilloToday(): { todayStart: Date; todayEnd: Date } {
+    const now = new Date();
+    const hmo = new Date(now.getTime() - 7 * 3600 * 1000); // hora-pared Hermosillo
+    const todayStart = new Date(Date.UTC(hmo.getUTCFullYear(), hmo.getUTCMonth(), hmo.getUTCDate(), 7, 0, 0, 0)); // 00:00 Hermosillo
+    const todayEnd = new Date(todayStart.getTime() + 24 * 3600 * 1000 - 1);
+    return { todayStart, todayEnd };
+  }
+
+  /**
+   * Resumen de inicio de sesión: pendientes de días anteriores, sin DEX/67 y
+   * paquetes que vencen hoy. Acotado por sucursal (si se pasa) y por tamaño.
+   */
+  async getWelcomeDashboard(subsidiaryId?: string) {
+    const { todayStart, todayEnd } = this.hermosilloToday();
+    const now = new Date();
+    const LIST_LIMIT = 100;
+    const subFilter: any = subsidiaryId ? { subsidiary: { id: subsidiaryId } } : {};
+
+    // --- 1. Vencen hoy: commitDateTime dentro de HOY + activos ---
+    const expWhere: any = { ...subFilter, status: In(this.WELCOME_ACTIVE_STATUSES), commitDateTime: Between(todayStart, todayEnd) };
+    const [expShipments, expShipTotal] = await this.shipmentRepository.findAndCount({
+      where: expWhere, relations: ['subsidiary'], order: { commitDateTime: 'ASC' }, take: LIST_LIMIT,
+    });
+    const [expCharges, expChargeTotal] = await this.chargeShipmentRepository.findAndCount({
+      where: expWhere, relations: ['subsidiary'], order: { commitDateTime: 'ASC' }, take: LIST_LIMIT,
+    });
+    const expiringPackages = [...expShipments, ...expCharges].slice(0, LIST_LIMIT).map((s: any) => {
+      const expiry = s.commitDateTime ? new Date(s.commitDateTime) : now;
+      return {
+        id: s.id,
+        trackingNumber: s.trackingNumber,
+        recipientName: s.recipientName || '—',
+        expiryDate: expiry.toISOString(),
+        subsidiaryName: s.subsidiary?.name || '—',
+        hoursRemaining: Math.max(0, Math.round((expiry.getTime() - now.getTime()) / 3600000)),
+      };
+    });
+
+    // --- 2. Pendientes de días anteriores: commit < hoy + activos (últimos 60 días) ---
+    const overdueFrom = new Date(todayStart.getTime() - 60 * 24 * 3600 * 1000);
+    const penWhere: any = { ...subFilter, status: In(this.WELCOME_ACTIVE_STATUSES), commitDateTime: Between(overdueFrom, new Date(todayStart.getTime() - 1)) };
+    const [penShipments, penShipTotal] = await this.shipmentRepository.findAndCount({
+      where: penWhere, relations: ['subsidiary'], order: { commitDateTime: 'DESC' }, take: LIST_LIMIT,
+    });
+    const [penCharges, penChargeTotal] = await this.chargeShipmentRepository.findAndCount({
+      where: penWhere, relations: ['subsidiary'], order: { commitDateTime: 'DESC' }, take: LIST_LIMIT,
+    });
+    const pendingPackages = [...penShipments, ...penCharges].slice(0, LIST_LIMIT).map((s: any) => ({
+      id: s.id,
+      trackingNumber: s.trackingNumber,
+      recipientName: s.recipientName || '—',
+      status: KpiService.STATUS_LABELS[String(s.status)] || String(s.status),
+      subsidiaryName: s.subsidiary?.name || '—',
+      createdAt: (s.commitDateTime ? new Date(s.commitDateTime) : s.createdAt || now).toISOString(),
+    }));
+
+    // --- 3. Sin DEX/67: PENDIENTE o EN_BODEGA cuyo historial NO tiene exceptionCode '67' ---
+    const code67Statuses = [ShipmentStatusType.PENDIENTE, ShipmentStatusType.EN_BODEGA];
+    const [s67, c67] = await Promise.all([
+      this.shipmentRepository.find({ where: { ...subFilter, status: In(code67Statuses) }, relations: ['statusHistory', 'subsidiary'], take: 500 }),
+      this.chargeShipmentRepository.find({ where: { ...subFilter, status: In(code67Statuses) }, relations: ['statusHistory', 'subsidiary'], take: 500 }),
+    ]);
+    const without67 = [...s67, ...c67].filter((s: any) => !(s.statusHistory || []).some((h: any) => h.exceptionCode === '67'));
+    const withoutDEXPackages = without67.slice(0, LIST_LIMIT).map((s: any) => ({
+      id: s.id,
+      trackingNumber: s.trackingNumber,
+      recipientName: s.recipientName || '—',
+      subsidiaryName: s.subsidiary?.name || '—',
+      carrier: String(s.shipmentType || '').toUpperCase() === 'DHL' ? 'DHL' : 'FedEx',
+      missingDocument: 'Código 67',
+    }));
+
+    return {
+      stats: {
+        pendingYesterday: penShipTotal + penChargeTotal,
+        withoutDEX: without67.length,
+        expiringToday: expShipTotal + expChargeTotal,
+      },
+      pendingPackages,
+      withoutDEXPackages,
+      expiringPackages,
+    };
+  }
+
   async getSubsidiariesKpisResp0205(startDate: string, endDate: string, subsidiaryIds?: string[]) {
     // 1. Manejo de fechas en Zona Horaria Hermosillo (UTC-7 constante)
     const baseStartDate = startDate.split('T')[0];

@@ -1,9 +1,8 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete, UseGuards, Request } from '@nestjs/common';
+import { Controller, Get, Post, Body, Param, Query, UseGuards, Request } from '@nestjs/common';
 import { PickUpService } from './pick-up.service';
-import { UpdatePickUpDto } from './dto/update-pick-up.dto';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from 'src/auth/guards/jwt-auth.guard';
-import { ForPickUp } from 'src/entities/for-pick-up.entity';
+import { SavePickUpDto } from './dto/save-pick-up.dto';
 
 @ApiTags('pick-up')
 @ApiBearerAuth()
@@ -13,22 +12,8 @@ export class PickUpController {
   constructor(private readonly pickUpService: PickUpService) {}
 
   @Post('/save')
-  create(@Body() createPickUpDto: ForPickUp[], @Request() req) {
-    const userId = req.user?.userId;
-
-    createPickUpDto.forEach(item => {
-      item.createdById = userId;
-      item.date = new Date();
-    });
-
-    console.log("🚀 ~ PickUpController ~ create ~ createPickUpDto:", createPickUpDto)
-
-    return this.pickUpService.create(createPickUpDto);
-  }
-
-  @Get()
-  findAll() {
-    return this.pickUpService.findAll();
+  create(@Body() savePickUpDto: SavePickUpDto, @Request() req) {
+    return this.pickUpService.create(savePickUpDto, req.user?.userId);
   }
 
   @Get('/tracking-info/:trackingNumber')
@@ -36,18 +21,16 @@ export class PickUpController {
     return this.pickUpService.findByTrackingNumber(trackingNumber);
   }
 
-  @Get(':id')
-  findOne(@Param('id') id: string) {
-    return this.pickUpService.findOne(+id);
-  }
-
-  @Patch(':id')
-  update(@Param('id') id: string, @Body() updatePickUpDto: UpdatePickUpDto) {
-    return this.pickUpService.update(+id, updatePickUpDto);
-  }
-
-  @Delete(':id')
-  remove(@Param('id') id: string) {
-    return this.pickUpService.remove(+id);
+  @Get('/subsidiary/:subsidiaryId')
+  findBySubsidiary(
+    @Param('subsidiaryId') subsidiaryId: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+    @Query('search') search?: string,
+    @Query('type') type?: string,
+  ) {
+    return this.pickUpService.findBySubsidiary(subsidiaryId, { page, limit, from, to, search, type });
   }
 }

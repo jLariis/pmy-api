@@ -16,11 +16,12 @@ import {
   WarehouseOutbound,
   WarehouseReceiving,
 } from 'src/entities';
-import { DataSource, In, QueryRunner, Repository } from 'typeorm';
+import { Between, DataSource, In, QueryRunner, Repository } from 'typeorm';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ScannedShipment } from './dto/scanned-shipment.dto';
 import { PaymentTypeEnum } from 'src/common/enums/payment-type.enum';
 import { ShipmentStatusType } from 'src/common/enums';
+import { PaginatedResult, parsePagination, resolveDateRange } from 'src/common/pagination.util';
 import { CreateOutboundDto } from './dto/create-outbound.dto';
 import { MailService } from 'src/mail/mail.service';
 import { format, toZonedTime } from 'date-fns-tz';
@@ -82,9 +83,13 @@ export class WarehouseService {
         `paquetes: ${createWarehouseDto.shipments?.length ?? 0}`,
     );
 
+    const queryRunner = this.dataSource.createQueryRunner();
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
+
     try {
       // 1. Guardar la información de la entrada a bodega en bd
-      const newReceiving = this.warehouseReceivingRepository.create({
+      const newReceiving = queryRunner.manager.create(WarehouseReceiving, {
         warehouseId: createWarehouseDto.warehouse,
         shipments: createWarehouseDto.shipments,
         vehicle: createWarehouseDto.vehicle
@@ -97,17 +102,15 @@ export class WarehouseService {
         createdBy: userId ? ({ id: userId } as any) : null,
       });
 
-      const savedReceiving =
-        await this.warehouseReceivingRepository.save(newReceiving);
+      const savedReceiving = await queryRunner.manager.save(WarehouseReceiving, newReceiving);
 
       // 2. Extraer los IDs de todos los paquetes recibidos en el DTO
-      const shipmentIds = createWarehouseDto.shipments.map(
-        (shipment) => shipment.id,
-      );
+      const shipmentIds = createWarehouseDto.shipments.map((shipment) => shipment.id);
 
       // 3. Ponemos todos los paquetes en estado "en bodega" y los asociamos a la entrada
       if (shipmentIds.length > 0) {
-        await this.shipmentRepository.update(
+        await queryRunner.manager.update(
+          Shipment,
           { id: In(shipmentIds) },
           { status: ShipmentStatusType.EN_BODEGA },
         );
@@ -123,15 +126,15 @@ export class WarehouseService {
         })),
       );
 
-      // Si hay piezas para guardar, hacemos un insert masivo
       if (remittancesData.length > 0) {
-        const newRemittances =
-          this.shipmentRemittanceRepository.create(remittancesData);
-        await this.shipmentRemittanceRepository.save(newRemittances);
+        const newRemittances = queryRunner.manager.create(ShipmentRemittance, remittancesData);
+        await queryRunner.manager.save(ShipmentRemittance, newRemittances);
       }
 
+      await queryRunner.commitTransaction();
       return savedReceiving;
     } catch (error) {
+      await queryRunner.rollbackTransaction();
       this.logger.error(
         `Error al procesar la entrada a bodega: ${error?.message}`,
         error?.stack,
@@ -139,6 +142,8 @@ export class WarehouseService {
       throw new InternalServerErrorException(
         'No se pudo procesar la entrada a bodega, verifique los datos.',
       );
+    } finally {
+      await queryRunner.release();
     }
   }
 
@@ -246,10 +251,11 @@ export class WarehouseService {
   async validateTrackingNumber(
     trackingNumber: string, // Recibe el código escaneado (Tracking o UniqueID)
     subsidiaryId?: string,
+    context?: 'inbound' | 'outbound',
   ): Promise<
     ScannedShipment | { isValid: false; trackingNumber: string; reason: string }
   > {
-    
+
     // Generar tracking alternativo para casos borde de DHL (JJD vs JD)
     let alternateTrackingNumber: string | undefined;
     if (trackingNumber.startsWith('JJD')) {
@@ -345,12 +351,24 @@ export class WarehouseService {
     const paymentAmount = foundPackage.payment?.amount || 0;
     const paymentType = foundPackage.payment?.type as PaymentTypeEnum;
 
+    // Piezas (remesas) ya registradas para esta guía maestra.
+    const remittances = await this.shipmentRemittanceRepository.find({
+      where: { shipmentId: foundPackage.id },
+      select: { pieceTrackingNumber: true },
+    });
+    const existingPieces = remittances
+      .map((r) => r.pieceTrackingNumber)
+      .filter(Boolean);
+
+    // Aviso (no bloqueante) si el estado no es apropiado para la operación.
+    const statusWarning = this.getStatusWarning(String(foundPackage.status), context);
+
     // 4. Retorno del objeto asegurando los tipos
-    // NOTA: Devolvemos foundPackage.trackingNumber para que el frontend 
+    // NOTA: Devolvemos foundPackage.trackingNumber para que el frontend
     // reciba exactamente el código con el que se guardó en BD.
     return {
       id: foundPackage.id,
-      trackingNumber: foundPackage.trackingNumber, 
+      trackingNumber: foundPackage.trackingNumber,
       shipmentType: foundPackage.shipmentType,
       recipientName: foundPackage.recipientName,
       recipientAddress: foundPackage.recipientAddress,
@@ -366,7 +384,120 @@ export class WarehouseService {
       paymentAmount,
       paymentType,
       dhlUniqueId: shipment?.dhlUniqueId || undefined,
+      existingPieces,
+      statusWarning,
     };
+  }
+
+  /**
+   * Devuelve un aviso si el estado del paquete no es el esperado para la
+   * operación. No bloquea: el operador decide. (entrada: no debería venir ya
+   * en ruta/entregado; salida: debería estar en bodega.)
+   */
+  private getStatusWarning(status: string, context?: 'inbound' | 'outbound'): string | undefined {
+    if (!context) return undefined;
+    const s = (status || '').toLowerCase();
+
+    const goneStatuses = [
+      ShipmentStatusType.EN_RUTA,
+      ShipmentStatusType.ENTREGADO,
+      ShipmentStatusType.ENTREGADO_EN_BODEGA,
+      ShipmentStatusType.EN_TRANSITO,
+    ].map((x) => String(x));
+
+    if (context === 'inbound' && goneStatuses.includes(s)) {
+      return `El paquete ya tiene estado "${status}" (no debería re-ingresar a bodega).`;
+    }
+
+    if (context === 'outbound') {
+      const inWarehouse = [
+        ShipmentStatusType.EN_BODEGA,
+        ShipmentStatusType.RECIBIDO_EN_BODEGA,
+        ShipmentStatusType.PENDIENTE,
+        ShipmentStatusType.ES_OCURRE,
+      ].map((x) => String(x));
+      if (!inWarehouse.includes(s)) {
+        return `El paquete no está en bodega (estado actual: "${status}").`;
+      }
+    }
+
+    return undefined;
+  }
+
+  /** Historial paginado de ENTRADAS a bodega (filtro por semana). */
+  async findInboundBySubsidiary(
+    warehouseId: string,
+    opts: { page?: string | number; limit?: string | number; from?: string; to?: string } = {},
+  ): Promise<PaginatedResult<any>> {
+    const { start, end } = resolveDateRange(opts.from, opts.to);
+    const { page, limit, skip } = parsePagination(opts.page, opts.limit);
+
+    const [rows, total] = await this.warehouseReceivingRepository.findAndCount({
+      where: { warehouseId, createdAt: Between(start, end) },
+      relations: ['warehouse', 'vehicle', 'drivers'],
+      order: { createdAt: 'DESC' },
+      skip,
+      take: limit,
+    });
+
+    const data = rows.map((r) => ({
+      id: r.id,
+      createdAt: r.createdAt,
+      warehouseName: r.warehouse?.name ?? null,
+      vehicleName: r.vehicle?.name ?? null,
+      driverNames: (r.drivers || []).map((d) => d.name).join(', '),
+      totalPackages: (r.shipments || []).length,
+      totalPieces: (r.shipments || []).reduce((acc, s) => acc + 1 + (s.remittances?.length || 0), 0),
+      shipments: r.shipments,
+    }));
+
+    return { data, total, page, limit, totalPages: Math.max(1, Math.ceil(total / limit)) };
+  }
+
+  /** Historial paginado de SALIDAS de bodega (filtro por semana). */
+  async findOutboundBySubsidiary(
+    warehouseId: string,
+    opts: { page?: string | number; limit?: string | number; from?: string; to?: string } = {},
+  ): Promise<PaginatedResult<any>> {
+    const { start, end } = resolveDateRange(opts.from, opts.to);
+    const { page, limit, skip } = parsePagination(opts.page, opts.limit);
+
+    const [rows, total] = await this.warehouseOutboundRepository.findAndCount({
+      where: { warehouseId, createdAt: Between(start, end) },
+      relations: ['warehouse', 'vehicle', 'drivers', 'routes'],
+      order: { createdAt: 'DESC' },
+      skip,
+      take: limit,
+    });
+
+    // Resolver nombres de sucursal destino (traspasos) en lote.
+    const destinationIds = Array.from(new Set(rows.map((r) => r.destinationId).filter(Boolean)));
+    const destMap = new Map<string, string>();
+    if (destinationIds.length > 0) {
+      const dests = await this.dataSource.getRepository(Subsidiary).find({
+        where: { id: In(destinationIds) },
+        select: { id: true, name: true },
+      });
+      dests.forEach((d) => destMap.set(d.id, d.name));
+    }
+
+    const data = rows.map((r) => ({
+      id: r.id,
+      createdAt: r.createdAt,
+      type: r.type,
+      warehouseName: r.warehouse?.name ?? null,
+      destinationId: r.destinationId ?? null,
+      destinationName: r.destinationId ? destMap.get(r.destinationId) ?? null : null,
+      vehicleName: r.vehicle?.name ?? null,
+      driverNames: (r.drivers || []).map((d) => d.name).join(', '),
+      routeNames: (r.routes || []).map((rt) => rt.name).join(', '),
+      kms: r.kms ?? null,
+      totalPackages: (r.shipments || []).length,
+      totalPieces: (r.shipments || []).reduce((acc, s) => acc + 1 + (s.remittances?.length || 0), 0),
+      shipments: r.shipments,
+    }));
+
+    return { data, total, page, limit, totalPages: Math.max(1, Math.ceil(total / limit)) };
   }
 
   async outbound(dto: CreateOutboundDto, userId?: string) {

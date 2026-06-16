@@ -18,4 +18,9 @@ export class DashboardController {
     ) {
         return this.kpiService.getSubsidiariesKpis(startDate, endDate, subsidiaryIds);
     }
+
+    @Get('welcome')
+    async getWelcome(@Query('subsidiaryId') subsidiaryId?: string) {
+        return this.kpiService.getWelcomeDashboard(subsidiaryId);
+    }
 }

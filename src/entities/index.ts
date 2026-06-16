@@ -27,3 +27,5 @@ export * from './warehouse-receiving.entity';
 export * from './shipment-remittance.entity';
 export * from './zone.entity';
 export * from './warehouse-outbound.entity';
+export * from './warehouse-delivery.entity';
+export * from './package-transfer.entity';

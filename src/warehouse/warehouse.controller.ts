@@ -1,4 +1,4 @@
-import { BadRequestException, Body, Controller, Get, HttpCode, HttpStatus, Post, Query, Req, UploadedFiles, UseInterceptors } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Get, HttpCode, HttpStatus, Param, Post, Query, Req, UploadedFiles, UseInterceptors } from '@nestjs/common';
 import { WarehouseService } from './warehouse.service';
 import { ScannedShipment } from './dto/scanned-shipment.dto';
 import { CreateWarehouseDto } from './dto/create-warehouse.dto';
@@ -22,8 +22,31 @@ export class WarehouseController {
   async validatePackage(
     @Query('trackingNumber') trackingNumber: string,
     @Query('subsidiaryId') subsidiaryId?: string,
+    @Query('context') context?: 'inbound' | 'outbound',
   ): Promise<ScannedShipment | { isValid: false; trackingNumber: string; reason: string }> {
-    return await this.warehouseService.validateTrackingNumber(trackingNumber, subsidiaryId);
+    return await this.warehouseService.validateTrackingNumber(trackingNumber, subsidiaryId, context);
+  }
+
+  @Get('inbound/subsidiary/:subsidiaryId')
+  findInbound(
+    @Param('subsidiaryId') subsidiaryId: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
+    return this.warehouseService.findInboundBySubsidiary(subsidiaryId, { page, limit, from, to });
+  }
+
+  @Get('outbound/subsidiary/:subsidiaryId')
+  findOutbound(
+    @Param('subsidiaryId') subsidiaryId: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
+    return this.warehouseService.findOutboundBySubsidiary(subsidiaryId, { page, limit, from, to });
   }
 
   @Post()

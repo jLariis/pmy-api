@@ -21,4 +21,8 @@ export class ScannedShipment {
   paymentAmount: number;
   paymentType: PaymentTypeEnum
   dhlUniqueId?: string;
+  /** Piezas (remesas) ya registradas para esta guía maestra. */
+  existingPieces?: string[];
+  /** Aviso si el estado del paquete no es apropiado para la operación (no bloquea). */
+  statusWarning?: string;
 };

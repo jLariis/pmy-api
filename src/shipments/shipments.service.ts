@@ -3212,45 +3212,59 @@ export class ShipmentsService {
     }
 
     private parseAndFormatCommitDate(commitDate: any): Date {
-      // Definimos el fallback por defecto (Hoy a las 21:00 UTC)
-      const now = new Date();
-      const fallbackDate = new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate(), 21, 0, 0, 0));
+      const TZ = 'America/Hermosillo';
+      const pad = (n: number) => String(n).padStart(2, '0');
+
+      // Sin hora en el archivo => se asume 21:00 (9 pm) HORA HERMOSILLO.
+      // Como la BD guarda UTC y Hermosillo es UTC-7, esto queda como el día
+      // siguiente a las 04:00 UTC. (Antes se escribía 21:00 UTC, que en
+      // Hermosillo se veía como las 14:00 / 2 pm: bug corregido.)
+      const at9pmHermosillo = (year: number, month1: number, day: number): Date =>
+        fromZonedTime(`${year}-${pad(month1)}-${pad(day)} 21:00:00`, TZ);
+
+      // Fallback: hoy (según el calendario de Hermosillo) a las 21:00.
+      const [fy, fm, fd] = formatInTimeZone(new Date(), TZ, 'yyyy-MM-dd')
+        .split('-')
+        .map(Number);
+      const fallbackDate = at9pmHermosillo(fy, fm, fd);
 
       if (!commitDate) return fallbackDate;
 
       const str = String(commitDate).trim().toLowerCase();
-      const currentYear = now.getFullYear();
+      const currentYear = fy;
 
-      // 1. Formato de Excel corto: "30-may", "01-jun", "30/may"
+      // 1. Formato de Excel corto: "30-may", "01-jun", "30/may" (DD-MMM)
       const monthMap: Record<string, number> = {
-        'ene': 0, 'jan': 0, 'feb': 1, 'mar': 2, 'abr': 3, 'apr': 3, 
-        'may': 4, 'jun': 5, 'jul': 6, 'ago': 7, 'aug': 7, 
+        'ene': 0, 'jan': 0, 'feb': 1, 'mar': 2, 'abr': 3, 'apr': 3,
+        'may': 4, 'jun': 5, 'jul': 6, 'ago': 7, 'aug': 7,
         'sep': 8, 'oct': 9, 'nov': 10, 'dic': 11, 'dec': 11
       };
-      
+
       const ddMmmMatch = str.match(/^(\d{1,2})[-\/]([a-z]{3})/);
       if (ddMmmMatch && monthMap[ddMmmMatch[2]] !== undefined) {
-        return new Date(Date.UTC(currentYear, monthMap[ddMmmMatch[2]], parseInt(ddMmmMatch[1], 10), 21, 0, 0, 0));
+        return at9pmHermosillo(currentYear, monthMap[ddMmmMatch[2]] + 1, parseInt(ddMmmMatch[1], 10));
       }
 
-      // 2. Formato de BD (ISO): "YYYY-MM-DD" o "YYYY/MM/DD" (Ej: 2026-05-30)
+      // 2. Formato ISO: "YYYY-MM-DD" o "YYYY/MM/DD" (Ej: 2026-06-19)
       const yyyyMmDdMatch = str.match(/^(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})/);
       if (yyyyMmDdMatch) {
-        return new Date(Date.UTC(parseInt(yyyyMmDdMatch[1], 10), parseInt(yyyyMmDdMatch[2], 10) - 1, parseInt(yyyyMmDdMatch[3], 10), 21, 0, 0, 0));
+        return at9pmHermosillo(+yyyyMmDdMatch[1], +yyyyMmDdMatch[2], +yyyyMmDdMatch[3]);
       }
 
-      // 3. Formato Local: "DD/MM/YYYY" o "DD-MM-YYYY" (Ej: 30/05/2026)
-      const ddMmYyyyMatch = str.match(/^(\d{1,2})[-\/](\d{1,2})[-\/](\d{4})/);
-      if (ddMmYyyyMatch) {
-        return new Date(Date.UTC(parseInt(ddMmYyyyMatch[3], 10), parseInt(ddMmYyyyMatch[2], 10) - 1, parseInt(ddMmYyyyMatch[1], 10), 21, 0, 0, 0));
+      // 3. Formato del export DHL: "MM/DD/YYYY" (US), p. ej. 06/19/2026 = 19 de junio.
+      // (Antes se interpretaba como DD/MM/YYYY: leía el día como mes y, al
+      // desbordarse, brincaba el año a 2027. Bug corregido.)
+      const mmDdYyyyMatch = str.match(/^(\d{1,2})[-\/](\d{1,2})[-\/](\d{4})/);
+      if (mmDdYyyyMatch) {
+        return at9pmHermosillo(+mmDdYyyyMatch[3], +mmDdYyyyMatch[1], +mmDdYyyyMatch[2]);
       }
 
-      // 4. Último recurso (Dejamos que JS intente leerlo)
+      // 4. Último recurso (dejamos que JS intente leerlo).
       const parsedFallback = new Date(str);
       if (!isNaN(parsedFallback.getTime())) {
         let y = parsedFallback.getFullYear();
         if (y < 2020) y = currentYear; // Protegemos contra años erróneos (como 2001)
-        return new Date(Date.UTC(y, parsedFallback.getMonth(), parsedFallback.getDate(), 21, 0, 0, 0));
+        return at9pmHermosillo(y, parsedFallback.getMonth() + 1, parsedFallback.getDate());
       }
 
       return fallbackDate;

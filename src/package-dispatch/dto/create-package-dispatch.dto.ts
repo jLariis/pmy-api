@@ -7,17 +7,21 @@ export class CreatePackageDispatchDto {
     @IsString({ each: true })
     shipments: string[];
 
+    @IsOptional()
     @IsArray()
-    routes: Route[];
+    routes?: Route[];
 
+    @IsOptional()
     @IsArray()
-    drivers: Driver[];
+    drivers?: Driver[];
 
     @IsOptional()
     vehicle?: Vehicle;
 
+    @IsOptional()
     subsidiary?: Subsidiary;
 
+    @IsOptional()
     @IsString()
     kms?: string;
 }

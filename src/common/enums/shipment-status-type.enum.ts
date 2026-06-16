@@ -10,6 +10,7 @@ export enum ShipmentStatusType {
   RECHAZADO = 'rechazado', // DEX07
   DEVUELTO_A_FEDEX = 'devuelto_a_fedex', // DEVOLUCION A FEDEX
   ES_OCURRE = 'es_ocurre', //HP - 015A
+  ENTREGADO_EN_BODEGA = 'entregado_en_bodega', // Entrega final al cliente en sucursal
   EN_BODEGA = 'en_bodega', // DESEMBARQUE - 67
   RETORNO_ABANDONO_FEDEX = 'retorno_abandono_fedex', //STAT14
   ESTACION_FEDEX = 'estacion_fedex', //STAT41
