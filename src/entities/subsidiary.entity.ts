@@ -10,6 +10,24 @@ import {
 import { User } from './user.entity';
 import { Zone } from './zone.entity';
 
+/**
+ * MySQL `bit(1)` se lee como Buffer en TypeORM. Este transformer normaliza
+ * lectura/escritura a boolean para que el API siempre exponga/acepte boolean
+ * (evita el error "Data too long for column 'isWarehouse'" al re-guardar).
+ */
+const bitToBoolean = {
+  from: (value: any): boolean => {
+    if (value === null || value === undefined) return false;
+    if (Buffer.isBuffer(value)) return value[0] === 1;
+    if (typeof value === 'object' && 'data' in value) return value.data?.[0] === 1;
+    return value === 1 || value === true || value === '1';
+  },
+  to: (value: any): number => {
+    if (value && typeof value === 'object' && 'data' in value) return value.data?.[0] === 1 ? 1 : 0;
+    return value ? 1 : 0;
+  },
+};
+
 @Entity('subsidiary')
 export class Subsidiary {
   @PrimaryGeneratedColumn('uuid')
@@ -100,7 +118,7 @@ export class Subsidiary {
   @Column({ nullable: true })
   createdById: string;
 
-  @Column({type: 'bit', default: false})
+  @Column({ type: 'bit', default: false, transformer: bitToBoolean })
   isWarehouse: boolean;
 
   @ManyToOne(() => Zone, { nullable: true })
