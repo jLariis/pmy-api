@@ -988,16 +988,23 @@ export class UnloadingService {
     let chargeShipments = [];
     let consolidatedsToValidate;
 
+    // DHL: el lector puede entregar "JJD" o "JD" y las piezas viven en dhlUniqueId.
+    // Buscamos por ambas variantes y por dhlUniqueId para no perder los DHL.
+    const searchSet = [...new Set(newTrackingsToQuery.flatMap(tn => this.dhlVariants(tn)))];
+
     if (newTrackingsToQuery.length > 0) {
       console.log(`⏳ Consultando repositorios...`);
       [shipments, chargeShipments, consolidatedsToValidate] = await Promise.all([
         this.shipmentRepository.find({
-          where: { trackingNumber: In(newTrackingsToQuery), status: Not(ShipmentStatusType.DEVUELTO_A_FEDEX) },
-          select: ['id', 'trackingNumber', 'commitDateTime', 'createdAt', 'consolidatedId', 'status', 'recipientName', 'recipientAddress', 'recipientPhone', 'recipientZip', 'priority', 'isHighValue'],
+          where: [
+            { trackingNumber: In(searchSet), status: Not(ShipmentStatusType.DEVUELTO_A_FEDEX) },
+            { dhlUniqueId: In(searchSet), status: Not(ShipmentStatusType.DEVUELTO_A_FEDEX) },
+          ],
+          select: ['id', 'trackingNumber', 'dhlUniqueId', 'commitDateTime', 'createdAt', 'consolidatedId', 'status', 'recipientName', 'recipientAddress', 'recipientPhone', 'recipientZip', 'priority', 'isHighValue'],
           order: { createdAt: 'DESC' },
         }),
         this.chargeShipmentRepository.find({
-          where: { trackingNumber: In(newTrackingsToQuery), status: Not(ShipmentStatusType.DEVUELTO_A_FEDEX) },
+          where: { trackingNumber: In(searchSet), status: Not(ShipmentStatusType.DEVUELTO_A_FEDEX) },
           select: ['id', 'trackingNumber', 'commitDateTime', 'createdAt', 'consolidatedId', 'status', 'recipientName', 'recipientAddress', 'recipientPhone', 'recipientZip', 'priority', 'isHighValue'],
           order: { createdAt: 'DESC' },
         }),
@@ -1009,9 +1016,9 @@ export class UnloadingService {
       consolidatedsToValidate = await this.getConsolidateToStartUnloading(subsidiaryId);
     }
 
-    // 3️⃣ Mapas para búsqueda rápida de los paquetes NUEVOS
-    const shipmentsMap = this.createMostRecentMap(shipments);
-    const chargeMap = this.createMostRecentMap(chargeShipments);
+    // 3️⃣ Mapas para búsqueda rápida de los paquetes NUEVOS (con variantes DHL).
+    const shipmentsMap = this.createDhlAwareMap(shipments);
+    const chargeMap = this.createDhlAwareMap(chargeShipments);
 
     // 4️⃣ Preparar el diccionario de consolidados
     const allConsolidateds: ConsolidatedItemDto[] = Object.values(consolidatedsToValidate).flat() as ConsolidatedItemDto[];
@@ -1242,7 +1249,7 @@ export class UnloadingService {
     items: T[]
   ): Map<string, T> {
     const map = new Map<string, T>();
-    
+
     for (const item of items) {
       const existing = map.get(item.trackingNumber);
       // Si no existe O el que estamos procesando es más nuevo que el guardado
@@ -1250,7 +1257,39 @@ export class UnloadingService {
         map.set(item.trackingNumber, item);
       }
     }
-    
+
+    return map;
+  }
+
+  /** Genera variantes JJD<->JD de un código DHL (incluye el original, en mayúsculas). */
+  private dhlVariants(code?: string): string[] {
+    const c = (code || '').trim().toUpperCase();
+    if (!c) return [];
+    const out = [c];
+    if (c.startsWith('JJD')) out.push(c.substring(1)); // JJD... -> JD...
+    else if (c.startsWith('JD')) out.push('J' + c); // JD... -> JJD...
+    return out;
+  }
+
+  /**
+   * Como createMostRecentMap pero indexa por trackingNumber Y dhlUniqueId,
+   * incluyendo variantes JJD<->JD. Necesario para que el escaneo de guías DHL
+   * encuentre la pieza aunque el lector entregue "JJD" y la BD guarde "JD".
+   */
+  private createDhlAwareMap<T extends { trackingNumber: string; createdAt: Date; dhlUniqueId?: string }>(
+    items: T[]
+  ): Map<string, T> {
+    const map = new Map<string, T>();
+    const setMostRecent = (key: string, item: T) => {
+      const existing = map.get(key);
+      if (!existing || new Date(item.createdAt) > new Date(existing.createdAt)) {
+        map.set(key, item);
+      }
+    };
+    for (const item of items) {
+      [...this.dhlVariants(item.trackingNumber), ...this.dhlVariants((item as any).dhlUniqueId)]
+        .forEach(k => setMostRecent(k, item));
+    }
     return map;
   }
 
