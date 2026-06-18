@@ -18,6 +18,15 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
         if(this.blacklistService.has(payload.sub)){
             throw new UnauthorizedException('Token is invalid');
         }
-        return { userId: payload.sub, email: payload.email, role: payload.role };
+        // Exponemos también nombre y sucursal (vienen en el token) para auditoría
+        // y notificaciones seccionadas por sucursal.
+        return {
+            userId: payload.sub,
+            email: payload.email,
+            role: payload.role,
+            name: payload.name,
+            lastName: payload.lastName,
+            subsidiary: payload.subsidiary,
+        };
     }
 }

@@ -36,11 +36,14 @@ export class TrackingCronService {
       if (shipments.length > 0) {
         const startF1 = Date.now();
         this.logger.log('🚀 [FASE 1] Iniciando actualización de Envíos Normales...');
-        
-        await this.shipmentService.processMasterFedexUpdate(shipments);
-        
+
+        const masterSummary = await this.shipmentService.processMasterFedexUpdate(shipments);
+
         const durationF1 = ((Date.now() - startF1) / 1000 / 60).toFixed(2);
-        this.logger.log(`✅ [FASE 1] Finalizada en ${durationF1} minutos.`);
+        this.logger.log(
+          `✅ [FASE 1] Finalizada en ${durationF1} min. ` +
+          `OK: ${masterSummary.ok} | Sin datos: ${masterSummary.noData} | Fallidas: ${masterSummary.failed}/${masterSummary.total}`
+        );
       }
 
       // 3. FASE 2: ChargeShipments (F2)
@@ -48,11 +51,14 @@ export class TrackingCronService {
         const startF2 = Date.now();
         this.logger.log('🚀 [FASE 2] Iniciando actualización de ChargeShipments (F2)...');
         this.logger.log(`📝 Nota: Se generará historial en shipment_status para ${chargeShipments.length} cargos.`);
-        
-        await this.shipmentService.processChargeFedexUpdate(chargeShipments); 
-        
+
+        const chargeSummary = await this.shipmentService.processChargeFedexUpdate(chargeShipments);
+
         const durationF2 = ((Date.now() - startF2) / 1000 / 60).toFixed(2);
-        this.logger.log(`✅ [FASE 2] Finalizada en ${durationF2} minutos.`);
+        this.logger.log(
+          `✅ [FASE 2] Finalizada en ${durationF2} min. ` +
+          `OK: ${chargeSummary.ok} | Sin datos: ${chargeSummary.noData} | Fallidas: ${chargeSummary.failed}/${chargeSummary.total}`
+        );
       }
 
       // Resumen Final

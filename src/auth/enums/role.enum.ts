@@ -1,5 +1,8 @@
 export enum Role {
     User = 'user',
     Admin = 'admin',
-    Owner = 'owner'
+    Owner = 'owner',
+    SuperAdmin = 'superadmin',
+    // Variante histórica (typo) almacenada en algunos registros.
+    SuperAdminLegacy = 'superamin',
 }

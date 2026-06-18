@@ -15,23 +15,74 @@ import { plainToInstance } from 'class-transformer';
 @Injectable()
 export class FedexService {
   private readonly logger = new Logger(FedexService.name);
+
+  /**
+   * True si el error es de CONECTIVIDAD (DNS caído, sin red, conexión rechazada/timeout),
+   * no una respuesta de FedEx. Sirve para abrir el circuito y abortar la corrida cuando
+   * la API es inalcanzable, en vez de marcar miles de guías como "error".
+   */
+  static isConnectivityError(error: any): boolean {
+    if (error?.response) return false; // hubo respuesta HTTP -> no es problema de red
+    const code = error?.code || '';
+    const msg = error?.message || '';
+    const netCodes = ['ENOTFOUND', 'EAI_AGAIN', 'ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'ECONNABORTED'];
+    return netCodes.includes(code) || /ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|ETIMEDOUT|getaddrinfo|network/i.test(msg);
+  }
   
   // Ruta del archivo en la raíz del proyecto
   private readonly tokenPath = path.join(process.cwd(), 'fedex-token.json');
 
+  // Caché en memoria del token (evita leer el archivo en cada llamada).
+  private cachedToken: { token: string; expiresAt: number } | null = null;
+  // Single-flight: una sola petición de refresh aunque lleguen N llamadas concurrentes.
+  private tokenRefreshPromise: Promise<string> | null = null;
+
+  /* ===================== TOKEN (single-flight + caché en memoria) ===================== */
+
   /**
-   * Obtiene el token desde el archivo local o desde la API de FedEx si expiró.
+   * Devuelve un token válido. Usa caché en memoria, luego el archivo (persistencia
+   * entre reinicios) y, si nada sirve, solicita uno nuevo con single-flight: aunque
+   * lleguen N llamadas concurrentes (cron con pLimit), solo se dispara UNA petición
+   * de auth y todas comparten el resultado. Esto evita la "estampida de token".
    */
   private async getSmartToken(): Promise<string> {
     const now = Date.now();
-    let cachedData = this.readTokenFromFile();
 
-    // Validamos si el token existe en el archivo y si aún es válido (margen de 5 min)
-    if (cachedData && cachedData.token && now < (cachedData.expiresAt - 300000)) {
-      return cachedData.token;
+    // 1. Caché en memoria (margen de 5 min).
+    if (this.cachedToken && now < this.cachedToken.expiresAt - 300000) {
+      return this.cachedToken.token;
     }
 
-    // Si no hay token válido, procedemos a solicitar uno nuevo
+    // 2. Archivo (sobrevive reinicios del proceso).
+    const fileToken = this.readTokenFromFile();
+    if (fileToken && fileToken.token && now < fileToken.expiresAt - 300000) {
+      this.cachedToken = fileToken;
+      return fileToken.token;
+    }
+
+    // 3. Refrescar (single-flight).
+    return this.refreshToken();
+  }
+
+  /** Single-flight: reutiliza el refresh en curso si ya hay uno. */
+  private refreshToken(): Promise<string> {
+    if (this.tokenRefreshPromise) return this.tokenRefreshPromise;
+
+    this.tokenRefreshPromise = this.requestNewToken().finally(() => {
+      this.tokenRefreshPromise = null;
+    });
+
+    return this.tokenRefreshPromise;
+  }
+
+  /** Fuerza un token nuevo (tras un 401). Invalida memoria y archivo, y refresca. */
+  private async forceRefreshToken(): Promise<string> {
+    this.cachedToken = null;
+    this.deleteTokenFile();
+    return this.refreshToken();
+  }
+
+  private async requestNewToken(): Promise<string> {
     const { FEDEX_CLIENT_ID, FEDEX_CLIENT_SECRET, FEDEX_API_URL } = process.env;
 
     if (!FEDEX_CLIENT_ID || !FEDEX_CLIENT_SECRET || !FEDEX_API_URL) {
@@ -44,25 +95,20 @@ export class FedexService {
       client_secret: FEDEX_CLIENT_SECRET,
     });
 
-    try {
-      this.logger.log('🔑 El token local no es válido o va a expirar. Solicitando nuevo token a FedEx...');
-      const response = await axios.post(
-        `${FEDEX_API_URL}${FEDEX_AUTHENTICATION_ENDPOINT}`,
-        data,
-        { headers: FEDEX_AUTH_HEADERS() }
-      );
+    this.logger.log('🔑 Solicitando nuevo token a FedEx...');
+    const response = await axios.post(
+      `${FEDEX_API_URL}${FEDEX_AUTHENTICATION_ENDPOINT}`,
+      data,
+      { headers: FEDEX_AUTH_HEADERS(), timeout: 15000 }
+    );
 
-      const { access_token, expires_in } = response.data;
-      const expiresAt = Date.now() + (expires_in * 1000);
+    const { access_token, expires_in } = response.data;
+    const expiresAt = Date.now() + (expires_in * 1000);
 
-      // Guardamos y/o creamos el archivo
-      this.saveTokenToFile(access_token, expiresAt);
+    this.cachedToken = { token: access_token, expiresAt };
+    this.saveTokenToFile(access_token, expiresAt);
 
-      return access_token;
-    } catch (error) {
-      this.logger.error('❌ Error al obtener token de FedEx', error.response?.data || error.message);
-      throw error;
-    }
+    return access_token;
   }
 
   // --- MÉTODOS DE PERSISTENCIA ---
@@ -81,7 +127,6 @@ export class FedexService {
   private readTokenFromFile(): { token: string; expiresAt: number } | null {
     try {
       if (!fs.existsSync(this.tokenPath)) {
-        this.logger.warn('📄 Archivo de token no encontrado. Se creará uno nuevo al solicitarlo.');
         return null;
       }
       const data = fs.readFileSync(this.tokenPath, 'utf8');
@@ -93,87 +138,118 @@ export class FedexService {
   }
 
   private deleteTokenFile() {
-    if (fs.existsSync(this.tokenPath)) {
-      fs.unlinkSync(this.tokenPath);
-      this.logger.warn('🗑️ Token local eliminado por invalidez.');
-    }
-  }
-
-
-async trackPackage(
-  trackingNumber: string, 
-  fedexUniqueId?: string, 
-  carrierCode?: string
-): Promise<FedExTrackingResponseDto> {
-  this.logger.log(`Rastreando guía: ${trackingNumber} ${fedexUniqueId ? `(ID: ${fedexUniqueId})` : ''}`);
-  
-  const token = await this.getSmartToken();
-  const url = `${process.env.FEDEX_API_URL}${FEDEX_TRACKING_ENDPOINT}`;
-
-  const body = {
-    includeDetailedScans: true,
-    trackingInfo: [
-      {
-        trackingNumberInfo: {
-          trackingNumber,
-          ...(fedexUniqueId && { trackingNumberUniqueId: fedexUniqueId }),
-          ...(carrierCode && { carrierCode: carrierCode }),
-        },
+    try {
+      if (fs.existsSync(this.tokenPath)) {
+        fs.unlinkSync(this.tokenPath);
       }
-    ],
-  };
-
-  try {
-    const response = await axios.post(url, body, {
-      headers: FEDEX_HEADERS(token),
-      timeout: 10000, // Evita que el cron se cuelgue infinitamente
-    });
-
-    // --- CRÍTICO: Transformación y Validación ---
-    const trackData = plainToInstance(FedExTrackingResponseDto, response.data);
-    
-    // Opcional: Validar si la respuesta tiene la estructura esperada
-    // const errors = await validate(trackData);
-    // if (errors.length > 0) throw new Error('Estructura de respuesta FedEx inválida');
-
-    return trackData;
-
-  } catch (error) {
-    if (error.response?.status === 401) {
-      this.logger.warn(`Token expirado para [${trackingNumber}], limpiando...`);
-      this.deleteTokenFile();
+    } catch (error) {
+      // ENOENT por carrera entre llamadas concurrentes: ignorable.
     }
-    
-    // Si FedEx responde 404 o similar, logueamos pero no necesariamente 
-    // matamos el proceso para que el cron siga con la siguiente guía
-    const errorData = error.response?.data || error.message;
-    this.logger.error(`❌ Error API FedEx [${trackingNumber}]:`, JSON.stringify(errorData));
-    
-    throw error; 
   }
-}
+
+  /* ===================== HELPERS DE RESILIENCIA ===================== */
+
+  private sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  /** Backoff exponencial con jitter (tope 8s) para repartir reintentos. */
+  private backoff(attempt: number): number {
+    const base = Math.min(1000 * 2 ** (attempt - 1), 8000);
+    return base + Math.floor(Math.random() * 500);
+  }
+
+  /**
+   * POST resiliente al endpoint de tracking. Reintenta ante fallos transitorios:
+   *  - 401: refresca token (single-flight) y reintenta.
+   *  - 429: respeta Retry-After (o backoff) y reintenta.
+   *  - timeout / red / 5xx: backoff exponencial + jitter.
+   *  - 4xx no recuperables (400/404…): no reintenta.
+   * Así un fallo pasajero deja de "tirar" el paquete por una hora completa.
+   */
+  private async postTracking(body: any, context: string): Promise<any> {
+    const url = `${process.env.FEDEX_API_URL}${FEDEX_TRACKING_ENDPOINT}`;
+    const maxAttempts = 4;
+    let lastError: any;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        // Dentro del try: si la obtención del token falla por DNS/red, también se reintenta.
+        const token = await this.getSmartToken();
+        const response = await axios.post(url, body, {
+          headers: FEDEX_HEADERS(token),
+          timeout: 15000,
+        });
+        return response.data;
+      } catch (error) {
+        lastError = error;
+        const status = error.response?.status;
+        const isLast = attempt === maxAttempts;
+
+        // 401: token inválido -> refresca y reintenta (no consume "intento útil").
+        if (status === 401) {
+          this.logger.warn(`[${context}] 401: refrescando token (intento ${attempt}/${maxAttempts}).`);
+          try { await this.forceRefreshToken(); } catch (e) { /* el siguiente getSmartToken reintentará */ }
+          if (!isLast) continue;
+        }
+        // 429: rate limit -> respeta Retry-After si viene.
+        else if (status === 429) {
+          const retryAfter = Number(error.response?.headers?.['retry-after']) || 0;
+          const wait = retryAfter > 0 ? retryAfter * 1000 : this.backoff(attempt);
+          this.logger.warn(`[${context}] 429 rate limit: esperando ${wait}ms (intento ${attempt}/${maxAttempts}).`);
+          if (!isLast) { await this.sleep(wait); continue; }
+        }
+        // Transitorios: timeout, red caída o 5xx.
+        else if (error.code === 'ECONNABORTED' || !error.response || (status >= 500 && status <= 599)) {
+          const wait = this.backoff(attempt);
+          this.logger.warn(`[${context}] Error transitorio (${status || error.code}): reintento en ${wait}ms (intento ${attempt}/${maxAttempts}).`);
+          if (!isLast) { await this.sleep(wait); continue; }
+        }
+
+        // 4xx no recuperable, o se agotaron los intentos.
+        const errorData = error.response?.data || error.message;
+        this.logger.error(`❌ Error API FedEx [${context}] (status ${status || error.code}):`, JSON.stringify(errorData));
+        throw error;
+      }
+    }
+
+    throw lastError;
+  }
+
+  async trackPackage(
+    trackingNumber: string,
+    fedexUniqueId?: string,
+    carrierCode?: string
+  ): Promise<FedExTrackingResponseDto> {
+    this.logger.log(`Rastreando guía: ${trackingNumber} ${fedexUniqueId ? `(ID: ${fedexUniqueId})` : ''}`);
+
+    const body = {
+      includeDetailedScans: true,
+      trackingInfo: [
+        {
+          trackingNumberInfo: {
+            trackingNumber,
+            ...(fedexUniqueId && { trackingNumberUniqueId: fedexUniqueId }),
+            ...(carrierCode && { carrierCode: carrierCode }),
+          },
+        },
+      ],
+    };
+
+    const data = await this.postTracking(body, trackingNumber);
+    return plainToInstance(FedExTrackingResponseDto, data);
+  }
 
   async completePackageInfo(trackingNumber: string): Promise<ValidatedPackageDispatchDto[]> {
     this.logger.log(`Obteniendo info completa: ${trackingNumber}`);
-    
-    const token = await this.getSmartToken();
-    const url = `${process.env.FEDEX_API_URL}${FEDEX_TRACKING_ENDPOINT}`;
 
     const body = {
       trackingInfo: [{ trackingNumberInfo: { trackingNumber } }],
       includeDetailedScans: true,
     };
 
-    try {
-      const response = await axios.post(url, body, {
-        headers: FEDEX_HEADERS(token),
-      });
-      return this.mapFedexToValidatedDto(response.data);
-    } catch (error) {
-      if (error.response?.status === 401) this.deleteTokenFile();
-      this.logger.error(`❌ Error completePackageInfo [${trackingNumber}]:`, error.response?.data || error.message);
-      throw error;
-    }
+    const data = await this.postTracking(body, trackingNumber);
+    return this.mapFedexToValidatedDto(data);
   }
 
   // --- MÉTODOS DE MAPEO ---

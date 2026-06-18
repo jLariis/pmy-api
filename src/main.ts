@@ -72,8 +72,6 @@ async function bootstrap() {
     'http://localhost:3000',
     'http://localhost:4000', 
     'http://127.0.0.1:4000',
-    'https://pc4gjn47-3000.usw3.devtunnels.ms',
-    'https://pc4gjn47-4000.usw3.devtunnels.ms',
     'http://187.137.164.211:3000',
   ];
 
@@ -109,6 +107,16 @@ async function bootstrap() {
         return callback(null, true);
       }
 
+      // Red local (LAN) para pruebas desde celular/otra PC en la misma red:
+      // localhost, 127.x, 10.x, 192.168.x, 172.16-31.x (con cualquier puerto).
+      if (
+        /^https?:\/\/(localhost|127\.\d+\.\d+\.\d+|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+)(:\d+)?$/i.test(
+          origin,
+        )
+      ) {
+        return callback(null, true);
+      }
+
       // ❗ No lanzar error (esto rompía tu CORS)
       return callback(null, false);
     },
@@ -118,13 +126,24 @@ async function bootstrap() {
       'Authorization',
       'Accept',
       'X-Requested-With',
+      // Headers de cliente para auditoría (si no se permiten, el preflight CORS falla
+      // y todas las peticiones cross-origin dan "Network Error" en navegador/Vercel).
+      'x-public-ip',
+      'x-geo-city',
+      'x-geo-region',
+      'x-geo-country',
+      'x-device',
+      'x-device-id',
+      'x-machine-name',
+      'x-request-id',
     ],
     credentials: true,
     preflightContinue: false,
     optionsSuccessStatus: 204
   });
 
-  await app.listen(port);
+  // Escuchar en todas las interfaces (0.0.0.0) para que sea accesible desde la LAN.
+  await app.listen(port, '0.0.0.0');
 }
 
 bootstrap();

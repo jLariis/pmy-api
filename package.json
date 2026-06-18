@@ -45,6 +45,7 @@
     "date-fns-tz": "^3.2.0",
     "dayjs": "^1.11.19",
     "exceljs": "^4.4.0",
+    "geoip-lite": "^2.0.3",
     "lodash": "^4.17.21",
     "luxon": "^3.7.2",
     "multer": "^2.0.0",

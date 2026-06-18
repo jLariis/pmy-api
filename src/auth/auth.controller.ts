@@ -6,6 +6,8 @@ import { Public } from './decorators/decorators/public-decorator';
 import { AppController } from "../app.controller";
 import { AuthDto } from './dto/AuthDto';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
+import { Audit } from '../audit/audit.decorator';
+import { AuditAction, AuditModule } from '../common/enums/audit.enum';
 
 @ApiTags('auth')
 @Controller('auth')
@@ -21,6 +23,7 @@ export class AuthController {
     @ApiResponse({ status: 200, description: 'Correct credentials' })
     @ApiResponse({ status: 401, description: 'Invalid Credentials' })
     @ApiBody({ type: AuthDto})
+    @Audit({ module: AuditModule.AUTH, action: AuditAction.LOGIN, resolveEntityId: ({ response }) => response?.user?.id })
     @Post('token')
     async login(@Request() req) {
         console.log("BODY:", req.body);
@@ -30,6 +33,7 @@ export class AuthController {
 
     @ApiBearerAuth()
     @UseGuards(JwtAuthGuard)
+    @Audit({ module: AuditModule.AUTH, action: AuditAction.LOGOUT })
     @Post('logout')
     async logout(@Request() req){
         this.logger.log('Calling logout()', AppController.name);

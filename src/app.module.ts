@@ -33,6 +33,8 @@ import { WarehouseModule } from './warehouse/warehouse.module';
 import { TransferModule } from './transfer/transfer.module';
 import { PackageTransferModule } from './package-transfer/package-transfer.module';
 import { ZoneModule } from './zone/zone.module';
+import { AuditModule } from './audit/audit.module';
+import { NotificationsModule } from './notifications/notifications.module';
 
 @Module({
   imports: [
@@ -86,7 +88,9 @@ import { ZoneModule } from './zone/zone.module';
     ResportsModule,
     WarehouseModule,
     TransferModule,
-    ZoneModule
+    ZoneModule,
+    AuditModule,
+    NotificationsModule
   ],
   controllers: [AppController],
   providers: [

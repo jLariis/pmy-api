@@ -9,6 +9,8 @@ import { BlacklistService } from './blacklist.service';
 import { EmailService } from './email.service';
 import { v4 as uuidv4 } from 'uuid';
 import { User } from 'src/entities/user.entity';
+import { AuditService } from '../audit/audit.service';
+import { AuditAction, AuditModule, AuditResult, AuditSeverity } from '../common/enums/audit.enum';
 
 @Injectable()
 export class AuthService {
@@ -19,7 +21,8 @@ export class AuthService {
         private userRepository: Repository<User>,
         @Inject(Logger) private readonly logger: LoggerService,
         private blacklistService: BlacklistService,
-        private mailService: EmailService
+        private mailService: EmailService,
+        private readonly auditService: AuditService
     ) { }
 
     async validateUser(email: string, password: string): Promise<any> {
@@ -27,6 +30,14 @@ export class AuthService {
         console.log("🚀 ~ AuthService ~ validateUser ~ user:", user)
 
         if (!user) {
+            this.auditService.log({
+                module: AuditModule.AUTH,
+                action: AuditAction.LOGIN_FAILED,
+                result: AuditResult.ERROR,
+                severity: AuditSeverity.WARNING,
+                userEmail: email,
+                description: 'Intento de inicio de sesión: usuario no encontrado',
+            });
             throw new BusinessException(
                 'exercise-api',
                 'Invalid credentials for user ${email}',
@@ -47,6 +58,16 @@ export class AuthService {
             return result;
         }
 
+        this.auditService.log({
+            module: AuditModule.AUTH,
+            action: AuditAction.LOGIN_FAILED,
+            result: AuditResult.ERROR,
+            severity: AuditSeverity.WARNING,
+            userId: user.id,
+            userEmail: email,
+            role: user.role,
+            description: 'Intento de inicio de sesión: contraseña incorrecta',
+        });
 
         return null;
     }

@@ -1505,7 +1505,7 @@ export class ShipmentsService {
             this.logger.log(`🚚 Procesando envío ${index + 1}/${batch.length} del lote ${i + 1}: ${trackingNumber} (sucursal: ${subsidiaryId})`);
 
             try {
-              const shipmentInfo: FedExTrackingResponseDto = await this.trackPackageWithRetry(trackingNumber);
+              const shipmentInfo: FedExTrackingResponseDto = await this.fedexService.trackPackage(trackingNumber);
               if (!shipmentInfo?.output?.completeTrackResults?.length || !shipmentInfo.output.completeTrackResults[0]?.trackResults?.length) {
                 const reason = `No se encontró información válida del envío ${trackingNumber}: completeTrackResults vacíos o inválidos`;
                 this.logger.error(`❌ ${reason}`);
@@ -1917,7 +1917,7 @@ export class ShipmentsService {
             this.logger.log(`🚚 Procesando envío ${index + 1}/${batch.length} del lote ${i + 1}: ${trackingNumber}`);
 
             try {
-              const shipmentInfo: FedExTrackingResponseDto = await this.trackPackageWithRetry(trackingNumber);
+              const shipmentInfo: FedExTrackingResponseDto = await this.fedexService.trackPackage(trackingNumber);
               if (!shipmentInfo?.output?.completeTrackResults?.length || !shipmentInfo.output.completeTrackResults[0]?.trackResults?.length) {
                 const reason = `No se encontró información válida del envío ${trackingNumber}: completeTrackResults vacíos o inválidos`;
                 this.logger.error(`❌ ${reason}`);
@@ -2625,7 +2625,7 @@ export class ShipmentsService {
     // 3. Consulta FedEx 
     let fedexShipmentData: FedExTrackingResponseDto;
     try {
-      fedexShipmentData = await this.trackPackageWithRetry(trackingNumber);
+      fedexShipmentData = await this.fedexService.trackPackage(trackingNumber);
     } catch (err) {
       throw new InternalServerErrorException(`Error FedEx guía ${trackingNumber}: ${err.message}`);
     }
@@ -2887,30 +2887,6 @@ export class ShipmentsService {
         this.logBuffer.push(`❌ Error escribiendo archivo de errores: ${err.message}`);
       }
     }
-  }
-
-  private async trackPackageWithRetry(trackingNumber: string): Promise<FedExTrackingResponseDto> {
-    let attempts = 0;
-    const maxAttempts = 3;
-    const delayMs = 1000;
-
-    while (attempts < maxAttempts) {
-      this.logger.log(`📬 Intento ${attempts + 1}/${maxAttempts} para trackPackage: ${trackingNumber}`);
-      try {
-        const result = await this.fedexService.trackPackage(trackingNumber);
-        this.logger.log(`✅ trackPackage exitoso para ${trackingNumber}`);
-        return result;
-      } catch (err) {
-        attempts++;
-        if (attempts === maxAttempts) {
-          this.logger.error(`❌ Fallo trackPackage para ${trackingNumber} tras ${maxAttempts} intentos`);
-          throw err;
-        }
-        this.logger.warn(`⚠️ Reintentando trackPackage para ${trackingNumber} tras error: ${err.message}`);
-        await new Promise((resolve) => setTimeout(resolve, delayMs));
-      }
-    }
-    throw new Error(`Failed to track package ${trackingNumber} after ${maxAttempts} attempts`);
   }
 
   private async existShipment(trackingNumber: string, consolidatedId: string): Promise<boolean> {
@@ -3549,7 +3525,7 @@ export class ShipmentsService {
 
             // 1. Obtener información de seguimiento de FedEx
             this.logger.log(`🔄 Consultando estado en FedEx para: ${trackingNumber}`);
-            const shipmentInfo: FedExTrackingResponseDto = await this.trackPackageWithRetry(trackingNumber);
+            const shipmentInfo: FedExTrackingResponseDto = await this.fedexService.trackPackage(trackingNumber);
 
             if (!shipmentInfo?.output?.completeTrackResults?.length || !shipmentInfo.output.completeTrackResults[0]?.trackResults?.length) {
               const reason = `No se encontró información válida del envío ${trackingNumber}: completeTrackResults vacíos o inválidos`;
@@ -4761,7 +4737,7 @@ export class ShipmentsService {
 
       try {
         this.logger.log(`📬 Consultando FedEx para ${trackingNumber}`);
-        fedexShipmentData = await this.trackPackageWithRetry(trackingNumber);
+        fedexShipmentData = await this.fedexService.trackPackage(trackingNumber);
       } catch (err) {
         throw new Error(`Error consultando FedEx: ${err.message}`);
       }
@@ -5172,7 +5148,7 @@ export class ShipmentsService {
       private async fetchFedexDataWithRetry(trackingNumber: string): Promise<FedExTrackingResponseDto | null> {
         for (let attempt = 1; attempt <= 3; attempt++) {
           try {
-            const shipmentInfo = await this.trackPackageWithRetry(trackingNumber);
+            const shipmentInfo = await this.fedexService.trackPackage(trackingNumber);
             if (shipmentInfo?.output?.completeTrackResults?.[0]?.trackResults?.length) {
               return shipmentInfo;
             }
@@ -6429,6 +6405,33 @@ export class ShipmentsService {
         }
       };
 
+      /** Divide un arreglo en lotes de tamaño fijo (para procesar en oleadas). */
+      private chunkArray<T>(arr: T[], size: number): T[][] {
+        const out: T[][] = [];
+        for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+        return out;
+      }
+
+      /**
+       * Persiste (dead-letter) las guías que NO se pudieron actualizar tras agotar
+       * reintentos, para tener visibilidad real y poder hacer un re-run dirigido.
+       */
+      private async writeFedexDeadLetter(
+        kind: string,
+        failed: { trackingNumber: string; reason: string }[]
+      ): Promise<void> {
+        if (!failed.length) return;
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+        const outputPath = path.join(process.cwd(), 'logs', `fedex-failed-${kind}-${timestamp}.json`);
+        try {
+          await fs.mkdir(path.dirname(outputPath), { recursive: true });
+          await fs.writeFile(outputPath, JSON.stringify(failed, null, 2), 'utf-8');
+          this.logger.warn(`🪦 Dead-letter [${kind}]: ${failed.length} guías sin actualizar → ${outputPath}`);
+        } catch (err) {
+          this.logger.error(`❌ No se pudo escribir dead-letter [${kind}]: ${err.message}`);
+        }
+      }
+
       async processMasterFedexUpdate(shipmentsToUpdate: Shipment[]) {
         this.logger.log(`💎 Master Update (Titanium - Shield & Income Edition): Procesando ${shipmentsToUpdate.length} guías...`);
 
@@ -6440,18 +6443,43 @@ export class ShipmentsService {
         }, {} as Record<string, string[]>);
 
         const uniqueTrackingNumbers = Object.keys(shipmentsByTracking);
-        const limit = pLimit(10); // Paralelismo controlado
+        const limit = pLimit(6); // Paralelismo controlado (reducido para bajar 429 de FedEx)
+        const BATCH_SIZE = 250;
+        const batches = this.chunkArray(uniqueTrackingNumbers, BATCH_SIZE);
 
-        const tasks = uniqueTrackingNumbers.map((tn) => limit(async () => {
+        // Telemetría: distinguimos OK / sin datos / fallidas (dead-letter).
+        const failed: { trackingNumber: string; reason: string }[] = [];
+        let okCount = 0;
+        let noDataCount = 0;
+        // Circuit breaker: si FedEx es inalcanzable (DNS/red) y no hay ningún éxito,
+        // abortamos la corrida en vez de marcar miles de guías como "error".
+        let networkErrors = 0;
+        let aborted = false;
+
+        for (let b = 0; b < batches.length; b++) {
+          this.logger.log(`📦 [Master] Lote ${b + 1}/${batches.length} (${batches[b].length} guías)...`);
+          const tasks = batches[b].map((tn) => limit(async () => {
+            if (aborted) return; // circuito abierto: no seguir intentando
             const shipmentWithId = shipmentsToUpdate.find(s => s.trackingNumber === tn && s.fedexUniqueId);
             const currentUniqueId = shipmentWithId?.fedexUniqueId;
+            // carrierCode (FDXE/FDXG…) desambigua el servicio y da el estatus exacto.
+            const currentCarrierCode = shipmentWithId?.carrierCode
+                || shipmentsToUpdate.find(s => s.trackingNumber === tn && s.carrierCode)?.carrierCode;
 
             // --- 1. CONSULTA FEDEX (Estrategia Proactiva) ---
             let fedexInfo;
             try {
-                fedexInfo = await this.fedexService.trackPackage(tn, currentUniqueId);
+                fedexInfo = await this.fedexService.trackPackage(tn, currentUniqueId, currentCarrierCode);
             } catch (error) {
                 this.logger.error(`[${tn}] Error API FedEx: ${error.message}`);
+                failed.push({ trackingNumber: tn, reason: `FEDEX_API: ${error.message}` });
+                if (FedexService.isConnectivityError(error)) {
+                    networkErrors++;
+                    if (!aborted && okCount === 0 && networkErrors >= 12) {
+                        aborted = true;
+                        this.logger.error(`🔌 [Master] FedEx inalcanzable (${networkErrors} errores de red, 0 éxitos). Abortando corrida; se reintentará la próxima hora.`);
+                    }
+                }
                 return;
             }
 
@@ -6474,7 +6502,7 @@ export class ShipmentsService {
                 }
             }
 
-            if (allTrackResults.length === 0) return;
+            if (allTrackResults.length === 0) { noDataCount++; return; }
 
             // =================================================================================
             // 🛡️ SELECTOR DE GENERACIÓN (Jerarquía de UniqueID)
@@ -6757,24 +6785,31 @@ export class ShipmentsService {
                 // =================================================================================
                 if (!isLocked) {
                     const newUniqueId = trackResult.trackingNumberInfo?.trackingNumberUniqueId;
+                    const newCarrierCode = trackResult.trackingNumberInfo?.carrierCode;
                     const newReceivedBy = trackResult.deliveryDetails?.receivedByName;
 
                     for (const ship of shipmentList) {
                         let hasChanges = false;
-                        
-                        if (ship.status !== finalStatus) { 
-                            ship.status = finalStatus as any; 
-                            hasChanges = true; 
+
+                        if (ship.status !== finalStatus) {
+                            ship.status = finalStatus as any;
+                            hasChanges = true;
                         }
-                        if (newUniqueId && ship.fedexUniqueId !== newUniqueId) { 
-                            ship.fedexUniqueId = newUniqueId; 
-                            hasChanges = true; 
+                        if (newUniqueId && ship.fedexUniqueId !== newUniqueId) {
+                            ship.fedexUniqueId = newUniqueId;
+                            hasChanges = true;
                         }
-                        if (newReceivedBy && ship.receivedByName !== newReceivedBy) { 
-                            ship.receivedByName = newReceivedBy; 
-                            hasChanges = true; 
+                        // Persistimos el carrierCode que devuelve FedEx para que la
+                        // próxima corrida consulte ya desambiguada (estatus exacto).
+                        if (newCarrierCode && ship.carrierCode !== newCarrierCode) {
+                            ship.carrierCode = newCarrierCode;
+                            hasChanges = true;
                         }
-                        
+                        if (newReceivedBy && ship.receivedByName !== newReceivedBy) {
+                            ship.receivedByName = newReceivedBy;
+                            hasChanges = true;
+                        }
+
                         if (hasChanges) {
                             await queryRunner.manager.save(Shipment, ship);
                         }
@@ -6782,210 +6817,36 @@ export class ShipmentsService {
                 }
 
                 await queryRunner.commitTransaction();
+                okCount++;
 
             } catch (error) {
                 this.logger.error(`[${tn}] Error Transacción: ${error.message}`);
+                failed.push({ trackingNumber: tn, reason: `TX: ${error.message}` });
                 if (queryRunner.isTransactionActive) await queryRunner.rollbackTransaction();
             } finally {
                 await queryRunner.release();
             }
-        }));
+          }));
 
-        await Promise.all(tasks);
-      }
+          await Promise.all(tasks);
+          if (aborted) break;
+        }
 
-      async processChargeFedexUpdate0806(chargeShipmentsToUpdate: ChargeShipment[]) {
-        this.logger.log(`🛡️ F2 Charge Update (Time-Shield Edition): Procesando ${chargeShipmentsToUpdate.length} cargas...`);
-
-        const shipmentsByTracking = chargeShipmentsToUpdate.reduce((acc, s) => {
-            if (!acc[s.trackingNumber]) acc[s.trackingNumber] = [];
-            acc[s.trackingNumber].push(s.id);
-            return acc;
-        }, {} as Record<string, string[]>);
-
-        const uniqueTrackingNumbers = Object.keys(shipmentsByTracking);
-        const limit = pLimit(5); 
-
-        const tasks = uniqueTrackingNumbers.map((tn) => limit(async () => {
-            const chargeWithId = chargeShipmentsToUpdate.find(s => s.trackingNumber === tn && (s as any).fedexUniqueId);
-            
-            // --- 1. API FedEx ---
-            let fedexInfo;
-            try {
-                fedexInfo = await this.fedexService.trackPackage(tn, (chargeWithId as any)?.fedexUniqueId);
-            } catch (error) {
-                this.logger.error(`[F2 - ${tn}] ❌ Error API FedEx: ${error.message}`);
-                return;
-            }
-
-            let allTrackResults = fedexInfo?.output?.completeTrackResults?.[0]?.trackResults || [];
-            if (allTrackResults.length === 0) return;
-
-            // Selección del resultado más reciente por ID de secuencia
-            const trackResult = allTrackResults.sort((a, b) => {
-                const seqA = parseInt(a.trackingNumberInfo?.trackingNumberUniqueId?.split('~')[0] || '0');
-                const seqB = parseInt(b.trackingNumberInfo?.trackingNumberUniqueId?.split('~')[0] || '0');
-                return seqB - seqA;
-            })[0];
-
-            const scanEvents = trackResult.scanEvents || [];
-            const lsdHeader = trackResult.latestStatusDetail;
-
-            const queryRunner = this.dataSource.createQueryRunner();
-            await queryRunner.connect();
-            await queryRunner.startTransaction();
-
-            try {
-                const targetIds = shipmentsByTracking[tn]; 
-                const chargeList = await queryRunner.manager.find(ChargeShipment, {
-                    where: { id: In(targetIds) }, 
-                    relations: ['subsidiary'],
-                    lock: { mode: 'pessimistic_write' }
-                });
-
-                if (chargeList.length === 0) {
-                    await queryRunner.commitTransaction();
-                    return;
-                }
-
-                const mainCharge = chargeList[0];
-                const subId = mainCharge.subsidiary?.id?.toLowerCase() || '';
-                const configKeys = Object.keys(this.SUBSIDIARY_CONFIG);
-                const matchedKey = configKeys.find(key => key.toLowerCase() === subId);
-                const subConfig = matchedKey ? this.SUBSIDIARY_CONFIG[matchedKey] : { trackExternalDelivery: false };
-
-                // --- 2. CONFIGURACIÓN DE PESOS HOMOLOGADA ---
-                const getWeight = (status: any) => {
-                    if (status === ShipmentStatusType.ENTREGADO || status === ShipmentStatusType.ENTREGADO_POR_FEDEX) return 10;
-                    // Nivel 9: Excepciones y Cambios de Fecha
-                    if ([
-                        ShipmentStatusType.RECHAZADO, 
-                        ShipmentStatusType.DIRECCION_INCORRECTA, 
-                        ShipmentStatusType.CLIENTE_NO_DISPONIBLE, 
-                        ShipmentStatusType.DEVUELTO_A_FEDEX,
-                        ShipmentStatusType.RETORNO_ABANDONO_FEDEX,
-                        ShipmentStatusType.CAMBIO_FECHA_SOLICITADO,
-                        ShipmentStatusType.LLEGADO_DESPUES
-                    ].includes(status)) return 9;
-                    if (status === ShipmentStatusType.EN_RUTA) return 8;
-                    if (status === ShipmentStatusType.EN_BODEGA) return 7;
-                    if (status === ShipmentStatusType.PENDIENTE) return 6;
-                    if (status === ShipmentStatusType.ACARGO_DE_FEDEX) return 5;
-                    if (status === ShipmentStatusType.EN_TRANSITO || status === ShipmentStatusType.ESTACION_FEDEX) return 2;
-                    if (status === ShipmentStatusType.RECOLECCION) return 1;
-                    return 0;
-                };
-
-                // --- 3. BÚSQUEDA DEL ANCLA OPERATIVA (TIME SHIELD) ---
-                const existingHistory = await queryRunner.manager.query(
-                    `SELECT status, timestamp, exceptionCode FROM shipment_status WHERE chargeShipmentId = ? ORDER BY timestamp DESC`,
-                    [mainCharge.id]
-                );
-
-                const OPERATIONAL_STATUSES = [
-                    ShipmentStatusType.PENDIENTE,
-                    ShipmentStatusType.EN_BODEGA,
-                    ShipmentStatusType.EN_RUTA
-                ];
-
-                const lastOperationalEvent = existingHistory
-                    .filter(h => OPERATIONAL_STATUSES.includes(h.status))
-                    .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())[0];
-
-                const lastOperationalTime = lastOperationalEvent ? new Date(lastOperationalEvent.timestamp).getTime() : 0;
-
-                // --- 4. PROCESAMIENTO DE HISTORIAL ---
-                const processedSignatures = new Set(existingHistory.map(h => `${new Date(h.timestamp).getTime()}_${(h.exceptionCode || '').trim()}`));
-                
-                let historyStatus = ShipmentStatusType.DESCONOCIDO;
-                let historyWeight = -1;
-
-                for (const event of scanEvents) {
-                    const eventDate = new Date(event.date);
-                    const eventTime = eventDate.getTime();
-                    const eCode = (event.exceptionCode || '').trim();
-                    const dCode = (event.derivedStatusCode || '').trim();
-                    const codeToSave = eCode || dCode || event.eventType;
-
-                    let mappedStatus = mapFedexStatusToLocalStatus(dCode, eCode);
-                    
-                    // 🛡️ MANEJO INTELIGENTE DE 'OD' (Evita DESCONOCIDO en Hermosillo)
-                    if (event.eventType === 'OD' || dCode === 'OD') {
-                        mappedStatus = subConfig.trackExternalDelivery ? ShipmentStatusType.ACARGO_DE_FEDEX : ShipmentStatusType.EN_RUTA;
-                    }
-
-                    if (codeToSave === '67') mappedStatus = ShipmentStatusType.PENDIENTE;
-
-                    // Guardar en historial si es nuevo
-                    if (!processedSignatures.has(`${eventTime}_${codeToSave}`)) {
-                        for (const charge of chargeList) {
-                            await queryRunner.manager.save(ShipmentStatus, {
-                                status: mappedStatus,
-                                exceptionCode: codeToSave,
-                                timestamp: eventDate,
-                                chargeShipment: charge,
-                                notes: `[${codeToSave}] FedEx Update`
-                            });
-                        }
-                    }
-
-                    // Aplicar Time Shield para el estatus final
-                    if (eventTime > lastOperationalTime) {
-                        const w = getWeight(mappedStatus);
-                        if (w > historyWeight) {
-                            historyStatus = mappedStatus;
-                            historyWeight = w;
-                        }
-                    }
-                }
-
-                // --- 5. CONSENSO Y ESCUDO DE PROTECCIÓN ---
-                const headerStatus = mapFedexStatusToLocalStatus(lsdHeader?.derivedCode || lsdHeader?.code || '', '');
-                const headerWeight = getWeight(headerStatus);
-
-                let finalStatus = (historyWeight >= headerWeight) ? historyStatus : (headerStatus !== ShipmentStatusType.DESCONOCIDO ? headerStatus : mainCharge.status);
-
-                // Bloqueo de retroceso para entregados
-                if (mainCharge.status === ShipmentStatusType.ENTREGADO || mainCharge.status === ShipmentStatusType.ENTREGADO_POR_FEDEX) {
-                    finalStatus = mainCharge.status as any;
-                }
-
-                // Prioridad Absoluta de Entrega (Header o Scans)
-                if (lsdHeader?.code === 'DL' || lsdHeader?.derivedCode === 'DL' || scanEvents.some(e => e.derivedStatusCode === 'DL')) {
-                    finalStatus = subConfig.trackExternalDelivery && scanEvents.some(e => e.eventType === 'OD') 
-                        ? ShipmentStatusType.ENTREGADO_POR_FEDEX 
-                        : ShipmentStatusType.ENTREGADO;
-                }
-
-                // Válvula de escape OD
-                const isFedexReclaim = (lsdHeader?.code === 'OD' || scanEvents.some(e => e.eventType === 'OD' && new Date(e.date).getTime() > lastOperationalTime));
-                
-                if (getWeight(finalStatus) < getWeight(mainCharge.status) && !isFedexReclaim) {
-                    finalStatus = mainCharge.status as any;
-                }
-
-                // --- 6. GUARDADO ---
-                if (mainCharge.status !== finalStatus) {
-                    const newUniqueId = trackResult.trackingNumberInfo?.trackingNumberUniqueId;
-                    const newReceivedBy = trackResult.deliveryDetails?.receivedByName;
-
-                    await queryRunner.manager.update(ChargeShipment, { id: In(targetIds) }, {
-                        status: finalStatus as any,
-                        fedexUniqueId: newUniqueId,
-                        receivedByName: newReceivedBy
-                    });
-                }
-
-                await queryRunner.commitTransaction();
-            } catch (error) {
-                this.logger.error(`[F2 - ${tn}] 💥 Error: ${error.message}`);
-                if (queryRunner.isTransactionActive) await queryRunner.rollbackTransaction();
-            } finally {
-                await queryRunner.release();
-            }
-        }));
-
-        await Promise.all(tasks);
+        this.logger.log(`📈 [Master] OK: ${okCount} | Sin datos: ${noDataCount} | Fallidas: ${failed.length} de ${uniqueTrackingNumbers.length}`);
+        // Si fue una caída de conectividad, NO escribimos dead-letter (no son fallos por guía).
+        if (aborted) {
+          this.logger.error(`🔌 [Master] Corrida abortada por conectividad con FedEx. No se generó dead-letter.`);
+        } else {
+          await this.writeFedexDeadLetter('master', failed);
+        }
+        return {
+          total: uniqueTrackingNumbers.length,
+          ok: okCount,
+          noData: noDataCount,
+          failed: failed.length,
+          aborted,
+          failedTrackings: failed.map(f => f.trackingNumber),
+        };
       }
 
       async processChargeFedexUpdate(chargeShipmentsToUpdate: ChargeShipment[]) {
@@ -6999,18 +6860,42 @@ export class ShipmentsService {
         }, {} as Record<string, string[]>);
 
         const uniqueTrackingNumbers = Object.keys(shipmentsByTracking);
-        const limit = pLimit(10); // Paralelismo actualizado a 10 para coincidir con Master
+        const limit = pLimit(6); // Paralelismo controlado (reducido para bajar 429 de FedEx)
+        const BATCH_SIZE = 250;
+        const batches = this.chunkArray(uniqueTrackingNumbers, BATCH_SIZE);
 
-        const tasks = uniqueTrackingNumbers.map((tn) => limit(async () => {
+        // Telemetría: distinguimos OK / sin datos / fallidas (dead-letter).
+        const failed: { trackingNumber: string; reason: string }[] = [];
+        let okCount = 0;
+        let noDataCount = 0;
+        // Circuit breaker: aborta si FedEx es inalcanzable (DNS/red) y no hay éxitos.
+        let networkErrors = 0;
+        let aborted = false;
+
+        for (let b = 0; b < batches.length; b++) {
+          this.logger.log(`📦 [F2] Lote ${b + 1}/${batches.length} (${batches[b].length} guías)...`);
+          const tasks = batches[b].map((tn) => limit(async () => {
+            if (aborted) return; // circuito abierto: no seguir intentando
             const chargeWithId = chargeShipmentsToUpdate.find(s => s.trackingNumber === tn && (s as any).fedexUniqueId);
             const currentUniqueId = (chargeWithId as any)?.fedexUniqueId;
+            // carrierCode (FDXE/FDXG…) desambigua el servicio y da el estatus exacto.
+            const currentCarrierCode = (chargeWithId as any)?.carrierCode
+                || (chargeShipmentsToUpdate.find(s => s.trackingNumber === tn && (s as any).carrierCode) as any)?.carrierCode;
 
             // --- 1. CONSULTA FEDEX (Estrategia Proactiva) ---
             let fedexInfo;
             try {
-                fedexInfo = await this.fedexService.trackPackage(tn, currentUniqueId);
+                fedexInfo = await this.fedexService.trackPackage(tn, currentUniqueId, currentCarrierCode);
             } catch (error) {
                 this.logger.error(`[C2 - ${tn}] ❌ Error API FedEx: ${error.message}`);
+                failed.push({ trackingNumber: tn, reason: `FEDEX_API: ${error.message}` });
+                if (FedexService.isConnectivityError(error)) {
+                    networkErrors++;
+                    if (!aborted && okCount === 0 && networkErrors >= 12) {
+                        aborted = true;
+                        this.logger.error(`🔌 [F2] FedEx inalcanzable (${networkErrors} errores de red, 0 éxitos). Abortando corrida; se reintentará la próxima hora.`);
+                    }
+                }
                 return;
             }
 
@@ -7033,7 +6918,7 @@ export class ShipmentsService {
                 }
             }
 
-            if (allTrackResults.length === 0) return;
+            if (allTrackResults.length === 0) { noDataCount++; return; }
 
             // =================================================================================
             // 🛡️ SELECTOR DE GENERACIÓN (Jerarquía de UniqueID)
@@ -7312,24 +7197,30 @@ export class ShipmentsService {
                 // =================================================================================
                 if (!isLocked) {
                     const newUniqueId = trackResult.trackingNumberInfo?.trackingNumberUniqueId;
+                    const newCarrierCode = trackResult.trackingNumberInfo?.carrierCode;
                     const newReceivedBy = trackResult.deliveryDetails?.receivedByName;
 
                     for (const charge of chargeList) {
                         let hasChanges = false;
-                        
-                        if (charge.status !== finalStatus) { 
-                            charge.status = finalStatus as any; 
-                            hasChanges = true; 
+
+                        if (charge.status !== finalStatus) {
+                            charge.status = finalStatus as any;
+                            hasChanges = true;
                         }
-                        if (newUniqueId && (charge as any).fedexUniqueId !== newUniqueId) { 
-                            (charge as any).fedexUniqueId = newUniqueId; 
-                            hasChanges = true; 
+                        if (newUniqueId && (charge as any).fedexUniqueId !== newUniqueId) {
+                            (charge as any).fedexUniqueId = newUniqueId;
+                            hasChanges = true;
                         }
-                        if (newReceivedBy && (charge as any).receivedByName !== newReceivedBy) { 
-                            (charge as any).receivedByName = newReceivedBy; 
-                            hasChanges = true; 
+                        // Persistimos el carrierCode que devuelve FedEx (estatus exacto en la próxima corrida).
+                        if (newCarrierCode && (charge as any).carrierCode !== newCarrierCode) {
+                            (charge as any).carrierCode = newCarrierCode;
+                            hasChanges = true;
                         }
-                        
+                        if (newReceivedBy && (charge as any).receivedByName !== newReceivedBy) {
+                            (charge as any).receivedByName = newReceivedBy;
+                            hasChanges = true;
+                        }
+
                         if (hasChanges) {
                             await queryRunner.manager.save(ChargeShipment, charge);
                         }
@@ -7337,16 +7228,36 @@ export class ShipmentsService {
                 }
 
                 await queryRunner.commitTransaction();
+                okCount++;
 
             } catch (error) {
                 this.logger.error(`[C2 - ${tn}] 💥 Error Transacción: ${error.message}`);
+                failed.push({ trackingNumber: tn, reason: `TX: ${error.message}` });
                 if (queryRunner.isTransactionActive) await queryRunner.rollbackTransaction();
             } finally {
                 await queryRunner.release();
             }
-        }));
+          }));
 
-        await Promise.all(tasks);
+          await Promise.all(tasks);
+          if (aborted) break;
+        }
+
+        this.logger.log(`📈 [F2] OK: ${okCount} | Sin datos: ${noDataCount} | Fallidas: ${failed.length} de ${uniqueTrackingNumbers.length}`);
+        // Si fue una caída de conectividad, NO escribimos dead-letter (no son fallos por guía).
+        if (aborted) {
+          this.logger.error(`🔌 [F2] Corrida abortada por conectividad con FedEx. No se generó dead-letter.`);
+        } else {
+          await this.writeFedexDeadLetter('charge', failed);
+        }
+        return {
+          total: uniqueTrackingNumbers.length,
+          ok: okCount,
+          noData: noDataCount,
+          failed: failed.length,
+          aborted,
+          failedTrackings: failed.map(f => f.trackingNumber),
+        };
       }
 
      /************************************************************** */

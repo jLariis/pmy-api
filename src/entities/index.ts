@@ -29,3 +29,5 @@ export * from './zone.entity';
 export * from './warehouse-outbound.entity';
 export * from './warehouse-delivery.entity';
 export * from './package-transfer.entity';
+export * from './audit-log.entity';
+export * from './notification-read.entity';
