@@ -55,7 +55,7 @@ export class InventoriesService {
   ){}
 
 
-  async create(createInventoryDto: CreateInventoryDto) {
+  async create(createInventoryDto: CreateInventoryDto, userId?: string) {
     const { inventoryDate, shipments, chargeShipments, subsidiary } = createInventoryDto;
     
     console.log("🚀 ~ InventoriesService ~ create ~ subsidiary:", subsidiary)
@@ -89,6 +89,7 @@ export class InventoriesService {
         shipments: shipmentsToSave,
         chargeShipments: chargeShipmentsToSave,
         subsidiary: subsidiaryObj,
+        createdById: userId ?? null,
       });
 
       const savedInventory = await queryRunner.manager.save(newInventory);

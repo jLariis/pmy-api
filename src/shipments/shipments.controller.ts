@@ -2,6 +2,7 @@ import { Controller, Get, Post, Param, UseGuards, UseInterceptors, UploadedFile,
 import { ShipmentsService } from './shipments.service';
 import { ApiBadRequestResponse, ApiBearerAuth, ApiBody, ApiConsumes, ApiOkResponse, ApiOperation, ApiProduces, ApiProperty, ApiQuery, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from 'src/auth/guards/jwt-auth.guard';
+import { SuperAdminGuard } from 'src/audit/super-admin.guard';
 import { FileFieldsInterceptor, FileInterceptor } from '@nestjs/platform-express';
 import { FedexService } from './fedex.service';
 import { FedExTrackingResponseDto } from './dto/fedex/fedex-tracking-response.dto';
@@ -15,6 +16,7 @@ import { Response } from 'express';
 import * as dayjs from 'dayjs'; 
 import { UniversalAuditDto } from './dto/audit-entity-type.dto';
 import { BusinessException } from 'src/common/business.exception';
+import { NoAudit } from 'src/audit/audit.decorator';
 
 @ApiTags('shipments')
 @ApiBearerAuth()
@@ -26,6 +28,51 @@ export class ShipmentsController {
     private readonly shipmentsService: ShipmentsService,
     private readonly fedexService: FedexService
   ) {}
+
+  /**
+   * 🔧 DEV: dispara el tracking de FedEx on-demand (sin esperar al cron horario),
+   * para medir el batching. `limit` acota a N guías (prueba rápida); si se omite,
+   * corre el set completo. `phase` = master | charge | both. Solo superadmin.
+   * Ej: GET /shipments/dev/run-tracking?limit=60&phase=master
+   */
+  @Get('dev/run-tracking')
+  @UseGuards(SuperAdminGuard)
+  async devRunTracking(
+    @Query('limit') limit?: string,
+    @Query('phase') phase: 'master' | 'charge' | 'both' = 'master',
+    @Query('bg') bg?: string,
+  ) {
+    const n = limit ? Math.max(1, Number(limit)) : undefined;
+
+    // Núcleo: corre las fases pedidas y devuelve el resumen.
+    const runAll = async () => {
+      const out: any = { phase, limit: n ?? 'todos' };
+      const started = Date.now();
+      if (phase === 'master' || phase === 'both') {
+        const all = await this.shipmentsService.getShipmentsToValidate();
+        const subset = n ? all.slice(0, n) : all;
+        out.master = { requested: subset.length, summary: await this.shipmentsService.processMasterFedexUpdate(subset) };
+      }
+      if (phase === 'charge' || phase === 'both') {
+        const all = await this.shipmentsService.getSimpleChargeShipments();
+        const subset = n ? all.slice(0, n) : all;
+        out.charge = { requested: subset.length, summary: await this.shipmentsService.processChargeFedexUpdate(subset) };
+      }
+      out.durationSec = +((Date.now() - started) / 1000).toFixed(1);
+      return out;
+    };
+
+    // bg=true: dispara en segundo plano y responde de inmediato (para correr el
+    // set completo sin colgar el HTTP 30 min). El avance/tiempos salen en los logs.
+    if (bg === 'true' || bg === '1') {
+      runAll()
+        .then((r) => this.logger.log(`✅ [dev/run-tracking bg] Finalizado: ${JSON.stringify(r).slice(0, 300)}`))
+        .catch((e) => this.logger.error(`❌ [dev/run-tracking bg] Error: ${e.message}`));
+      return { started: true, background: true, phase, limit: n ?? 'todos', note: 'Corriendo en segundo plano; revisa los logs (⏱️).' };
+    }
+
+    return runAll();
+  }
 
   @Get('test-new-cron')
   async testNewCronJob() {
@@ -153,9 +200,10 @@ export class ShipmentsController {
     },
   })
   async uploadFile(
-    @UploadedFile() file: Express.Multer.File, 
+    @UploadedFile() file: Express.Multer.File,
     @Body() dto: UploadShipmentDto, // <-- Usamos el DTO completo
-    @Res() res: Response
+    @Res() res: Response,
+    @Req() req?: any,
   ) {
     try {
       const isAereoBoolean = String(dto.isAereo).toLowerCase() === 'true';
@@ -163,11 +211,12 @@ export class ShipmentsController {
 
       // Llamamos al servicio normalmente
       const result = await this.shipmentsService.addConsMasterBySubsidiary(
-        file, 
-        dto.subsidiaryId, 
-        dto.consNumber || '', 
-        dateForCons, 
-        isAereoBoolean
+        file,
+        dto.subsidiaryId,
+        dto.consNumber || '',
+        dateForCons,
+        isAereoBoolean,
+        req?.user?.userId,
       );
 
       return res.status(HttpStatus.OK).json(result);
@@ -220,11 +269,12 @@ export class ShipmentsController {
     },
   })
   uploadChargeFile(
-    @UploadedFile() file: Express.Multer.File, 
+    @UploadedFile() file: Express.Multer.File,
     @Body('subsidiaryId') subsidiaryId: string,
     @Body('consNumber') consNumber: string,
     @Body('consDate') consDate?: string,
     @Body('notRemoveCharge') notRemoveCharge: any = false,
+    @Req() req?: any,
   ) {
       console.log("🚀 ~ Raw notRemoveCharge:", notRemoveCharge);
   
@@ -244,11 +294,11 @@ export class ShipmentsController {
 
     if(shouldNotRemove) {
       console.log('🔍 Calling addChargeShipments');
-      return this.shipmentsService.addChargeShipments(file, subsidiaryId, consNumber, dateForCons);
+      return this.shipmentsService.addChargeShipments(file, subsidiaryId, consNumber, dateForCons, req?.user?.userId);
     }
 
     console.log('🔍 Calling processFileF2');
-    return this.shipmentsService.processFileF2(file, subsidiaryId, consNumber, dateForCons);
+    return this.shipmentsService.processFileF2(file, subsidiaryId, consNumber, dateForCons, req?.user?.userId);
   }
 
   @Post('upload-payment')
@@ -511,6 +561,7 @@ export class ShipmentsController {
 
   /****************************************** SOLO PRUEBAS *********************************************************/
   
+    @NoAudit() // Prueba/validación: no auditable.
     @Post('validate-tracking')
     @UseInterceptors(FileInterceptor('file'))
     @ApiOperation({ summary: 'Subir archivo Excel para procesar' })
@@ -538,6 +589,7 @@ export class ShipmentsController {
     }
 
 
+    @NoAudit() // Prueba/consulta a paquetería: no auditable.
     @Post('test-check-status')
     async checkFedexStatus(@Body() body: CheckFedexStatusDto) {
       const { trackingNumbers, shouldPersist = false } = body;
@@ -551,6 +603,12 @@ export class ShipmentsController {
     @Get('validate-shipment-ontheway/:subsidiaryId')
     async checkShipmentOnTheWayBySubsidiary(@Param('subsidiaryId') subsidiaryId: string) {
       return await this.shipmentsService.checkStatus67OnShipments(subsidiaryId);
+    }
+
+    // JSON para la tabla del reporte "Sin 67" (la versión Excel está abajo).
+    @Get('report-no67/:subsidiaryId/json')
+    async getNo67ReportJson(@Param('subsidiaryId') subsidiaryId: string) {
+      return this.shipmentsService.validateCode67BySubsidiary(subsidiaryId);
     }
 
     @Get('report-no67/:subsidiaryId')
@@ -608,9 +666,9 @@ export class ShipmentsController {
   /**************************************************************************************************************** */
 
   @Post("add-shipment")
-  async addSingleShipment(@Body() dto: ShipmentToSaveDto) {
-    return this.shipmentsService.addShipment(dto);
-  }  
+  async addSingleShipment(@Body() dto: ShipmentToSaveDto, @Req() req: any) {
+    return this.shipmentsService.addShipment(dto, req.user?.userId);
+  }
 
   @Post('dispatch/sync-status/:trackingNumber')
   @HttpCode(HttpStatus.OK)
@@ -639,6 +697,7 @@ export class ShipmentsController {
     }
   }
 
+  @NoAudit() // Consulta directa a paquetería: no auditable.
   @Post('fedex-direct')
   async getFedexDirect(@Body('trackingNumbers') trackingNumbers: string[]) {
     console.log("🚀 ~ ShipmentsController ~ getFedexDirect ~ trackingNumbers:", trackingNumbers);
@@ -692,6 +751,7 @@ export class ShipmentsController {
     return await this.shipmentsService.findNonDeliveredShipments(subsidiaryId, parsedDate);
   }
 
+  @NoAudit() // Consulta de estatus: no auditable.
   @Post('check-44-status')
   async checkStatus44ForShipments(@Body('trackingNumbers') trackingNumbers: string[]) {
     

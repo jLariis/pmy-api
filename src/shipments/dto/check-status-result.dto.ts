@@ -104,7 +104,13 @@ class ForPickUpShipmentDto {
   consolidatedId?: string;
 }
 
-export class FedexTrackingResponseDto {
+/**
+ * Resultado del PROCESO de tracking (no es el response de FedEx): agrupa qué
+ * guías se actualizaron, cuáles fallaron, códigos inusuales, etc. Antes se
+ * llamaba `FedexTrackingResponseDto` y chocaba con el DTO del wire de FedEx
+ * (`FedExTrackingResponseDto`); renombrado para evitar confusión.
+ */
+export class TrackingProcessResultDto {
   @IsArray()
   @ValidateNested({ each: true })
   @Type(() => UpdatedShipmentDto)

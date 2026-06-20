@@ -30,4 +30,8 @@ export class Devolution {
     
     @Column({ type: 'datetime', default: () => 'CURRENT_TIMESTAMP' })
     createdAt: Date;
+
+    /** Usuario que registró la devolución (auditoría). */
+    @Column({ type: 'char', length: 36, nullable: true })
+    createdById?: string;
 }

@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Body, Param, UploadedFiles, BadRequestException, UseInterceptors } from '@nestjs/common';
+import { Controller, Get, Post, Body, Param, UploadedFiles, BadRequestException, UseInterceptors, Req } from '@nestjs/common';
 import { DevolutionsService } from './devolutions.service';
 import { CreateDevolutionDto } from './dto/create-devolution.dto';
 import { FilesInterceptor } from '@nestjs/platform-express';
@@ -10,8 +10,8 @@ export class DevolutionsController {
   constructor(private readonly devolutionsService: DevolutionsService) {}
 
   @Post()
-  create(@Body() createDevolutionDto: CreateDevolutionDto[]) {
-    return this.devolutionsService.create(createDevolutionDto);
+  create(@Body() createDevolutionDto: CreateDevolutionDto[], @Req() req: any) {
+    return this.devolutionsService.create(createDevolutionDto, req.user?.userId);
   }
 
   @Get(':subsidiaryId')

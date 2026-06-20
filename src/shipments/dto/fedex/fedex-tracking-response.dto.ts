@@ -13,14 +13,17 @@ import {
 // 1. NIVEL BASE (Clases que no dependen de nadie o solo de primitivos)
 // -------------------------------------------------------------------------
 
+// NOTA: FedEx omite la mayoría de estos campos según el estado del paquete
+// (errores, label-only, direcciones parciales). Todo es opcional salvo lo que
+// la API garantiza. El consumidor usa optional-chaining acorde a esta realidad.
 export class FedExAddressDto {
   @IsOptional() @IsArray() @IsString({ each: true }) streetLines?: string[];
-  @IsString() city: string;
-  @IsOptional() @IsString() stateOrProvinceCode: string;
-  @IsString() postalCode: string;
-  @IsString() countryCode: string;
-  @IsString() countryName: string;
-  @IsBoolean() residential: boolean;
+  @IsOptional() @IsString() city?: string;
+  @IsOptional() @IsString() stateOrProvinceCode?: string;
+  @IsOptional() @IsString() postalCode?: string;
+  @IsOptional() @IsString() countryCode?: string;
+  @IsOptional() @IsString() countryName?: string;
+  @IsOptional() @IsBoolean() residential?: boolean;
   @IsOptional() @IsString() addressClassification?: string;
 }
 
@@ -62,9 +65,9 @@ export class FedExPackageIdentifierDto {
 }
 
 export class FedExTrackingNumberInfoDto {
-  @IsString() trackingNumber: string;
-  @IsString() trackingNumberUniqueId: string;
-  @IsString() carrierCode: string;
+  @IsString() trackingNumber: string; // único garantizado
+  @IsOptional() @IsString() trackingNumberUniqueId?: string;
+  @IsOptional() @IsString() carrierCode?: string;
 }
 
 export class FedExDateTimeDto {
@@ -129,19 +132,27 @@ export class FedExWeightAndDimensionsDto {
 export class FedExDeliveryDetailsDto {
   @IsOptional() @IsString() deliveryAttempts?: string;
   @IsOptional() @IsString() receivedByName?: string;
+  // `signedByName` = QUIÉN FIRMÓ la entrega (no el destinatario ordenado).
+  @IsOptional() @IsString() signedByName?: string;
   @IsOptional() @IsString() destinationServiceArea?: string;
+  @IsOptional() @IsString() destinationServiceAreaDescription?: string;
   @IsOptional() @IsString() locationDescription?: string;
+  @IsOptional() @IsString() locationType?: string;
+  @IsOptional() @IsString() officeOrderDeliveryMethod?: string;
+  @IsOptional() @IsBoolean() deliveryToday?: boolean;
+  @IsOptional() @ValidateNested() @Type(() => FedExAddressDto)
+  actualDeliveryAddress?: FedExAddressDto;
   @IsOptional() @ValidateNested({ each: true }) @Type(() => FedExDeliveryOptionEligibilityDto)
   deliveryOptionEligibilityDetails?: FedExDeliveryOptionEligibilityDto[];
 }
 
 export class FedExStatusDetailDto {
-  @IsString() code: string;
-  @IsString() derivedCode: string;
-  @IsString() statusByLocale: string;
-  @IsString() description: string;
-  @ValidateNested() @Type(() => FedExAddressDto)
-  scanLocation: FedExAddressDto;
+  @IsOptional() @IsString() code?: string;
+  @IsOptional() @IsString() derivedCode?: string;
+  @IsOptional() @IsString() statusByLocale?: string;
+  @IsOptional() @IsString() description?: string;
+  @IsOptional() @ValidateNested() @Type(() => FedExAddressDto)
+  scanLocation?: FedExAddressDto;
   @IsOptional() @ValidateNested({ each: true }) @Type(() => FedExAncillaryDetailDto)
   ancillaryDetails?: FedExAncillaryDetailDto[];
 }
@@ -152,12 +163,12 @@ export class FedExScanEventDto {
   @IsString() eventDescription: string;
   @IsOptional() @IsString() exceptionCode?: string;
   @IsOptional() @IsString() exceptionDescription?: string;
-  @ValidateNested() @Type(() => FedExAddressDto)
-  scanLocation: FedExAddressDto;
+  @IsOptional() @ValidateNested() @Type(() => FedExAddressDto)
+  scanLocation?: FedExAddressDto;
   @IsOptional() @IsString() locationId?: string;
   @IsOptional() @IsString() locationType?: string;
-  @IsString() derivedStatusCode: string;
-  @IsString() derivedStatus: string;
+  @IsOptional() @IsString() derivedStatusCode?: string;
+  @IsOptional() @IsString() derivedStatus?: string;
 }
 
 export class FedExAdditionalTrackingInfoDto {
@@ -195,60 +206,62 @@ export class FedExPackageDetailsDto {
 // 4. CLASES PRINCIPALES (Los contenedores grandes)
 // -------------------------------------------------------------------------
 
+// Único campo garantizado por FedEx es `trackingNumberInfo`. Todo lo demás
+// puede faltar (errores por guía, label-only, etc.) → opcional.
 export class FedExTrackResultDto {
   @ValidateNested() @Type(() => FedExTrackingNumberInfoDto)
   trackingNumberInfo: FedExTrackingNumberInfoDto;
 
-  @ValidateNested() @Type(() => FedExAdditionalTrackingInfoDto)
-  additionalTrackingInfo: FedExAdditionalTrackingInfoDto;
+  @IsOptional() @ValidateNested() @Type(() => FedExAdditionalTrackingInfoDto)
+  additionalTrackingInfo?: FedExAdditionalTrackingInfoDto;
 
-  @ValidateNested() @Type(() => FedExLocationContactAndAddressDto)
-  shipperInformation: FedExLocationContactAndAddressDto;
+  @IsOptional() @ValidateNested() @Type(() => FedExLocationContactAndAddressDto)
+  shipperInformation?: FedExLocationContactAndAddressDto;
 
-  @ValidateNested() @Type(() => FedExLocationContactAndAddressDto)
-  recipientInformation: FedExLocationContactAndAddressDto;
+  @IsOptional() @ValidateNested() @Type(() => FedExLocationContactAndAddressDto)
+  recipientInformation?: FedExLocationContactAndAddressDto;
 
-  @ValidateNested() @Type(() => FedExStatusDetailDto)
-  latestStatusDetail: FedExStatusDetailDto;
+  @IsOptional() @ValidateNested() @Type(() => FedExStatusDetailDto)
+  latestStatusDetail?: FedExStatusDetailDto;
 
-  @ValidateNested({ each: true }) @Type(() => FedExDateTimeDto)
-  dateAndTimes: FedExDateTimeDto[];
+  @IsOptional() @ValidateNested({ each: true }) @Type(() => FedExDateTimeDto)
+  dateAndTimes?: FedExDateTimeDto[];
 
-  @ValidateNested({ each: true }) @Type(() => FedExScanEventDto)
-  scanEvents: FedExScanEventDto[];
+  @IsOptional() @ValidateNested({ each: true }) @Type(() => FedExScanEventDto)
+  scanEvents?: FedExScanEventDto[];
 
-  @ValidateNested() @Type(() => FedExPackageDetailsDto)
-  packageDetails: FedExPackageDetailsDto;
+  @IsOptional() @ValidateNested() @Type(() => FedExPackageDetailsDto)
+  packageDetails?: FedExPackageDetailsDto;
 
-  @ValidateNested() @Type(() => FedExShipmentDetailsDto)
-  shipmentDetails: FedExShipmentDetailsDto;
+  @IsOptional() @ValidateNested() @Type(() => FedExShipmentDetailsDto)
+  shipmentDetails?: FedExShipmentDetailsDto;
 
-  @ValidateNested() @Type(() => FedExServiceDetailDto)
-  serviceDetail: FedExServiceDetailDto;
+  @IsOptional() @ValidateNested() @Type(() => FedExServiceDetailDto)
+  serviceDetail?: FedExServiceDetailDto;
 
-  @IsArray() @IsString({ each: true })
-  availableNotifications: string[];
+  @IsOptional() @IsArray() @IsString({ each: true })
+  availableNotifications?: string[];
 
-  @ValidateNested() @Type(() => FedExDeliveryDetailsDto)
-  deliveryDetails: FedExDeliveryDetailsDto;
+  @IsOptional() @ValidateNested() @Type(() => FedExDeliveryDetailsDto)
+  deliveryDetails?: FedExDeliveryDetailsDto;
 
-  @ValidateNested() @Type(() => FedExLocationDto)
-  originLocation: FedExLocationDto;
+  @IsOptional() @ValidateNested() @Type(() => FedExLocationDto)
+  originLocation?: FedExLocationDto;
 
-  @ValidateNested() @Type(() => FedExLocationDto)
-  destinationLocation: FedExLocationDto;
+  @IsOptional() @ValidateNested() @Type(() => FedExLocationDto)
+  destinationLocation?: FedExLocationDto;
 
-  @ValidateNested() @Type(() => FedExAddressDto)
-  lastUpdatedDestinationAddress: FedExAddressDto;
+  @IsOptional() @ValidateNested() @Type(() => FedExAddressDto)
+  lastUpdatedDestinationAddress?: FedExAddressDto;
 
-  @ValidateNested() @Type(() => FedExServiceCommitMessageDto)
-  serviceCommitMessage: FedExServiceCommitMessageDto;
+  @IsOptional() @ValidateNested() @Type(() => FedExServiceCommitMessageDto)
+  serviceCommitMessage?: FedExServiceCommitMessageDto;
 
-  @ValidateNested() @Type(() => FedExTimeWindowDto)
-  standardTransitTimeWindow: FedExTimeWindowDto;
+  @IsOptional() @ValidateNested() @Type(() => FedExTimeWindowDto)
+  standardTransitTimeWindow?: FedExTimeWindowDto;
 
-  @ValidateNested() @Type(() => FedExEstimatedTimeWindowDto)
-  estimatedDeliveryTimeWindow: FedExEstimatedTimeWindowDto;
+  @IsOptional() @ValidateNested() @Type(() => FedExEstimatedTimeWindowDto)
+  estimatedDeliveryTimeWindow?: FedExEstimatedTimeWindowDto;
 
   @IsOptional() @IsString()
   goodsClassificationCode?: string;

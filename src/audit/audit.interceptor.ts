@@ -17,6 +17,7 @@ import {
 } from 'src/common/enums/audit.enum';
 import { getClientIp, redact } from './audit.util';
 import { parseDevice } from './client-info.util';
+import { resolveAudit, normalizeAuditPath, AuditDescribeCtx } from './audit-catalog';
 
 const METHOD_ACTION: Record<string, AuditAction> = {
   POST: AuditAction.CREATE,
@@ -100,6 +101,7 @@ export class AuditInterceptor implements NestInterceptor {
     const start = Date.now();
     const requestId = req.headers['x-request-id'] || randomUUID();
     const user = req.user || {};
+    const normPath = normalizeAuditPath(req.originalUrl || req.url);
 
     const base = {
       userId: user.userId ?? user.id,
@@ -107,9 +109,6 @@ export class AuditInterceptor implements NestInterceptor {
       userName: [user.name, user.lastName].filter(Boolean).join(' ') || undefined,
       role: user.role,
       subsidiaryId: user.subsidiary?.id ?? user.subsidiaryId,
-      module: meta?.module ?? AuditModule.OTRO,
-      action: meta?.action ?? METHOD_ACTION[method] ?? AuditAction.OTHER,
-      entityName: meta?.entityName,
       method,
       path: req.originalUrl,
       ip: getClientIp(req),
@@ -123,11 +122,46 @@ export class AuditInterceptor implements NestInterceptor {
       },
     };
 
+    /**
+     * Deriva módulo + acción + descripción legible desde el catálogo central,
+     * permitiendo override por @Audit({ module, action, describe }).
+     */
+    const enrich = (result: 'success' | 'error', response: any, error?: any) => {
+      const ctx: AuditDescribeCtx = {
+        method, path: normPath,
+        params: req.params, query: req.query, body: req.body,
+        response, result, error,
+      };
+      const cat = resolveAudit(ctx);
+      let description = cat.description;
+      let details = cat.details;
+      if (meta?.describe) {
+        try {
+          const d = meta.describe(ctx);
+          if (typeof d === 'string') description = d;
+          else if (d) { description = d.message; details = { ...details, ...d.details }; }
+        } catch { /* conserva la descripción del catálogo */ }
+      }
+      return {
+        module: meta?.module ?? cat.module ?? AuditModule.OTRO,
+        action: meta?.action ?? cat.action ?? METHOD_ACTION[method] ?? AuditAction.OTHER,
+        entityName: meta?.entityName ?? cat.entityName,
+        description,
+        metadata: details ? { ...base.metadata, details } : base.metadata,
+      };
+    };
+
     return next.handle().pipe(
       tap((response) => {
         const res = context.switchToHttp().getResponse();
+        const e = enrich('success', response);
         this.audit.log({
           ...base,
+          module: e.module,
+          action: e.action,
+          entityName: e.entityName,
+          description: e.description,
+          metadata: e.metadata,
           result: AuditResult.SUCCESS,
           statusCode: res?.statusCode,
           durationMs: Date.now() - start,
@@ -139,8 +173,14 @@ export class AuditInterceptor implements NestInterceptor {
         });
       }),
       catchError((err) => {
+        const e = enrich('error', undefined, err);
         this.audit.log({
           ...base,
+          module: e.module,
+          action: e.action,
+          entityName: e.entityName,
+          description: e.description,
+          metadata: e.metadata,
           result: AuditResult.ERROR,
           severity: AuditSeverity.WARNING,
           statusCode: err?.status ?? err?.statusCode ?? 500,

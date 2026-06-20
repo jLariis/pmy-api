@@ -1,10 +1,11 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete, BadRequestException, UploadedFiles, UseInterceptors, ParseArrayPipe, Query } from '@nestjs/common';
+import { Controller, Get, Post, Body, Patch, Param, Delete, BadRequestException, UploadedFiles, UseInterceptors, ParseArrayPipe, Query, Req } from '@nestjs/common';
 import { InventoriesService } from './inventories.service';
 import { CreateInventoryDto } from './dto/create-inventory.dto';
 import { UpdateInventoryDto } from './dto/update-inventory.dto';
 import { FilesInterceptor } from '@nestjs/platform-express';
 import { ApiOperation, ApiConsumes, ApiBody, ApiTags } from '@nestjs/swagger';
 import { ValidationPayloadDto } from 'src/unloading/dto/validate-payload.dto';
+import { NoAudit } from 'src/audit/audit.decorator';
 
 @ApiTags('inventories')
 @Controller('inventories')
@@ -12,9 +13,9 @@ export class InventoriesController {
   constructor(private readonly inventoriesService: InventoriesService) {}
 
   @Post()
-  create(@Body() createInventoryDto: CreateInventoryDto) {
+  create(@Body() createInventoryDto: CreateInventoryDto, @Req() req: any) {
     console.log("🚀 ~ InventoriesController ~ create ~ createInventoryDto:", createInventoryDto)
-    return this.inventoriesService.create(createInventoryDto);
+    return this.inventoriesService.create(createInventoryDto, req.user?.userId);
   }
 
   @Get('detail/:id')
@@ -40,6 +41,7 @@ export class InventoriesController {
     return this.inventoriesService.validateTrackingNumber(trackingNumber);
   }
 
+  @NoAudit() // Validación por escaneo: muy frecuente, no es una acción auditable.
   @Post('validate-tracking-numbers')
   validateTrackingNumbers(
     @Body(

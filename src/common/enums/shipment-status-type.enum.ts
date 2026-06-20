@@ -49,3 +49,18 @@ export enum ShipmentCanceledStatus {
   DEX07 = 'dex07',
   DEX03 = 'dex03'
 }
+
+/**
+ * Estados TERMINALES: el paquete ya llegó a un desenlace y NO debe contarse como
+ * "pendiente" ni como "sin 67" (no se espera que reciba un 67 local).
+ * Se usa para filtrar reportes (sin67/sin44/pendientes). Lista ajustable por negocio.
+ */
+export const TERMINAL_SHIPMENT_STATUSES: ShipmentStatusType[] = [
+  ShipmentStatusType.ENTREGADO,
+  ShipmentStatusType.ENTREGADO_POR_FEDEX,
+  ShipmentStatusType.ENTREGADO_EN_BODEGA,
+  ShipmentStatusType.DEVUELTO_A_FEDEX,
+  ShipmentStatusType.RETORNO_ABANDONO_FEDEX,
+  ShipmentStatusType.ES_OCURRE,
+  ShipmentStatusType.ACARGO_DE_FEDEX,
+];

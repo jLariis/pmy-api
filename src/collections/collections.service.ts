@@ -24,7 +24,7 @@ export class CollectionsService {
     ){}
 
 
-    async save(collectionDto: CollectionDto[]): Promise<{
+    async save(collectionDto: CollectionDto[], userId?: string): Promise<{
       savedCollections: Collection[];
       duplicates: string[];
       errors: Array<{ trackingNumber: string; error: string }>;
@@ -51,7 +51,9 @@ export class CollectionsService {
         }
 
         // 2. Crear y guardar collections
-        const newCollections = this.collectionRepository.create(uniqueCollections);
+        const newCollections = this.collectionRepository.create(
+          uniqueCollections.map((dto) => ({ ...dto, createdById: userId ?? null })),
+        );
         const savedCollections = await this.collectionRepository.save(newCollections);
         this.logger.log(`Se guardaron ${savedCollections.length} collections`);
 
@@ -82,6 +84,7 @@ export class CollectionsService {
               sourceType: IncomeSourceType.COLLECTION,
               collection: { id: collection.id },
               date: new Date(), // Usar fecha actual en lugar de createdAt
+              createdById: userId ?? null,
             });
           });
 

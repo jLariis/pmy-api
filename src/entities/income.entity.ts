@@ -67,6 +67,10 @@ export class Income {
   @Column({ type: 'datetime', default: () => 'CURRENT_TIMESTAMP' })
   createdAt: Date;
 
+  /** Usuario que originó el ingreso (auditoría); se hereda de la operación padre. */
+  @Column({ type: 'char', length: 36, nullable: true })
+  createdById?: string;
+
   @BeforeInsert()
   setDefaults() {
     this.createdAt = new Date(); // Fecha en UTC

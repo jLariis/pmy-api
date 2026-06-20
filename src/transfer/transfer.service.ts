@@ -67,6 +67,7 @@ export class TransferService {
         isGrouped: false,
         sourceType: sourceType,
         date: createTransferDto.transferDate, // Usamos la fecha del traslado
+        createdById: userId ?? null,
       });
 
       await queryRunner.manager.save(newIncome);

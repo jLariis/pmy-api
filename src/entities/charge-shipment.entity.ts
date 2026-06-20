@@ -84,7 +84,11 @@ export class ChargeShipment {
     
       @Column({ type: 'datetime', default: () => 'CURRENT_TIMESTAMP' })
       createdAt: Date;
-    
+
+      /** Usuario que dio de alta la carga/F2 (auditoría). */
+      @Column({ type: 'char', length: 36, nullable: true })
+      createdById?: string;
+
       @ManyToOne(() => Subsidiary, { nullable: true })
       @JoinColumn({ name: 'subsidiaryId' })
       subsidiary: Subsidiary;

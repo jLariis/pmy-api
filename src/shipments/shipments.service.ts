@@ -35,7 +35,7 @@ import { SubsidiaryRules } from './dto/subsidiary-rules';
 import { ForPickUp } from 'src/entities/for-pick-up.entity';
 import { ForPickUpDto } from './dto/for-pick-up.dto';
 import { IncomeValidationResult } from './dto/income-validation.dto';
-import { FedexTrackingResponseDto } from './dto/check-status-result.dto';
+import { TrackingProcessResultDto } from './dto/check-status-result.dto';
 import { PaymentTypeEnum } from 'src/common/enums/payment-type.enum';
 import { ShipmentStatusForReportDto } from 'src/mail/dtos/shipment.dto';
 import { SearchShipmentDto } from './dto/search-package.dto';
@@ -825,7 +825,7 @@ export class ShipmentsService {
     return { exist: count > 0, shipment: _[0] };
   }
 
-  async processFileF2(file: Express.Multer.File, subsidiaryId: string, consNumber: string, consDate?: Date) {
+  async processFileF2(file: Express.Multer.File, subsidiaryId: string, consNumber: string, consDate?: Date, userId?: string) {
     this.logger.log("🚀 Iniciando migración masiva y carga directa (F2)");
 
     if (!file) throw new BadRequestException('No se subió ningún archivo');
@@ -880,6 +880,7 @@ export class ShipmentsService {
               charge: savedCharge,
               subsidiary: chargeSubsidiary,
               status: original.status || ShipmentStatusType.PENDIENTE,
+              createdById: userId ?? null,
             });
 
             savedCS = await queryRunner.manager.save(chargeShipment);
@@ -914,6 +915,7 @@ export class ShipmentsService {
               status: ShipmentStatusType.PENDIENTE,
               charge: savedCharge,
               subsidiary: chargeSubsidiary,
+              createdById: userId ?? null,
             });
 
             savedCS = await queryRunner.manager.save(newCS);
@@ -947,6 +949,7 @@ export class ShipmentsService {
           sourceType: IncomeSourceType.CHARGE,
           charge: savedCharge,
           date: consDate || new Date(),
+          createdById: userId ?? null,
         });
         await queryRunner.manager.save(newIncome);
       }
@@ -1134,7 +1137,7 @@ export class ShipmentsService {
   }
 
   /*** NUEVO SI SE USA */
-  async addChargeShipments(file: Express.Multer.File, subsidiaryId: string, consNumber: string, consDate?: Date) {
+  async addChargeShipments(file: Express.Multer.File, subsidiaryId: string, consNumber: string, consDate?: Date, userId?: string) {
     console.log("🟢 START addChargeShipments method");
     
     if (!file) throw new BadRequestException('No file uploaded');
@@ -1242,6 +1245,7 @@ export class ShipmentsService {
             ...shipment,
             id: undefined,
             charge: savedCharge, // ✅ Asegurar que savedCharge tenga id
+            createdById: userId ?? null,
           });
 
           console.log("💾 Attempting to save...");
@@ -1287,6 +1291,7 @@ export class ShipmentsService {
             sourceType: IncomeSourceType.CHARGE,
             charge: { id: savedCharge.id },
             date: consDate ? consDate : new Date(),
+            createdById: userId ?? null,
           });
 
           console.log("💾 Saving income...");
@@ -2298,7 +2303,8 @@ export class ShipmentsService {
     subsidiaryId: string,
     consNumber: string,
     consDate?: Date,
-    isAereo?: boolean
+    isAereo?: boolean,
+    userId?: string,
   ): Promise<any> {
       const startTime = Date.now();
       this.logger.log(`📂 Procesando archivo: ${file?.originalname} | Tipo: ${isAereo ? 'AÉREO' : 'ORDINARIO'}`);
@@ -2338,6 +2344,7 @@ export class ShipmentsService {
               isCompleted: false,
               efficiency: 0,
               commitDateTime: new Date(),
+              createdById: userId ?? null,
           });
 
           const savedCons = await transactionalEntityManager.save(Consolidated, consolidated);
@@ -2357,7 +2364,8 @@ export class ShipmentsService {
                           index + 1,
                           processedTrackingNumbers,
                           shipmentsToGenerateIncomes,
-                          savedCons.id
+                          savedCons.id,
+                          userId,
                       )
                   )
               );
@@ -2428,7 +2436,8 @@ export class ShipmentsService {
     subsidiaryId: string,
     consNumber: string,
     consDate?: Date,
-    isAereo?: boolean
+    isAereo?: boolean,
+    userId?: string,
   ): Promise<any> {
       const startTime = Date.now();
       this.logger.log(`📂 Procesando archivo: ${file?.originalname} | Tipo: ${isAereo ? 'AÉREO' : 'ORDINARIO'}`);
@@ -2468,6 +2477,7 @@ export class ShipmentsService {
               isCompleted: false,
               efficiency: 0,
               commitDateTime: new Date(),
+              createdById: userId ?? null,
           });
 
           const savedCons = await transactionalEntityManager.save(Consolidated, consolidated);
@@ -2487,7 +2497,8 @@ export class ShipmentsService {
                           index + 1,
                           processedTrackingNumbers,
                           shipmentsToGenerateIncomes,
-                          savedCons.id
+                          savedCons.id,
+                          userId,
                       )
                   )
               );
@@ -2604,7 +2615,8 @@ export class ShipmentsService {
     shipmentIndex: number,
     processedTrackingNumbers: Set<string>,
     shipmentsToGenerateIncomes: { shipment: Shipment; timestamp: Date; exceptionCode: string | undefined }[],
-    consolidatedId: string
+    consolidatedId: string,
+    userId?: string,
   ): Promise<void> {
     const trackingNumber = shipment.trackingNumber?.toString().trim();
     
@@ -2686,8 +2698,9 @@ export class ShipmentsService {
       newShipment.fedexUniqueId = trackResult?.trackingNumberInfo?.trackingNumberUniqueId || null;
       newShipment.carrierCode = trackResult?.trackingNumberInfo?.carrierCode || null;
       newShipment.createdAt = new Date();
+      newShipment.createdById = userId ?? null;
       newShipment.subsidiary = predefinedSubsidiary;
-      newShipment.consolidatedId = consolidated.id; 
+      newShipment.consolidatedId = consolidated.id;
 
       // 6. Procesar Historial (Mapea todos los eventos para la BD sin alterar el estatus principal)
       const histories = await this.processFedexScanEventsToStatusesResp(scanEvents, newShipment);
@@ -2847,6 +2860,7 @@ export class ShipmentsService {
       sourceType: IncomeSourceType.SHIPMENT,
       date: timestamp || new Date(),
       createdAt: new Date(),
+      createdById: (shipment as any).createdById ?? null, // hereda el autor del envío
     });
 
     // Usamos save sobre el repositorio específico para máxima limpieza
@@ -2907,6 +2921,7 @@ export class ShipmentsService {
     const shipment = await this.shipmentRepository.findOne({
       where : {trackingNumber},
       relations: ['statusHistory'],
+      order: { createdAt: 'DESC' }, // con duplicados, el más reciente
     });
 
     if (!shipment) {
@@ -2928,7 +2943,8 @@ export class ShipmentsService {
   async findStatusHistoryByTrackingNumber(trackingNumber: string) {
     const shipment = await this.shipmentRepository.findOne({
       where: { trackingNumber },
-      relations: ['statusHistory']
+      relations: ['statusHistory'],
+      order: { createdAt: 'DESC' }, // con duplicados, el más reciente
     });
 
     if (!shipment) {
@@ -3157,6 +3173,7 @@ export class ShipmentsService {
             consolidatedId: savedConsolidated.id,
             consNumber: finalConsNumber,
             subsidiary: { id: subsidiaryId } as Subsidiary,
+            createdById: userId ?? null,
           });
 
           try {
@@ -4631,7 +4648,7 @@ export class ShipmentsService {
 
 
     /***** Agrear shipments directamente */
-    async addShipment(dto: ShipmentToSaveDto): Promise<any> {
+    async addShipment(dto: ShipmentToSaveDto, userId?: string): Promise<any> {
       try {
         this.logger.log("📥 addShipment() recibido");
         this.logger.log(JSON.stringify(dto, null, 2));
@@ -4653,7 +4670,7 @@ export class ShipmentsService {
         // -------------------------
         // LLAMAR processShipmentDirect()
         // -------------------------
-        const savedShipment = await this.processShipmentDirect(dto, subsidiary);
+        const savedShipment = await this.processShipmentDirect(dto, subsidiary, userId);
 
         this.logger.log(`✅ Shipment guardado: ${savedShipment.trackingNumber}`);
 
@@ -4675,7 +4692,8 @@ export class ShipmentsService {
 
     async processShipmentDirect(
       shipment: ShipmentToSaveDto,
-      predefinedSubsidiary: Subsidiary
+      predefinedSubsidiary: Subsidiary,
+      userId?: string,
     ): Promise<Shipment> {
 
       const trackingNumber = shipment.trackingNumber;
@@ -4726,6 +4744,7 @@ export class ShipmentsService {
         status: shipment.status,
         priority: shipment.priority,
         receivedByName: '',
+        createdById: userId ?? null,
         subsidiary: predefinedSubsidiary,
         subsidiaryId: predefinedSubsidiary.id,
       });
@@ -4857,7 +4876,7 @@ export class ShipmentsService {
       async checkStatusOnFedexBySubsidiaryRulesTesting(
         trackingNumbers: string[],
         shouldPersist = false
-      ): Promise<FedexTrackingResponseDto> {
+      ): Promise<TrackingProcessResultDto> {
         // Inicializar resultados
         const results = this.initializeResults();
         
@@ -6316,10 +6335,13 @@ export class ShipmentsService {
       const end = new Date(endDate);
       end.setHours(23, 59, 59, 999);*/
 
-      // SUBCONSULTA: Obtener el ID más reciente por tracking number
+      // SUBCONSULTA: id de la fila MÁS RECIENTE por trackingNumber.
+      // OJO: el id es UUID (aleatorio), así que MAX(id) NO es el más nuevo. Usamos
+      // el truco groupwise-max sobre createdAt: MAX(CONCAT(createdAt,'|',id)) y luego
+      // extraemos el id. createdAt en formato 'YYYY-MM-DD HH:MM:SS' ordena cronológicamente.
       const subQuery = this.shipmentRepository
         .createQueryBuilder('s2')
-        .select('MAX(s2.id)', 'max_id') // Usar ID máximo como proxy de más reciente
+        .select("SUBSTRING_INDEX(MAX(CONCAT(s2.createdAt, '|', s2.id)), '|', -1)", 'max_id')
         .addSelect('s2.trackingNumber', 'tracking_number')
         .where('s2.subsidiaryId = :subsidiaryId', { subsidiaryId })
         //.andWhere('s2.createdAt BETWEEN :start AND :end', { start, end })
@@ -6432,6 +6454,52 @@ export class ShipmentsService {
         }
       }
 
+      /**
+       * Prefetch de FedEx por LOTES de 30 (la Track API lo soporta) en vez de 1
+       * request por guía. Devuelve un Map<tracking, trackResults> + el conteo de
+       * errores de RED (para el circuit breaker). Compartido por los procesadores
+       * Master (envíos) y Charge (F2) para no duplicar la lógica de consulta.
+       */
+      private async prefetchFedexBatch(
+        trackingNumbers: string[],
+        source: Array<{ trackingNumber: string; fedexUniqueId?: string; carrierCode?: string }>,
+        ctx: string,
+      ): Promise<{ map: Map<string, any[]>; networkErrors: number }> {
+        const map = new Map<string, any[]>();
+        let networkErrors = 0;
+
+        // Índice tracking -> {uniqueId, carrierCode} para no hacer find() N veces.
+        const meta = new Map<string, { fedexUniqueId?: string; carrierCode?: string }>();
+        for (const s of source) {
+          if (!s?.trackingNumber) continue;
+          const prev = meta.get(s.trackingNumber) || {};
+          meta.set(s.trackingNumber, {
+            fedexUniqueId: prev.fedexUniqueId || (s as any).fedexUniqueId || undefined,
+            carrierCode: prev.carrierCode || (s as any).carrierCode || undefined,
+          });
+        }
+
+        const chunks = this.chunkArray(trackingNumbers, FedexService.MAX_TRACKINGS_PER_REQUEST);
+        const fetchLimit = pLimit(4); // hasta 4 requests batch en paralelo (~120 guías en vuelo)
+
+        await Promise.all(
+          chunks.map((chunk) =>
+            fetchLimit(async () => {
+              const items = chunk.map((tn) => ({ trackingNumber: tn, ...(meta.get(tn) || {}) }));
+              try {
+                const res = await this.fedexService.trackBatch(items, ctx);
+                for (const [tn, trs] of res) map.set(tn, trs);
+              } catch (error) {
+                if (FedexService.isConnectivityError(error)) networkErrors += chunk.length;
+                this.logger.error(`[${ctx}] Error en lote de ${chunk.length} guías: ${error.message}`);
+              }
+            }),
+          ),
+        );
+
+        return { map, networkErrors };
+      }
+
       async processMasterFedexUpdate(shipmentsToUpdate: Shipment[]) {
         this.logger.log(`💎 Master Update (Titanium - Shield & Income Edition): Procesando ${shipmentsToUpdate.length} guías...`);
 
@@ -6455,35 +6523,32 @@ export class ShipmentsService {
         // abortamos la corrida en vez de marcar miles de guías como "error".
         let networkErrors = 0;
         let aborted = false;
+        // Diagnóstico: tiempo de prefetch (batch), reintentos individuales (label-only/
+        // miss del prefetch) y tiempo total. Si `retries` ≈ total → el prefetch no pega.
+        const runStart = Date.now();
+        let prefetchMs = 0;
+        let retries = 0;
 
         for (let b = 0; b < batches.length; b++) {
           this.logger.log(`📦 [Master] Lote ${b + 1}/${batches.length} (${batches[b].length} guías)...`);
+
+          // --- PREFETCH por lotes de 30 (1 request c/u en vez de 1 por guía) ---
+          const tPre = Date.now();
+          const { map: prefetched, networkErrors: batchNetErrors } =
+            await this.prefetchFedexBatch(batches[b], shipmentsToUpdate as any, '[Master]');
+          prefetchMs += Date.now() - tPre;
+          networkErrors += batchNetErrors;
+          this.logger.log(`   ⏱️ [Master] Prefetch lote ${b + 1}: ${prefetched.size}/${batches[b].length} guías con datos en ${((Date.now() - tPre) / 1000).toFixed(1)}s`);
+          if (!aborted && okCount === 0 && networkErrors >= 12) {
+            aborted = true;
+            this.logger.error(`🔌 [Master] FedEx inalcanzable (${networkErrors} errores de red, 0 éxitos). Abortando corrida; se reintentará la próxima hora.`);
+          }
+
           const tasks = batches[b].map((tn) => limit(async () => {
             if (aborted) return; // circuito abierto: no seguir intentando
-            const shipmentWithId = shipmentsToUpdate.find(s => s.trackingNumber === tn && s.fedexUniqueId);
-            const currentUniqueId = shipmentWithId?.fedexUniqueId;
-            // carrierCode (FDXE/FDXG…) desambigua el servicio y da el estatus exacto.
-            const currentCarrierCode = shipmentWithId?.carrierCode
-                || shipmentsToUpdate.find(s => s.trackingNumber === tn && s.carrierCode)?.carrierCode;
 
-            // --- 1. CONSULTA FEDEX (Estrategia Proactiva) ---
-            let fedexInfo;
-            try {
-                fedexInfo = await this.fedexService.trackPackage(tn, currentUniqueId, currentCarrierCode);
-            } catch (error) {
-                this.logger.error(`[${tn}] Error API FedEx: ${error.message}`);
-                failed.push({ trackingNumber: tn, reason: `FEDEX_API: ${error.message}` });
-                if (FedexService.isConnectivityError(error)) {
-                    networkErrors++;
-                    if (!aborted && okCount === 0 && networkErrors >= 12) {
-                        aborted = true;
-                        this.logger.error(`🔌 [Master] FedEx inalcanzable (${networkErrors} errores de red, 0 éxitos). Abortando corrida; se reintentará la próxima hora.`);
-                    }
-                }
-                return;
-            }
-
-            let allTrackResults = fedexInfo?.output?.completeTrackResults?.[0]?.trackResults || [];
+            // --- 1. CONSULTA FEDEX (desde el prefetch por lotes de 30) ---
+            let allTrackResults = prefetched.get(tn) || [];
 
             // 🚨 Reintento global si es Label Only o está vacío
             const isLabelOnly = allTrackResults.some(r => 
@@ -6491,6 +6556,7 @@ export class ShipmentsService {
             );
 
             if (isLabelOnly || allTrackResults.length === 0) {
+                retries++;
                 try {
                     const retryInfo = await this.fedexService.trackPackage(tn, undefined);
                     const retryResults = retryInfo?.output?.completeTrackResults?.[0]?.trackResults || [];
@@ -6546,6 +6612,7 @@ export class ShipmentsService {
                 }
 
                 const mainShipment = shipmentList[0];
+                const prevStatus = mainShipment.status; // para loguear solo si hay transición real
                 const subId = mainShipment.subsidiary?.id?.toLowerCase() || '';
                 const configKeys = Object.keys(this.SUBSIDIARY_CONFIG);
                 const matchedKey = configKeys.find(key => key.toLowerCase() === subId);
@@ -6816,6 +6883,11 @@ export class ShipmentsService {
                     }
                 }
 
+                // Log por paquete SOLO cuando cambia el estatus (la señal que importa).
+                if (!isLocked && prevStatus !== finalStatus) {
+                    this.logger.log(`📦 [${tn}] ${prevStatus} → ${finalStatus}`);
+                }
+
                 await queryRunner.commitTransaction();
                 okCount++;
 
@@ -6833,6 +6905,7 @@ export class ShipmentsService {
         }
 
         this.logger.log(`📈 [Master] OK: ${okCount} | Sin datos: ${noDataCount} | Fallidas: ${failed.length} de ${uniqueTrackingNumbers.length}`);
+        this.logger.log(`   ⏱️ [Master] Total ${((Date.now() - runStart) / 1000).toFixed(1)}s · prefetch ${(prefetchMs / 1000).toFixed(1)}s · reintentos individuales: ${retries}/${uniqueTrackingNumbers.length}${retries > uniqueTrackingNumbers.length * 0.5 ? ' ⚠️ (prefetch no está pegando — revisar key)' : ''}`);
         // Si fue una caída de conectividad, NO escribimos dead-letter (no son fallos por guía).
         if (aborted) {
           this.logger.error(`🔌 [Master] Corrida abortada por conectividad con FedEx. No se generó dead-letter.`);
@@ -6871,35 +6944,30 @@ export class ShipmentsService {
         // Circuit breaker: aborta si FedEx es inalcanzable (DNS/red) y no hay éxitos.
         let networkErrors = 0;
         let aborted = false;
+        const runStart = Date.now();
+        let prefetchMs = 0;
+        let retries = 0;
 
         for (let b = 0; b < batches.length; b++) {
           this.logger.log(`📦 [F2] Lote ${b + 1}/${batches.length} (${batches[b].length} guías)...`);
+
+          // --- PREFETCH por lotes de 30 (1 request c/u en vez de 1 por guía) ---
+          const tPre = Date.now();
+          const { map: prefetched, networkErrors: batchNetErrors } =
+            await this.prefetchFedexBatch(batches[b], chargeShipmentsToUpdate as any, '[F2]');
+          prefetchMs += Date.now() - tPre;
+          networkErrors += batchNetErrors;
+          this.logger.log(`   ⏱️ [F2] Prefetch lote ${b + 1}: ${prefetched.size}/${batches[b].length} guías con datos en ${((Date.now() - tPre) / 1000).toFixed(1)}s`);
+          if (!aborted && okCount === 0 && networkErrors >= 12) {
+            aborted = true;
+            this.logger.error(`🔌 [F2] FedEx inalcanzable (${networkErrors} errores de red, 0 éxitos). Abortando corrida; se reintentará la próxima hora.`);
+          }
+
           const tasks = batches[b].map((tn) => limit(async () => {
             if (aborted) return; // circuito abierto: no seguir intentando
-            const chargeWithId = chargeShipmentsToUpdate.find(s => s.trackingNumber === tn && (s as any).fedexUniqueId);
-            const currentUniqueId = (chargeWithId as any)?.fedexUniqueId;
-            // carrierCode (FDXE/FDXG…) desambigua el servicio y da el estatus exacto.
-            const currentCarrierCode = (chargeWithId as any)?.carrierCode
-                || (chargeShipmentsToUpdate.find(s => s.trackingNumber === tn && (s as any).carrierCode) as any)?.carrierCode;
 
-            // --- 1. CONSULTA FEDEX (Estrategia Proactiva) ---
-            let fedexInfo;
-            try {
-                fedexInfo = await this.fedexService.trackPackage(tn, currentUniqueId, currentCarrierCode);
-            } catch (error) {
-                this.logger.error(`[C2 - ${tn}] ❌ Error API FedEx: ${error.message}`);
-                failed.push({ trackingNumber: tn, reason: `FEDEX_API: ${error.message}` });
-                if (FedexService.isConnectivityError(error)) {
-                    networkErrors++;
-                    if (!aborted && okCount === 0 && networkErrors >= 12) {
-                        aborted = true;
-                        this.logger.error(`🔌 [F2] FedEx inalcanzable (${networkErrors} errores de red, 0 éxitos). Abortando corrida; se reintentará la próxima hora.`);
-                    }
-                }
-                return;
-            }
-
-            let allTrackResults = fedexInfo?.output?.completeTrackResults?.[0]?.trackResults || [];
+            // --- 1. CONSULTA FEDEX (desde el prefetch por lotes de 30) ---
+            let allTrackResults = prefetched.get(tn) || [];
 
             // 🚨 Reintento global si es Label Only o está vacío
             const isLabelOnly = allTrackResults.some((r: any) => 
@@ -6962,6 +7030,7 @@ export class ShipmentsService {
                 }
 
                 const mainCharge = chargeList[0];
+                const prevStatus = mainCharge.status; // para loguear solo si hay transición real
                 const subId = mainCharge.subsidiary?.id?.toLowerCase() || '';
                 const configKeys = Object.keys(this.SUBSIDIARY_CONFIG);
                 const matchedKey = configKeys.find(key => key.toLowerCase() === subId);
@@ -7227,6 +7296,11 @@ export class ShipmentsService {
                     }
                 }
 
+                // Log por paquete SOLO cuando cambia el estatus (la señal que importa).
+                if (!isLocked && prevStatus !== finalStatus) {
+                    this.logger.log(`📦 [C2 - ${tn}] ${prevStatus} → ${finalStatus}`);
+                }
+
                 await queryRunner.commitTransaction();
                 okCount++;
 
@@ -7244,6 +7318,7 @@ export class ShipmentsService {
         }
 
         this.logger.log(`📈 [F2] OK: ${okCount} | Sin datos: ${noDataCount} | Fallidas: ${failed.length} de ${uniqueTrackingNumbers.length}`);
+        this.logger.log(`   ⏱️ [F2] Total ${((Date.now() - runStart) / 1000).toFixed(1)}s · prefetch ${(prefetchMs / 1000).toFixed(1)}s · reintentos individuales: ${retries}/${uniqueTrackingNumbers.length}${retries > uniqueTrackingNumbers.length * 0.5 ? ' ⚠️ (prefetch no está pegando — revisar key)' : ''}`);
         // Si fue una caída de conectividad, NO escribimos dead-letter (no son fallos por guía).
         if (aborted) {
           this.logger.error(`🔌 [F2] Corrida abortada por conectividad con FedEx. No se generó dead-letter.`);
@@ -7843,7 +7918,7 @@ export class ShipmentsService {
             let allTrackResults = fedexInfo?.output?.completeTrackResults?.[0]?.trackResults || [];
 
             // 🚨 Reintento global si es Label Only o está vacío
-            const isLabelOnly = allTrackResults.some(r => 
+            const isLabelOnly = allTrackResults.some(r =>
                 r.latestStatusDetail?.code === 'OC' && (r.scanEvents?.length || 0) <= 1
             );
 

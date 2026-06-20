@@ -67,17 +67,19 @@ export class MonitoringController {
     return this.monitoringService.getInfoFromConsolidated(consolidatedId);
   }
 
-  @Get('update-by-package-dispatch/:packageDispatchId')
+  // POST: estos endpoints MUTAN (disparan actualización contra FedEx). Como GET
+  // un prefetch/caché del navegador podría dispararlos solos.
+  @Post('update-by-package-dispatch/:packageDispatchId')
   updateFedexFromPackageDispatch(@Param('packageDispatchId') packageDispatchId: string) {
     return this.monitoringService.updateFedexFromPackageDispatch(packageDispatchId);
   }
 
-  @Get('update-by-unloading/:unloadingId')
+  @Post('update-by-unloading/:unloadingId')
   updateFedexFromUnloading(@Param('unloadingId') unloadingId: string) {
     return this.monitoringService.updateFedexFromUnloading(unloadingId);
   }
 
-  @Get('update-by-consolidated/:consolidatedId')
+  @Post('update-by-consolidated/:consolidatedId')
   updateFedexFromConsolidated(@Param('consolidatedId') consolidatedId: string) {
     return this.monitoringService.updateFedexFromConsolidated(consolidatedId);
   }

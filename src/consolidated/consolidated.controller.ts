@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete, Query } from '@nestjs/common';
+import { Controller, Get, Post, Body, Patch, Param, Delete, Query, Req } from '@nestjs/common';
 import { ConsolidatedService } from './consolidated.service';
 import { CreateConsolidatedDto } from './dto/create-consolidated.dto';
 import { UpdateConsolidatedDto } from './dto/update-consolidated.dto';
@@ -32,8 +32,8 @@ export class ConsolidatedController {
   }
 
   @Post()
-  create(@Body() createConsolidatedDto: CreateConsolidatedDto) {
-    return this.consolidatedService.create(createConsolidatedDto);
+  create(@Body() createConsolidatedDto: CreateConsolidatedDto, @Req() req: any) {
+    return this.consolidatedService.create(createConsolidatedDto, req.user?.userId);
   }
 
   @Get('')

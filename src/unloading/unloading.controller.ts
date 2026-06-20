@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete, UploadedFile, UseInterceptors, BadRequestException, UploadedFiles, Query, ParseArrayPipe } from '@nestjs/common';
+import { Controller, Get, Post, Body, Patch, Param, Delete, UploadedFile, UseInterceptors, BadRequestException, UploadedFiles, Query, ParseArrayPipe, Req } from '@nestjs/common';
 import { UnloadingService } from './unloading.service';
 import { CreateUnloadingDto } from './dto/create-unloading.dto';
 import { UpdateUnloadingDto } from './dto/update-unloading.dto';
@@ -6,6 +6,7 @@ import { FilesInterceptor } from '@nestjs/platform-express';
 import { ApiTags, ApiBearerAuth, ApiOperation, ApiConsumes, ApiBody, ApiResponse, ApiQuery } from '@nestjs/swagger';
 import { ValidateTrackingNumbersDto } from './dto/validate-tracking-numbers.dto';
 import { ValidationPayloadDto } from './dto/validate-payload.dto';
+import { NoAudit } from 'src/audit/audit.decorator';
 
 @ApiTags('unloadings')
 @ApiBearerAuth()
@@ -14,8 +15,8 @@ export class UnloadingController {
   constructor(private readonly unloadingService: UnloadingService) {}
 
   @Post()
-  create(@Body() createUnloadingDto: CreateUnloadingDto) {
-    return this.unloadingService.create(createUnloadingDto);
+  create(@Body() createUnloadingDto: CreateUnloadingDto, @Req() req: any) {
+    return this.unloadingService.create(createUnloadingDto, req.user?.userId);
   }
 
   
@@ -160,12 +161,13 @@ export class UnloadingController {
       return this.unloadingService.validateTrackingNumbers(trackingNumbers, subsidiaryId);
     }*/
 
+  @NoAudit() // Validación por escaneo: muy frecuente, no es una acción auditable.
   @Post('validate-tracking-numbers')
   validateTrackingNumbers(
     @Body(
-      'trackingNumbers', 
+      'trackingNumbers',
       new ParseArrayPipe({ items: ValidationPayloadDto, optional: true }) // 🚀 LA MAGIA ESTÁ AQUÍ
-    ) 
+    )
     trackingNumbers: ValidationPayloadDto[] = [], // ✅ Pon el nuevo DTO
     @Body('subsidiaryId') subsidiaryId?: string,
   ) {

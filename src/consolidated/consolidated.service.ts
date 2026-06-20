@@ -7,7 +7,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { ShipmentConsolidatedDto } from './dto/shipment.dto';
 import { ConsolidatedDto } from './dto/consolidated.dto';
 import { ShipmentsService } from 'src/shipments/shipments.service';
-import { ShipmentStatusType } from 'src/common/enums/shipment-status-type.enum';
+import { ShipmentStatusType, TERMINAL_SHIPMENT_STATUSES } from 'src/common/enums/shipment-status-type.enum';
 
 @Injectable()
 export class ConsolidatedService {
@@ -26,8 +26,11 @@ export class ConsolidatedService {
     private readonly shipmentStatusRepository: Repository<ShipmentStatus>
   ){}
 
-  async create(createConsolidatedDto: CreateConsolidatedDto) {
-    const newConsolidated = await this.consolidatedRepository.create(createConsolidatedDto);
+  async create(createConsolidatedDto: CreateConsolidatedDto, userId?: string) {
+    const newConsolidated = await this.consolidatedRepository.create({
+      ...createConsolidatedDto,
+      createdById: userId ?? null,
+    } as any);
     return await this.consolidatedRepository.save(newConsolidated);
   }
 
@@ -1037,7 +1040,7 @@ export class ConsolidatedService {
     const shipmentsWithout67 = [];
 
     const shipments = await this.shipmentRepository.find({
-      where: { consolidatedId: id, status: Not(ShipmentStatusType.ENTREGADO) },
+      where: { consolidatedId: id, status: Not(In(TERMINAL_SHIPMENT_STATUSES)) },
       relations: [
         'statusHistory',
       ],
@@ -1046,7 +1049,7 @@ export class ConsolidatedService {
     console.log("📦 Shipments encontrados:", shipments.length);
 
     const chargeShipments = await this.chargeShipmentRepository.find({
-      where: { consolidatedId: id, status: Not(ShipmentStatusType.ENTREGADO) },
+      where: { consolidatedId: id, status: Not(In(TERMINAL_SHIPMENT_STATUSES)) },
       relations: [
         'statusHistory',
       ],
@@ -1128,13 +1131,13 @@ export class ConsolidatedService {
 
     // 1. Obtener embarques normales
     const shipments = await this.shipmentRepository.find({
-      where: { consolidatedId: id, status: Not(ShipmentStatusType.ENTREGADO) },
+      where: { consolidatedId: id, status: Not(In(TERMINAL_SHIPMENT_STATUSES)) },
       relations: ['statusHistory'],
     });
 
     // 2. Obtener embarques de carga (ChargeShipments)
     const chargeShipments = await this.chargeShipmentRepository.find({
-      where: { consolidatedId: id, status: Not(ShipmentStatusType.ENTREGADO) },
+      where: { consolidatedId: id, status: Not(In(TERMINAL_SHIPMENT_STATUSES)) },
       relations: ['statusHistory'],
     });
 

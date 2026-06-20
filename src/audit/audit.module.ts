@@ -3,6 +3,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { APP_INTERCEPTOR } from '@nestjs/core';
 import { AuditLog } from 'src/entities/audit-log.entity';
 import { User } from 'src/entities/user.entity';
+import { Subsidiary } from 'src/entities/subsidiary.entity';
 import { AuditService } from './audit.service';
 import { AuditController } from './audit.controller';
 import { AuditInterceptor } from './audit.interceptor';
@@ -14,7 +15,7 @@ import { AuditInterceptor } from './audit.interceptor';
  */
 @Global()
 @Module({
-  imports: [TypeOrmModule.forFeature([AuditLog, User])],
+  imports: [TypeOrmModule.forFeature([AuditLog, User, Subsidiary])],
   controllers: [AuditController],
   providers: [
     AuditService,

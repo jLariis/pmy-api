@@ -302,6 +302,8 @@ export class WarehouseService {
           payment: { id: true, amount: true, type: true },
         },
         relations: ['subsidiary', 'payment'],
+        // Con guías duplicadas, SIEMPRE el más reciente.
+        order: { createdAt: 'DESC' },
       }),
 
       this.chargeShipmentRepository.findOne({
@@ -322,6 +324,7 @@ export class WarehouseService {
           payment: { id: true, amount: true, type: true },
         },
         relations: ['subsidiary', 'payment'],
+        order: { createdAt: 'DESC' },
       }),
     ]);
 

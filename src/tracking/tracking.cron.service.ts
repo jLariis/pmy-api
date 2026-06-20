@@ -8,6 +8,13 @@ import { UnloadingService } from 'src/unloading/unloading.service';
 export class TrackingCronService {
   private readonly logger = new Logger(TrackingCronService.name);
 
+  /**
+   * Guard de re-entrada: si la corrida anterior aún no termina (puede tardar
+   * más de 1 hora con miles de guías), NO arrancamos otra encima. Evita doble
+   * carga a FedEx, contención de locks y 429 por solapamiento.
+   */
+  private isRunning = false;
+
   constructor(
     private readonly shipmentService: ShipmentsService,
     private readonly unloadingService: UnloadingService
@@ -15,9 +22,15 @@ export class TrackingCronService {
 
   @Cron(CronExpression.EVERY_HOUR)
   async handleCron() {
-    const globalStart = Date.now();    
+    if (this.isRunning) {
+      this.logger.warn('⏭️ La corrida anterior sigue en curso; se omite este disparo del cron.');
+      return;
+    }
+    this.isRunning = true;
+
+    const globalStart = Date.now();
     this.logger.log('🕐 Iniciando verificación de envíos (Normales y F2)...');
-    
+
     try {
       // 1. Obtención de datos en paralelo
       const [shipments, chargeShipments] = await Promise.all([
@@ -70,6 +83,8 @@ export class TrackingCronService {
 
     } catch (err) {
       this.logger.error(`❌ Error fatal en handleCron: ${err.message}`);
+    } finally {
+      this.isRunning = false;
     }
   }
 

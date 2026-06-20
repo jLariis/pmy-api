@@ -140,7 +140,7 @@ export class DevolutionsService {
     };
   }
 
-  async create(devolutions: CreateDevolutionDto[]): Promise<{
+  async create(devolutions: CreateDevolutionDto[], userId?: string): Promise<{
   success: string[];
   duplicates: string[];
   notFound: string[];
@@ -173,13 +173,14 @@ export class DevolutionsService {
         continue;
       }
 
-      // 3. Buscar el paquete en Shipment o ChargeShipment
-      let shipment = await queryRunner.manager.findOne(Shipment, { where: { trackingNumber } });
+      // 3. Buscar el paquete en Shipment o ChargeShipment.
+      // Con guías duplicadas, SIEMPRE el más reciente (order createdAt DESC).
+      let shipment = await queryRunner.manager.findOne(Shipment, { where: { trackingNumber }, order: { createdAt: 'DESC' } });
       let chargeShipment = null;
       let relationKey: 'shipment' | 'chargeShipment' = 'shipment';
 
       if (!shipment) {
-        chargeShipment = await queryRunner.manager.findOne(ChargeShipment, { where: { trackingNumber } });
+        chargeShipment = await queryRunner.manager.findOne(ChargeShipment, { where: { trackingNumber }, order: { createdAt: 'DESC' } });
         relationKey = 'chargeShipment';
       }
 
@@ -193,6 +194,7 @@ export class DevolutionsService {
       const newDevolution = queryRunner.manager.create(Devolution, {
         ...dto,
         date: new Date(),
+        createdById: userId ?? null,
       });
       await queryRunner.manager.save(newDevolution);
 

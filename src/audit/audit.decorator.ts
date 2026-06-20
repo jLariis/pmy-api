@@ -12,6 +12,15 @@ export interface AuditMeta {
   skipBody?: boolean;
   /** Resuelve el id del registro afectado desde la petición/respuesta. */
   resolveEntityId?: (ctx: { params: any; body: any; response: any }) => string | undefined;
+  /**
+   * Override de la descripción legible. Si se omite, el catálogo central
+   * (audit-catalog.ts) la deriva a partir de la ruta. Devuelve un texto o
+   * `{ message, details }` para guardar también detalles estructurados.
+   */
+  describe?: (ctx: {
+    params: any; query: any; body: any; response: any;
+    result: 'success' | 'error'; error?: any;
+  }) => string | { message: string; details?: Record<string, any> } | undefined;
 }
 
 /**

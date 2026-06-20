@@ -1,17 +1,18 @@
-import { Controller, Get, Post, Body, Param, Delete, BadRequestException, UploadedFiles, UseInterceptors } from '@nestjs/common';
+import { Controller, Get, Post, Body, Param, Delete, BadRequestException, UploadedFiles, UseInterceptors, Req } from '@nestjs/common';
 import { RouteclosureService } from './routeclosure.service';
 import { CreateRouteclosureDto } from './dto/create-routeclosure.dto';
 import { ValidateTrackingsForClosureDto } from './dto/validate-trackings-for-closure';
 import { FilesInterceptor } from '@nestjs/platform-express';
 import { ApiOperation, ApiConsumes, ApiBody } from '@nestjs/swagger';
+import { NoAudit } from 'src/audit/audit.decorator';
 
 @Controller('route-closure')
 export class RouteclosureController {
   constructor(private readonly routeclosureService: RouteclosureService) {}
 
   @Post()
-  create(@Body() createRouteclosureDto: CreateRouteclosureDto) {
-    return this.routeclosureService.create(createRouteclosureDto);
+  create(@Body() createRouteclosureDto: CreateRouteclosureDto, @Req() req: any) {
+    return this.routeclosureService.create(createRouteclosureDto, req.user?.userId);
   }
 
   @Get(':subsidiryId')
@@ -29,6 +30,7 @@ export class RouteclosureController {
     return this.routeclosureService.remove(id);
   }
 
+  @NoAudit() // Validación por escaneo durante el cierre: ruido, no auditable.
   @Post('validateTrackingsForClosure')
   validateTrackingsForClosure(
     @Body() validateTrackingForClosure: ValidateTrackingsForClosureDto
@@ -36,6 +38,7 @@ export class RouteclosureController {
     return this.routeclosureService.validateTrackingNumbersForClosure(validateTrackingForClosure);
   }
 
+  @NoAudit() // Validación por escaneo durante el cierre: ruido, no auditable.
   @Post('validateNoVanTrackings')
   validateNoVanTrackings(
     @Body('noVanTrackingNumbers') noVanTrackingNumbers: string[]

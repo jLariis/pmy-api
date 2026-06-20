@@ -11,7 +11,7 @@ import { ValidatedUnloadingDto } from './dto/validate-package-unloading.dto';
 import { MailService } from 'src/mail/mail.service';
 import { ConsolidatedType } from 'src/common/enums/consolidated-type.enum';
 import { ConsolidatedItemDto, ConsolidatedsDto } from './dto/consolidated.dto';
-import { ShipmentStatusType } from 'src/common/enums/shipment-status-type.enum';
+import { ShipmentStatusType, TERMINAL_SHIPMENT_STATUSES } from 'src/common/enums/shipment-status-type.enum';
 import { UnloadingReportDto } from './dto/unloading-report.dto';
 import { ShipmentsService } from 'src/shipments/shipments.service';
 import { fromZonedTime } from 'date-fns-tz';
@@ -210,7 +210,7 @@ export class UnloadingService {
   }
   }
 
-  async create(createUnloadingDto: CreateUnloadingDto) {
+  async create(createUnloadingDto: CreateUnloadingDto, userId?: string) {
     const allShipmentIds = createUnloadingDto.shipments;
     const queryRunner = this.dataSource.createQueryRunner();
     await queryRunner.connect();
@@ -243,6 +243,7 @@ export class UnloadingService {
         missingTrackings: createUnloadingDto.missingTrackings,
         unScannedTrackings: createUnloadingDto.unScannedTrackings,
         date: new Date(),
+        createdById: userId ?? null,
       });
       const savedUnloading = await queryRunner.manager.save(newUnloading);
 
@@ -3391,7 +3392,7 @@ export class UnloadingService {
     const shipmentsWithout67 = [];
 
     const shipments = await this.shipmentRepository.find({
-      where: { unloading: { id } , status: Not(ShipmentStatusType.ENTREGADO) },
+      where: { unloading: { id } , status: Not(In(TERMINAL_SHIPMENT_STATUSES)) },
       relations: [
         'statusHistory'
       ],
@@ -3400,7 +3401,7 @@ export class UnloadingService {
     console.log("📦 Shipments encontrados:", shipments.length);
 
     const chargeShipments = await this.chargeShipmentRepository.find({
-      where: { unloading: { id } , status: Not(ShipmentStatusType.ENTREGADO)},
+      where: { unloading: { id } , status: Not(In(TERMINAL_SHIPMENT_STATUSES))},
       relations: [
         'statusHistory',
       ],
@@ -3482,7 +3483,7 @@ export class UnloadingService {
 
     // 1. Buscar Shipments normales relacionados a la descarga
     const shipments = await this.shipmentRepository.find({
-      where: { unloading: { id }, status: Not(ShipmentStatusType.ENTREGADO) },
+      where: { unloading: { id }, status: Not(In(TERMINAL_SHIPMENT_STATUSES)) },
       relations: ['statusHistory'],
     });
 
@@ -3490,7 +3491,7 @@ export class UnloadingService {
 
     // 2. Buscar ChargeShipments relacionados a la descarga
     const chargeShipments = await this.chargeShipmentRepository.find({
-      where: { unloading: { id }, status: Not(ShipmentStatusType.ENTREGADO) },
+      where: { unloading: { id }, status: Not(In(TERMINAL_SHIPMENT_STATUSES)) },
       relations: ['statusHistory'],
     });
 

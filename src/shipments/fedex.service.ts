@@ -5,7 +5,6 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { FEDEX_AUTH_HEADERS, FEDEX_AUTHENTICATION_ENDPOINT, FEDEX_HEADERS, FEDEX_TRACKING_ENDPOINT } from 'src/common/constants';
 import { FedExTrackingResponseDto } from './dto/fedex/fedex-tracking-response.dto';
-import { FedexTrackingResponse } from './dto/FedexTrackingCompleteInfo.dto';
 import { ShipmentStatusType } from 'src/common/enums/shipment-status-type.enum';
 import { ValidatedPackageDispatchDto } from 'src/package-dispatch/dto/validated-package-dispatch.dto';
 import { Priority } from 'src/common/enums/priority.enum';
@@ -54,7 +53,11 @@ export class FedexService {
     }
 
     // 2. Archivo (sobrevive reinicios del proceso).
-    const fileToken = this.readTokenFromFile();
+    // NOTA arquitectura: en Vercel / múltiples instancias este archivo NO se
+    // comparte (cada instancia mantiene el suyo). El single-flight evita la
+    // estampida dentro de UNA instancia; para caché compartida real habría que
+    // mover el token a BD/Redis. Como fallback, el cold start re-autentica (barato).
+    const fileToken = await this.readTokenFromFile();
     if (fileToken && fileToken.token && now < fileToken.expiresAt - 300000) {
       this.cachedToken = fileToken;
       return fileToken.token;
@@ -78,7 +81,7 @@ export class FedexService {
   /** Fuerza un token nuevo (tras un 401). Invalida memoria y archivo, y refresca. */
   private async forceRefreshToken(): Promise<string> {
     this.cachedToken = null;
-    this.deleteTokenFile();
+    await this.deleteTokenFile();
     return this.refreshToken();
   }
 
@@ -102,46 +105,52 @@ export class FedexService {
       { headers: FEDEX_AUTH_HEADERS(), timeout: 15000 }
     );
 
-    const { access_token, expires_in } = response.data;
-    const expiresAt = Date.now() + (expires_in * 1000);
+    const { access_token, expires_in } = response.data || {};
+
+    // Validación: no envenenar la caché con un token inválido / expiresAt NaN.
+    if (!access_token || typeof access_token !== 'string') {
+      throw new Error('FedEx auth: respuesta sin access_token válido.');
+    }
+    const ttlMs = Number(expires_in) > 0 ? Number(expires_in) * 1000 : 3300_000; // 55 min por defecto
+    const expiresAt = Date.now() + ttlMs;
 
     this.cachedToken = { token: access_token, expiresAt };
-    this.saveTokenToFile(access_token, expiresAt);
+    await this.saveTokenToFile(access_token, expiresAt);
 
     return access_token;
   }
 
   // --- MÉTODOS DE PERSISTENCIA ---
 
-  private saveTokenToFile(token: string, expiresAt: number) {
+  // I/O asíncrono (no bloquea el event loop). En multi-instancia/serverless el
+  // archivo NO se comparte; ver nota de arquitectura en getSmartToken.
+  private async saveTokenToFile(token: string, expiresAt: number): Promise<void> {
     try {
       const data = JSON.stringify({ token, expiresAt }, null, 2);
-      // writeFileSync crea el archivo si no existe
-      fs.writeFileSync(this.tokenPath, data, 'utf8');
+      await fs.promises.writeFile(this.tokenPath, data, 'utf8');
       this.logger.log('💾 Token persistido en fedex-token.json');
     } catch (error) {
       this.logger.error('❌ No se pudo escribir el archivo de token', error);
     }
   }
 
-  private readTokenFromFile(): { token: string; expiresAt: number } | null {
+  private async readTokenFromFile(): Promise<{ token: string; expiresAt: number } | null> {
     try {
-      if (!fs.existsSync(this.tokenPath)) {
-        return null;
+      const data = await fs.promises.readFile(this.tokenPath, 'utf8');
+      const parsed = JSON.parse(data);
+      if (!parsed?.token || !Number.isFinite(parsed?.expiresAt)) return null;
+      return parsed;
+    } catch (error: any) {
+      if (error?.code !== 'ENOENT') {
+        this.logger.error('❌ Error al leer o parsear el archivo de token', error.message);
       }
-      const data = fs.readFileSync(this.tokenPath, 'utf8');
-      return JSON.parse(data);
-    } catch (error) {
-      this.logger.error('❌ Error al leer o parsear el archivo de token', error);
       return null;
     }
   }
 
-  private deleteTokenFile() {
+  private async deleteTokenFile(): Promise<void> {
     try {
-      if (fs.existsSync(this.tokenPath)) {
-        fs.unlinkSync(this.tokenPath);
-      }
+      await fs.promises.unlink(this.tokenPath);
     } catch (error) {
       // ENOENT por carrera entre llamadas concurrentes: ignorable.
     }
@@ -166,6 +175,11 @@ export class FedexService {
    *  - timeout / red / 5xx: backoff exponencial + jitter.
    *  - 4xx no recuperables (400/404…): no reintenta.
    * Así un fallo pasajero deja de "tirar" el paquete por una hora completa.
+   *
+   * TODO (on-hold, junto al refactor del pipeline): validar el contrato de FedEx
+   * en el BORDE con zod (parse seguro del `response.data` aquí) para detectar
+   * cambios de su API temprano. Hoy `plainToInstance` NO valida → los decoradores
+   * del DTO son solo de tipo/documentación, no runtime.
    */
   private async postTracking(body: any, context: string): Promise<any> {
     const url = `${process.env.FEDEX_API_URL}${FEDEX_TRACKING_ENDPOINT}`;
@@ -216,12 +230,55 @@ export class FedexService {
     throw lastError;
   }
 
+  /** Límite de la Track API de FedEx: nº de trackingInfo por request. */
+  static readonly MAX_TRACKINGS_PER_REQUEST = 30;
+
+  /**
+   * Rastrea HASTA 30 guías en UNA sola llamada (la Track API lo soporta).
+   * Devuelve un `Map<trackingNumber, trackResults[]>`. Reduce ~30× el número
+   * de requests (clave para evitar 429 y acelerar el cron).
+   *
+   * Resiliencia: usa `postTracking` (reintentos 401/429/5xx/red). Las guías
+   * inválidas NO tiran la llamada: FedEx responde 200 con un `error` por guía.
+   * Si el request completo falla tras los reintentos, lanza (el consumidor
+   * decide: lo cuenta como fallido y alimenta el circuit breaker).
+   */
+  async trackBatch(
+    items: { trackingNumber: string; fedexUniqueId?: string; carrierCode?: string }[],
+    context = 'batch',
+  ): Promise<Map<string, any[]>> {
+    const out = new Map<string, any[]>();
+    const slice = (items || []).slice(0, FedexService.MAX_TRACKINGS_PER_REQUEST);
+    if (slice.length === 0) return out;
+
+    const body = {
+      includeDetailedScans: true,
+      trackingInfo: slice.map((it) => ({
+        trackingNumberInfo: {
+          trackingNumber: it.trackingNumber,
+          ...(it.fedexUniqueId && { trackingNumberUniqueId: it.fedexUniqueId }),
+          ...(it.carrierCode && { carrierCode: it.carrierCode }),
+        },
+      })),
+    };
+
+    const data = await this.postTracking(body, `${context}:${slice.length}`);
+    const completeResults = data?.output?.completeTrackResults || [];
+    for (const cr of completeResults) {
+      // En la Track API, `trackingNumber` vive a NIVEL de completeTrackResults
+      // (no en trackingNumberInfo, que está dentro de cada trackResult).
+      const tn = cr?.trackingNumber || cr?.trackResults?.[0]?.trackingNumberInfo?.trackingNumber;
+      if (tn) out.set(tn, cr.trackResults || []);
+    }
+    return out;
+  }
+
   async trackPackage(
     trackingNumber: string,
     fedexUniqueId?: string,
     carrierCode?: string
   ): Promise<FedExTrackingResponseDto> {
-    this.logger.log(`Rastreando guía: ${trackingNumber} ${fedexUniqueId ? `(ID: ${fedexUniqueId})` : ''}`);
+    this.logger.debug(`Rastreando guía: ${trackingNumber} ${fedexUniqueId ? `(ID: ${fedexUniqueId})` : ''}`);
 
     const body = {
       includeDetailedScans: true,
@@ -254,33 +311,94 @@ export class FedexService {
 
   // --- MÉTODOS DE MAPEO ---
 
+  /** Códigos `derivedCode` de FedEx que ya tenemos mapeados (para detectar los nuevos). */
+  private static readonly KNOWN_FEDEX_CODES = new Set([
+    'DL', 'IT', 'OD', 'PU', 'AR', 'DP', 'AF', 'AP', 'OC',
+    'RS', 'RT', 'RR', 'CA', 'HL', 'DE', 'SE', 'DY',
+  ]);
+
   mapFedexStatusToEnum(fedexCode?: string): ShipmentStatusType | undefined {
     if (!fedexCode) return undefined;
-    switch (fedexCode.toUpperCase()) {
-      case "DL": return ShipmentStatusType.ENTREGADO;
-      case "IT": 
-      case "OD": 
-      case "PU": return ShipmentStatusType.EN_RUTA;
-      default: return ShipmentStatusType.PENDIENTE;
+    const code = fedexCode.toUpperCase();
+    switch (code) {
+      // Entregado
+      case 'DL': return ShipmentStatusType.ENTREGADO;
+      // En tránsito / en ruta (movimientos normales)
+      case 'IT': // In transit
+      case 'OD': // Out for delivery
+      case 'PU': // Picked up
+      case 'AR': // Arrived at facility
+      case 'DP': // Departed
+      case 'AF': // At FedEx facility
+      case 'AP': // At pickup
+        return ShipmentStatusType.EN_RUTA;
+      // Devolución / retorno al shipper
+      case 'RS': // Return to shipper
+      case 'RT': // Returned
+      case 'RR': // Return requested
+        return ShipmentStatusType.DEVUELTO_A_FEDEX;
+      // En estación / retenido para recoger
+      case 'HL': // Hold at location
+        return ShipmentStatusType.ESTACION_FEDEX;
+      // Excepciones / demoras (requieren atención; el detalle fino sale del exceptionCode)
+      case 'DE': // Delivery exception
+      case 'SE': // Shipment exception
+      case 'DY': // Delay
+        return ShipmentStatusType.DEMORA_EN_ENTREGA;
+      // Cancelado
+      case 'CA': // Cancelled
+        return ShipmentStatusType.OTRO;
+      // Solo etiqueta creada, sin movimiento
+      case 'OC': // Order/label created
+        return ShipmentStatusType.PENDIENTE;
+      default:
+        // No perdemos el dato en silencio: registramos códigos nuevos para mapearlos.
+        if (!FedexService.KNOWN_FEDEX_CODES.has(code)) {
+          this.logger.warn(`⚠️ Código FedEx no mapeado: '${code}' → PENDIENTE (revisar mapFedexStatusToEnum).`);
+        }
+        return ShipmentStatusType.PENDIENTE;
     }
   }
 
-  mapFedexToValidatedDto(fedexResponse: FedexTrackingResponse): ValidatedPackageDispatchDto[] {
+  /** Fecha estimada de entrega: prioriza dateAndTimes, con fallback a las ventanas. */
+  private extractCommitDateTime(track: any): Date | undefined {
+    const fromDateAndTimes = track.dateAndTimes?.find(
+      (dt: any) => dt.type === 'ESTIMATED_DELIVERY' || dt.type === 'COMMIT' || dt.type === 'APPOINTMENT_DELIVERY',
+    )?.dateTime;
+    const raw =
+      fromDateAndTimes ||
+      track.estimatedDeliveryTimeWindow?.window?.ends ||
+      track.standardTransitTimeWindow?.window?.ends;
+    if (!raw) return undefined;
+    const d = new Date(raw);
+    return isNaN(d.getTime()) ? undefined : d;
+  }
+
+  /** Evento de scan MÁS RECIENTE. FedEx NO garantiza el orden, así que ordenamos por fecha. */
+  private latestScanEvent(scanEvents?: any[]): any | undefined {
+    if (!scanEvents?.length) return undefined;
+    return [...scanEvents].sort(
+      (a, b) => new Date(b?.date || 0).getTime() - new Date(a?.date || 0).getTime(),
+    )[0];
+  }
+
+  mapFedexToValidatedDto(fedexResponse: FedExTrackingResponseDto): ValidatedPackageDispatchDto[] {
     const results: ValidatedPackageDispatchDto[] = [];
     for (const complete of fedexResponse.output.completeTrackResults) {
       for (const track of complete.trackResults) {
+        const lastScan = this.latestScanEvent(track.scanEvents);
         const dto: ValidatedPackageDispatchDto = {
           id: undefined,
           trackingNumber: track.trackingNumberInfo?.trackingNumber,
-          commitDateTime: track.dateAndTimes?.find(dt => dt.type === "ESTIMATED_DELIVERY")?.dateTime
-            ? new Date(track.dateAndTimes.find(dt => dt.type === "ESTIMATED_DELIVERY")!.dateTime)
-            : undefined,
+          commitDateTime: this.extractCommitDateTime(track),
           consNumber: track.additionalTrackingInfo?.packageIdentifiers?.find(p => p.type === "CONSIGNMENT_ID")?.value,
           consolidated: undefined,
           isHighValue: false,
           priority: Priority.BAJA,
           recipientAddress: track.recipientInformation?.address?.streetLines?.join(", "),
           recipientCity: track.recipientInformation?.address?.city,
+          // OJO: FedEx no expone el nombre del DESTINATARIO en tracking; `signedByName`
+          // es QUIÉN FIRMÓ la entrega ("recibido por"). Se usa como nombre disponible.
           recipientName: track.deliveryDetails?.signedByName ?? undefined,
           recipientPhone: undefined,
           recipientZip: track.recipientInformation?.address?.postalCode,
@@ -292,12 +410,12 @@ export class FedexService {
           isValid: !!track.latestStatusDetail,
           reason: track.error?.message ?? undefined,
           payment: undefined,
-          lastHistory: track.scanEvents && track.scanEvents.length > 0
+          lastHistory: lastScan
             ? {
-                code: track.scanEvents[0].eventType,
-                description: track.scanEvents[0].eventDescription,
-                date: new Date(track.scanEvents[0].date),
-                location: track.scanEvents[0].scanLocation?.city,
+                code: lastScan.eventType,
+                description: lastScan.eventDescription,
+                date: new Date(lastScan.date),
+                location: lastScan.scanLocation?.city,
               } as any
             : undefined
         };

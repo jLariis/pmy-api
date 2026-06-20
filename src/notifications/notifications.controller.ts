@@ -1,6 +1,7 @@
 import { Controller, Get, Post, Query, Request } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { NotificationsService } from './notifications.service';
+import { NoAudit } from 'src/audit/audit.decorator';
 
 @ApiTags('notifications')
 @ApiBearerAuth()
@@ -15,6 +16,7 @@ export class NotificationsController {
   }
 
   /** Marca todo como leído (resetea el contador). */
+  @NoAudit()
   @Post('mark-read')
   markRead(@Request() req) {
     return this.notifications.markAllRead(req.user?.userId);

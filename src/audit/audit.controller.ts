@@ -40,6 +40,18 @@ export class AuditController {
     return this.audit.findByModule(m, Number(limit) || 20);
   }
 
+  /** Inactividad por sucursal: desde cuándo no se hace cada operación clave. */
+  @Get('subsidiaries-activity')
+  subsidiariesActivity() {
+    return this.audit.getSubsidiariesActivity();
+  }
+
+  /** Detalle de una sucursal: últimos registros por operación (quién, cuándo, folio). */
+  @Get('subsidiaries/:id/recent')
+  subsidiaryRecent(@Param('id') id: string, @Query('perOp') perOp?: string) {
+    return this.audit.getSubsidiaryRecent(id, Number(perOp) || 6);
+  }
+
   /** Lista de usuarios + estadísticas de auditoría y estado en línea. */
   @Get('users')
   users() {
@@ -72,6 +84,7 @@ export class AuditController {
       { header: 'Nombre', key: 'userName', width: 24 },
       { header: 'Rol', key: 'role', width: 12 },
       { header: 'Módulo', key: 'module', width: 18 },
+      { header: 'Sucursal', key: 'subsidiaryName', width: 22 },
       { header: 'Acción', key: 'action', width: 14 },
       { header: 'Registro', key: 'entityId', width: 26 },
       { header: 'Resultado', key: 'result', width: 12 },

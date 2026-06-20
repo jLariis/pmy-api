@@ -79,9 +79,15 @@ export class NotificationsService {
     const route = ROUTES.find((r) => r.match(path));
     if (!route) return null;
 
+    // Usa la descripción rica del catálogo de auditoría cuando exista
+    // ("Creó salida a ruta R-1234 · 18 paquetes"); si no, el verbo genérico.
+    const message = row.description
+      ? `${actor}: ${row.description}`
+      : `${actor} ${route.verb}${idLabel}`;
+
     return {
       id: row.id, createdAt: row.createdAt, module: route.module, actor, actorEmail: row.userEmail,
-      message: `${actor} ${route.verb}${idLabel}`,
+      message,
       entityId: row.entityId, subsidiaryId: row.subsidiaryId, ip: row.ip, read: false, kind: 'operation',
     };
   }

@@ -31,7 +31,7 @@ export class RouteclosureService {
     private readonly dataSource: DataSource
   ) {}
 
-  async create(createRouteclosureDto: CreateRouteclosureDto) {
+  async create(createRouteclosureDto: CreateRouteclosureDto, userId?: string) {
     const queryRunner = this.dataSource.createQueryRunner();
     await queryRunner.connect();
     await queryRunner.startTransaction();
@@ -80,10 +80,11 @@ export class RouteclosureService {
 
       const newRouteClosure = queryRunner.manager.create(RouteClosure, {
         ...createRouteclosureDto,
-        podPackages: validPodShipments, 
-        returnedPackages: validReturnedShipments, 
+        podPackages: validPodShipments,
+        returnedPackages: validReturnedShipments,
         collections: trackingNumbers,
         subsidiary: packageDispatch.subsidiary,
+        createdById: userId ?? null,
       });
 
       const savedClosure = await queryRunner.manager.save(RouteClosure, newRouteClosure);
@@ -121,9 +122,10 @@ export class RouteclosureService {
           return queryRunner.manager.create(Collection, {
             trackingNumber: tn,
             subsidiary: packageDispatch.subsidiary,
-            status: 'COLECTADO_EN_CIERRE', 
+            status: 'COLECTADO_EN_CIERRE',
             isPickUp: true,
-            createdAt: utcDate
+            createdAt: utcDate,
+            createdById: userId ?? null,
           });
         });
 
@@ -217,7 +219,8 @@ export class RouteclosureService {
               isGrouped: false,
               sourceType: IncomeSourceType.SHIPMENT,
               shipment: pPackage,
-              date: currentDatetime 
+              date: currentDatetime,
+              createdById: userId ?? null,
             });
 
             await queryRunner.manager.save(Income, newIncome);

@@ -1,4 +1,4 @@
-import { Body, Controller, Get, HttpCode, Param, Post, UsePipes, ValidationPipe } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, Param, Post, Req, UsePipes, ValidationPipe } from '@nestjs/common';
 import { CollectionsService } from './collections.service';
 import { CollectionDto } from './dto/collection.dto';
 import { ApiOperation, ApiBody, ApiCreatedResponse, ApiBearerAuth, ApiTags } from '@nestjs/swagger';
@@ -28,8 +28,8 @@ export class CollectionsController {
     type: Collection, // Tipo de retorno para documentación
     isArray: true, // Indica que puede ser un array
   })
-  async save(@Body() collectionDto: CollectionDto[]) {
-    return this.collectionsService.save(collectionDto);
+  async save(@Body() collectionDto: CollectionDto[], @Req() req: any) {
+    return this.collectionsService.save(collectionDto, req.user?.userId);
   }
 
   @Get('validate/:trackingNumber')

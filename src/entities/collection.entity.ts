@@ -31,6 +31,10 @@ export class Collection {
   @JoinColumn({ name: 'returningHistoryId' })
   returningHistory?: ReturningHistory;
 
+  /** Usuario que registró la recolección (auditoría). */
+  @Column({ type: 'char', length: 36, nullable: true })
+  createdById?: string;
+
   @BeforeInsert()
   setDefaults() {
     this.createdAt = new Date(); // Fecha en UTC (asegúrate de que el servidor esté en UTC)
