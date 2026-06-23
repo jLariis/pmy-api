@@ -352,50 +352,61 @@ export class DhlService {
             const processAndAddShipment = (shipment: DhlShipmentDto) => {
                 if (shipment.remesas && shipment.remesas.length > 0) {
                     if (shipment.pieces > 1) {
-                        // LOG: Identificamos un paquete multi-pieza
-                        console.log(`📦 [Multi-pieza Detectado] AWB Maestro: ${shipment.awb} | Piezas declaradas: ${shipment.pieces} | PIDs encontrados: ${shipment.remesas.length}`);
+                        this.logger.debug(`[Multi-pieza] AWB ${shipment.awb} | piezas ${shipment.pieces} | PIDs ${shipment.remesas.length}`);
 
                         // Multi-pieza: Creamos un registro independiente por cada PID (JD/JJD)
-                        shipment.remesas.forEach((pid, index) => {
+                        shipment.remesas.forEach((pid) => {
                             const childShipment = JSON.parse(JSON.stringify(shipment));
-                            
-                            // Mantenemos el awb intacto y guardamos el JD en la nueva propiedad pid
-                            childShipment.pid = pid; 
+                            childShipment.pid = pid;
                             childShipment.remesas = []; // Limpiamos para evitar redundancia
-                            
-                            // LOG: Mostramos la creación de cada pieza hija
-                            console.log(`   -> Generando pieza ${index + 1} para el AWB ${shipment.awb} con PID: ${pid}`);
-
                             shipments.push(childShipment);
                         });
                     } else {
-                        // LOG: Identificamos un paquete de 1 sola pieza pero que trae su JD
-                        console.log(`📄 [Pieza Única con PID] AWB: ${shipment.awb} | PID asignado: ${shipment.remesas[0]}`);
-
                         // 1 sola pieza: Asignamos su único JD a la propiedad pid
                         shipment.pid = shipment.remesas[0];
                         shipment.remesas = [];
                         shipments.push(shipment);
                     }
                 } else {
-                    // LOG: Identificamos un paquete que por alguna razón no trajo PIDs en los eventos
-                    console.log(`⚠️ [Sin PIDs/Remesas] AWB: ${shipment.awb} se procesará sin un PID asignado.`);
-
+                    this.logger.debug(`[Sin PIDs] AWB ${shipment.awb} se procesará sin PID.`);
                     // Fallback sin PIDs detectados
                     shipments.push(shipment);
                 }
+            };
+
+            // Deduplicación por AWB: DHL marca "Duplicate AWB!" cuando la misma guía
+            // aparece 2 veces (normalmente el 2º bloque viene vacío). En vez de crear
+            // 2 filas, fusionamos en una sola conservando los datos reales.
+            const byAwb = new Map<string, DhlShipmentDto>();
+            const mergeDhl = (base: any, inc: any) => {
+                for (const f of ['origin', 'destination', 'shipmentTime', 'product', 'description', 'shipperAccount', 'payerAccount']) {
+                    if (!base[f] && inc[f]) base[f] = inc[f];
+                }
+                base.pieces = Math.max(base.pieces || 0, inc.pieces || 0);
+                base.weight = base.weight || inc.weight || 0;
+                if (!base.receiver?.name && inc.receiver?.name) base.receiver = inc.receiver;
+                base.remesas = Array.from(new Set([...(base.remesas || []), ...(inc.remesas || [])]));
+                base.events = [...(base.events || []), ...(inc.events || [])];
+            };
+            const commit = (sh: DhlShipmentDto | null) => {
+                if (!sh || !sh.awb) return;
+                const existing = byAwb.get(sh.awb);
+                if (!existing) byAwb.set(sh.awb, sh);
+                else mergeDhl(existing, sh);
             };
 
             for (const line of lines) {
                 // 1. Detectar AWB (nuevo envío)
                 if (line.startsWith('AWB :')) {
                     if (currentShipment) {
-                        processAndAddShipment(currentShipment);
+                        commit(currentShipment);
                     }
-                    
+
                     currentShipment = this.initializeDhlDto();
-                    currentShipment.awb = line.replace('AWB :', '').trim();
-                    currentShipment.remesas = []; 
+                    // El AWB es el primer token. DHL a veces anexa "Duplicate AWB!"
+                    // (mismo AWB repetido en el archivo) → nos quedamos solo con el número.
+                    currentShipment.awb = line.replace('AWB :', '').trim().split(/\s+/)[0] || '';
+                    currentShipment.remesas = [];
                     currentSection = 'awb';
                     continue;
                 }
@@ -474,9 +485,10 @@ export class DhlService {
                 }
             }
 
-            // Asegurar que el último envío se agregue correctamente
-            if (currentShipment) {
-                processAndAddShipment(currentShipment);
+            // Cerrar el último bloque y luego procesar (expandir a PIDs) los AWB ya deduplicados.
+            commit(currentShipment);
+            for (const sh of byAwb.values()) {
+                processAndAddShipment(sh);
             }
 
             this.logOperationSuccess('parseDhlText', { count: shipments.length });

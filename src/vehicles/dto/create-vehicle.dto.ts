@@ -1,12 +1,22 @@
-import { IsString, IsEnum, IsUUID, IsOptional, IsNumber } from 'class-validator';
+import { IsString, IsEnum, IsOptional, IsNumber } from 'class-validator';
 import { VehicleStatus } from 'src/common/enums/vehicle-status-enum';
 import { VehicleTypeEnum } from 'src/common/enums/vehicle-type.enum';
 import { Subsidiary } from 'src/entities';
 
-
 export class CreateVehicleDto {
     @IsString()
     plateNumber: string;
+
+    @IsString()
+    @IsOptional()
+    plateNumber2?: string;
+
+    @IsString()
+    @IsOptional()
+    policyNumber?: string;
+
+    @IsOptional()
+    policyExpirationDate?: Date;
 
     @IsString()
     model: string;
@@ -15,27 +25,35 @@ export class CreateVehicleDto {
     brand: string;
 
     @IsNumber()
-    kms: number;
+    @IsOptional()
+    kms?: number;
 
     @IsString()
-    code: string;
+    @IsOptional()
+    code?: string;
 
     @IsString()
-    name: string;
+    @IsOptional()
+    name?: string;
 
     @IsNumber()
-    capacity: number;
+    @IsOptional()
+    capacity?: number;
 
-    type: VehicleTypeEnum;
+    // Sin @IsEnum: el enum del frontend diverge del backend (van/camioneta/rabon… vs camion/moto).
+    // TODO: alinear VehicleTypeEnum front/back y luego endurecer.
+    type?: VehicleTypeEnum;
 
-    lastMaintenance?: Date;
+    // Nombres alineados con la entidad (antes eran lastMaintenance/nextMaintenance y no mapeaban).
+    @IsOptional()
+    lastMaintenanceDate?: Date;
 
-    nextMaintenance?: Date;
+    @IsOptional()
+    nextMaintenanceDate?: Date;
 
     subsidiary: Subsidiary;
 
     @IsEnum(VehicleStatus)
-    @IsOptional() // ya que tiene un valor por defecto en la entidad
+    @IsOptional() // tiene valor por defecto en la entidad
     status?: VehicleStatus;
 }
-

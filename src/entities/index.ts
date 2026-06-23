@@ -31,3 +31,10 @@ export * from './warehouse-delivery.entity';
 export * from './package-transfer.entity';
 export * from './audit-log.entity';
 export * from './notification-read.entity';
+export * from './role.entity';
+export * from './permission.entity';
+export * from './company-settings.entity';
+export * from './catalog-item.entity';
+// Solo la clase entidad en el barrel; el enum PermissionEffect se importa desde el archivo
+// (evita que `seed.ts`/registro de entidades lo tome como entidad).
+export { UserPermission } from './user-permission.entity';

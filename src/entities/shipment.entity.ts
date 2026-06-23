@@ -123,6 +123,18 @@ export class Shipment {
   @Column({ type: 'varchar', length: 255, nullable: true })
   dhlUniqueId: string;
 
+  /**
+   * Reciclaje de quota 17TRACK (solo DHL). `registeredAt` = cuándo se registró en
+   * 17TRACK (consume 1 slot de quota). `releasedAt` = cuándo se borró de 17TRACK
+   * (deletetrack) tras llegar a estatus terminal, liberando el slot.
+   * Activo en 17TRACK ⇔ registeredAt != null AND releasedAt == null.
+   */
+  @Column({ type: 'datetime', nullable: true })
+  seventeenRegisteredAt?: Date;
+
+  @Column({ type: 'datetime', nullable: true })
+  seventeenReleasedAt?: Date;
+
   @BeforeInsert()
   setDefaults() {
     this.createdAt = new Date(); // Fecha en UTC (asegúrate de que el servidor esté en UTC)

@@ -124,9 +124,34 @@ export class Subsidiary {
   @ManyToOne(() => Zone, { nullable: true })
   @JoinColumn({ name: 'zoneId' })
   zone: Zone;
-  
+
   @Column({ nullable: true })
   zoneId: string;
+
+  // ---- Configuración operativa por sucursal (antes hardcodeada en SUBSIDIARY_CONFIG) ----
+  /** Monitoreo: alertar cuando falta el código 67 de FedEx (recepción en estación). */
+  @Column({ default: false })
+  monitorFedexCode67: boolean;
+
+  /** Monitoreo: alertar cuando falta el código 44 de FedEx. */
+  @Column({ default: false })
+  monitorFedexCode44: boolean;
+
+  /** Tracking: rastrear la entrega que hace FedEx por su cuenta (OD → "a cargo de FedEx"). */
+  @Column({ default: false })
+  trackFedexExternalDelivery: boolean;
+
+  /** Tracking: dar prioridad al estatus reportado por FedEx para esta sucursal. */
+  @Column({ default: false })
+  forceFedexStatusOverride: boolean;
+
+  /**
+   * Salidas a ruta: si está activo, los paquetes se ORDENAN por código postal
+   * (recipientZip) en el escaneo, PDF y Excel. Si está en false, se conserva el
+   * orden en que se escanearon.
+   */
+  @Column({ default: false })
+  sortDispatchByPostalCode: boolean;
 
   @BeforeInsert()
   setCreatedAt() {

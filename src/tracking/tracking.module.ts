@@ -14,9 +14,10 @@ import { UnloadingService } from 'src/unloading/unloading.service';
 import { Unloading } from 'src/entities/unloading.entity';
 import { PackageDispatch } from 'src/entities/package-dispatch.entity';
 import { DhlService } from 'src/shipments/dhl.service';
+import { SeventeenTrackDhlService } from 'src/tracking/seventeen-track-dhl.service';
 
 @Module({
     imports: [TypeOrmModule.forFeature([Shipment, ShipmentStatus,Subsidiary, Income, ChargeShipment, Charge, Consolidated, ForPickUp, Unloading, PackageDispatch])],
-    providers: [TrackingCronService, ShipmentsService, FedexService, DhlService, SubsidiariesService, ConsolidatedService, MailService, UnloadingService],
+    providers: [TrackingCronService, ShipmentsService, FedexService, DhlService, SubsidiariesService, ConsolidatedService, MailService, UnloadingService, SeventeenTrackDhlService],
 })
 export class TrackingModule {}

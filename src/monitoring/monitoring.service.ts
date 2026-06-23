@@ -6,12 +6,14 @@ import { ConsolidatedService } from 'src/consolidated/consolidated.service';
 import { PackageDispatchService } from 'src/package-dispatch/package-dispatch.service';
 import { UnloadingService } from 'src/unloading/unloading.service';
 import { InventoriesService } from 'src/inventories/inventories.service';
+import { SubsidiariesService } from 'src/subsidiaries/subsidiaries.service';
 
 @Injectable()
 export class MonitoringService {
   private readonly logger = new Logger(MonitoringService.name);
 
-  private SUBSIDIARY_CONFIG = { 
+  // Fallback histórico (se prefiere la config real de la entidad Subsidiary).
+  private SUBSIDIARY_CONFIG = {
     "abf2fc38-cb42-41b6-9554-4b71c11b8916": {
       shouldCheck67: true,
       shouldCheck44: false
@@ -34,7 +36,21 @@ export class MonitoringService {
     private readonly consolidatedService: ConsolidatedService,
     private readonly unloadingService: UnloadingService,
     private readonly inventoryService: InventoriesService,
+    private readonly subsidiariesService: SubsidiariesService,
   ) {}
+
+  /**
+   * Config de monitoreo por sucursal: LEE de la entidad Subsidiary (columnas reales)
+   * y cae al SUBSIDIARY_CONFIG hardcodeado solo si la sucursal no existe.
+   */
+  private async getMonitorConfig(subsidiaryId: string): Promise<{ check67: boolean; check44: boolean }> {
+    const sub: any = await this.subsidiariesService.findById(subsidiaryId).catch(() => null);
+    const hc: any = this.SUBSIDIARY_CONFIG[subsidiaryId];
+    return {
+      check67: sub?.monitorFedexCode67 ?? hc?.shouldCheck67 ?? false,
+      check44: sub?.monitorFedexCode44 ?? hc?.shouldCheck44 ?? false,
+    };
+  }
 
   async getConsolidatedsBySubsidiary(subdiaryId: string) {
     const consolidateds  = await this.consolidatedService.findBySubsidiary(subdiaryId)
@@ -82,12 +98,13 @@ export class MonitoringService {
   }
 
   async getShipmentsWithout67(consolidatedId: string, subdidiaryId: string){
-    if(this.SUBSIDIARY_CONFIG[subdidiaryId]?.shouldCheck67){
+    const cfg = await this.getMonitorConfig(subdidiaryId);
+    if(cfg.check67){
       const shipments = await this.consolidatedService.getShipmentsWithout67ByConsolidated(consolidatedId);
-      return shipments; 
+      return shipments;
     }
 
-    if(this.SUBSIDIARY_CONFIG[subdidiaryId]?.shouldCheck44){
+    if(cfg.check44){
       const shipments = await this.consolidatedService.getShipmentsWithout44ByConsolidated(consolidatedId);
       return shipments;
     }
@@ -96,12 +113,13 @@ export class MonitoringService {
   }
 
   async getShipmentsWithout67ByUnloading(unloadingId: string, subdidiaryId: string){
-    if(this.SUBSIDIARY_CONFIG[subdidiaryId]?.shouldCheck67){
+    const cfg = await this.getMonitorConfig(subdidiaryId);
+    if(cfg.check67){
       const shipments = await this.unloadingService.getShipmentsWithout67ByUnloading(unloadingId);
-      return shipments; 
+      return shipments;
     }
 
-    if(this.SUBSIDIARY_CONFIG[subdidiaryId]?.shouldCheck44){
+    if(cfg.check44){
       const shipments = await this.unloadingService.getShipmentsWithout44ByUnloading(unloadingId);
       return shipments;
     }
@@ -110,12 +128,13 @@ export class MonitoringService {
   }
 
   async getShipmentsWithout67ByPackageDispatch(packageDispatchId: string, subdidiaryId: string){
-    if(this.SUBSIDIARY_CONFIG[subdidiaryId]?.shouldCheck67){
+    const cfg = await this.getMonitorConfig(subdidiaryId);
+    if(cfg.check67){
       const shipments = await this.packageDispatchService.getShipmentsWithout67ByPackageDispatch(packageDispatchId);
-      return shipments; 
+      return shipments;
     }
 
-    if(this.SUBSIDIARY_CONFIG[subdidiaryId]?.shouldCheck44){
+    if(cfg.check44){
       const shipments = await this.packageDispatchService.getShipmentsWithout44ByPackageDispatch(packageDispatchId);
       return shipments;
     }

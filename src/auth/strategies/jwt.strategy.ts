@@ -27,6 +27,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
             name: payload.name,
             lastName: payload.lastName,
             subsidiary: payload.subsidiary,
+            permissions: Array.isArray(payload.permissions) ? payload.permissions : [],
         };
     }
 }

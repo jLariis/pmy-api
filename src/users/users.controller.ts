@@ -3,11 +3,17 @@ import { UsersService } from './users.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { ApiBearerAuth, ApiBody, ApiTags } from '@nestjs/swagger';
-import { JwtAuthGuard } from 'src/auth/guards/jwt-auth.guard';
-import { Public } from 'src/auth/decorators/decorators/public-decorator';
+import { AdminGuard } from 'src/auth/guards/admin.guard';
 
+/**
+ * Gestión de usuarios — SOLO administradores. Antes `register` era `@Public()`
+ * (cualquiera podía auto-registrarse con role:'superadmin') y las demás rutas no
+ * tenían guard de rol (cualquier autenticado podía listar/editar/borrar usuarios
+ * y cambiar roles). El `AdminGuard` a nivel de controller cierra ambos huecos.
+ */
 @ApiTags('users')
 @ApiBearerAuth()
+@UseGuards(AdminGuard)
 @Controller('users')
 export class UsersController {
   constructor(private readonly usersService: UsersService) {}
@@ -17,8 +23,7 @@ export class UsersController {
     return this.usersService.findAll();
   }
 
-  @ApiBody({type: CreateUserDto})
-  @Public()
+  @ApiBody({ type: CreateUserDto })
   @Post('register')
   create(@Body() createUserDto: CreateUserDto) {
     return this.usersService.create(createUserDto);

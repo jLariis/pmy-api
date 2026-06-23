@@ -1,11 +1,13 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule'; // Tu servicio que accede a la BD
 import { ShipmentsService } from 'src/shipments/shipments.service';
 import { UnloadingService } from 'src/unloading/unloading.service';
+import { SeventeenTrackDhlService } from 'src/tracking/seventeen-track-dhl.service';
+import { runDhlRecyclingCycle } from 'src/tracking/dhl-tracking-cycle';
 
 
 @Injectable()
-export class TrackingCronService {
+export class TrackingCronService implements OnModuleInit {
   private readonly logger = new Logger(TrackingCronService.name);
 
   /**
@@ -14,11 +16,31 @@ export class TrackingCronService {
    * carga a FedEx, contención de locks y 429 por solapamiento.
    */
   private isRunning = false;
+  /** Guard de re-entrada independiente para el cron de DHL/17TRACK. */
+  private isRunningDhl = false;
+
+  /**
+   * Tope de quota de registros activos en 17TRACK (reciclaje). El cron nunca
+   * registra por encima de este número; al liberar (deletetrack) se reusa.
+   * Configurable por env; default 200 (plan gratis). Conviene dejar margen.
+   */
+  private readonly seventeenQuotaCap = Number(process.env.SEVENTEEN_TRACK_QUOTA_CAP) || 200;
 
   constructor(
     private readonly shipmentService: ShipmentsService,
-    private readonly unloadingService: UnloadingService
+    private readonly unloadingService: UnloadingService,
+    private readonly seventeenTrackService: SeventeenTrackDhlService,
   ) {}
+
+  /**
+   * Confirma en los logs, al arrancar, que los crons quedaron programados.
+   * Útil para verificar tras un deploy/restart sin esperar al disparo.
+   */
+  onModuleInit() {
+    this.logger.log('⏰ Crons de tracking programados:');
+    this.logger.log('   📦 FedEx: cada hora en punto (:00).');
+    this.logger.log(`   🚚 DHL/17TRACK (reciclaje de quota, tope ${this.seventeenQuotaCap}): cada hora al minuto :30 (America/Hermosillo).`);
+  }
 
   @Cron(CronExpression.EVERY_HOUR)
   async handleCron() {
@@ -88,6 +110,31 @@ export class TrackingCronService {
     }
   }
 
+  /**
+   * Cron DHL vía 17TRACK (cada hora, al minuto 30 para no solaparse con FedEx).
+   * Ciclo de RECICLAJE de quota:
+   *   1) POLL (gratis): consulta las guías ya registradas y persiste su estatus.
+   *   2) LIBERA: borra de 17TRACK (deletetrack) las que llegaron a terminal → libera slots.
+   *   3) REGISTRA: da de alta guías DHL nuevas no-terminales, SIN pasar del tope de quota.
+   */
+  @Cron('0 30 * * * *', { timeZone: 'America/Hermosillo' })
+  async handleDhlTrackingCron() {
+    if (this.isRunningDhl) {
+      this.logger.warn('⏭️ Cron DHL: la corrida anterior sigue en curso; se omite este disparo.');
+      return;
+    }
+    this.isRunningDhl = true;
+    this.logger.log('🕐 [DHL/17TRACK] Iniciando ciclo de tracking con reciclaje de quota...');
+
+    try {
+      await runDhlRecyclingCycle(this.shipmentService, this.seventeenTrackService, this.seventeenQuotaCap, this.logger);
+    } catch (err) {
+      this.logger.error(`❌ Error fatal en handleDhlTrackingCron: ${err.message}`);
+    } finally {
+      this.isRunningDhl = false;
+    }
+  }
+
   @Cron('0 0 1 * * 1-6', { timeZone: 'America/Hermosillo' })
   async handleUpdatePriotiry() {
     this.logger.log('🕐 Ejecutando actualización de prioridades...');
@@ -99,7 +146,6 @@ export class TrackingCronService {
     this.logger.log('🕐 Ejecutando el envío de correo con envíos que deben ser prioritarios...');
     await this.shipmentService.sendEmailWithHighPriorities();
   }
-
   
   @Cron('0 0 8,10,12,14,16,18,20,22 * * 1-6', {
     timeZone: 'America/Hermosillo'

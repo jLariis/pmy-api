@@ -47,7 +47,8 @@ export class DevolutionsController {
     })
   sendEmail(
     @UploadedFiles() files: Express.Multer.File[],
-    @Body('subsidiaryName') subsidiaryName: string
+    @Body('subsidiaryName') subsidiaryName: string,
+    @Body('subsidiaryId') subsidiaryId?: string,
   ) {
     console.log('🚀 ~ PackageDispatchController ~ sendEmail ~ files:', files);
         console.log('🚀 ~ PackageDispatchController ~ sendEmail ~ subsidiaryName:', subsidiaryName);
@@ -66,7 +67,7 @@ export class DevolutionsController {
         if (!pdfFile || !excelFile) {
           throw new BadRequestException('Se requiere un archivo PDF y un archivo Excel.');
         }
-    return this.devolutionsService.sendByEmail(pdfFile, excelFile, subsidiaryName)
+    return this.devolutionsService.sendByEmail(pdfFile, excelFile, subsidiaryName, subsidiaryId)
   }
 
 }

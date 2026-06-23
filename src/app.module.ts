@@ -35,6 +35,9 @@ import { PackageTransferModule } from './package-transfer/package-transfer.modul
 import { ZoneModule } from './zone/zone.module';
 import { AuditModule } from './audit/audit.module';
 import { NotificationsModule } from './notifications/notifications.module';
+import { RbacModule } from './rbac/rbac.module';
+import { CompanySettingsModule } from './company-settings/company-settings.module';
+import { CatalogModule } from './catalog/catalog.module';
 
 @Module({
   imports: [
@@ -90,7 +93,10 @@ import { NotificationsModule } from './notifications/notifications.module';
     TransferModule,
     ZoneModule,
     AuditModule,
-    NotificationsModule
+    NotificationsModule,
+    RbacModule,
+    CompanySettingsModule,
+    CatalogModule
   ],
   controllers: [AppController],
   providers: [

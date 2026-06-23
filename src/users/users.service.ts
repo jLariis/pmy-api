@@ -3,17 +3,38 @@ import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { Role } from 'src/auth/enums/role.enum';
 import { BusinessException } from 'src/common/business.exception';
 import * as bcrypt from 'bcrypt';
-import { User } from 'src/entities';
+import { Role, User } from 'src/entities';
+import { LEGACY_ROLE_MAP } from 'src/auth/rbac/permission-catalog';
+
+/** Rol por defecto (el de menor privilegio) cuando no se especifica uno. */
+const DEFAULT_ROLE_KEY = 'user';
 
 @Injectable()
 export class UsersService {
   constructor(
     @InjectRepository(User)
-    private userRepository: Repository<User>
+    private userRepository: Repository<User>,
+    @InjectRepository(Role)
+    private roleRepository: Repository<Role>,
 ) { }
+
+  /**
+   * Resuelve la key canónica y el `roleId` (FK) a partir del string de rol
+   * recibido (acepta variantes/typos vía LEGACY_ROLE_MAP). Si no se pasa rol,
+   * usa el rol más bajo ('user'). Devuelve `roleId: undefined` si la tabla `role`
+   * aún no tiene ese rol (no rompe: el `role` string queda igual).
+   */
+  private async resolveRole(roleString?: string): Promise<{ key: string; roleId?: string }> {
+    const requested = (roleString || '').toString().trim().toLowerCase();
+    const key = LEGACY_ROLE_MAP[requested] || DEFAULT_ROLE_KEY;
+    let role = await this.roleRepository.findOne({ where: { key } });
+    if (!role && key !== DEFAULT_ROLE_KEY) {
+      role = await this.roleRepository.findOne({ where: { key: DEFAULT_ROLE_KEY } });
+    }
+    return { key, roleId: role?.id };
+  }
 
   async create(createUserDto: CreateUserDto) {
     // Verificar si el email ya existe
@@ -42,13 +63,18 @@ export class UsersService {
 
     try {
         const saltRounds = 10;
-        const salt = await bcrypt.genSalt(saltRounds);        
+        const salt = await bcrypt.genSalt(saltRounds);
         const hashedPassword = await bcrypt.hash(createUserDto.password, salt);
 
-        const newUser = {
+        // Asigna rol canónico + roleId (FK). Sin rol → el más bajo ('user').
+        const { key, roleId } = await this.resolveRole(createUserDto.role);
+
+        const newUser = this.userRepository.create({
             ...createUserDto,
+            role: key as User['role'],
+            roleId,
             password: hashedPassword,
-        };
+        });
 
         return await this.userRepository.save(newUser);
     } catch (error) {
@@ -124,6 +150,14 @@ export class UsersService {
     }
 
     const updatedUser = this.userRepository.merge(user, updateUserDto);
+
+    // Si se cambió el rol, mantener `roleId` (FK) en sincronía con la key canónica.
+    if (updateUserDto.role !== undefined) {
+      const { key, roleId } = await this.resolveRole(updateUserDto.role);
+      updatedUser.role = key as typeof updatedUser.role;
+      updatedUser.roleId = roleId;
+    }
+
     return this.userRepository.save(updatedUser);
   }
 

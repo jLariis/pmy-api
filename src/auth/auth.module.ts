@@ -12,6 +12,7 @@ import { AuthController } from './auth.controller';
 import { BlacklistService } from './blacklist.service';
 import { EmailService } from './email.service';
 import { User } from 'src/entities/user.entity';
+import { RbacModule } from '../rbac/rbac.module';
 
 @Module({
     controllers: [AuthController],
@@ -22,7 +23,8 @@ import { User } from 'src/entities/user.entity';
             secret: jwtConstants.secret,
             signOptions: { expiresIn: jwtConstants.expiration },
         }),
-        TypeOrmModule.forFeature([User])
+        TypeOrmModule.forFeature([User]),
+        RbacModule,
     ],
     providers: [
         AuthService,

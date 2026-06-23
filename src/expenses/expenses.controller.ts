@@ -13,47 +13,15 @@ import { FileInterceptor } from '@nestjs/platform-express';
 export class ExpensesController {
   constructor(private readonly expensesService: ExpensesService) {}
 
+  // ⚠️ ORDEN IMPORTANTE: las rutas ESTÁTICAS deben declararse ANTES que las de
+  // parámetro (`:subsidiaryId`). Antes `@Get(':subsidiaryId')` tapaba a
+  // `/findBySubsidiaryAndDates` (y `:subsidiaryId`/`:id` eran el mismo patrón, así
+  // que `findOne` era inalcanzable).
+
   @Post()
   create(@Body() createExpenseDto: Expense, @Request() req) {
     createExpenseDto.createdById = req.user?.userId;
     return this.expensesService.create(createExpenseDto);
-  }
-
-  @Get(':subsidiaryId')
-  getIExpenesesBySucursal(@Param('subsidiaryId') subsidiaryId: string, @Request() req) {
-    console.log("🚀 ~ ExpensesController ~ getIExpenesesBySucursal ~ subsidiaryId:", subsidiaryId)
-    return this.expensesService.findBySubsidiary(subsidiaryId)  
-  }
-
-  @Get()
-  findAll() {
-    return this.expensesService.findAll();
-  }
-
-  @Get(':id')
-  findOne(@Param('id') id: string) {
-    return this.expensesService.findOne(id);
-  }
-
-  @Patch(':id')
-  update(@Param('id') id: string, @Body() updateExpenseDto: UpdateExpenseDto) {
-    return this.expensesService.update(id, updateExpenseDto);
-  }
-
-  @Delete(':id')
-  remove(@Param('id') id: string) {
-    return this.expensesService.remove(id);
-  }
-
-  @Get('/findBySubsidiaryAndDates')
-  getExpensesBySucursalAndDates(
-    @Query('subsidiaryId') subsidiaryId: string,
-    @Query('firstDay') firstDay: string,
-    @Query('lastDay') lastDay: string
-  ) {
-    const firstDayOfMonth = new Date(firstDay);
-    const lastDayOfMonth = new Date(lastDay);
-    return this.expensesService.findBySubsidiaryAndDates(subsidiaryId, firstDayOfMonth, lastDayOfMonth)  
   }
 
   @Post('upload')
@@ -64,5 +32,41 @@ export class ExpensesController {
     @Request() req
   ) {
     return this.expensesService.importFromExcel(file, subsidiaryId, req.user?.userId);
+  }
+
+  @Get()
+  findAll() {
+    return this.expensesService.findAll();
+  }
+
+  @Get('findBySubsidiaryAndDates')
+  getExpensesBySucursalAndDates(
+    @Query('subsidiaryId') subsidiaryId: string,
+    @Query('firstDay') firstDay: string,
+    @Query('lastDay') lastDay: string
+  ) {
+    const firstDayOfMonth = new Date(firstDay);
+    const lastDayOfMonth = new Date(lastDay);
+    return this.expensesService.findBySubsidiaryAndDates(subsidiaryId, firstDayOfMonth, lastDayOfMonth)
+  }
+
+  @Get('detail/:id')
+  findOne(@Param('id') id: string) {
+    return this.expensesService.findOne(id);
+  }
+
+  @Get(':subsidiaryId')
+  getIExpenesesBySucursal(@Param('subsidiaryId') subsidiaryId: string) {
+    return this.expensesService.findBySubsidiary(subsidiaryId)
+  }
+
+  @Patch(':id')
+  update(@Param('id') id: string, @Body() updateExpenseDto: UpdateExpenseDto) {
+    return this.expensesService.update(id, updateExpenseDto);
+  }
+
+  @Delete(':id')
+  remove(@Param('id') id: string) {
+    return this.expensesService.remove(id);
   }
 }

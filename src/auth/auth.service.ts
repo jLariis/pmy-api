@@ -11,6 +11,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { User } from 'src/entities/user.entity';
 import { AuditService } from '../audit/audit.service';
 import { AuditAction, AuditModule, AuditResult, AuditSeverity } from '../common/enums/audit.enum';
+import { RbacService } from '../rbac/rbac.service';
 
 @Injectable()
 export class AuthService {
@@ -22,7 +23,8 @@ export class AuthService {
         @Inject(Logger) private readonly logger: LoggerService,
         private blacklistService: BlacklistService,
         private mailService: EmailService,
-        private readonly auditService: AuditService
+        private readonly auditService: AuditService,
+        private readonly rbacService: RbacService,
     ) { }
 
     async validateUser(email: string, password: string): Promise<any> {
@@ -72,14 +74,28 @@ export class AuthService {
         return null;
     }
 
-    async login(user: any): Promise<{access_token: string, user: any}> {        
-        const payload = { 
-            email: user.email, 
-            sub: user.id, 
-            role: user.role, 
-            name: user.name, 
+    async login(user: any): Promise<{access_token: string, user: any}> {
+        // Permisos efectivos (rol ∪ allow − deny). Si RBAC aún no está sembrado
+        // o falla, el login NO se rompe: se entrega [] y el gateo cae al mapa de
+        // roles legacy (transición de la Fase C).
+        let permissions: string[] = [];
+        try {
+            permissions = await this.rbacService.getEffectivePermissions(user.id);
+        } catch (err) {
+            this.logger.warn(
+                `No se pudieron calcular permisos efectivos para ${user.email}: ${err?.message}`,
+                AuthService.name,
+            );
+        }
+
+        const payload = {
+            email: user.email,
+            sub: user.id,
+            role: user.role,
+            name: user.name,
             lastName: user.lastName,
-            subsidiary: user.subsidiary
+            subsidiary: user.subsidiary,
+            permissions,
         };
 
         this.logger.log(`Login Payload: ${JSON.stringify(payload)}`, AuthService.name);
@@ -91,9 +107,10 @@ export class AuthService {
                 role: payload.role,
                 name: payload.name,
                 lastName: payload.lastName,
-                subsidiary: user.subsidiary
+                subsidiary: user.subsidiary,
+                permissions,
             }
-            
+
         };
     }
 

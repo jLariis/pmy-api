@@ -9,6 +9,7 @@ import {
 } from 'typeorm';
 import { Exclude } from 'class-transformer';
 import { Subsidiary } from './subsidiary.entity';
+import { Role } from './role.entity';
 
 @Entity('user')
 export class User {
@@ -28,8 +29,19 @@ export class User {
   @Column({ nullable: true })
   lastName?: string;
 
+  // Columna varchar (sin enum de BD). Unión alineada con los roles reales usados en
+  // código/JWT (incluye la variante histórica 'superamin' y 'subadmin'/'superadmin'/'owner').
+  // TRANSICIONAL: convive con la FK `roleId` (tabla `role`) durante la migración RBAC;
+  // se deprecará cuando el front/guards usen permisos.
   @Column({ default: 'user' })
-  role: 'admin' | 'user' | 'auxiliar' | 'superamin' | 'bodega';
+  role: 'admin' | 'user' | 'auxiliar' | 'bodega' | 'superadmin' | 'superamin' | 'subadmin' | 'owner';
+
+  @ManyToOne(() => Role, { nullable: true })
+  @JoinColumn({ name: 'roleId' })
+  roleEntity?: Role;
+
+  @Column({ nullable: true })
+  roleId?: string;
 
   @ManyToOne(() => Subsidiary, { nullable: true })
   @JoinColumn({ name: 'subsidiaryId' })

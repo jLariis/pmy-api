@@ -2,7 +2,7 @@ import { BadRequestException, forwardRef, HttpStatus, Inject, Injectable, Intern
 import { InjectRepository } from '@nestjs/typeorm';
 import { Between, Brackets, EntityManager, In, Repository } from 'typeorm';
 import { Shipment } from 'src/entities/shipment.entity';
-import { ShipmentStatusType } from 'src/common/enums/shipment-status-type.enum';
+import { ShipmentStatusType, TERMINAL_SHIPMENT_STATUSES } from 'src/common/enums/shipment-status-type.enum';
 import * as XLSX from 'xlsx';
 import { FedexService } from './fedex.service';
 import { ShipmentStatus } from 'src/entities/shipment-status.entity';
@@ -10,6 +10,8 @@ import { getPriority, parseDynamicFileF2, parseDynamicHighValue, parseDynamicShe
 import { scanEventsFilter } from 'src/utils/scan-events-filter';
 import { ParsedShipmentDto } from './dto/parsed-shipment.dto';
 import { mapFedexStatusToLocalStatus } from 'src/utils/fedex.utils';
+import { map17TrackStatusToLocal } from 'src/utils/dhl.utils';
+import type { NormalizedTrackingResult } from 'src/tracking/seventeen-track-dhl.service';
 import { addDays, differenceInDays, endOfToday, format, isSameDay, parse, parseISO, startOfToday } from 'date-fns';
 import { ShipmentType } from 'src/common/enums/shipment-type.enum';
 import { Consolidated, Income, Payment, Subsidiary } from 'src/entities';
@@ -2786,17 +2788,21 @@ export class ShipmentsService {
     exceptionCode: string | undefined,
     transactionalEntityManager: EntityManager
   ): Promise<void> {
-    // 1. Obtener costo de la sucursal
-    // Usamos una navegación segura para el ID de la sucursal
+    // 1. Obtener costo de la sucursal SEGÚN EL TIPO (FedEx vs DHL).
+    // Antes siempre cobraba fedexCostPackage aunque la guía fuera DHL.
     const subsidiaryId = shipment.subsidiary?.id;
-    let packageCost = shipment.subsidiary?.fedexCostPackage || 0;
+    const isDhl = String(shipment.shipmentType).toLowerCase() === ShipmentType.DHL.toLowerCase();
+    const costOf = (s?: { fedexCostPackage?: number; dhlCostPackage?: number } | null) =>
+      Number((isDhl ? s?.dhlCostPackage : s?.fedexCostPackage) || 0);
+
+    let packageCost = costOf(shipment.subsidiary as any);
 
     if (packageCost <= 0 && subsidiaryId) {
       const subsidiary = await transactionalEntityManager.getRepository(Subsidiary).findOne({
         where: { id: subsidiaryId },
-        select: ['fedexCostPackage', 'name']
+        select: ['fedexCostPackage', 'dhlCostPackage', 'name']
       });
-      packageCost = subsidiary?.fedexCostPackage || 0;
+      packageCost = costOf(subsidiary);
     }
 
     if (packageCost <= 0) {
@@ -3891,6 +3897,173 @@ export class ShipmentsService {
       return await this.fedexService.completePackageInfo(trackingNumber);
     }
 
+    /**
+     * Persiste en los envíos DHL los estatus normalizados que devuelve 17TRACK.
+     * Por cada resultado: localiza el envío (variantes JJD↔JD + dhlUniqueId, el
+     * MÁS RECIENTE por createdAt), mapea el estatus 17TRACK → local y, si es nuevo,
+     * agrega un ShipmentStatus al historial y actualiza `shipment.status`.
+     * NO genera ingresos: el ingreso de DHL se genera en el CIERRE DE RUTA.
+     */
+    async persistDhlTrackingResults(results: NormalizedTrackingResult[]) {
+      const summary = {
+        updated: [] as { trackingNumber: string; status: string }[],
+        unchanged: [] as string[],
+        notFound: [] as string[],
+        skipped: [] as string[],
+        errors: [] as { trackingNumber: string; reason: string }[],
+      };
+
+      for (const r of results || []) {
+        const trackingNumber = r.trackingNumber;
+        try {
+          const mapped = map17TrackStatusToLocal(r.currentStatus);
+          if (!mapped) { summary.skipped.push(trackingNumber); continue; }
+
+          // Variantes DHL: JJD↔JD + dhlUniqueId (mismo criterio que la búsqueda de detalle).
+          const variants = [trackingNumber];
+          if (trackingNumber.startsWith('JJD')) variants.push(trackingNumber.substring(1));
+          else if (trackingNumber.startsWith('JD')) variants.push('J' + trackingNumber);
+          const where = variants.flatMap((tn) => [{ trackingNumber: tn }, { dhlUniqueId: tn }]);
+
+          const matches = await this.shipmentRepository.find({
+            where,
+            relations: ['statusHistory'],
+            order: { createdAt: 'DESC' },
+          });
+          if (matches.length === 0) { summary.notFound.push(trackingNumber); continue; }
+          const shipment = matches[0]; // el más reciente (dedup de guías recicladas)
+
+          const parsed = r.latestEvent?.time ? new Date(r.latestEvent.time) : new Date();
+          const eventDate = isNaN(parsed.getTime()) ? new Date() : parsed;
+
+          shipment.statusHistory = shipment.statusHistory || [];
+          const latest = shipment.statusHistory.length
+            ? shipment.statusHistory.reduce((a, c) => (new Date(c.timestamp) > new Date(a.timestamp) ? c : a))
+            : null;
+          const isNewer = !latest || eventDate > new Date(latest.timestamp);
+          const isDuplicate = shipment.statusHistory.some(
+            (s) => s.status === mapped && isSameDay(s.timestamp, eventDate),
+          );
+          if (isDuplicate && !isNewer) { summary.unchanged.push(trackingNumber); continue; }
+
+          const ns = new ShipmentStatus();
+          ns.status = mapped;
+          ns.timestamp = eventDate;
+          ns.notes = `17TRACK: ${r.currentStatus}${r.subStatus ? ` / ${r.subStatus}` : ''}${
+            r.latestEvent?.description ? ` - ${r.latestEvent.description}` : ''
+          }`.slice(0, 250);
+          ns.shipment = shipment;
+
+          await this.shipmentRepository.manager.transaction(async (tem) => {
+            await tem.save(ShipmentStatus, ns);
+            await tem
+              .createQueryBuilder()
+              .update(Shipment)
+              .set({ status: mapped })
+              .where('id = :id', { id: shipment.id })
+              .execute();
+          });
+
+          summary.updated.push({ trackingNumber, status: mapped });
+        } catch (err: any) {
+          this.logger.error(`Error persistiendo estatus DHL ${trackingNumber}: ${err?.message}`);
+          summary.errors.push({ trackingNumber, reason: err?.message });
+        }
+      }
+
+      this.logger.log(
+        `DHL 17TRACK persistencia → actualizados:${summary.updated.length} sin_cambio:${summary.unchanged.length} ` +
+          `no_encontrados:${summary.notFound.length} omitidos:${summary.skipped.length} errores:${summary.errors.length}`,
+      );
+      return summary;
+    }
+
+    /* ===================== Reciclaje de quota 17TRACK (DHL) ===================== */
+
+    /** Fecha de corte: solo guías recientes (evita reciclados viejos). */
+    private dhlTrackingCutoff(): Date {
+      const d = new Date();
+      d.setMonth(d.getMonth() - 6);
+      return d;
+    }
+
+    /** Guías DHL ACTIVAS en 17TRACK (registradas y no liberadas) — para hacer polling. */
+    async getActiveRegisteredDhl(): Promise<{ id: string; trackingNumber: string; status: ShipmentStatusType }[]> {
+      const rows = await this.shipmentRepository
+        .createQueryBuilder('s')
+        .select(['s.id AS id', 's.trackingNumber AS trackingNumber', 's.status AS status'])
+        .where('LOWER(s.shipmentType) = :type', { type: ShipmentType.DHL.toLowerCase() })
+        .andWhere('s.seventeenRegisteredAt IS NOT NULL')
+        .andWhere('s.seventeenReleasedAt IS NULL')
+        .getRawMany();
+      return rows;
+    }
+
+    /** Cuenta los slots de quota ocupados (activos en 17TRACK). */
+    async countActiveRegisteredDhl(): Promise<number> {
+      return this.shipmentRepository
+        .createQueryBuilder('s')
+        .where('LOWER(s.shipmentType) = :type', { type: ShipmentType.DHL.toLowerCase() })
+        .andWhere('s.seventeenRegisteredAt IS NOT NULL')
+        .andWhere('s.seventeenReleasedAt IS NULL')
+        .getCount();
+    }
+
+    /** Guías DHL NO terminales aún sin registrar en 17TRACK (candidatas a alta). */
+    async getUnregisteredDhl(limit: number): Promise<{ id: string; trackingNumber: string }[]> {
+      if (limit <= 0) return [];
+      const terminal = TERMINAL_SHIPMENT_STATUSES.map((s) => String(s).toLowerCase());
+      const rows = await this.shipmentRepository
+        .createQueryBuilder('s')
+        .select(['s.id AS id', 's.trackingNumber AS trackingNumber'])
+        .where('LOWER(s.shipmentType) = :type', { type: ShipmentType.DHL.toLowerCase() })
+        .andWhere('s.seventeenRegisteredAt IS NULL')
+        .andWhere('s.createdAt > :cutoff', { cutoff: this.dhlTrackingCutoff() })
+        .andWhere('LOWER(s.status) NOT IN (:...terminal)', { terminal })
+        .orderBy('s.createdAt', 'DESC')
+        .limit(limit)
+        .getRawMany();
+      return rows;
+    }
+
+    /** Guías DHL activas en 17TRACK que YA llegaron a terminal → liberar su slot. */
+    async getActiveRegisteredDhlTerminal(): Promise<{ id: string; trackingNumber: string }[]> {
+      const terminal = TERMINAL_SHIPMENT_STATUSES.map((s) => String(s).toLowerCase());
+      const rows = await this.shipmentRepository
+        .createQueryBuilder('s')
+        .select(['s.id AS id', 's.trackingNumber AS trackingNumber'])
+        .where('LOWER(s.shipmentType) = :type', { type: ShipmentType.DHL.toLowerCase() })
+        .andWhere('s.seventeenRegisteredAt IS NOT NULL')
+        .andWhere('s.seventeenReleasedAt IS NULL')
+        .andWhere('LOWER(s.status) IN (:...terminal)', { terminal })
+        .getRawMany();
+      return rows;
+    }
+
+    /** Marca como registradas (consumió quota) las guías indicadas. */
+    async markDhlRegistered(trackingNumbers: string[]): Promise<void> {
+      if (!trackingNumbers?.length) return;
+      await this.shipmentRepository
+        .createQueryBuilder()
+        .update(Shipment)
+        .set({ seventeenRegisteredAt: () => 'CURRENT_TIMESTAMP' })
+        .where('trackingNumber IN (:...nums)', { nums: trackingNumbers })
+        .andWhere('LOWER(shipmentType) = :type', { type: ShipmentType.DHL.toLowerCase() })
+        .andWhere('seventeenRegisteredAt IS NULL')
+        .execute();
+    }
+
+    /** Marca como liberadas (slot de quota devuelto) las guías indicadas. */
+    async markDhlReleased(ids: string[]): Promise<void> {
+      if (!ids?.length) return;
+      await this.shipmentRepository
+        .createQueryBuilder()
+        .update(Shipment)
+        .set({ seventeenReleasedAt: () => 'CURRENT_TIMESTAMP' })
+        .where('id IN (:...ids)', { ids })
+        .execute();
+    }
+
     async getShipmentDetailsByTrackingNumber(trackingNumber: string): Promise<SearchShipmentDto | null> {
       
       // 1. Generar tracking alternativo para casos de DHL (JJD vs JD)
@@ -4109,11 +4282,115 @@ export class ShipmentsService {
       };
     }
 
+    /**
+     * Reporte "Recibidas de FedEx (con 67)": guías cuyo evento 67 (llegada a
+     * estación FedEx) cayó en el rango dado. Equivale al correo de FedEx (puedes
+     * ordenar/filtrar por "días desde el 67" para ver el bucket atorado).
+     * Deduplica por trackingNumber (copia más reciente para los datos de display),
+     * pero detecta el 67 en CUALQUIER copia (toma la fecha 67 más reciente en rango).
+     */
+    async getReceivedWith67BySubsidiary(subsidiaryId: string, start?: string, end?: string) {
+      const s = start ? new Date(start) : new Date(Date.now() - 10 * 24 * 60 * 60 * 1000);
+      const e = end ? new Date(end) : new Date();
+      const now = Date.now();
+
+      /**
+       * 2 pasos (acotado, rápido con los índices idx_ss_excode_ts + idx_shipment_trackingNumber):
+       *  Q1 agg: guía + fecha 67 más reciente EN RANGO (cualquier copia).
+       *  Q2 disp: datos de la copia MÁS NUECA por guía (groupwise-max), acotado a las guías de Q1.
+       */
+      const run = async (table: 'shipment' | 'charge_shipment', fk: 'shipmentId' | 'chargeShipmentId') => {
+        // Arranca desde shipment_status para aprovechar idx_ss_excode_ts (exceptionCode, timestamp).
+        const agg: any[] = await this.shipmentRepository.query(
+          `SELECT t2.trackingNumber AS tn, MAX(ss.timestamp) AS fecha67
+           FROM shipment_status ss
+           JOIN \`${table}\` t2 ON t2.id = ss.\`${fk}\`
+           WHERE ss.exceptionCode = '67' AND ss.timestamp BETWEEN ? AND ? AND t2.subsidiaryId = ?
+           GROUP BY t2.trackingNumber`,
+          [s, e, subsidiaryId],
+        );
+        if (agg.length === 0) return [];
+        const tns: string[] = agg.map((a) => a.tn);
+        const ph = tns.map(() => '?').join(',');
+        const disp: any[] = await this.shipmentRepository.query(
+          `SELECT t.trackingNumber AS tn, t.status, t.recipientName, t.recipientAddress, t.recipientCity, t.recipientZip
+           FROM \`${table}\` t
+           JOIN (
+             SELECT trackingNumber, SUBSTRING_INDEX(MAX(CONCAT(createdAt, '|', id)), '|', -1) AS nid
+             FROM \`${table}\` WHERE subsidiaryId = ? AND trackingNumber IN (${ph}) GROUP BY trackingNumber
+           ) nc ON t.id = nc.nid`,
+          [subsidiaryId, ...tns],
+        );
+        const dispMap = new Map(disp.map((d) => [d.tn, d]));
+        return agg.map((a) => {
+          const d = dispMap.get(a.tn) || {};
+          const dias = a.fecha67 ? Math.floor((now - new Date(a.fecha67).getTime()) / 86400000) : null;
+          return {
+            trackingNumber: a.tn, fecha67: a.fecha67, diasDesde67: dias,
+            status: d.status, recipientName: d.recipientName, recipientAddress: d.recipientAddress,
+            recipientCity: d.recipientCity, recipientZip: d.recipientZip,
+          };
+        });
+      };
+
+      try {
+        const [shipments, charges] = await Promise.all([
+          run('shipment', 'shipmentId'),
+          run('charge_shipment', 'chargeShipmentId'),
+        ]);
+        const details = [
+          ...shipments.map((r: any) => ({ ...r, isCharge: false })),
+          ...charges.map((r: any) => ({ ...r, isCharge: true })),
+        ].sort((a, b) => new Date(b.fecha67).getTime() - new Date(a.fecha67).getTime());
+
+        return {
+          summary: {
+            Total: details.length,
+            Envíos: shipments.length,
+            Cargas: charges.length,
+            Desde: s.toISOString().slice(0, 10),
+            Hasta: e.toISOString().slice(0, 10),
+          },
+          details,
+        };
+      } catch (err: any) {
+        this.logger.error(`getReceivedWith67BySubsidiary: ${err.message}`);
+        return { summary: { Total: 0 }, details: [] };
+      }
+    }
+
+    /** Excel del reporte "Recibidas de FedEx (con 67)". */
+    async exportReceived67Excel(rows: any[]): Promise<Buffer> {
+      const wb = new ExcelJS.Workbook();
+      const ws = wb.addWorksheet('Recibidas con 67');
+      ws.columns = [
+        { header: 'Guía', key: 'trackingNumber', width: 22 },
+        { header: 'Fecha 67', key: 'fecha67', width: 20 },
+        { header: 'Días desde 67', key: 'diasDesde67', width: 14 },
+        { header: 'Estatus', key: 'status', width: 22 },
+        { header: 'Destinatario', key: 'recipientName', width: 26 },
+        { header: 'Dirección', key: 'recipientAddress', width: 34 },
+        { header: 'Ciudad', key: 'recipientCity', width: 18 },
+        { header: 'CP', key: 'recipientZip', width: 10 },
+        { header: 'Tipo', key: 'tipo', width: 10 },
+      ];
+      ws.getRow(1).font = { bold: true };
+      for (const r of rows) {
+        ws.addRow({
+          ...r,
+          fecha67: r.fecha67 ? new Date(r.fecha67).toLocaleString('es-MX') : '',
+          tipo: r.isCharge ? 'Carga' : 'Envío',
+        });
+      }
+      const arrayBuffer = await wb.xlsx.writeBuffer();
+      return Buffer.from(arrayBuffer as ArrayBuffer);
+    }
+
     /*** Validate Status Code 67 by Subsidiary **************************/
     async validateCode67BySubsidiary(subsidiaryId: string) {
       // 1. Definimos estrictamente los estados operativos de interés
       const targetStatuses = [
-        ShipmentStatusType.PENDIENTE, 
+        ShipmentStatusType.PENDIENTE,
         ShipmentStatusType.EN_BODEGA
       ];
 
@@ -6232,6 +6509,8 @@ export class ShipmentsService {
 
       worksheet.columns = [
         { header: 'Tracking', key: 'trackingNumber', width: 18 },
+        { header: 'Tipo', key: 'tipo', width: 10 },
+        { header: 'Carga', key: 'carga', width: 10 },
         { header: 'Estado', key: 'status', width: 14 },
         { header: 'Prioridad', key: 'priority', width: 12 },
         { header: 'Fecha compromiso', key: 'commitDateTime', width: 22 },
@@ -6266,9 +6545,16 @@ export class ShipmentsService {
 
       /* ===================== Data ===================== */
 
-      shipments.forEach(s => {
+      const tipoXls = (t?: string) => {
+        const v = String(t || '').toLowerCase();
+        return v === 'fedex' ? 'FedEx' : v === 'dhl' ? 'DHL' : (t ? String(t).toUpperCase() : 'Otro');
+      };
+
+      shipments.forEach((s: any) => {
         worksheet.addRow({
           trackingNumber: s.trackingNumber,
+          tipo: tipoXls(s.shipmentType),
+          carga: s.isCharge ? 'Carga' : 'Normal',
           status: s.status,
           priority: s.priority,
           commitDateTime: this.formatToHermosillo(s.commitDateTime),
@@ -6327,10 +6613,10 @@ export class ShipmentsService {
     }
 
     async getPendingShipmentsBySubsidiary(
-      subsidiaryId: string, 
-      /*startDate: string, 
+      subsidiaryId: string,
+      /*startDate: string,
       endDate: string*/
-    ): Promise<{ count: number, shipments: Shipment[] }> {
+    ): Promise<{ count: number, shipments: any[] }> {
       /*const start = new Date(startDate);
       const end = new Date(endDate);
       end.setHours(23, 59, 59, 999);*/
@@ -6390,11 +6676,49 @@ export class ShipmentsService {
         .orderBy('s.recipientZip', 'ASC')
         .getMany();
 
-      console.log(`📊 Envíos pendientes únicos: ${shipments.length}`);
+      // --- CARGAS (F2) pendientes: mismo criterio que los envíos, marcadas isCharge ---
+      const cSubQuery = this.chargeShipmentRepository
+        .createQueryBuilder('c2')
+        .select("SUBSTRING_INDEX(MAX(CONCAT(c2.createdAt, '|', c2.id)), '|', -1)", 'max_id')
+        .addSelect('c2.trackingNumber', 'tracking_number')
+        .where('c2.subsidiaryId = :subsidiaryId', { subsidiaryId })
+        .groupBy('c2.trackingNumber')
+        .getQuery();
+
+      const cDeliveredSubQuery = this.chargeShipmentRepository
+        .createQueryBuilder('c3')
+        .select('DISTINCT c3.trackingNumber', 'tracking_number')
+        .where('c3.subsidiaryId = :subsidiaryId', { subsidiaryId })
+        .andWhere('c3.status IN (:...deliveredStatuses)', { deliveredStatuses: ['ENTREGADO', 'ENTREGADA'] })
+        .getQuery();
+
+      const charges = await this.chargeShipmentRepository
+        .createQueryBuilder('c')
+        .innerJoin(`(${cSubQuery})`, 'latest', 'c.trackingNumber = latest.tracking_number AND c.id = latest.max_id')
+        .where('c.subsidiaryId = :subsidiaryId', { subsidiaryId })
+        .andWhere(`c.trackingNumber NOT IN (${cDeliveredSubQuery})`)
+        .andWhere('c.status IN (:...pendingStatuses)', {
+          pendingStatuses: ['EN_RUTA', 'PENDIENTE', 'DESCONOCIDO', 'EN_BODEGA']
+        })
+        .setParameters({
+          subsidiaryId,
+          deliveredStatuses: ['ENTREGADO', 'ENTREGADA'],
+          pendingStatuses: ['EN_RUTA', 'PENDIENTE', 'DESCONOCIDO', 'EN_BODEGA']
+        })
+        .orderBy('c.recipientZip', 'ASC')
+        .getMany();
+
+      // Unificamos: envíos normales + cargas; cada fila marcada con isCharge (y su shipmentType ya viene en la entidad).
+      const rows: any[] = [
+        ...shipments.map((s) => ({ ...s, isCharge: false })),
+        ...charges.map((c) => ({ ...c, isCharge: true })),
+      ];
+
+      console.log(`📊 Pendientes únicos: ${shipments.length} envíos + ${charges.length} cargas`);
 
       return {
-        count: shipments.length,
-        shipments
+        count: rows.length,
+        shipments: rows,
       };
     }
 
@@ -6412,6 +6736,134 @@ export class ShipmentsService {
         );
 
       return this.generatePendingShipmentsExcel(shipments);
+    }
+
+    /**
+     * Estatus ACTUAL en FedEx (mapeado a estatus local) para un conjunto de guías,
+     * SIN persistir nada. Alimenta la columna "Estatus FedEx" del reporte de
+     * Pendientes (botón "Consultar FedEx" en lote). Reusa el MISMO prefetch por
+     * lotes y el MISMO mapeo (mapFedexStatusToLocalStatus) que la actualización real,
+     * para que el estatus mostrado sea comparable con la actualización efectiva.
+     */
+    async getFedexComparisonStatuses(
+      items: { trackingNumber: string; fedexUniqueId?: string }[],
+    ): Promise<Record<string, { fedexStatus: string; fedexRaw?: string; derivedCode?: string; exceptionCode?: string; reason?: string }>> {
+      const tns = [...new Set((items || []).map((i) => i.trackingNumber).filter(Boolean))];
+      if (tns.length === 0) return {};
+
+      const { map, networkErrors } = await this.prefetchFedexBatch(tns, (items || []) as any, '[Pendientes-Compare]');
+      const out: Record<string, { fedexStatus: string; fedexRaw?: string; derivedCode?: string; exceptionCode?: string; reason?: string }> = {};
+
+      // Diagnóstico agregado: para entender de dónde viene el "sin datos".
+      let conDatos = 0, sinResultado = 0, conErrorFedex = 0, vacio = 0;
+      const erroresPorCodigo: Record<string, number> = {};
+
+      for (const tn of tns) {
+        const results = map.get(tn) || [];
+        if (results.length === 0) {
+          // La guía NO vino en la respuesta de FedEx (lote con error de red, o no reconocida).
+          sinResultado++;
+          out[tn] = { fedexStatus: 'SIN_DATOS', reason: 'sin_resultado' };
+          continue;
+        }
+
+        // Misma jerarquía que processMasterFedexUpdate: la generación con secuencia mayor.
+        if (results.length > 1) {
+          results.sort((a: any, b: any) => {
+            const seqA = parseInt(a.trackingNumberInfo?.trackingNumberUniqueId?.split('~')[0] || '0');
+            const seqB = parseInt(b.trackingNumberInfo?.trackingNumberUniqueId?.split('~')[0] || '0');
+            return seqB - seqA;
+          });
+        }
+        const top = results[0];
+        const fxError = top.error; // FedEx devuelve un error POR guía (no encontrada / sin info).
+        const lsd = top.latestStatusDetail;
+        const newestEvent = [...(top.scanEvents || [])].sort(
+          (a: any, b: any) => new Date(b.date).getTime() - new Date(a.date).getTime(),
+        )[0];
+
+        // IMPORTANTE: preferimos derivedCode sobre code (igual que processMasterFedexUpdate
+        // al calcular headerStatus). FedEx a veces deja `code` VACÍO pero llena `derivedCode`
+        // (p.ej. "OW" = On the Way con 0 scanEvents) → si leyéramos `code` saldría "sin datos".
+        // Además derivedCode refleja el desenlace real (ej. code=DE pero derived=RF=Rechazado).
+        const derivedCode = lsd?.derivedCode || lsd?.code || newestEvent?.derivedStatusCode || '';
+        const exceptionCode = lsd?.ancillaryDetails?.[0]?.reason || newestEvent?.exceptionCode || '';
+        const fedexRaw =
+          lsd?.description || lsd?.statusByLocale || newestEvent?.eventDescription || derivedCode || '';
+
+        // Si FedEx no devolvió NADA útil (ni códigos ni eventos), es "sin datos".
+        // Casi siempre trae un error EXPLÍCITO por guía (no encontrada/sin info) → lo exponemos.
+        if (!derivedCode && !exceptionCode && !newestEvent) {
+          if (fxError?.code) {
+            conErrorFedex++;
+            erroresPorCodigo[fxError.code] = (erroresPorCodigo[fxError.code] || 0) + 1;
+          } else {
+            vacio++;
+          }
+          out[tn] = {
+            fedexStatus: 'SIN_DATOS',
+            reason: fxError?.code || 'vacio',
+            fedexRaw: fxError?.message || fedexRaw || undefined,
+            derivedCode: fxError?.code || undefined,
+          };
+          continue;
+        }
+
+        conDatos++;
+        const mapped = mapFedexStatusToLocalStatus(derivedCode, exceptionCode);
+        // derivedCode/exceptionCode se exponen SIEMPRE para diagnosticar (y mapear) los DESCONOCIDO.
+        out[tn] = { fedexStatus: mapped, fedexRaw, derivedCode, exceptionCode };
+      }
+
+      // Resumen para diagnosticar el "sin datos": distingue no-encontrada (error FedEx)
+      // de problemas de red/auth (networkErrors / sinResultado).
+      this.logger.log(
+        `📊 [Pendientes-Compare] guías=${tns.length} conDatos=${conDatos} sinResultado=${sinResultado} ` +
+        `errorFedex=${conErrorFedex} vacío=${vacio} networkErrors=${networkErrors} ` +
+        `erroresPorCódigo=${JSON.stringify(erroresPorCodigo)}`,
+      );
+      return out;
+    }
+
+    /**
+     * Actualiza UNA guía (envío o carga) reutilizando EXACTAMENTE el negocio de
+     * actualización con ingresos: processMasterFedexUpdate / processChargeFedexUpdate.
+     * Carga TODAS las copias de la guía en la sucursal (esos métodos agrupan por
+     * trackingNumber) y devuelve el estatus de la copia más reciente.
+     */
+    async updateOnePending(
+      subsidiaryId: string,
+      trackingNumber: string,
+      isCharge: boolean,
+    ): Promise<{ trackingNumber: string; isCharge: boolean; status: string | null }> {
+      if (!subsidiaryId || !trackingNumber) {
+        throw new BadRequestException('subsidiaryId y trackingNumber son obligatorios');
+      }
+
+      if (isCharge) {
+        const charges = await this.chargeShipmentRepository.find({
+          where: { trackingNumber, subsidiary: { id: subsidiaryId } },
+        });
+        if (charges.length === 0) return { trackingNumber, isCharge, status: null };
+        await this.processChargeFedexUpdate(charges);
+      } else {
+        const shipments = await this.shipmentRepository.find({
+          where: { trackingNumber, subsidiary: { id: subsidiaryId } },
+        });
+        if (shipments.length === 0) return { trackingNumber, isCharge, status: null };
+        await this.processMasterFedexUpdate(shipments);
+      }
+
+      // Estatus resultante = copia más reciente por createdAt.
+      const repo: any = isCharge ? this.chargeShipmentRepository : this.shipmentRepository;
+      const latest = await repo
+        .createQueryBuilder('x')
+        .where('x.trackingNumber = :trackingNumber', { trackingNumber })
+        .andWhere('x.subsidiaryId = :subsidiaryId', { subsidiaryId })
+        .orderBy('x.createdAt', 'DESC')
+        .getOne();
+
+      return { trackingNumber, isCharge, status: latest?.status ?? null };
     }
 
 
@@ -6614,9 +7066,15 @@ export class ShipmentsService {
                 const mainShipment = shipmentList[0];
                 const prevStatus = mainShipment.status; // para loguear solo si hay transición real
                 const subId = mainShipment.subsidiary?.id?.toLowerCase() || '';
-                const configKeys = Object.keys(this.SUBSIDIARY_CONFIG);
-                const matchedKey = configKeys.find(key => key.toLowerCase() === subId);
-                const subConfig = matchedKey ? this.SUBSIDIARY_CONFIG[matchedKey] : { trackExternalDelivery: false };
+                // Config por sucursal: se LEE de la entidad (columnas reales); fallback al
+                // SUBSIDIARY_CONFIG hardcodeado solo si la sucursal no está cargada.
+                const matchedKey = Object.keys(this.SUBSIDIARY_CONFIG).find(key => key.toLowerCase() === subId);
+                const hc: any = matchedKey ? this.SUBSIDIARY_CONFIG[matchedKey] : undefined;
+                const sub: any = mainShipment.subsidiary;
+                const subConfig = {
+                  trackExternalDelivery: sub?.trackFedexExternalDelivery ?? hc?.trackExternalDelivery ?? false,
+                  forceFedexStatus: sub?.forceFedexStatusOverride ?? hc?.forceFedexStatus ?? false,
+                };
 
                 // 🛡️ HUELLA DIGITAL (Evita Duplicados en DB)
                 const existingHistory = await queryRunner.manager.query(

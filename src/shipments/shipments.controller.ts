@@ -17,6 +17,8 @@ import * as dayjs from 'dayjs';
 import { UniversalAuditDto } from './dto/audit-entity-type.dto';
 import { BusinessException } from 'src/common/business.exception';
 import { NoAudit } from 'src/audit/audit.decorator';
+import { SeventeenTrackDhlService } from 'src/tracking/seventeen-track-dhl.service';
+import { runDhlRecyclingCycle } from 'src/tracking/dhl-tracking-cycle';
 
 @ApiTags('shipments')
 @ApiBearerAuth()
@@ -26,7 +28,8 @@ export class ShipmentsController {
 
   constructor(
     private readonly shipmentsService: ShipmentsService,
-    private readonly fedexService: FedexService
+    private readonly fedexService: FedexService,
+    private readonly seventeenTrackingService: SeventeenTrackDhlService
   ) {}
 
   /**
@@ -171,6 +174,35 @@ export class ShipmentsController {
     );
 
     res.end(buffer);
+  }
+
+  /**
+   * Estatus actual en FedEx (mapeado a local) para comparar contra el estatus
+   * guardado en el reporte de Pendientes. Read-only, no persiste. Botón "Consultar
+   * FedEx" en lote del front.
+   */
+  @Post('pendings/fedex-status')
+  @NoAudit()
+  async pendingsFedexStatus(
+    @Body() body: { items: { trackingNumber: string; fedexUniqueId?: string }[] }
+  ) {
+    return this.shipmentsService.getFedexComparisonStatuses(body?.items || []);
+  }
+
+  /**
+   * Actualiza UNA guía (envío o carga) con el mismo negocio de actualización con
+   * ingresos (processMasterFedexUpdate / processChargeFedexUpdate). Devuelve el
+   * nuevo estatus. Se audita (no lleva @NoAudit) porque muta datos.
+   */
+  @Post('pendings/update-one')
+  async pendingsUpdateOne(
+    @Body() body: { subsidiaryId: string; trackingNumber: string; isCharge?: boolean }
+  ) {
+    return this.shipmentsService.updateOnePending(
+      body.subsidiaryId,
+      body.trackingNumber,
+      !!body.isCharge,
+    );
   }
 
 
@@ -611,6 +643,30 @@ export class ShipmentsController {
       return this.shipmentsService.validateCode67BySubsidiary(subsidiaryId);
     }
 
+    // Reporte "Recibidas de FedEx (con 67)" — JSON (tabla) + Excel.
+    @Get('received-67/:subsidiaryId/json')
+    async getReceived67Json(
+      @Param('subsidiaryId') subsidiaryId: string,
+      @Query('start') start?: string,
+      @Query('end') end?: string,
+    ) {
+      return this.shipmentsService.getReceivedWith67BySubsidiary(subsidiaryId, start, end);
+    }
+
+    @Get('received-67/:subsidiaryId/excel')
+    async getReceived67Excel(
+      @Param('subsidiaryId') subsidiaryId: string,
+      @Res() res: any,
+      @Query('start') start?: string,
+      @Query('end') end?: string,
+    ) {
+      const { details } = await this.shipmentsService.getReceivedWith67BySubsidiary(subsidiaryId, start, end);
+      const buffer = await this.shipmentsService.exportReceived67Excel(details);
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      res.setHeader('Content-Disposition', `attachment; filename="recibidas_67_${subsidiaryId}_${Date.now()}.xlsx"`);
+      res.end(buffer);
+    }
+
     @Get('report-no67/:subsidiaryId')
     async getNo67Report(@Param('subsidiaryId') subsidiaryId: string, @Res() res: any) {
       try {
@@ -781,6 +837,79 @@ export class ShipmentsController {
       this.logger.error(`Error verificando estatus 44 para la lista proporcionada: ${error.message}`, error.stack);
       throw new InternalServerErrorException('Ocurrió un problema interno al verificar los estatus en FedEx.');
     }
+  }
+
+  @NoAudit() // Consulta directa a paquetería a través de 17TRACK: no auditable.
+  @Post('dhl/manual-track')
+  @ApiOperation({ summary: 'Consultar estatus de DHL manualmente vía 17TRACK' })
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        trackingNumbers: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Lista de números de rastreo de DHL'
+        }
+      }
+    }
+  })
+  async fetchDhlStatusesManually(
+    @Body('trackingNumbers') trackingNumbers: string[],
+    @Body('persist') persist: boolean = true,
+  ) {
+    if (!trackingNumbers || !Array.isArray(trackingNumbers) || trackingNumbers.length === 0) {
+      throw new BadRequestException('Se requiere una lista válida y no vacía de números de rastreo para DHL.');
+    }
+
+    try {
+      this.logger.log(`Solicitando estatus manual para ${trackingNumbers.length} guías de DHL a través de 17TRACK.`);
+
+      const trackingResults = await this.seventeenTrackingService.fetchTrackingStatuses(trackingNumbers);
+
+      // Persistir el estatus normalizado en los envíos DHL (a menos que persist=false).
+      const persistResult = persist
+        ? await this.shipmentsService.persistDhlTrackingResults(trackingResults)
+        : null;
+
+      return {
+        success: true,
+        message: 'Consulta manual de DHL completada con éxito',
+        totalProcessed: trackingNumbers.length,
+        data: trackingResults,
+        persisted: persistResult,
+      };
+    } catch (error) {
+      this.logger.error(`Error consultando estatus manual de DHL: ${error.message}`, error.stack);
+      throw new InternalServerErrorException('Ocurrió un problema interno al verificar los estatus de DHL en 17TRACK.');
+    }
+  }
+
+  /**
+   * Dispara el ciclo de reciclaje DHL/17TRACK on-demand (poll + liberar + registrar),
+   * sin esperar al cron horario. Solo superadmin.
+   */
+  @NoAudit()
+  @Post('dhl/sync-cron')
+  @UseGuards(SuperAdminGuard)
+  @ApiOperation({ summary: 'Ejecutar el ciclo de tracking DHL (reciclaje de quota) on-demand' })
+  async runDhlSyncCron() {
+    const quotaCap = Number(process.env.SEVENTEEN_TRACK_QUOTA_CAP) || 200;
+    try {
+      const summary = await runDhlRecyclingCycle(this.shipmentsService, this.seventeenTrackingService, quotaCap, this.logger);
+      return { success: true, ...summary };
+    } catch (error) {
+      this.logger.error(`Error en ciclo DHL on-demand: ${error.message}`, error.stack);
+      throw new InternalServerErrorException('Ocurrió un problema al ejecutar el ciclo de tracking de DHL.');
+    }
+  }
+
+  /** Quota actual de la cuenta 17TRACK (para mostrar en Configuración). */
+  @NoAudit()
+  @Get('dhl/quota')
+  @ApiOperation({ summary: 'Quota actual de 17TRACK (total/usada/restante)' })
+  async getSeventeenTrackQuota() {
+    return this.seventeenTrackingService.getQuota();
   }
 }
 

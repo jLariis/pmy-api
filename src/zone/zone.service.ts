@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { CreateZoneDto } from './dto/create-zone.dto';
 import { UpdateZoneDto } from './dto/update-zone.dto';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -14,13 +14,13 @@ export class ZoneService {
     private readonly zoneRepository: Repository<Zone>,
   ) {}
 
-  async create(createZoneDto: CreateZoneDto) {
-    const zone = this.zoneRepository.create(createZoneDto);
+  async create(createZoneDto: CreateZoneDto, userId?: string) {
+    const zone = this.zoneRepository.create({ ...createZoneDto, createdById: userId ?? null });
     return await this.zoneRepository.save(zone);
   }
 
   async findAll() {
-    return await this.zoneRepository.find();
+    return await this.zoneRepository.find({ order: { name: 'ASC' } });
   }
 
   async findOne(id: string) {
@@ -29,16 +29,14 @@ export class ZoneService {
 
   async update(id: string, updateZoneDto: UpdateZoneDto) {
     const zone = await this.zoneRepository.findOne({ where: { id } });
+    if (!zone) throw new NotFoundException('Zona no encontrada.');
     Object.assign(zone, updateZoneDto);
     return await this.zoneRepository.save(zone);
   }
 
   async remove(id: string) {
     const zone = await this.zoneRepository.findOne({ where: { id } });
+    if (!zone) throw new NotFoundException('Zona no encontrada.');
     return await this.zoneRepository.remove(zone);
-  }
-
-  async assingToSubsidiary(zoneId: string, subsidiaryId: string) {
-    const zone = await this.zoneRepository.findOne({ where: { id: zoneId } });
   }
 }

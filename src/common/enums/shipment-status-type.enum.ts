@@ -64,3 +64,16 @@ export const TERMINAL_SHIPMENT_STATUSES: ShipmentStatusType[] = [
   ShipmentStatusType.ES_OCURRE,
   ShipmentStatusType.ACARGO_DE_FEDEX,
 ];
+
+/**
+ * Estados que GENERAN INGRESO al actualizar (espejo de la lógica de
+ * processMasterFedexUpdate → isChargeable): ENTREGADO (DL), RECHAZADO (07) y
+ * CLIENTE_NO_DISPONIBLE (08, cobra en la 3ra visita acumulada).
+ * OJO: ENTREGADO_POR_FEDEX NO genera ingreso (es el blindaje anti-cobro cuando
+ * FedEx tomó el control). Se usa para resaltar en reportes.
+ */
+export const INCOME_GENERATING_STATUSES: ShipmentStatusType[] = [
+  ShipmentStatusType.ENTREGADO,
+  ShipmentStatusType.RECHAZADO,
+  ShipmentStatusType.CLIENTE_NO_DISPONIBLE,
+];

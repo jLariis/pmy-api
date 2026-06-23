@@ -1,4 +1,4 @@
-import { forwardRef, Inject, Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, forwardRef, Inject, Injectable, Logger } from '@nestjs/common';
 import { CreateDevolutionDto } from './dto/create-devolution.dto';
 import { DataSource, Repository } from 'typeorm';
 import { Devolution } from 'src/entities/devolution.entity';
@@ -419,9 +419,27 @@ export class DevolutionsService {
     };
   }
 
-  async sendByEmail(pdfFile: Express.Multer.File, excelfile: Express.Multer.File, subsidiaryName: string) {
-    const subsidiary = await this.subsidiaryRepository.findOneBy({name: subsidiaryName});
+  async sendByEmail(
+    pdfFile: Express.Multer.File,
+    excelfile: Express.Multer.File,
+    subsidiaryName: string,
+    subsidiaryId?: string,
+  ) {
+    // Buscar por id (estable) y, si no llega o no existe, por nombre. Antes solo
+    // se buscaba por nombre: si no coincidía, `subsidiary` quedaba null y reventaba
+    // con 500 al leer subsidiary.name/officeEmail en el mailer.
+    let subsidiary = subsidiaryId
+      ? await this.subsidiaryRepository.findOneBy({ id: subsidiaryId })
+      : null;
+    if (!subsidiary && subsidiaryName) {
+      subsidiary = await this.subsidiaryRepository.findOneBy({ name: subsidiaryName });
+    }
+    if (!subsidiary) {
+      throw new BadRequestException(
+        `No se encontró la sucursal (id: ${subsidiaryId ?? '-'}, nombre: ${subsidiaryName ?? '-'}) para enviar el correo de devoluciones.`,
+      );
+    }
 
-    return await this.mailService.sendHighPriorityDevolutionsEmail(pdfFile, excelfile, subsidiary)
+    return await this.mailService.sendHighPriorityDevolutionsEmail(pdfFile, excelfile, subsidiary);
   }
 }

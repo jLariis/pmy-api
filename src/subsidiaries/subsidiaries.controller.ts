@@ -1,8 +1,9 @@
-import { Body, Controller, Delete, Get, Param, Post } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Req, UseGuards } from '@nestjs/common';
 import { SubsidiariesService } from './subsidiaries.service';
-import { Subsidiary } from 'src/entities';
 import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
-
+import { AdminGuard } from 'src/auth/guards/admin.guard';
+import { CreateSubsidiaryDto } from './dto/create-subsidiary.dto';
+import { UpdateSubsidiaryDto } from './dto/update-subsidiary.dto';
 
 @ApiTags('subsidiaries')
 @ApiBearerAuth()
@@ -12,12 +13,19 @@ export class SubsidiariesController {
 
   @Get()
   getAll(){
-    return this.subsidiariesService.findAll(); 
-   }
+    return this.subsidiariesService.findAll();
+  }
 
   @Post()
-  save(@Body() subsidiary: Subsidiary) {
-    return this.subsidiariesService.create(subsidiary);
+  @UseGuards(AdminGuard)
+  save(@Body() dto: CreateSubsidiaryDto, @Req() req: any) {
+    return this.subsidiariesService.create(dto, req.user?.userId);
+  }
+
+  @Patch(':id')
+  @UseGuards(AdminGuard)
+  update(@Param('id') id: string, @Body() dto: UpdateSubsidiaryDto) {
+    return this.subsidiariesService.update(id, dto);
   }
 
   @Get(':id')
@@ -26,8 +34,8 @@ export class SubsidiariesController {
   }
 
   @Delete(':id')
+  @UseGuards(AdminGuard)
   deleteById(@Param('id') id: string) {
     return this.subsidiariesService.delete(id)
   }
-
 }

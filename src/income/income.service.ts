@@ -44,14 +44,21 @@ export class IncomeService {
           relations: ['subsidiary'],
         });
 
-        const totalShipmentIncome = incomes.reduce(
+        // Misma regla de negocio que la tabla (formatIncomesNew): excluir los
+        // FedEx no_entregado con DEX '03'. Antes el total del dashboard NO la
+        // aplicaba y por eso no cuadraba con la tabla de ingresos.
+        const billable = incomes.filter(
+          (i) => !(i.sourceType === 'shipment' && i.shipmentType === 'fedex' && i.incomeType === 'no_entregado' && i.nonDeliveryStatus === '03'),
+        );
+
+        const totalShipmentIncome = billable.reduce(
           (acc, income) => acc + parseFloat(income.cost.toString()),
           0
         );
 
         return {
           totalIncome: totalShipmentIncome,
-          incomes,
+          incomes: billable,
         };
     }
 
