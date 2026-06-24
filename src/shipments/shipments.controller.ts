@@ -190,6 +190,19 @@ export class ShipmentsController {
   }
 
   /**
+   * Confirmación con FedEx de la visibilidad 67: por guía, días con/sin 67 y los
+   * días faltantes dentro de la ventana [alta en sistema → entrega/hoy].
+   * `includeSundays` (default true) controla si los domingos exigen 67. Read-only.
+   */
+  @Post('visibility-67/fedex-check')
+  @NoAudit()
+  async visibility67FedexCheck(
+    @Body() body: { items: { trackingNumber: string; fedexUniqueId?: string }[]; includeSundays?: boolean },
+  ) {
+    return this.shipmentsService.getFedex67Visibility(body?.items || [], body?.includeSundays !== false);
+  }
+
+  /**
    * Actualiza UNA guía (envío o carga) con el mismo negocio de actualización con
    * ingresos (processMasterFedexUpdate / processChargeFedexUpdate). Devuelve el
    * nuevo estatus. Se audita (no lleva @NoAudit) porque muta datos.
@@ -637,10 +650,14 @@ export class ShipmentsController {
       return await this.shipmentsService.checkStatus67OnShipments(subsidiaryId);
     }
 
-    // JSON para la tabla del reporte "Sin 67" (la versión Excel está abajo).
+    // JSON para la tabla del reporte "Visibilidad 67" (la versión Excel está abajo).
     @Get('report-no67/:subsidiaryId/json')
-    async getNo67ReportJson(@Param('subsidiaryId') subsidiaryId: string) {
-      return this.shipmentsService.validateCode67BySubsidiary(subsidiaryId);
+    async getNo67ReportJson(
+      @Param('subsidiaryId') subsidiaryId: string,
+      @Query('threshold') threshold?: string,
+    ) {
+      const t = Number(threshold);
+      return this.shipmentsService.validateCode67BySubsidiary(subsidiaryId, Number.isFinite(t) && t > 0 ? t : 1);
     }
 
     // Reporte "Recibidas de FedEx (con 67)" — JSON (tabla) + Excel.
@@ -680,15 +697,19 @@ export class ShipmentsController {
           });
         }
         
+        // Solo exportamos los ACCIONABLES (sin 67 hoy: 'sin67' o 'nunca'); los que
+        // ya tienen 67 hoy ('hoy') no van al Excel para mantenerlo enfocado.
+        const accionables = result.details.filter((d: any) => d.category !== 'hoy');
+
         // Verificar que hay datos
-        if (result.details.length === 0) {
+        if (accionables.length === 0) {
           return res.status(404).json({
-            message: 'No hay shipments sin código 67 para exportar',
+            message: 'No hay paquetes sin código 67 de hoy para exportar',
           });
         }
-        
+
         // Generar el Excel
-        await this.shipmentsService.exportNo67Shipments(result.details, res);
+        await this.shipmentsService.exportNo67Shipments(accionables, res);
         
       } catch (error) {
         return res.status(500).json({

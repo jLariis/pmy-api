@@ -12,7 +12,7 @@ import { ParsedShipmentDto } from './dto/parsed-shipment.dto';
 import { mapFedexStatusToLocalStatus } from 'src/utils/fedex.utils';
 import { map17TrackStatusToLocal } from 'src/utils/dhl.utils';
 import type { NormalizedTrackingResult } from 'src/tracking/seventeen-track-dhl.service';
-import { addDays, differenceInDays, endOfToday, format, isSameDay, parse, parseISO, startOfToday } from 'date-fns';
+import { addDays, differenceInCalendarDays, differenceInDays, endOfToday, format, isSameDay, parse, parseISO, startOfToday } from 'date-fns';
 import { ShipmentType } from 'src/common/enums/shipment-type.enum';
 import { Consolidated, Income, Payment, Subsidiary } from 'src/entities';
 import { PaymentStatus } from 'src/common/enums/payment-status.enum';
@@ -4387,69 +4387,124 @@ export class ShipmentsService {
     }
 
     /*** Validate Status Code 67 by Subsidiary **************************/
-    async validateCode67BySubsidiary(subsidiaryId: string) {
-      // 1. Definimos estrictamente los estados operativos de interés
-      const targetStatuses = [
-        ShipmentStatusType.PENDIENTE,
-        ShipmentStatusType.EN_BODEGA
-      ];
+    /**
+     * Reporte de VISIBILIDAD 67 (regla FedEx: cada paquete debe tener ≥1 código 67
+     * por día, desde que se recibe hasta que se entrega). Lista los paquetes ACTIVOS
+     * (pendiente / en bodega) y calcula, por GUÍA (agregando todas sus copias), la
+     * fecha del último 67 y los DÍAS SIN 67. Categoriza:
+     *   - 'hoy'   → ya tiene un 67 hoy (días = 0). OK.
+     *   - 'sin67' → tiene 67 pero no de hoy (días ≥ 1). Perdió visibilidad.
+     *   - 'nunca' → jamás registró un 67.
+     * `thresholdDays` (default 1) marca a partir de cuántos días sin 67 se considera
+     * "crítico" para el conteo del resumen. Devuelve TODOS los activos (la tabla
+     * filtra/ordena por categoría o días desde 67).
+     */
+    async validateCode67BySubsidiary(subsidiaryId: string, thresholdDays = 1) {
+      const targetStatuses = [ShipmentStatusType.PENDIENTE, ShipmentStatusType.EN_BODEGA];
 
-      // 2. Buscamos en ambos repositorios filtrando por subsidiaria y estados
       const [shipments, chargeShipments] = await Promise.all([
         this.shipmentRepository.find({
-          where: { 
-            subsidiary: { id: subsidiaryId },
-            status: In(targetStatuses) 
-          },
+          where: { subsidiary: { id: subsidiaryId }, status: In(targetStatuses) },
           relations: ['statusHistory'],
         }),
         this.chargeShipmentRepository.find({
-          where: { 
-            subsidiary: { id: subsidiaryId },
-            status: In(targetStatuses) 
-          },
+          where: { subsidiary: { id: subsidiaryId }, status: In(targetStatuses) },
           relations: ['statusHistory'],
         }),
       ]);
 
-      const allShipments = [...shipments, ...chargeShipments];
-      const shipmentsWithout67 = [];
+      const tagged = [
+        ...shipments.map((s) => ({ s, isCharge: false })),
+        ...chargeShipments.map((s) => ({ s, isCharge: true })),
+      ];
 
-      // 3. Procesamos la lista unificada
-      for (const shipment of allShipments) {
-        try {
-          // Si no tiene historial, por lógica no tiene el código 67
-          if (!shipment.statusHistory || shipment.statusHistory.length === 0) {
-            shipmentsWithout67.push(this.mapMissing67Data(shipment, 'Sin historial de estados'));
-            continue;
+      // Agregamos por GUÍA: una guía puede tener varias copias; el 67 puede estar en
+      // cualquiera. Tomamos el 67 MÁS RECIENTE entre todas las copias y la copia más
+      // nueva (createdAt) como representante para estatus/destinatario.
+      const byGuide = new Map<string, { rep: any; isCharge: boolean; max67: Date | null; codes: Set<string>; firstStatus: Date | null; lastStatus: Date | null; historyCount: number; minCreatedAt: Date }>();
+
+      const maxDate = (a: Date | null, b: Date | null) => (!a ? b : !b ? a : a > b ? a : b);
+
+      for (const { s, isCharge } of tagged) {
+        const history = s.statusHistory || [];
+        let max67: Date | null = null;
+        let firstStatus: Date | null = null;
+        let lastStatus: Date | null = null;
+        const codes = new Set<string>();
+        for (const h of history) {
+          if (h.exceptionCode) codes.add(h.exceptionCode);
+          const t = h.timestamp ? new Date(h.timestamp) : null;
+          if (t) {
+            firstStatus = !firstStatus || t < firstStatus ? t : firstStatus;
+            lastStatus = !lastStatus || t > lastStatus ? t : lastStatus;
+            if (h.exceptionCode === '67') max67 = maxDate(max67, t);
           }
+        }
 
-          // Verificamos la existencia del código 67
-          const hasExceptionCode67 = shipment.statusHistory.some(
-            status => status.exceptionCode === '67'
-          );
-
-          if (!hasExceptionCode67) {
-            const sortedHistory = shipment.statusHistory.sort(
-              (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
-            );
-
-            shipmentsWithout67.push(
-              this.mapMissing67Data(shipment, 'No tiene exceptionCode 67', sortedHistory)
-            );
-          }
-        } catch (error) {
-          shipmentsWithout67.push(this.mapMissing67Data(shipment, `Error: ${error.message}`));
+        const createdAt = new Date(s.createdAt);
+        const existing = byGuide.get(s.trackingNumber);
+        if (!existing) {
+          byGuide.set(s.trackingNumber, { rep: s, isCharge, max67, codes, firstStatus, lastStatus, historyCount: history.length, minCreatedAt: createdAt });
+        } else {
+          const repNewer = createdAt > new Date(existing.rep.createdAt);
+          existing.rep = repNewer ? s : existing.rep;
+          existing.isCharge = existing.isCharge || isCharge;
+          existing.max67 = maxDate(existing.max67, max67);
+          existing.firstStatus = existing.firstStatus && firstStatus ? (firstStatus < existing.firstStatus ? firstStatus : existing.firstStatus) : (existing.firstStatus || firstStatus);
+          existing.lastStatus = maxDate(existing.lastStatus, lastStatus);
+          existing.historyCount += history.length;
+          if (createdAt < existing.minCreatedAt) existing.minCreatedAt = createdAt; // alta = la copia más antigua
+          for (const c of codes) existing.codes.add(c);
         }
       }
 
+      const now = new Date();
+      const details = Array.from(byGuide.values()).map(({ rep, isCharge, max67, codes, firstStatus, lastStatus, historyCount, minCreatedAt }) => {
+        const daysSinceLast67 = max67 ? differenceInCalendarDays(now, max67) : null;
+        const category = max67 == null ? 'nunca' : daysSinceLast67 === 0 ? 'hoy' : 'sin67';
+        return {
+          trackingNumber: rep.trackingNumber,
+          status: rep.status,
+          currentStatus: rep.status, // alias para el Excel legacy
+          recipientName: rep.recipientName,
+          recipientAddress: rep.recipientAddress,
+          recipientCity: rep.recipientCity,
+          recipientZip: rep.recipientZip,
+          shipmentType: rep.shipmentType,
+          fedexUniqueId: rep.fedexUniqueId,
+          isCharge,
+          createdAt: minCreatedAt.toISOString(), // alta en el sistema (copia más antigua)
+          last67Date: max67 ? max67.toISOString() : null,
+          daysSinceLast67, // number | null (null = nunca)
+          has67Today: category === 'hoy',
+          category, // 'hoy' | 'sin67' | 'nunca'
+          // Campos para el Excel legacy / diagnóstico:
+          statusHistoryCount: historyCount,
+          exceptionCodes: Array.from(codes),
+          firstStatusDate: firstStatus ? firstStatus.toISOString() : null,
+          lastStatusDate: lastStatus ? lastStatus.toISOString() : null,
+          comment: category === 'nunca' ? 'Nunca registró 67' : category === 'sin67' ? `Sin 67 hace ${daysSinceLast67} día(s)` : 'Tiene 67 hoy',
+        };
+      });
+
+      // Orden por defecto: por fecha de alta en el sistema, del MÁS VIEJO al más nuevo.
+      // (En la tabla se puede reordenar por cualquier columna desde el encabezado.)
+      details.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+
+      const con67Hoy = details.filter((d) => d.category === 'hoy').length;
+      const nunca = details.filter((d) => d.category === 'nunca').length;
+      const criticos = details.filter((d) => d.category === 'nunca' || (d.daysSinceLast67 ?? 0) >= thresholdDays).length;
+
       return {
         summary: {
-          totalInWarehouseOrPending: allShipments.length,
-          withoutCode67: shipmentsWithout67.length,
-          withCode67: allShipments.length - shipmentsWithout67.length,
+          totalActivos: details.length,
+          con67Hoy,
+          sin67: details.length - con67Hoy, // todo lo que no tiene 67 de hoy
+          nunca,
+          criticos, // sin 67 >= thresholdDays (incluye 'nunca')
+          thresholdDays,
         },
-        details: shipmentsWithout67,
+        details,
       };
     }
 
@@ -6745,6 +6800,132 @@ export class ShipmentsService {
      * lotes y el MISMO mapeo (mapFedexStatusToLocalStatus) que la actualización real,
      * para que el estatus mostrado sea comparable con la actualización efectiva.
      */
+    /**
+     * Confirmación con FedEx de la VISIBILIDAD 67: por guía cuenta los días
+     * calendario CON un escaneo 67 (exceptionCode '67' = "tercero va en camino")
+     * vs la ventana [alta en sistema (MIN createdAt) → entrega (scan DL) u hoy],
+     * y lista los días que FALTARON. `includeSundays` controla si los domingos
+     * exigen 67 (configurable, no hardcodeado). Solo lectura (no persiste).
+     * Hermosillo = UTC-7 fijo (Sonora no usa horario de verano).
+     */
+    async getFedex67Visibility(
+      items: { trackingNumber: string; fedexUniqueId?: string }[],
+      includeSundays = true,
+    ): Promise<Record<string, {
+      windowStart: string | null; windowEnd: string | null; delivered: boolean;
+      daysWith67: number; daysWithout67: number; missingDates: string[]; last67: string | null;
+      events: { date: string; description: string; exceptionCode?: string }[];
+      lastMovement: { date: string; description: string } | null;
+      fedexStatus: string; fedexRaw?: string; derivedCode?: string; exceptionCode?: string;
+    }>> {
+      const tns = [...new Set((items || []).map((i) => i.trackingNumber).filter(Boolean))];
+      const out: Record<string, any> = {};
+      if (tns.length === 0) return out;
+
+      const HER = -7 * 3600 * 1000;
+      const herDay = (x: any) => new Date(new Date(x).getTime() + HER).toISOString().slice(0, 10);
+      const dow = (d: string) => new Date(d + 'T12:00:00Z').getUTCDay(); // 0 = domingo
+      const addDay = (d: string) => new Date(new Date(d + 'T12:00:00Z').getTime() + 86400000).toISOString().slice(0, 10);
+      const enumerate = (start: string, end: string) => {
+        const days: string[] = [];
+        let d = start, guard = 0;
+        while (d <= end && guard++ < 800) {
+          if (includeSundays || dow(d) !== 0) days.push(d);
+          d = addDay(d);
+        }
+        return days;
+      };
+
+      // Inicio de ventana = MIN(createdAt) por guía (alta en el sistema), envíos + cargas.
+      const startMap = new Map<string, string>();
+      const collectStarts = async (repo: Repository<any>, alias: string) => {
+        const rows = await repo
+          .createQueryBuilder(alias)
+          .select(`${alias}.trackingNumber`, 'tn')
+          .addSelect(`MIN(${alias}.createdAt)`, 'minCreated')
+          .where(`${alias}.trackingNumber IN (:...tns)`, { tns })
+          .groupBy(`${alias}.trackingNumber`)
+          .getRawMany();
+        for (const r of rows) {
+          const day = herDay(r.minCreated);
+          const cur = startMap.get(r.tn);
+          if (!cur || day < cur) startMap.set(r.tn, day); // el más antiguo entre envío/carga
+        }
+      };
+      await collectStarts(this.shipmentRepository, 's');
+      await collectStarts(this.chargeShipmentRepository, 'cs');
+
+      const { map } = await this.prefetchFedexBatch(tns, (items || []) as any, '[Visibilidad67-FedEx]');
+      const today = herDay(new Date());
+
+      for (const tn of tns) {
+        const results = map.get(tn) || [];
+        if (results.length > 1) {
+          results.sort((a: any, b: any) => {
+            const seqA = parseInt(a.trackingNumberInfo?.trackingNumberUniqueId?.split('~')[0] || '0');
+            const seqB = parseInt(b.trackingNumberInfo?.trackingNumberUniqueId?.split('~')[0] || '0');
+            return seqB - seqA;
+          });
+        }
+        const top = results[0];
+        const events: any[] = top?.scanEvents || [];
+
+        const days67 = new Set<string>(
+          events.filter((e) => e.exceptionCode === '67' && e.date).map((e) => herDay(e.date)),
+        );
+        const dl = events.find((e) => e.eventType === 'DL' && e.date);
+        const delivered = !!dl;
+
+        // Inicio: createdAt; si falta, el primer 67; si tampoco, hoy.
+        const windowStart = startMap.get(tn) || (days67.size ? [...days67].sort()[0] : today);
+        let windowEnd = dl ? herDay(dl.date) : today;
+        if (windowEnd < windowStart) windowEnd = windowStart; // guardas contra datos raros
+
+        const windowDays = enumerate(windowStart, windowEnd);
+        // Solo contamos 67 dentro de la ventana.
+        const days67InWindow = [...days67].filter((d) => d >= windowStart && d <= windowEnd);
+        const set67 = new Set(days67InWindow);
+        const missingDates = windowDays.filter((d) => !set67.has(d));
+
+        // Estatus actual en FedEx (mapeado a local) — habilita el botón "Actualizar"
+        // por fila (mismo criterio que getFedexComparisonStatuses).
+        const lsd = top?.latestStatusDetail;
+        const newestEvt = [...events].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())[0];
+        const derivedCode = lsd?.derivedCode || lsd?.code || newestEvt?.derivedStatusCode || '';
+        const exceptionCode = lsd?.ancillaryDetails?.[0]?.reason || newestEvt?.exceptionCode || '';
+        const fedexRaw = lsd?.description || lsd?.statusByLocale || newestEvt?.eventDescription || derivedCode || '';
+        const fedexStatus = derivedCode || exceptionCode || newestEvt ? mapFedexStatusToLocalStatus(derivedCode, exceptionCode) : 'SIN_DATOS';
+
+        // Movimientos (historial de escaneos de FedEx), del más reciente al más antiguo.
+        const sortedEvents = [...events].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+        const movements = sortedEvents
+          .filter((e) => e.date)
+          .map((e) => ({
+            date: e.date,
+            description: e.eventDescription || e.derivedStatusCode || e.eventType || '',
+            ...(e.exceptionCode ? { exceptionCode: e.exceptionCode } : {}),
+          }));
+
+        out[tn] = {
+          windowStart,
+          windowEnd,
+          delivered,
+          daysWith67: set67.size,
+          daysWithout67: missingDates.length,
+          missingDates,
+          last67: days67InWindow.length ? days67InWindow.sort().slice(-1)[0] : null,
+          events: movements,
+          lastMovement: movements.length ? { date: movements[0].date, description: movements[0].description } : null,
+          fedexStatus,
+          fedexRaw,
+          derivedCode,
+          exceptionCode,
+        };
+      }
+
+      return out;
+    }
+
     async getFedexComparisonStatuses(
       items: { trackingNumber: string; fedexUniqueId?: string }[],
     ): Promise<Record<string, { fedexStatus: string; fedexRaw?: string; derivedCode?: string; exceptionCode?: string; reason?: string }>> {
