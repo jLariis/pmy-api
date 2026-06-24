@@ -141,8 +141,6 @@ export class IncomeService {
       const { totalExpenses, daily } = await this.getTotalExpenses(subsidiaryId, startDay, adjustedToDate)
       const balance = income.totalIncome - totalExpenses;
 
-      console.log("Finalizo y retorna: ",  balance);
-
       return {
         incomes: formattedIncome,
         expenses: daily,

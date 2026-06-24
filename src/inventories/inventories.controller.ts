@@ -6,6 +6,8 @@ import { FilesInterceptor } from '@nestjs/platform-express';
 import { ApiOperation, ApiConsumes, ApiBody, ApiTags } from '@nestjs/swagger';
 import { ValidationPayloadDto } from 'src/unloading/dto/validate-payload.dto';
 import { NoAudit } from 'src/audit/audit.decorator';
+import { UseGuards } from '@nestjs/common';
+import { SubsidiaryScopeGuard } from 'src/auth/guards/subsidiary-scope.guard';
 
 @ApiTags('inventories')
 @Controller('inventories')
@@ -21,6 +23,22 @@ export class InventoriesController {
   @Get('detail/:id')
   findOneFull(@Param('id') id: string) {
     return this.inventoriesService.findOneFull(id);
+  }
+
+  /** Reporte "Inventarios" (estilo Visibilidad 67) por sucursal y rango (default: ayer). */
+  @Get('visibility-report/:subsidiaryId')
+  @UseGuards(SubsidiaryScopeGuard) // Acota por sucursal (no-elevados solo la suya).
+  getInventoryVisibilityReport(
+    @Param('subsidiaryId') subsidiaryId: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
+    const f = from ? new Date(from) : new Date();
+    const t = to ? new Date(to) : new Date();
+    if (isNaN(f.getTime()) || isNaN(t.getTime())) {
+      throw new BadRequestException('Fechas inválidas (from/to).');
+    }
+    return this.inventoriesService.getInventoryVisibilityReport(subsidiaryId, f, t);
   }
 
   @Get(':subsidiaryId')

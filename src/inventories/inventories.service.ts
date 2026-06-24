@@ -11,6 +11,7 @@ import { MailService } from 'src/mail/mail.service';
 import { ShipmentStatusType } from 'src/common/enums/shipment-status-type.enum';
 import * as ExcelJS from 'exceljs';
 import { fromZonedTime } from 'date-fns-tz';
+import { differenceInCalendarDays } from 'date-fns';
 
 export interface ShipmentWithout67 {
   trackingNumber: string;
@@ -868,6 +869,150 @@ export class InventoriesService {
       this.logger.error(`❌ Error: ${error.message}`, error.stack);
       throw error;
     }
+  }
+
+  /**
+   * Reporte de VISIBILIDAD 67 sobre los INVENTARIOS de una sucursal en un rango
+   * (por defecto "ayer"). Busca los inventarios con `inventoryDate` en el rango,
+   * junta sus paquetes (envíos + cargas) y los DEDUPLICA por guía: una sola fila
+   * por paquete con su ESTATUS ACTUAL + los campos estilo Visibilidad 67 (alta,
+   * último 67, días sin 67, categoría) + la lista de inventarios en los que
+   * estuvo ese día (tipo/fecha). La confirmación con FedEx la hace el front
+   * reutilizando el mismo endpoint de Visibilidad 67 (por número de guía).
+   */
+  async getInventoryVisibilityReport(subsidiaryId: string, from: Date, to: Date) {
+    const start = new Date(from); start.setHours(0, 0, 0, 0);
+    const end = new Date(to); end.setHours(23, 59, 59, 999);
+
+    // 1) Inventarios del rango (solo metadatos — NO cargamos paquetes ni historial
+    //    por relación: eso explotaba la memoria con el join de statusHistory).
+    const invs = await this.inventoryRepository.find({
+      where: { subsidiary: { id: subsidiaryId }, inventoryDate: Between(start, end) },
+      select: ['id', 'type', 'inventoryDate'],
+      order: { inventoryDate: 'ASC' },
+    });
+    if (invs.length === 0) {
+      return { summary: { inventarios: 0, paquetes: 0, con67Hoy: 0, sin67: 0, nunca: 0 }, details: [] };
+    }
+    const invIds = invs.map((i) => i.id);
+    const invMeta = new Map(invs.map((i) => [i.id, { type: String(i.type ?? 'initial'), inventoryDate: i.inventoryDate }]));
+
+    // 2) Membresías paquete↔inventario vía tablas pivote, SOLO columnas necesarias
+    //    (sin statusHistory, y envíos/cargas en consultas separadas para no hacer
+    //    producto cartesiano shipments×chargeShipments).
+    const PKG_COLS: [string, string][] = [
+      ['trackingNumber', 'trackingNumber'], ['status', 'status'],
+      ['recipientName', 'recipientName'], ['recipientAddress', 'recipientAddress'],
+      ['recipientCity', 'recipientCity'], ['recipientZip', 'recipientZip'],
+      ['shipmentType', 'shipmentType'], ['fedexUniqueId', 'fedexUniqueId'], ['createdAt', 'createdAt'],
+    ];
+    const buildPkgQuery = (repo: Repository<any>, alias: string, pivot: string, fk: string) => {
+      const qb = repo.createQueryBuilder(alias)
+        .innerJoin(pivot, 'j', `j.${fk} = ${alias}.id`)
+        .where('j.inventoryId IN (:...invIds)', { invIds })
+        // Solo los que REALMENTE se quedaron en bodega (estatus actual = en_bodega).
+        .andWhere(`LOWER(${alias}.status) = :enBodega`, { enBodega: ShipmentStatusType.EN_BODEGA })
+        .select(`${alias}.id`, 'id')
+        .addSelect('j.inventoryId', 'inventoryId');
+      for (const [col, as] of PKG_COLS) qb.addSelect(`${alias}.${col}`, as);
+      return qb.getRawMany();
+    };
+    const [shipRows, chargeRows] = await Promise.all([
+      buildPkgQuery(this.shipmentRepository, 's', 'inventory_shipment', 'shipmentId'),
+      buildPkgQuery(this.chargeShipmentRepository, 'cs', 'inventory_charge_shipments', 'chargeShipmentId'),
+    ]);
+
+    // 3) Fecha del último 67 por paquete — UN agregado sobre shipment_status,
+    //    acotado a los ids de este reporte (chunked). Sin hidratar el historial.
+    const chunk = <T,>(arr: T[], n: number) => { const o: T[][] = []; for (let i = 0; i < arr.length; i += n) o.push(arr.slice(i, i + n)); return o; };
+    const max67By = async (ids: string[], fkCol: string): Promise<Map<string, Date>> => {
+      const m = new Map<string, Date>();
+      for (const part of chunk([...new Set(ids)], 1000)) {
+        if (part.length === 0) continue;
+        const ph = part.map(() => '?').join(',');
+        const rows: any[] = await this.dataSource.query(
+          `SELECT ${fkCol} AS id, MAX(timestamp) AS m FROM shipment_status WHERE ${fkCol} IN (${ph}) AND exceptionCode = '67' GROUP BY ${fkCol}`,
+          part,
+        );
+        for (const r of rows) if (r.id) m.set(String(r.id), new Date(r.m));
+      }
+      return m;
+    };
+    const [ship67, charge67] = await Promise.all([
+      max67By(shipRows.map((r) => r.id), 'shipmentId'),
+      max67By(chargeRows.map((r) => r.id), 'chargeShipmentId'),
+    ]);
+
+    // 4) Agregar por guía (dedup): estatus actual = copia más nueva; 67 = máximo
+    //    entre copias; inventarios = en cuáles estuvo.
+    const maxDate = (a: Date | null, b: Date | null) => (!a ? b : !b ? a : a > b ? a : b);
+    type Agg = { rep: any; isCharge: boolean; max67: Date | null; minCreatedAt: Date; inventories: { inventoryId: string; type: string; inventoryDate: Date }[] };
+    const byGuide = new Map<string, Agg>();
+
+    const ingest = (row: any, isCharge: boolean, max67Map: Map<string, Date>) => {
+      if (!row?.trackingNumber) return;
+      const inv = invMeta.get(row.inventoryId);
+      if (!inv) return;
+      const max67 = max67Map.get(String(row.id)) ?? null;
+      const createdAt = new Date(row.createdAt);
+      const invRef = { inventoryId: row.inventoryId, type: inv.type, inventoryDate: inv.inventoryDate };
+      const existing = byGuide.get(row.trackingNumber);
+      if (!existing) {
+        byGuide.set(row.trackingNumber, { rep: row, isCharge, max67, minCreatedAt: createdAt, inventories: [invRef] });
+      } else {
+        if (createdAt > new Date(existing.rep.createdAt)) existing.rep = row;
+        existing.isCharge = existing.isCharge || isCharge;
+        existing.max67 = maxDate(existing.max67, max67);
+        if (createdAt < existing.minCreatedAt) existing.minCreatedAt = createdAt;
+        if (!existing.inventories.some((i) => i.inventoryId === row.inventoryId)) existing.inventories.push(invRef);
+      }
+    };
+    shipRows.forEach((r) => ingest(r, false, ship67));
+    chargeRows.forEach((r) => ingest(r, true, charge67));
+
+    const now = new Date();
+    const details = Array.from(byGuide.values()).map(({ rep, isCharge, max67, minCreatedAt, inventories }) => {
+      const daysSinceLast67 = max67 ? differenceInCalendarDays(now, max67) : null;
+      const category = max67 == null ? 'nunca' : daysSinceLast67 === 0 ? 'hoy' : 'sin67';
+      // Orden cronológico de los inventarios en que estuvo (inicial→dex→final).
+      const invSorted = [...inventories].sort((a, b) => new Date(a.inventoryDate).getTime() - new Date(b.inventoryDate).getTime());
+      return {
+        trackingNumber: rep.trackingNumber,
+        status: rep.status,
+        recipientName: rep.recipientName,
+        recipientAddress: rep.recipientAddress,
+        recipientCity: rep.recipientCity,
+        recipientZip: rep.recipientZip,
+        shipmentType: rep.shipmentType,
+        fedexUniqueId: rep.fedexUniqueId,
+        isCharge,
+        createdAt: minCreatedAt.toISOString(),
+        last67Date: max67 ? max67.toISOString() : null,
+        daysSinceLast67,
+        has67Today: category === 'hoy',
+        category,
+        inventories: invSorted.map((i) => ({ type: i.type, inventoryDate: i.inventoryDate, inventoryId: i.inventoryId })),
+        inventoryTypes: invSorted.map((i) => i.type).join(', '),
+        inventoryCount: invSorted.length,
+      };
+    });
+
+    // Orden por defecto: alta en sistema, del más viejo al más nuevo.
+    details.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+
+    const con67Hoy = details.filter((d) => d.category === 'hoy').length;
+    const nunca = details.filter((d) => d.category === 'nunca').length;
+
+    return {
+      summary: {
+        inventarios: invs.length,
+        paquetes: details.length,
+        con67Hoy,
+        sin67: details.length - con67Hoy,
+        nunca,
+      },
+      details,
+    };
   }
 
   // ============ MÉTODOS HELPER CORREGIDOS ============
