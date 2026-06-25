@@ -1,5 +1,6 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete, UploadedFile, UseInterceptors, BadRequestException, UploadedFiles, Query, ParseArrayPipe, Req } from '@nestjs/common';
+import { Controller, Get, Post, Body, Patch, Param, Delete, UploadedFile, UseInterceptors, BadRequestException, UploadedFiles, Query, ParseArrayPipe, Req, UseGuards } from '@nestjs/common';
 import { UnloadingService } from './unloading.service';
+import { SubsidiaryScopeGuard } from 'src/auth/guards/subsidiary-scope.guard';
 import { CreateUnloadingDto } from './dto/create-unloading.dto';
 import { UpdateUnloadingDto } from './dto/update-unloading.dto';
 import { FilesInterceptor } from '@nestjs/platform-express';
@@ -17,6 +18,22 @@ export class UnloadingController {
   @Post()
   create(@Body() createUnloadingDto: CreateUnloadingDto, @Req() req: any) {
     return this.unloadingService.create(createUnloadingDto, req.user?.userId);
+  }
+
+  /** Reporte "Desembarques" (estilo Visibilidad 67, todos los estatus) por sucursal y rango. */
+  @Get('visibility-report/:subsidiaryId')
+  @UseGuards(SubsidiaryScopeGuard)
+  getUnloadingVisibilityReport(
+    @Param('subsidiaryId') subsidiaryId: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
+    const f = from ? new Date(from) : new Date();
+    const t = to ? new Date(to) : new Date();
+    if (isNaN(f.getTime()) || isNaN(t.getTime())) {
+      throw new BadRequestException('Fechas inválidas (from/to).');
+    }
+    return this.unloadingService.getUnloadingVisibilityReport(subsidiaryId, f, t);
   }
 
   

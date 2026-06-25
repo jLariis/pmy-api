@@ -189,6 +189,13 @@ export class ShipmentsController {
     return this.shipmentsService.getFedexComparisonStatuses(body?.items || []);
   }
 
+  /** Historiales de estatus por guía (lote) — para el timeline del detalle de Ingresos. */
+  @Post('status-history')
+  @NoAudit()
+  async getStatusHistories(@Body('trackingNumbers') trackingNumbers: string[]) {
+    return this.shipmentsService.getStatusHistoriesByTrackingNumbers(trackingNumbers || []);
+  }
+
   /**
    * Confirmación con FedEx de la visibilidad 67: por guía, días con/sin 67 y los
    * días faltantes dentro de la ventana [alta en sistema → entrega/hoy].

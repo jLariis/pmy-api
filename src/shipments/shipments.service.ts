@@ -3898,11 +3898,41 @@ export class ShipmentsService {
     }
 
     /**
+     * Historiales de estatus por número de guía (lote). Lo usa el detalle de
+     * Ingresos para cargar el timeline BAJO DEMANDA (getIncome no une statusHistory
+     * por performance). Devuelve, por guía, su historial ordenado cronológicamente
+     * (de la copia más reciente).
+     */
+    async getStatusHistoriesByTrackingNumbers(
+      trackingNumbers: string[],
+    ): Promise<Record<string, { status: string; timestamp: Date; exceptionCode?: string; notes?: string }[]>> {
+      const tns = [...new Set((trackingNumbers || []).map((t) => `${t}`.trim()).filter(Boolean))];
+      const out: Record<string, any[]> = {};
+      if (tns.length === 0) return out;
+
+      const [shipments, charges] = await Promise.all([
+        this.shipmentRepository.find({ where: { trackingNumber: In(tns) }, relations: ['statusHistory'], order: { createdAt: 'DESC' } }),
+        this.chargeShipmentRepository.find({ where: { trackingNumber: In(tns) }, relations: ['statusHistory'], order: { createdAt: 'DESC' } }),
+      ]);
+
+      const put = (tn: string, hist: any[]) => {
+        if (out[tn]) return; // ya tomamos la copia más reciente (orden DESC)
+        out[tn] = (hist || [])
+          .map((h) => ({ status: h.status, timestamp: h.timestamp, exceptionCode: h.exceptionCode, notes: h.notes }))
+          .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+      };
+      for (const s of shipments) put(s.trackingNumber, s.statusHistory);
+      for (const c of charges) put(c.trackingNumber, c.statusHistory);
+      return out;
+    }
+
+    /**
      * Persiste en los envíos DHL los estatus normalizados que devuelve 17TRACK.
      * Por cada resultado: localiza el envío (variantes JJD↔JD + dhlUniqueId, el
      * MÁS RECIENTE por createdAt), mapea el estatus 17TRACK → local y, si es nuevo,
      * agrega un ShipmentStatus al historial y actualiza `shipment.status`.
-     * NO genera ingresos: el ingreso de DHL se genera en el CIERRE DE RUTA.
+     * Si la sucursal tiene `generateDhlIncomeOnDelivery`, al detectar ENTREGADO
+     * genera el ingreso (idempotente con el cierre de ruta).
      */
     async persistDhlTrackingResults(results: NormalizedTrackingResult[]) {
       const summary = {
@@ -3927,7 +3957,7 @@ export class ShipmentsService {
 
           const matches = await this.shipmentRepository.find({
             where,
-            relations: ['statusHistory'],
+            relations: ['statusHistory', 'subsidiary'], // subsidiary: para costo + flag de ingreso
             order: { createdAt: 'DESC' },
           });
           if (matches.length === 0) { summary.notFound.push(trackingNumber); continue; }
@@ -3962,6 +3992,16 @@ export class ShipmentsService {
               .set({ status: mapped })
               .where('id = :id', { id: shipment.id })
               .execute();
+
+            // Ingreso DHL al detectar ENTREGA (si la sucursal lo activa). Solo
+            // entregado: es el único billable claro que da 17TRACK (los DEX se
+            // cobran en cierre de ruta, donde sí se conoce el código). generateIncomes
+            // es idempotente (dedup guía+tipo+semana) y el cierre de ruta también
+            // checa "¿ya existe ingreso?", así que NO se duplica.
+            if (mapped === ShipmentStatusType.ENTREGADO && (shipment.subsidiary as any)?.generateDhlIncomeOnDelivery) {
+              shipment.status = mapped; // generateIncomes lee shipment.status
+              await this.generateIncomes(shipment, eventDate, undefined, tem);
+            }
           });
 
           summary.updated.push({ trackingNumber, status: mapped });

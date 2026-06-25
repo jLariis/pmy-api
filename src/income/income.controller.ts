@@ -19,51 +19,7 @@ export class IncomeController {
     return d;
   }
 
-
-  /*@Get('month/:firstDay/:lastDay')
-  getIncomeMonthlyAll(
-    @Param('firstDay') firstDay: string,
-    @Param('lastDay') lastDay: string,
-  ) {
-    const firstDayOfWeek= new Date(firstDay);
-    console.log("🚀 ~ IncomeController ~ firstDayOfWeek:", firstDayOfWeek)
-    const lastDayOfWeek = new Date(lastDay);
-    return this.incomeService.getMonthlyShipmentReport(firstDayOfWeek,lastDayOfWeek)  
-  }
-
-  @Get(':subsidiary/:firstDay/:lastDay')
-  getIncomeBySucursal(
-    @Param('subsidiary') subsiary: string,
-    @Param('firstDay') firstDay: string,
-    @Param('lastDay') lastDay: string,
-  ) {
-    
-    console.log("🚀 ~ IncomeController ~ lastDay:", lastDay)
-    console.log("🚀 ~ IncomeController ~ firstDay:", firstDay)
-    const firstDayOfWeek= new Date(firstDay);
-    const lastDayOfWeek = new Date(lastDay);
-
-    console.log("🚀 ~ IncomeController ~ firstDayOfWeek:", firstDayOfWeek)
-    console.log("🚀 ~ IncomeController ~ lastDayOfWeek:", lastDayOfWeek)
-
-    
-    return this.incomeService.getWeecklyShipmentReport(subsiary,firstDayOfWeek,lastDayOfWeek)  
-  }*/
-
-  /**** Sera para lo usuarios que no tengan role admin*/
-  /*@Get('monthAndSubsidiary/:subsidiary/:firstDay/:lastDay')
-  getIncomeMonthlyBySucursal(
-    @Param('subsidiary') subsiary: string,
-    @Param('firstDay') firstDay: string,
-    @Param('lastDay') lastDay: string,
-  ) {
-    const firstDayOfWeek= new Date(firstDay);
-    const lastDayOfWeek = new Date(lastDay);
-    return this.incomeService.getMonthShipmentReportBySucursal(subsiary,firstDayOfWeek,lastDayOfWeek)  
-  }*/
-
-  /************ DE AQUI PARA ARRIBA QUITAR USAR LOS DE ABAJO ***********/
-  /*** Método que llena la tabla de ingresos dentro de finanzas */
+  /** Llena la tabla de ingresos dentro de finanzas. */
   @Get('bySucursal/:subsidiaryId')
   getIncomeBySucursalAndDates(
     @Param('subsidiaryId') subsidiaryId: string,

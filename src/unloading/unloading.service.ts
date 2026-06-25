@@ -15,6 +15,7 @@ import { ShipmentStatusType, TERMINAL_SHIPMENT_STATUSES } from 'src/common/enums
 import { UnloadingReportDto } from './dto/unloading-report.dto';
 import { ShipmentsService } from 'src/shipments/shipments.service';
 import { fromZonedTime } from 'date-fns-tz';
+import { differenceInCalendarDays } from 'date-fns';
 import { ValidationPayloadDto } from './dto/validate-payload.dto';
 
 
@@ -40,6 +41,132 @@ export class UnloadingService {
     private readonly shipmentStatusRepository: Repository<ShipmentStatus>,
     private readonly dataSource: DataSource,
   ) {}
+
+  /**
+   * Reporte de VISIBILIDAD 67 sobre los DESEMBARQUES de una sucursal en un rango
+   * (por defecto "ayer"). Igual que el de inventarios pero SIN filtrar por estatus
+   * (muestra todos: entregado/DEX/en ruta/bodega/etc.), centrado en si tienen 67.
+   * Optimizado: no hidrata statusHistory (eso causaba OOM); junta paquetes vía la
+   * FK unloadingId y calcula el 67 con un agregado aparte.
+   */
+  async getUnloadingVisibilityReport(subsidiaryId: string, from: Date, to: Date) {
+    const start = new Date(from); start.setHours(0, 0, 0, 0);
+    const end = new Date(to); end.setHours(23, 59, 59, 999);
+
+    // 1) Desembarques del rango (por COALESCE(date, createdAt), date es nullable).
+    const unls: any[] = await this.unloadingRepository.createQueryBuilder('u')
+      .leftJoin('u.subsidiary', 'sub')
+      .where('sub.id = :subsidiaryId', { subsidiaryId })
+      .andWhere('COALESCE(u.date, u.createdAt) BETWEEN :start AND :end', { start, end })
+      .select('u.id', 'id').addSelect('u.date', 'date').addSelect('u.createdAt', 'createdAt')
+      .orderBy('COALESCE(u.date, u.createdAt)', 'ASC')
+      .getRawMany();
+    if (unls.length === 0) {
+      return { summary: { desembarques: 0, paquetes: 0, con67Hoy: 0, sin67: 0, nunca: 0 }, details: [] };
+    }
+    const unlIds = unls.map((u) => u.id);
+    const unlMeta = new Map(unls.map((u) => [u.id, { date: u.date ?? u.createdAt }]));
+
+    // 2) Paquetes por desembarque (FK unloadingId), solo columnas (sin statusHistory).
+    const PKG_COLS: [string, string][] = [
+      ['trackingNumber', 'trackingNumber'], ['status', 'status'],
+      ['recipientName', 'recipientName'], ['recipientAddress', 'recipientAddress'],
+      ['recipientCity', 'recipientCity'], ['recipientZip', 'recipientZip'],
+      ['shipmentType', 'shipmentType'], ['fedexUniqueId', 'fedexUniqueId'], ['createdAt', 'createdAt'],
+    ];
+    const buildPkgQuery = (repo: Repository<any>, alias: string) => {
+      const qb = repo.createQueryBuilder(alias)
+        .leftJoin(`${alias}.unloading`, 'u')
+        .where('u.id IN (:...unlIds)', { unlIds })
+        .select(`${alias}.id`, 'id')
+        .addSelect('u.id', 'unloadingId');
+      for (const [col, as] of PKG_COLS) qb.addSelect(`${alias}.${col}`, as);
+      return qb.getRawMany();
+    };
+    const [shipRows, chargeRows] = await Promise.all([
+      buildPkgQuery(this.shipmentRepository, 's'),
+      buildPkgQuery(this.chargeShipmentRepository, 'cs'),
+    ]);
+
+    // 3) Último 67 por paquete — agregado sobre shipment_status (chunked).
+    const chunk = <T,>(arr: T[], n: number) => { const o: T[][] = []; for (let i = 0; i < arr.length; i += n) o.push(arr.slice(i, i + n)); return o; };
+    const max67By = async (ids: string[], fkCol: string): Promise<Map<string, Date>> => {
+      const m = new Map<string, Date>();
+      for (const part of chunk([...new Set(ids)], 1000)) {
+        if (part.length === 0) continue;
+        const ph = part.map(() => '?').join(',');
+        const rows: any[] = await this.dataSource.query(
+          `SELECT ${fkCol} AS id, MAX(timestamp) AS m FROM shipment_status WHERE ${fkCol} IN (${ph}) AND exceptionCode = '67' GROUP BY ${fkCol}`,
+          part,
+        );
+        for (const r of rows) if (r.id) m.set(String(r.id), new Date(r.m));
+      }
+      return m;
+    };
+    const [ship67, charge67] = await Promise.all([
+      max67By(shipRows.map((r) => r.id), 'shipmentId'),
+      max67By(chargeRows.map((r) => r.id), 'chargeShipmentId'),
+    ]);
+
+    // 4) Agregar por guía (dedup) — SIN filtro de estatus (todos los estatus).
+    const maxDate = (a: Date | null, b: Date | null) => (!a ? b : !b ? a : a > b ? a : b);
+    type Agg = { rep: any; isCharge: boolean; max67: Date | null; minCreatedAt: Date; unloadings: { unloadingId: string; date: Date }[] };
+    const byGuide = new Map<string, Agg>();
+    const ingest = (row: any, isCharge: boolean, max67Map: Map<string, Date>) => {
+      if (!row?.trackingNumber) return;
+      const meta = unlMeta.get(row.unloadingId);
+      if (!meta) return;
+      const max67 = max67Map.get(String(row.id)) ?? null;
+      const createdAt = new Date(row.createdAt);
+      const ref = { unloadingId: row.unloadingId, date: meta.date };
+      const existing = byGuide.get(row.trackingNumber);
+      if (!existing) {
+        byGuide.set(row.trackingNumber, { rep: row, isCharge, max67, minCreatedAt: createdAt, unloadings: [ref] });
+      } else {
+        if (createdAt > new Date(existing.rep.createdAt)) existing.rep = row;
+        existing.isCharge = existing.isCharge || isCharge;
+        existing.max67 = maxDate(existing.max67, max67);
+        if (createdAt < existing.minCreatedAt) existing.minCreatedAt = createdAt;
+        if (!existing.unloadings.some((u) => u.unloadingId === row.unloadingId)) existing.unloadings.push(ref);
+      }
+    };
+    shipRows.forEach((r) => ingest(r, false, ship67));
+    chargeRows.forEach((r) => ingest(r, true, charge67));
+
+    const now = new Date();
+    const details = Array.from(byGuide.values()).map(({ rep, isCharge, max67, minCreatedAt, unloadings }) => {
+      const daysSinceLast67 = max67 ? differenceInCalendarDays(now, max67) : null;
+      const category = max67 == null ? 'nunca' : daysSinceLast67 === 0 ? 'hoy' : 'sin67';
+      const sorted = [...unloadings].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+      return {
+        trackingNumber: rep.trackingNumber,
+        status: rep.status,
+        recipientName: rep.recipientName,
+        recipientAddress: rep.recipientAddress,
+        recipientCity: rep.recipientCity,
+        recipientZip: rep.recipientZip,
+        shipmentType: rep.shipmentType,
+        fedexUniqueId: rep.fedexUniqueId,
+        isCharge,
+        createdAt: minCreatedAt.toISOString(),
+        last67Date: max67 ? max67.toISOString() : null,
+        daysSinceLast67,
+        has67Today: category === 'hoy',
+        category,
+        unloadings: sorted,
+        unloadingCount: sorted.length,
+      };
+    });
+
+    details.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+    const con67Hoy = details.filter((d) => d.category === 'hoy').length;
+    const nunca = details.filter((d) => d.category === 'nunca').length;
+
+    return {
+      summary: { desembarques: unls.length, paquetes: details.length, con67Hoy, sin67: details.length - con67Hoy, nunca },
+      details,
+    };
+  }
 
   async getConsolidateToStartUnloading(subdiaryId: string): Promise<ConsolidatedsDto> {
     const timeZone = "America/Hermosillo";

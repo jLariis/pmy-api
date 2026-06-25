@@ -76,4 +76,12 @@ export class CreateSubsidiaryDto {
   @IsBoolean() @IsOptional() trackFedexExternalDelivery?: boolean;
   @IsBoolean() @IsOptional() forceFedexStatusOverride?: boolean;
   @IsBoolean() @IsOptional() sortDispatchByPostalCode?: boolean;
+
+  // Reglas de ingreso por sucursal.
+  @IsBoolean() @IsOptional() chargeDex03?: boolean;
+  @IsBoolean() @IsOptional() chargeDex07?: boolean;
+  @IsBoolean() @IsOptional() chargeDex08?: boolean;
+  @IsBoolean() @IsOptional() chargeDelivered?: boolean;
+  @IsBoolean() @IsOptional() generateDhlIncomeOnDelivery?: boolean;
+  @IsBoolean() @IsOptional() countTransfersAsIncome?: boolean;
 }

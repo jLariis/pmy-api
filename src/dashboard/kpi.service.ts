@@ -8,6 +8,28 @@ import { Charge, ChargeShipment, Consolidated, Expense, Income, Shipment, Shipme
 import { startOfDay, endOfDay, differenceInDays } from 'date-fns';
 import { Frequency } from 'src/common/enums/frequency-enum';
 
+/**
+ * Ingreso "contable" según las reglas de la sucursal (regla ÚNICA, espejo SQL de
+ * `isCountableIncome`): traslados solo si countTransfersAsIncome; envíos/cargas
+ * por estatus (entregado / DEX 03·07·08 según su flag); recolecciones siempre;
+ * manual u otros fuera. Requiere `leftJoin('income.subsidiary','sub')`.
+ */
+const COUNTABLE_REVENUE_SQL = `SUM(CASE WHEN (
+  CASE
+    WHEN income.sourceType IN ('tyco','aeropuerto','special_transfer') THEN sub.countTransfersAsIncome
+    WHEN income.sourceType = 'collection' THEN 1
+    WHEN income.sourceType IN ('shipment','charge') THEN
+      CASE
+        WHEN income.incomeType = 'entregado' THEN sub.chargeDelivered
+        WHEN income.incomeType = 'no_entregado' AND income.nonDeliveryStatus = '03' THEN sub.chargeDex03
+        WHEN income.incomeType = 'no_entregado' AND income.nonDeliveryStatus = '07' THEN sub.chargeDex07
+        WHEN income.incomeType = 'no_entregado' AND income.nonDeliveryStatus = '08' THEN sub.chargeDex08
+        ELSE 1
+      END
+    ELSE 0
+  END
+) = 1 THEN income.cost ELSE 0 END)`;
+
 @Injectable()
 export class KpiService {
   private readonly logger = new Logger(KpiService.name);
@@ -214,8 +236,9 @@ export class KpiService {
 
       // -- D. INGRESOS TOTALES --
       this.incomeRepository.createQueryBuilder('income')
+        .leftJoin('income.subsidiary', 'sub')
         .select('income.subsidiaryId', 'subsidiaryId')
-        .addSelect('SUM(income.cost)', 'totalRevenue')
+        .addSelect(COUNTABLE_REVENUE_SQL, 'totalRevenue')
         .where('income.date BETWEEN :startDate AND :endDate', { startDate: startDateObj, endDate: endDateObj })
         .andWhere(subsidiaryCondition, { subsidiaryIds })
         .groupBy('income.subsidiaryId')
@@ -412,8 +435,9 @@ export class KpiService {
 
       // -- D. INGRESOS TOTALES --
       this.incomeRepository.createQueryBuilder('income')
+        .leftJoin('income.subsidiary', 'sub')
         .select('income.subsidiaryId', 'subsidiaryId')
-        .addSelect('SUM(income.cost)', 'totalRevenue')
+        .addSelect(COUNTABLE_REVENUE_SQL, 'totalRevenue')
         .where('income.date BETWEEN :startDate AND :endDate', { startDate: startDateObj, endDate: endDateObj })
         .andWhere(subsidiaryCondition, { subsidiaryIds })
         .groupBy('income.subsidiaryId')

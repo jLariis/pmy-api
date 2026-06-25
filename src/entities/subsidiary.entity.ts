@@ -153,6 +153,35 @@ export class Subsidiary {
   @Column({ default: false })
   sortDispatchByPostalCode: boolean;
 
+  // ---- Reglas de INGRESO por sucursal (defaults = comportamiento histórico) ----
+  /**
+   * ¿El DEX03 (dirección incorrecta) cuenta como ingreso? Default false: el
+   * registro SIEMPRE se crea y se conserva, pero se EXCLUYE del total mientras
+   * sea false (para poder cobrarlo después con facturación dedicada).
+   */
+  @Column({ default: false })
+  chargeDex03: boolean;
+
+  /** ¿El DEX07 (rechazado) cobra/cuenta como ingreso? */
+  @Column({ default: true })
+  chargeDex07: boolean;
+
+  /** ¿El DEX08 (cliente no disponible) cobra/cuenta como ingreso? */
+  @Column({ default: true })
+  chargeDex08: boolean;
+
+  /** ¿El entregado cobra/cuenta como ingreso? */
+  @Column({ default: true })
+  chargeDelivered: boolean;
+
+  /** ¿Generar ingreso DHL al detectar entrega (17track), no solo en cierre de ruta? */
+  @Column({ default: true })
+  generateDhlIncomeOnDelivery: boolean;
+
+  /** ¿Los traslados (tyco/aeropuerto/especial) cuentan como ingreso en finanzas? */
+  @Column({ default: true })
+  countTransfersAsIncome: boolean;
+
   @BeforeInsert()
   setCreatedAt() {
     this.createdAt = new Date(); // Fecha en UTC

@@ -80,4 +80,12 @@ export const RBAC_PERMISSIONS: RbacPermissionDef[] = [
   { code: 'configuracion.roles', name: 'Configuración · Roles y Permisos', groupName: 'Sistema', roles: ['superadmin'] },
   { code: 'configuracion.sucursales', name: 'Configuración · Sucursales (operativa)', groupName: 'Sistema', roles: ['superadmin'] },
   { code: 'auditoria', name: 'Auditoría', groupName: 'Sistema', roles: ['superadmin'] },
+  // Reportes (acceso POR reporte; el code = id del reporte en report-registry).
+  // Default = mismos roles que la página Reportes; el superadmin restringe por rol.
+  { code: 'reportes.pendientes', name: 'Reporte: Pendientes', groupName: 'Reportes', roles: ['admin', 'subadmin', 'superadmin', 'user'] },
+  { code: 'reportes.recibidas67', name: 'Reporte: Recibidas de FedEx (67)', groupName: 'Reportes', roles: ['admin', 'subadmin', 'superadmin', 'user'] },
+  { code: 'reportes.visibilidad67', name: 'Reporte: Visibilidad 67', groupName: 'Reportes', roles: ['admin', 'subadmin', 'superadmin', 'user'] },
+  { code: 'reportes.inventarios', name: 'Reporte: Inventarios', groupName: 'Reportes', roles: ['admin', 'subadmin', 'superadmin', 'user'] },
+  { code: 'reportes.desembarques', name: 'Reporte: Desembarques', groupName: 'Reportes', roles: ['admin', 'subadmin', 'superadmin', 'user'] },
+  { code: 'reportes.inventario67', name: 'Reporte: Último inventario sin 67', groupName: 'Reportes', roles: ['admin', 'subadmin', 'superadmin', 'user'] },
 ];
