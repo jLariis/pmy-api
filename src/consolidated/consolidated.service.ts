@@ -519,6 +519,22 @@ export class ConsolidatedService {
     });
   }
 
+  /**
+   * Búsqueda de consolidado NORMALIZADA (trim + mayúsculas, sin espacios dobles)
+   * y con ALCANCE por sucursal + carrier. Evita falsos positivos entre sucursales
+   * y captura duplicados con variaciones de espacios/mayúsculas.
+   */
+  async findByConsNumberScoped(consNumber: string, subsidiaryId?: string, carrier?: string): Promise<Consolidated | null> {
+    const norm = (consNumber || '').trim().toUpperCase().replace(/\s+/g, ' ');
+    if (!norm) return null;
+    const qb = this.consolidatedRepository.createQueryBuilder('c')
+      .leftJoinAndSelect('c.subsidiary', 'sub')
+      .where('TRIM(UPPER(c.consNumber)) = :norm', { norm });
+    if (subsidiaryId) qb.andWhere('sub.id = :subsidiaryId', { subsidiaryId });
+    if (carrier) qb.andWhere('c.carrier = :carrier', { carrier });
+    return qb.getOne();
+  }
+
   async getShipmentsByConsolidatedId(consolidatedId): Promise<ShipmentConsolidatedDto[]> { // Cambiamos el tipo de retorno a solo shipments
       // 1. Validación - consolidatedId es requerido
       if (!consolidatedId) {

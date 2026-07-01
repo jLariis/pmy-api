@@ -53,6 +53,19 @@ export class User {
   @Column({ nullable: true, default: true })
   active: boolean;
 
+  // ---- Recuperación de contraseña por OTP (autoservicio) ----
+  @Column({ nullable: true })
+  @Exclude()
+  otpCode?: string;
+
+  @Column({ type: 'datetime', nullable: true })
+  @Exclude()
+  otpExpiresAt?: Date;
+
+  /** Último inicio de sesión exitoso (para auditoría/sesiones). */
+  @Column({ type: 'datetime', nullable: true })
+  lastLoginAt?: Date;
+
   @Column({ type: 'datetime', default: () => 'CURRENT_TIMESTAMP' })
   createdAt: Date;
 

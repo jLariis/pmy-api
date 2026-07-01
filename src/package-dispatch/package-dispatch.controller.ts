@@ -49,6 +49,15 @@ export class PackageDispatchController {
     return this.packageDispatchService.findAllBySubsidiary(subsidiaryId, { page, limit, from, to, search });
   }
 
+  @Get('routes-report/:subsidiaryId')
+  getRoutesReport(
+    @Param('subsidiaryId') subsidiaryId: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
+    return this.packageDispatchService.getRoutesReport(subsidiaryId, from, to);
+  }
+
   @Get(':id')
   findOne(@Param('id') id: string) {
     return this.packageDispatchService.findOne(id);

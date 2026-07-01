@@ -1,22 +1,31 @@
-import { Controller, Get, Post, Body, Param, UploadedFiles, BadRequestException, UseInterceptors, Req } from '@nestjs/common';
+import { Controller, Get, Post, Body, Param, UploadedFiles, BadRequestException, UseInterceptors, Req, UseGuards, ParseArrayPipe } from '@nestjs/common';
 import { DevolutionsService } from './devolutions.service';
 import { CreateDevolutionDto } from './dto/create-devolution.dto';
 import { FilesInterceptor } from '@nestjs/platform-express';
 import { ApiOperation, ApiConsumes, ApiBody, ApiTags } from '@nestjs/swagger';
+import { PermissionsGuard } from 'src/auth/guards/permissions.guard';
+import { SubsidiaryScopeGuard } from 'src/auth/guards/subsidiary-scope.guard';
+import { RequirePermission } from 'src/auth/decorators/require-permission.decorator';
 
 @ApiTags('devolutions')
 @Controller('devolutions')
+// Autorización por permiso (defensa en profundidad sobre el gate de página del front).
+@UseGuards(PermissionsGuard)
+@RequirePermission('operaciones.devoluciones')
 export class DevolutionsController {
   constructor(private readonly devolutionsService: DevolutionsService) {}
 
   @Post()
-  create(@Body() createDevolutionDto: CreateDevolutionDto[], @Req() req: any) {
+  create(
+    @Body(new ParseArrayPipe({ items: CreateDevolutionDto })) createDevolutionDto: CreateDevolutionDto[],
+    @Req() req: any,
+  ) {
     return this.devolutionsService.create(createDevolutionDto, req.user?.userId);
   }
 
   @Get(':subsidiaryId')
+  @UseGuards(SubsidiaryScopeGuard)
   findAll(@Param('subsidiaryId') subsidiaryId: string) {
-    console.log("🚀 ~ DevolutionsController ~ findAll ~ subsidiaryId:", subsidiaryId)
     return this.devolutionsService.findAll(subsidiaryId);
   }
 

@@ -38,6 +38,8 @@ import { NotificationsModule } from './notifications/notifications.module';
 import { RbacModule } from './rbac/rbac.module';
 import { CompanySettingsModule } from './company-settings/company-settings.module';
 import { CatalogModule } from './catalog/catalog.module';
+import { GeocodeModule } from './geocode/geocode.module';
+import { ServerStatsModule } from './server-stats/server-stats.module';
 
 @Module({
   imports: [
@@ -96,7 +98,9 @@ import { CatalogModule } from './catalog/catalog.module';
     NotificationsModule,
     RbacModule,
     CompanySettingsModule,
-    CatalogModule
+    CatalogModule,
+    GeocodeModule,
+    ServerStatsModule
   ],
   controllers: [AppController],
   providers: [

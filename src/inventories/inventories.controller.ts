@@ -41,6 +41,16 @@ export class InventoriesController {
     return this.inventoriesService.getInventoryVisibilityReport(subsidiaryId, f, t);
   }
 
+  @Get('ld-report/:subsidiaryId')
+  @UseGuards(SubsidiaryScopeGuard)
+  getInventoryLDReport(
+    @Param('subsidiaryId') subsidiaryId: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
+    return this.inventoriesService.getInventoryLDReport(subsidiaryId, from, to);
+  }
+
   @Get(':subsidiaryId')
   findAll(
     @Param('subsidiaryId') subsidiaryId: string,

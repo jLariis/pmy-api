@@ -1,4 +1,3 @@
-import { ShipmentCanceledStatus } from "src/common/enums/shipment-status-type.enum";
 import { Column, Entity, JoinColumn, ManyToOne, PrimaryGeneratedColumn } from "typeorm";
 import { Subsidiary } from "./subsidiary.entity";
 import { ReturningHistory } from "./returning-history.entity";
@@ -11,8 +10,9 @@ export class Devolution {
     @Column({ nullable: false })
     trackingNumber: string;
 
+    /** Motivo de la devolución. Guarda el exceptionCode de FedEx (varchar, no enum). */
     @Column({ nullable: false })
-    reason: ShipmentCanceledStatus;
+    reason: string;
 
     @ManyToOne(() => Subsidiary, { nullable: true })
     @JoinColumn({ name: 'subsidiaryId' })

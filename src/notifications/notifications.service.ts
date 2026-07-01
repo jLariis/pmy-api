@@ -19,6 +19,7 @@ const ROUTES: { match: (p: string) => boolean; module: string; verb: string }[] 
   { match: (p) => p === '/route-closure', module: 'cierre_ruta', verb: 'registró un cierre de ruta' },
   { match: (p) => p === '/transfers' || p === '/package-transfers', module: 'traslados', verb: 'registró un traslado' },
   { match: (p) => p.startsWith('/warehouse'), module: 'bodega', verb: 'registró un movimiento de bodega' },
+  { match: (p) => p === '/dhl-webhook', module: 'dhl', verb: 'actualización DHL' },
 ];
 
 export interface NotificationItem {

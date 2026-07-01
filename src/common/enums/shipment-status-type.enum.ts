@@ -23,6 +23,7 @@ export enum ShipmentStatusType {
   DEMORA_EN_ENTREGA = 'demora_en_entrega', // DEX84 o STAT84
   EMPRESA_CERRADA = 'empresa_cerrada', // STAT42
   NO_SE_PUDO_RECOLECTAR_EL_COBRO = 'no_se_pudo_recolectar_el_cobro', // DEX93
+  RESTRICCION_SEGURIDAD_UBICACION = 'restriccion_seguridad_ubicacion', // DEX05: "Location security restrictions - Delivery will be reattempted"
   OTRO = 'otro' // DEX93 falta definir
   //17 - 17 - A request was made to change this delivery date.
   //84

@@ -308,13 +308,26 @@ export class IncomeService {
                   if (i.sourceType === 'collection') displayType = 'collection';
                   if (i.sourceType === 'charge') displayType = 'carga';
 
+                  // Estatus mostrado en el detalle. Una recolección se cobra COMO
+                  // recolección, no como "entregado": el ingreso de collection se crea
+                  // con incomeType=entregado por compatibilidad, pero aquí debe verse
+                  // según su origen para que no se confunda con entregas FedEx.
+                  let displayStatus: string;
+                  if (i.sourceType === 'collection') {
+                      displayStatus = 'recoleccion';
+                  } else if (i.sourceType === 'charge') {
+                      displayStatus = 'carga';
+                  } else if (i.shipmentType === 'fedex' && i.incomeType === 'no_entregado' && ['07', '08'].includes(i.nonDeliveryStatus ?? '')) {
+                      displayStatus = `DEX${i.nonDeliveryStatus}`;
+                  } else {
+                      displayStatus = i.incomeType;
+                  }
+
                   return {
                       type: displayType,
                       trackingNumber: i.trackingNumber,
                       shipmentType: i.shipmentType,
-                      status: (i.shipmentType === 'fedex' && i.incomeType === 'no_entregado' && ['07', '08'].includes(i.nonDeliveryStatus ?? ''))
-                          ? `DEX${i.nonDeliveryStatus}`
-                          : i.incomeType,
+                      status: displayStatus,
                       date: hermDate.format('YYYY-MM-DD HH:mm:ss'),
                       cost: Number(i.cost) || 0,
                       statusHistory: i.shipment?.statusHistory || [],

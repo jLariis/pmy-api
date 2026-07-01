@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { DataSource, In, Repository } from 'typeorm';
 import { CollectionDto } from './dto/collection.dto';
 import { FedexService } from 'src/shipments/fedex.service';
 import { FedExTrackingResponseDto } from 'src/shipments/dto/fedex/fedex-tracking-response.dto';
@@ -20,7 +20,8 @@ export class CollectionsService {
       private incomeRepository: Repository<Income>,
       @InjectRepository(Subsidiary)
       private subsidiaryRepository: Repository<Subsidiary>,
-      private readonly fedexService: FedexService
+      private readonly fedexService: FedexService,
+      private readonly dataSource: DataSource,
     ){}
 
 
@@ -29,19 +30,20 @@ export class CollectionsService {
       duplicates: string[];
       errors: Array<{ trackingNumber: string; error: string }>;
     }> {
-      const savedCollections: Collection[] = [];
       const duplicates: string[] = [];
       const errors: Array<{ trackingNumber: string; error: string }> = [];
 
+      const queryRunner = this.dataSource.createQueryRunner();
+      await queryRunner.connect();
+      await queryRunner.startTransaction();
+
       try {
         // 1. Validar y filtrar colecciones duplicadas
-        const uniqueCollections = [];
-        
+        const uniqueCollections: CollectionDto[] = [];
         for (const dto of collectionDto) {
-          const existingCollection = await this.collectionRepository.findOneBy({ 
-            trackingNumber: dto.trackingNumber 
+          const existingCollection = await queryRunner.manager.findOneBy(Collection, {
+            trackingNumber: dto.trackingNumber,
           });
-
           if (existingCollection) {
             duplicates.push(dto.trackingNumber);
             this.logger.warn(`Collection duplicada - Tracking: ${dto.trackingNumber}`);
@@ -50,63 +52,72 @@ export class CollectionsService {
           uniqueCollections.push(dto);
         }
 
-        // 2. Crear y guardar collections
-        const newCollections = this.collectionRepository.create(
-          uniqueCollections.map((dto) => ({ ...dto, createdById: userId ?? null })),
-        );
-        const savedCollections = await this.collectionRepository.save(newCollections);
-        this.logger.log(`Se guardaron ${savedCollections.length} collections`);
-
-        // 3. Validar que se guardó al menos una collection
-        if (savedCollections.length === 0) {
+        // 2. Si todo era duplicado, no hay nada que guardar.
+        if (uniqueCollections.length === 0) {
+          await queryRunner.rollbackTransaction();
           this.logger.warn('No se guardaron collections, todas eran duplicadas');
           return { savedCollections: [], duplicates, errors };
         }
 
-        // 4. Obtener subsidiaria (con validación)
-        const subsidiaryId = savedCollections[0].subsidiary.id;
-        const subsidiary = await this.subsidiaryRepository.findOneBy({ id: subsidiaryId });
-        
-        if (!subsidiary) {
-          throw new Error(`Subsidiaria no encontrada con ID: ${subsidiaryId}`);
-        }
+        // 3. Crear y guardar collections
+        const newCollections = queryRunner.manager.create(
+          Collection,
+          uniqueCollections.map((dto) => ({ ...dto, createdById: userId ?? null })),
+        );
+        const savedCollections = await queryRunner.manager.save(newCollections);
+        this.logger.log(`Se guardaron ${savedCollections.length} collections`);
 
-        // 5. Crear incomes (con manejo de errores)
-        try {
-          const newIncomes = savedCollections.map((collection) => {
-            return this.incomeRepository.create({
-              subsidiary,
-              trackingNumber: collection.trackingNumber,
-              shipmentType: ShipmentType.FEDEX,
-              incomeType: IncomeStatus.ENTREGADO,
-              cost: subsidiary.fedexCostPackage,
-              isGrouped: false,
-              sourceType: IncomeSourceType.COLLECTION,
-              collection: { id: collection.id },
-              date: new Date(), // Usar fecha actual en lugar de createdAt
-              createdById: userId ?? null,
-            });
+        // 4. Resolver las sucursales involucradas (puede haber más de una en el lote).
+        //    Antes se usaba savedCollections[0].subsidiary para TODAS, lo que asignaba
+        //    el costo/sucursal equivocados si el lote mezclaba sucursales.
+        const subsidiaryIds = [
+          ...new Set(savedCollections.map((c) => c.subsidiary?.id).filter(Boolean)),
+        ];
+        const subsidiaries = subsidiaryIds.length
+          ? await queryRunner.manager.find(Subsidiary, { where: { id: In(subsidiaryIds) } })
+          : [];
+        const subsidiaryById = new Map(subsidiaries.map((s) => [s.id, s]));
+
+        // 5. Crear incomes — uno por recolección, con la sucursal/costo correctos.
+        //    La recolección se cobra COMO recolección (sourceType=COLLECTION); el
+        //    incomeType=entregado se mantiene por compatibilidad, pero en los reportes
+        //    se categoriza por sourceType, no por incomeType.
+        const newIncomes = savedCollections.map((collection) => {
+          const subsidiary = subsidiaryById.get(collection.subsidiary?.id);
+          if (!subsidiary) {
+            throw new Error(
+              `Sucursal no encontrada (id: ${collection.subsidiary?.id}) para la recolección ${collection.trackingNumber}`,
+            );
+          }
+          return queryRunner.manager.create(Income, {
+            subsidiary,
+            trackingNumber: collection.trackingNumber,
+            shipmentType: ShipmentType.FEDEX,
+            incomeType: IncomeStatus.ENTREGADO,
+            cost: subsidiary.fedexCostPackage,
+            isGrouped: false,
+            sourceType: IncomeSourceType.COLLECTION,
+            collection: { id: collection.id },
+            date: new Date(),
+            createdById: userId ?? null,
           });
+        });
+        await queryRunner.manager.save(newIncomes);
+        this.logger.log(`Se crearon ${newIncomes.length} incomes`);
 
-          await this.incomeRepository.save(newIncomes);
-          this.logger.log(`Se crearon ${newIncomes.length} incomes`);
-        } catch (incomeError) {
-          this.logger.error('Error al crear incomes', incomeError.stack);
-          errors.push({
-            trackingNumber: 'VARIOS',
-            error: `Error al crear incomes: ${incomeError.message}`
-          });
-        }
-
+        // 6. Commit atómico: o se guardan recolecciones + ingresos juntos, o nada.
+        await queryRunner.commitTransaction();
         return { savedCollections, duplicates, errors };
-
       } catch (error) {
-        this.logger.error('Error en el proceso save', error.stack);
+        await queryRunner.rollbackTransaction();
+        this.logger.error('Error en el proceso save (rollback aplicado)', error.stack);
         errors.push({
           trackingNumber: 'GLOBAL',
-          error: `Error general: ${error.message}`
+          error: `Error general: ${error.message}`,
         });
         return { savedCollections: [], duplicates, errors };
+      } finally {
+        await queryRunner.release();
       }
     }
 

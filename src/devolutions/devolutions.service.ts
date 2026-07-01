@@ -425,14 +425,24 @@ export class DevolutionsService {
     subsidiaryName: string,
     subsidiaryId?: string,
   ) {
-    // Buscar por id (estable) y, si no llega o no existe, por nombre. Antes solo
-    // se buscaba por nombre: si no coincidía, `subsidiary` quedaba null y reventaba
-    // con 500 al leer subsidiary.name/officeEmail en el mailer.
-    let subsidiary = subsidiaryId
-      ? await this.subsidiaryRepository.findOneBy({ id: subsidiaryId })
-      : null;
-    if (!subsidiary && subsidiaryName) {
+    // Resolución de sucursal para el correo. El `id` es la fuente de verdad (estable
+    // y único). El `name` NO es único en la tabla, así que caer del id a un nombre
+    // podría mandar el correo a la sucursal equivocada. Por eso:
+    //  - Si llega `subsidiaryId`: se usa SOLO el id; si no existe, error (no fallback).
+    //  - Si NO llega `subsidiaryId`: se intenta por nombre como último recurso.
+    let subsidiary: Subsidiary | null = null;
+    if (subsidiaryId) {
+      subsidiary = await this.subsidiaryRepository.findOneBy({ id: subsidiaryId });
+      if (!subsidiary) {
+        throw new BadRequestException(
+          `No se encontró la sucursal con id ${subsidiaryId} para enviar el correo de devoluciones.`,
+        );
+      }
+    } else if (subsidiaryName) {
       subsidiary = await this.subsidiaryRepository.findOneBy({ name: subsidiaryName });
+      this.logger.warn(
+        `Correo de devoluciones resuelto por NOMBRE ("${subsidiaryName}") por falta de subsidiaryId. El nombre no es único; conviene enviar siempre el id.`,
+      );
     }
     if (!subsidiary) {
       throw new BadRequestException(

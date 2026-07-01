@@ -128,6 +128,19 @@ export class Subsidiary {
   @Column({ nullable: true })
   zoneId: string;
 
+  // ---- Geolocalización (antes hardcodeada en el mapa del dashboard) ----
+  /** Estado de la república donde está la sucursal (para el panel del mapa). */
+  @Column({ default: '', nullable: true })
+  state: string;
+
+  /** Latitud para ubicar el marcador en el mapa interactivo. */
+  @Column({ type: 'decimal', precision: 10, scale: 7, nullable: true })
+  latitude: number | null;
+
+  /** Longitud para ubicar el marcador en el mapa interactivo. */
+  @Column({ type: 'decimal', precision: 10, scale: 7, nullable: true })
+  longitude: number | null;
+
   // ---- Configuración operativa por sucursal (antes hardcodeada en SUBSIDIARY_CONFIG) ----
   /** Monitoreo: alertar cuando falta el código 67 de FedEx (recepción en estación). */
   @Column({ default: false })

@@ -1,4 +1,4 @@
-import { Controller, Inject, Logger, Post, Request, UseGuards, LoggerService  } from '@nestjs/common';
+import { Body, Controller, Inject, Logger, Post, Request, UseGuards, LoggerService  } from '@nestjs/common';
 import { AuthService } from './auth.service';
 import { ApiBasicAuth, ApiBearerAuth, ApiBody, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { LocalAuthGuard } from './guards/local-auth.guard';
@@ -44,23 +44,22 @@ export class AuthController {
         }
     }
 
-    /*@Public()
-    @Post('recover')
-    async recoverPassword() {
-        this.logger.log('Calling recoverPassword()', AppController.name);
-        ///await this.authService.requestPasswordReset(dto);
-        return { message: 'Reset password email sent.' };
-    };
+    // ---- Recuperación de contraseña por OTP (autoservicio, públicos) ----
 
-    @Post('reset-password')
     @Public()
-    @ApiResponse({ status: 200, description: 'Password successfully updated.' })
-    @ApiResponse({ status: 400, description: 'Invalid token or failed to update password.' })
-    async resetPassword(
-      @Body() body: { token: string; newPassword: string },
-    ): Promise<void> {
-      const { token, newPassword } = body;
-        await this.authService.resetPassword(token, newPassword);
-    }*/
+    @Post('forgot-password')
+    @ApiResponse({ status: 200, description: 'OTP enviado al correo registrado.' })
+    @ApiResponse({ status: 404, description: 'No existe una cuenta con ese correo.' })
+    async forgotPassword(@Body() body: { email: string }) {
+        return this.authService.requestPasswordOtp(body?.email);
+    }
+
+    @Public()
+    @Post('reset-password-otp')
+    @ApiResponse({ status: 200, description: 'Contraseña actualizada.' })
+    @ApiResponse({ status: 400, description: 'Código inválido/expirado o contraseña débil.' })
+    async resetPasswordOtp(@Body() body: { email: string; otp: string; newPassword: string }) {
+        return this.authService.resetPasswordWithOtp(body?.email, body?.otp, body?.newPassword);
+    }
 
 }

@@ -100,10 +100,14 @@ export class AuthService {
 
         this.logger.log(`Login Payload: ${JSON.stringify(payload)}`, AuthService.name);
 
+        // Marca el último inicio de sesión (auditoría/sesiones). No rompe el login si falla.
+        this.userRepository.update(user.id, { lastLoginAt: new Date() }).catch(() => undefined);
+
         return {
             access_token: this.jwtService.sign(payload),
             user: {
                 id: payload.sub,
+                email: payload.email,
                 role: payload.role,
                 name: payload.name,
                 lastName: payload.lastName,
@@ -115,8 +119,57 @@ export class AuthService {
     }
 
     async logout(token: string) {
-        return "Logout user."
+        // Antes había un `return` ANTES del add → el token nunca se invalidaba.
         this.blacklistService.add(token);
+        return "Logout user.";
+    }
+
+    // ===================== Recuperación de contraseña por OTP =====================
+
+    private maskEmail(email: string): string {
+        const [u, d] = (email || '').split('@');
+        if (!d) return email;
+        const head = u.length <= 2 ? (u[0] ?? '') : u.slice(0, 2);
+        return `${head}${'*'.repeat(Math.max(1, u.length - head.length))}@${d}`;
+    }
+
+    /** Genera y envía un OTP al correo registrado. Si el correo no existe, error. */
+    async requestPasswordOtp(email: string): Promise<{ message: string; email: string }> {
+        const user = await this.usersService.findByEmail((email || '').trim().toLowerCase());
+        if (!user) {
+            throw new BusinessException('exercise-api', 'User not found for OTP', 'No existe una cuenta con ese correo.', HttpStatus.NOT_FOUND);
+        }
+        const code = Math.floor(100000 + Math.random() * 900000).toString(); // 6 dígitos
+        const otpHash = await bcrypt.hash(code, 10);
+        await this.userRepository.update(user.id, { otpCode: otpHash, otpExpiresAt: new Date(Date.now() + 10 * 60 * 1000) });
+        try {
+            await this.mailService.sendOtpEmail(user.email, code, 10);
+        } catch (err: any) {
+            this.logger.error(`No se pudo enviar OTP a ${user.email}: ${err?.message}`, AuthService.name);
+            throw new BusinessException('exercise-api', 'OTP email failed', 'No se pudo enviar el código. Intenta más tarde.', HttpStatus.INTERNAL_SERVER_ERROR);
+        }
+        return { message: 'Código enviado al correo registrado.', email: this.maskEmail(user.email) };
+    }
+
+    /** Verifica el OTP y restablece la contraseña. */
+    async resetPasswordWithOtp(email: string, otp: string, newPassword: string): Promise<{ message: string }> {
+        const user = await this.usersService.findByEmail((email || '').trim().toLowerCase());
+        if (!user || !user.otpCode || !user.otpExpiresAt) {
+            throw new BusinessException('exercise-api', 'No OTP pending', 'Solicita un nuevo código.', HttpStatus.BAD_REQUEST);
+        }
+        if (new Date(user.otpExpiresAt).getTime() < Date.now()) {
+            throw new BusinessException('exercise-api', 'OTP expired', 'El código expiró. Solicita uno nuevo.', HttpStatus.BAD_REQUEST);
+        }
+        const ok = await bcrypt.compare(String(otp || '').trim(), user.otpCode);
+        if (!ok) {
+            throw new BusinessException('exercise-api', 'OTP mismatch', 'Código incorrecto.', HttpStatus.BAD_REQUEST);
+        }
+        if (!this.validatePasswordComplexity(newPassword)) {
+            throw new BusinessException('exercise-api', 'Weak password', 'La contraseña debe tener mínimo 8 caracteres, una mayúscula, un número y un símbolo.', HttpStatus.BAD_REQUEST);
+        }
+        const hashed = await bcrypt.hash(newPassword, 10);
+        await this.userRepository.update(user.id, { password: hashed, otpCode: null, otpExpiresAt: null });
+        return { message: 'Contraseña actualizada. Ya puedes iniciar sesión.' };
     }
 
     /*async requestPasswordReset(dto: any): Promise<void> {

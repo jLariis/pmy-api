@@ -70,6 +70,12 @@ export class CreateSubsidiaryDto {
   @IsOptional()
   zoneId?: string | null;
 
+  // Geolocalización para el mapa del dashboard (antes hardcodeada).
+  @IsString() @IsOptional() state?: string;
+  // lat/lng: permisivos (los `decimal` pueden llegar como string en el round-trip).
+  @IsOptional() latitude?: number | null;
+  @IsOptional() longitude?: number | null;
+
   // Config operativa por sucursal (antes hardcodeada).
   @IsBoolean() @IsOptional() monitorFedexCode67?: boolean;
   @IsBoolean() @IsOptional() monitorFedexCode44?: boolean;

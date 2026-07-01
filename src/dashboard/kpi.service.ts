@@ -300,6 +300,9 @@ export class KpiService {
       return {
         subsidiaryId: subsidiary.id,
         subsidiaryName: subsidiary.name,
+        state: subsidiary.state || '',
+        latitude: subsidiary.latitude != null ? Number(subsidiary.latitude) : null,
+        longitude: subsidiary.longitude != null ? Number(subsidiary.longitude) : null,
         totalPackages,
         deliveredPackages,
         undeliveredPackages: totalUndelivered,
@@ -499,6 +502,9 @@ export class KpiService {
       return {
         subsidiaryId: subsidiary.id,
         subsidiaryName: subsidiary.name,
+        state: subsidiary.state || '',
+        latitude: subsidiary.latitude != null ? Number(subsidiary.latitude) : null,
+        longitude: subsidiary.longitude != null ? Number(subsidiary.longitude) : null,
         totalPackages,
         deliveredPackages,
         undeliveredPackages: totalUndelivered,

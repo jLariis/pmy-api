@@ -49,6 +49,63 @@ function formatExcelTimeToMySQL(timeStr?: string): string {
   return `${hours}:${minutes}:${seconds}`;
 }
 
+/**
+ * Devuelve la PRIMERA hoja del libro cuyos encabezados se reconocen. Evita el
+ * bug de leer siempre `SheetNames[0]` cuando el Excel trae 2+ páginas (portada,
+ * resumen, etc.) y los datos están en otra hoja.
+ */
+export function pickSheetWithHeaders(workbook: XLSX.WorkBook, isForCharges = false): { sheet: XLSX.Sheet; sheetName: string } {
+    const names = workbook.SheetNames || [];
+    const problems: string[] = [];
+    // Se prueba EN ORDEN (normalmente la hoja 0 es la de datos). Se EXIGE la
+    // columna de guía (trackingNumber); las hojas sin ella se SALTAN en vez de
+    // tronar — así un archivo con hojas extra (resumen, etc.) no rompe el proceso.
+    for (const name of names) {
+        const sheet = workbook.Sheets[name];
+        try {
+            const { map } = getHeaderIndexMap(sheet, 10, isForCharges);
+            if (map.trackingNumber === undefined) {
+                problems.push(`"${name}" (sin columna de Guía/Tracking)`);
+                continue;
+            }
+            return { sheet, sheetName: name };
+        } catch {
+            problems.push(`"${name}" (sin encabezados reconocidos)`);
+            continue;
+        }
+    }
+    throw new Error(`Ninguna hoja del archivo tiene las columnas necesarias. Hojas revisadas: ${problems.join(', ')}. Se requiere al menos la columna de Tracking/Guía.`);
+}
+
+/**
+ * Interpreta una celda de cobro (COD/FTC/ROD + monto) de forma robusta: acepta
+ * número o texto, separadores de miles/decimales y elige el último monto.
+ */
+export function parsePaymentCell(raw: any): { amount: number; type: string | null } | null {
+    if (raw === null || raw === undefined) return null;
+    const s = String(raw).trim();
+    if (!s) return null;
+
+    const typeMatch = s.match(/\b(COD|FTC|ROD)\b/i);
+    const type = typeMatch ? typeMatch[1].toUpperCase() : null;
+
+    const amountMatches = s.match(/([0-9]+(?:[.,\s][0-9]{3})*(?:[.,][0-9]{1,2})?)/g);
+    if (!amountMatches || amountMatches.length === 0) return null;
+
+    let normalized = amountMatches[amountMatches.length - 1].trim();
+    if (normalized.includes('.') && normalized.includes(',') && normalized.indexOf(',') > normalized.indexOf('.')) {
+        normalized = normalized.replace(/\./g, '').replace(',', '.');           // 1.234,56 → 1234.56
+    } else if (normalized.includes(',') && !normalized.includes('.')) {
+        normalized = /,[0-9]{1,2}$/.test(normalized) ? normalized.replace(',', '.') : normalized.replace(/,/g, ''); // 1,50 → 1.50 / 1,234 → 1234
+    } else {
+        normalized = normalized.replace(/[\s,]/g, '');
+    }
+
+    const amount = parseFloat(normalized);
+    if (isNaN(amount) || amount <= 0) return null;
+    return { amount, type };
+}
+
 export function parseDynamicSheet(workbook: XLSX.WorkBook, options: ParseOptions): ParsedShipmentDto[] {
     const { fileName } = options;
     const is315 = fileName.toLowerCase().includes('31.5');
@@ -61,25 +118,34 @@ export function parseDynamicSheet(workbook: XLSX.WorkBook, options: ParseOptions
     let headerMap: Record<string, number> = {};
     let headerRowIndex = 0;
 
+    const sheetProblems: string[] = [];
     for (const sheetName of sheetNames) {
         console.log(`🔍 Buscando headers en hoja: "${sheetName}"`);
         const sheet = workbook.Sheets[sheetName];
-        
+
         try {
             const headerResult = getHeaderIndexMap(sheet);
+            // EXIGIR la columna de Guía: una hoja con otros headers pero sin
+            // trackingNumber NO es la de datos → se salta (no truena).
+            if (headerResult.map.trackingNumber === undefined) {
+                console.log(`⏭️ Hoja "${sheetName}" sin columna de Guía/Tracking - continuando...`);
+                sheetProblems.push(`"${sheetName}" (sin columna de Guía/Tracking)`);
+                continue;
+            }
             targetSheet = sheet;
             headerMap = headerResult.map;
             headerRowIndex = headerResult.headerRowIndex;
-            console.log(`✅ Headers encontrados en hoja: "${sheetName}"`);
-            break; // ¡IMPORTANTE! Salir al encontrar la primera hoja válida
+            console.log(`✅ Headers válidos en hoja: "${sheetName}"`);
+            break; // primera hoja con la columna de guía
         } catch (error) {
             console.log(`❌ No se encontraron headers en hoja "${sheetName}" - continuando...`);
+            sheetProblems.push(`"${sheetName}" (sin encabezados reconocidos)`);
             continue;
         }
     }
 
     if (!targetSheet) {
-        throw new Error('No se pudieron detectar encabezados válidos en ninguna hoja del archivo');
+        throw new Error(`Ninguna hoja del archivo tiene las columnas necesarias. Hojas revisadas: ${sheetProblems.join(', ')}. Se requiere al menos la columna de Tracking/Guía (revisa si los datos están en otra hoja o si el archivo es el correcto para este paso).`);
     }
 
     // Procesar solo la hoja que encontró headers
@@ -112,7 +178,7 @@ export function parseDynamicSheet(workbook: XLSX.WorkBook, options: ParseOptions
             consNumber: row[headerMap['consNumber']] ?? null,
             isPartOfCharge: is315,
         };
-    });
+    }).filter(r => String(r.trackingNumber ?? '').trim() !== ''); // ignora filas sin guía (basura / 2ª hoja)
 }
 
 export function parseDynamicFileF2(sheet: XLSX.Sheet) {    
@@ -140,7 +206,7 @@ export function parseDynamicFileF2(sheet: XLSX.Sheet) {
             recipientPhone: row[headerMap['recipientPhone']] ?? '',
             recipientCity: row[headerMap['recipientCity']] ?? ''
         };
-    });
+    }).filter(r => String(r.trackingNumber ?? '').trim() !== ''); // ignora filas sin guía
 }
 
 export function parseDynamicSheetCharge(sheet: XLSX.Sheet) {

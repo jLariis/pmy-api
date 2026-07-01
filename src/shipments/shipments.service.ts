@@ -1,17 +1,17 @@
 import { BadRequestException, forwardRef, HttpStatus, Inject, Injectable, InternalServerErrorException, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Between, Brackets, EntityManager, In, Repository } from 'typeorm';
+import { Between, Brackets, EntityManager, In, MoreThanOrEqual, Repository } from 'typeorm';
 import { Shipment } from 'src/entities/shipment.entity';
 import { ShipmentStatusType, TERMINAL_SHIPMENT_STATUSES } from 'src/common/enums/shipment-status-type.enum';
 import * as XLSX from 'xlsx';
 import { FedexService } from './fedex.service';
 import { ShipmentStatus } from 'src/entities/shipment-status.entity';
-import { getPriority, parseDynamicFileF2, parseDynamicHighValue, parseDynamicSheet, parseDynamicSheetCharge, parseDynamicSheetDHL } from 'src/utils/file-upload.utils';
+import { getPriority, parseDynamicFileF2, parseDynamicHighValue, parseDynamicSheet, parseDynamicSheetCharge, parseDynamicSheetDHL, pickSheetWithHeaders, parsePaymentCell } from 'src/utils/file-upload.utils';
 import { scanEventsFilter } from 'src/utils/scan-events-filter';
 import { ParsedShipmentDto } from './dto/parsed-shipment.dto';
 import { mapFedexStatusToLocalStatus } from 'src/utils/fedex.utils';
-import { map17TrackStatusToLocal } from 'src/utils/dhl.utils';
-import type { NormalizedTrackingResult } from 'src/tracking/seventeen-track-dhl.service';
+import { mapWhereParcelStatusToLocal } from 'src/utils/dhl.utils';
+import type { NormalizedTrackingResult } from 'src/tracking/where-parcel-dhl.service';
 import { addDays, differenceInCalendarDays, differenceInDays, endOfToday, format, isSameDay, parse, parseISO, startOfToday } from 'date-fns';
 import { ShipmentType } from 'src/common/enums/shipment-type.enum';
 import { Consolidated, Income, Payment, Subsidiary } from 'src/entities';
@@ -844,7 +844,7 @@ export class ShipmentsService {
     try {
       // 1. Lectura de Excel
       const workbook = XLSX.read(buffer, { type: 'buffer', cellDates: true, cellText: false });
-      const sheet = workbook.Sheets[workbook.SheetNames[0]];
+      const { sheet } = pickSheetWithHeaders(workbook); // multi-hoja: toma la hoja con datos
       const shipmentsToProcess = parseDynamicFileF2(sheet);
 
       if (shipmentsToProcess.length === 0) return { message: 'Archivo vacío.' };
@@ -906,6 +906,17 @@ export class ShipmentsService {
 
           } else {
             // --- ESCENARIO B: NO EXISTE -> INSERTAR DIRECTO ---
+            // commitDateTime (columna NOT NULL): del Excel o fallback hoy 18:00.
+            let csCommitDateTime: Date | undefined;
+            if (data.commitDate && data.commitTime) {
+              const d = new Date(`${data.commitDate}T${data.commitTime}`);
+              if (!isNaN(d.getTime())) csCommitDateTime = d;
+            }
+            if (!csCommitDateTime || isNaN(csCommitDateTime.getTime())) {
+              csCommitDateTime = new Date();
+              csCommitDateTime.setHours(18, 0, 0, 0);
+            }
+
             const newCS = this.chargeShipmentRepository.create({
               trackingNumber: data.trackingNumber,
               recipientName: data.recipientName || 'N/A',
@@ -913,6 +924,7 @@ export class ShipmentsService {
               recipientZip: data.recipientZip || 'N/A',
               recipientCity: data.recipientCity || 'N/A',
               recipientPhone: data.recipientPhone || 'N/A',
+              commitDateTime: csCommitDateTime,
               shipmentType: ShipmentType.FEDEX,
               status: ShipmentStatusType.PENDIENTE,
               charge: savedCharge,
@@ -1157,8 +1169,8 @@ export class ShipmentsService {
     try {
       console.log("🟢 Step 1: Reading Excel file");
       const workbook = XLSX.read(buffer, { type: 'buffer' });
-      const sheet = workbook.Sheets[workbook.SheetNames[0]];
-      
+      const { sheet } = pickSheetWithHeaders(workbook); // multi-hoja: toma la hoja con datos
+
       console.log("🟢 Step 2: Parsing file data");
       const chargeShipmentsToSave = parseDynamicFileF2(sheet);
       console.log("📦 Found", chargeShipmentsToSave.length, "shipments to save");
@@ -1198,54 +1210,31 @@ export class ShipmentsService {
 
       console.log("🟢 Step 5: Processing", chargeShipmentsToSave.length, "shipments");
       
-      let commitDate: string | undefined;
-      let commitTime: string | undefined;
-      let commitDateTime: Date | undefined;
-      let dateSource: string;
-
-      const processPromises = chargeShipmentsToSave.map(async (shipment) => { 
+      const processPromises = chargeShipmentsToSave.map(async (shipment) => {
         try {
           console.log("🔄 Creating charge shipment for:", shipment.trackingNumber);
-          
+
+          // commitDateTime POR PAQUETE (antes la var estaba fuera del map y, peor,
+          // nunca se asignaba a la entidad → la columna NOT NULL tronaba). Igual
+          // que en shipments: del Excel (date+time) y, si no viene/ inválido,
+          // fallback a hoy 18:00.
+          let commitDateTime: Date | undefined;
           if (shipment.commitDate && shipment.commitTime) {
-            try {
-              const parsedDate = parse(shipment.commitDate, 'yyyy-MM-dd', new Date());
-              const parsedTime = parse(shipment.commitTime, 'HH:mm:ss', new Date());
-              if (!isNaN(parsedDate.getTime()) && !isNaN(parsedTime.getTime())) {
-                commitDate = format(parsedDate, 'yyyy-MM-dd');
-                commitTime = format(parsedTime, 'HH:mm:ss');
-                commitDateTime = new Date(`${commitDate}T${commitTime}`);
-                dateSource = 'Excel';
-                this.logger.log(`📅 commitDateTime asignado desde Excel para ${shipment.trackingNumber}: ${commitDateTime.toISOString()} (commitDate=${commitDate}, commitTime=${commitTime})`);
-              } else {
-                this.logger.log(`⚠️ Formato inválido en Excel para ${shipment.trackingNumber}: commitDate=${shipment.commitDate}, commitTime=${shipment.commitTime}`);
-              }
-            } catch (err) {
-              this.logger.log(`⚠️ Error al parsear datos de Excel para ${shipment.trackingNumber}: ${err.message}`);
-            }
+            const d = new Date(`${shipment.commitDate}T${shipment.commitTime}`);
+            if (!isNaN(d.getTime())) commitDateTime = d;
           }
-
-          if (!commitDateTime) {
-            const today = new Date();
-            today.setHours(18, 0, 0, 0); // ← 18:00:00
-            commitDateTime = today;
-            console.log("⚠️ commitDateTime missing, set to 18:00:00 today");
+          if (!commitDateTime || isNaN(commitDateTime.getTime())) {
+            commitDateTime = new Date();
+            commitDateTime.setHours(18, 0, 0, 0);
           }
-
-          // ✅ VERIFICAR que shipment tenga todos los campos requeridos
-          console.log("Shipment data:", {
-            trackingNumber: shipment.trackingNumber,
-            recipientName: shipment.recipientName,
-            recipientAddress: shipment.recipientAddress,
-            recipientCity: shipment.recipientCity,
-            recipientZip: shipment.recipientZip,
-            commitDateTime: commitDateTime, // ← Este es crítico
-            recipientPhone: shipment.recipientPhone,
-          });
 
           const chargeShipment = this.chargeShipmentRepository.create({
             ...shipment,
             id: undefined,
+            commitDateTime, // ← se asigna explícitamente
+            shipmentType: ShipmentType.FEDEX,
+            status: ShipmentStatusType.PENDIENTE,
+            subsidiary: chargeSubsidiary, // antes no se ligaba la sucursal
             charge: savedCharge, // ✅ Asegurar que savedCharge tenga id
             createdById: userId ?? null,
           });
@@ -1334,7 +1323,7 @@ export class ShipmentsService {
     }
 
     const workbook = XLSX.read(buffer, { type: 'buffer' });
-    const sheet = workbook.Sheets[workbook.SheetNames[0]];
+    const { sheet } = pickSheetWithHeaders(workbook, true); // multi-hoja (headers de cargos)
 
     const shipmentsWithCharge = parseDynamicSheetCharge(sheet);
 
@@ -2316,8 +2305,13 @@ export class ShipmentsService {
       const predefinedSubsidiary = await this.subsidiaryService.findById(subsidiaryId);
       if (!predefinedSubsidiary) throw new BadRequestException(`La subsidiaria seleccionada no es válida.`);
 
-      const existingCons = await this.consolidatedService.findByConsNumber(consNumber);
-      if (existingCons) throw new BadRequestException(`El número de consolidado '${consNumber}' ya existe.`);
+      // Unicidad NORMALIZADA + por sucursal/carrier (evita falsos positivos entre
+      // sucursales y atrapa variaciones de espacios/mayúsculas).
+      const existingCons = await this.consolidatedService.findByConsNumberScoped(consNumber, subsidiaryId, ShipmentType.FEDEX);
+      if (existingCons) {
+        const fecha = existingCons.date ? new Date(existingCons.date).toLocaleDateString('es-MX') : 's/fecha';
+        throw new BadRequestException(`El consolidado '${consNumber}' ya existe en esta sucursal (${existingCons.numberOfPackages ?? 0} guías, ${fecha}).`);
+      }
 
       let shipmentsToSave: any[] = [];
       try {
@@ -2449,8 +2443,13 @@ export class ShipmentsService {
       const predefinedSubsidiary = await this.subsidiaryService.findById(subsidiaryId);
       if (!predefinedSubsidiary) throw new BadRequestException(`La subsidiaria seleccionada no es válida.`);
 
-      const existingCons = await this.consolidatedService.findByConsNumber(consNumber);
-      if (existingCons) throw new BadRequestException(`El número de consolidado '${consNumber}' ya existe.`);
+      // Unicidad NORMALIZADA + por sucursal/carrier (evita falsos positivos entre
+      // sucursales y atrapa variaciones de espacios/mayúsculas).
+      const existingCons = await this.consolidatedService.findByConsNumberScoped(consNumber, subsidiaryId, ShipmentType.FEDEX);
+      if (existingCons) {
+        const fecha = existingCons.date ? new Date(existingCons.date).toLocaleDateString('es-MX') : 's/fecha';
+        throw new BadRequestException(`El consolidado '${consNumber}' ya existe en esta sucursal (${existingCons.numberOfPackages ?? 0} guías, ${fecha}).`);
+      }
 
       let shipmentsToSave: any[] = [];
       try {
@@ -2621,14 +2620,17 @@ export class ShipmentsService {
     userId?: string,
   ): Promise<void> {
     const trackingNumber = shipment.trackingNumber?.toString().trim();
-    
-    // 1. Validación de Tracking
+
+    // 1. Validación de Tracking — fila sin guía se OMITE (no aborta todo el archivo).
     if (!trackingNumber) {
-      throw new BadRequestException(`Fila ${shipmentIndex} (Lote ${batchNumber}): Guía vacía.`);
+      result.failed++;
+      (result.failedTrackings ||= []).push({ ...shipment, reason: `Fila ${shipmentIndex} (Lote ${batchNumber}): sin número de guía` });
+      return;
     }
 
-    // 2. Validación de Duplicados (Archivo y DB)
-    if (processedTrackingNumbers.has(trackingNumber) || await this.existShipment(trackingNumber, consolidatedId)) {
+    // 2. Validación de Duplicados (archivo + BD a nivel SUCURSAL → no permite
+    //    reimportar las mismas guías aunque cambien el consNumber).
+    if (processedTrackingNumbers.has(trackingNumber) || await this.existShipmentForSubsidiary(trackingNumber, predefinedSubsidiary?.id)) {
       result.duplicated++;
       result.duplicatedTrackings.push(shipment);
       processedTrackingNumbers.add(trackingNumber);
@@ -2731,21 +2733,17 @@ export class ShipmentsService {
         newShipment.statusHistory = histories;
       }
 
-      // 8. LÓGICA DE PAGOS (Completa)
-      if (shipment.payment) {
-        const amountMatch = shipment.payment.match(/([0-9]+(?:\.[0-9]+)?)/);
-        if (amountMatch) {
-          const amount = parseFloat(amountMatch[1]);
-          const typeMatch = shipment.payment.match(/^(COD|FTC|ROD)/);
-          if (!isNaN(amount) && amount > 0) {
-            newShipment.payment = {
-              amount,
-              type: typeMatch ? typeMatch[1] : null,
-              status: finalStatus === ShipmentStatusType.ENTREGADO ? PaymentStatus.PAID : PaymentStatus.PENDING,
-              createdAt: new Date()
-            } as any;
-          }
-        }
+      // 8. LÓGICA DE PAGOS (robusta): acepta número o texto, separadores de
+      //    miles/decimales y tipo COD/FTC/ROD. Antes el regex tomaba el primer
+      //    dígito (montos mal/cero) y tronaba con celdas numéricas → cobros perdidos.
+      const parsedPayment = parsePaymentCell(shipment.payment);
+      if (parsedPayment) {
+        newShipment.payment = {
+          amount: parsedPayment.amount,
+          type: parsedPayment.type,
+          status: finalStatus === ShipmentStatusType.ENTREGADO ? PaymentStatus.PAID : PaymentStatus.PENDING,
+          createdAt: new Date(),
+        } as any;
       }
 
       // 9. VALIDACIÓN DE INCOMES (Reglas de Facturación)
@@ -2921,6 +2919,96 @@ export class ShipmentsService {
       this.logger.log(`❌ Error verificando existencia de envío ${trackingNumber}: ${err.message}`);
       throw err;
     }
+  }
+
+  /**
+   * Ventana (días) para considerar una guía "duplicada". Una guía importada hace
+   * MÁS de estos días NO se considera duplicada: FedEx a veces regresa un paquete
+   * y lo reenvía semanas después con la misma guía → debe poder re-subirse.
+   */
+  private readonly DEDUP_WINDOW_DAYS = 21;
+  private dedupCutoff(): Date {
+    return new Date(Date.now() - this.DEDUP_WINDOW_DAYS * 24 * 60 * 60 * 1000);
+  }
+
+  /** Existe la guía en la sucursal DENTRO de la ventana reciente (no las de semanas atrás). */
+  private async existShipmentForSubsidiary(trackingNumber: string, subsidiaryId?: string): Promise<boolean> {
+    if (!subsidiaryId) return false;
+    try {
+      return await this.shipmentRepository.exists({
+        where: { trackingNumber, subsidiary: { id: subsidiaryId }, createdAt: MoreThanOrEqual(this.dedupCutoff()) },
+      });
+    } catch (err) {
+      this.logger.error(`existShipmentForSubsidiary ${trackingNumber}: ${err.message}`);
+      return false;
+    }
+  }
+
+  /** Guías del archivo que YA existen para la sucursal (con su consNumber/fecha) — para el preview. */
+  async findExistingTrackings(trackingNumbers: string[], subsidiaryId: string): Promise<{ trackingNumber: string; consNumber: string | null; date: Date | null }[]> {
+    const tns = [...new Set((trackingNumbers || []).map((t) => String(t ?? '').trim()).filter(Boolean))];
+    if (!tns.length || !subsidiaryId) return [];
+    const out: any[] = [];
+    const CHUNK = 500;
+    for (let i = 0; i < tns.length; i += CHUNK) {
+      const slice = tns.slice(i, i + CHUNK);
+      const rows = await this.shipmentRepository.createQueryBuilder('s')
+        .leftJoin('s.subsidiary', 'sub')
+        .leftJoin('consolidated', 'c', 'c.id = s.consolidatedId')
+        .select('s.trackingNumber', 'trackingNumber')
+        .addSelect('c.consNumber', 'consNumber')
+        .addSelect('c.date', 'date')
+        .where('sub.id = :subsidiaryId', { subsidiaryId })
+        .andWhere('s.trackingNumber IN (:...slice)', { slice })
+        .andWhere('s.createdAt >= :cutoff', { cutoff: this.dedupCutoff() }) // solo recientes (FedEx reenvía guías viejas)
+        .getRawMany();
+      out.push(...rows);
+    }
+    return out;
+  }
+
+  /** Pre-validación de un archivo FedEx SIN guardar (para avisar antes de subir). */
+  async previewUpload(file: Express.Multer.File, subsidiaryId: string, consNumber: string, carrier: ShipmentType = ShipmentType.FEDEX) {
+    if (!file) throw new BadRequestException('No se recibió el archivo.');
+    const sub = await this.subsidiaryService.findById(subsidiaryId);
+    if (!sub) throw new BadRequestException('La sucursal seleccionada no es válida.');
+
+    let rows: any[] = [];
+    let parseError: string | null = null;
+    try {
+      const wb = XLSX.read(file.buffer, { type: 'buffer' });
+      rows = parseDynamicSheet(wb, { fileName: file.originalname }) || [];
+    } catch (e: any) {
+      parseError = e?.message ?? 'No se pudo leer el archivo.';
+    }
+
+    const all = rows.map((r) => String(r?.trackingNumber ?? '').trim());
+    const withTn = all.filter(Boolean);
+    const seen = new Set<string>();
+    const dupInFile = new Set<string>();
+    withTn.forEach((t) => { if (seen.has(t)) dupInFile.add(t); else seen.add(t); });
+    const uniqueTns = [...seen];
+
+    const existing = uniqueTns.length ? await this.findExistingTrackings(uniqueTns, subsidiaryId) : [];
+    const existingSet = new Set(existing.map((e) => String(e.trackingNumber)));
+    const consExists = await this.consolidatedService.findByConsNumberScoped(consNumber, subsidiaryId, carrier);
+
+    return {
+      fileName: file.originalname,
+      parseError,
+      totalRows: all.length,
+      withTracking: withTn.length,
+      emptyTracking: all.length - withTn.length,
+      duplicatesInFile: dupInFile.size,
+      alreadyImportedCount: existingSet.size,
+      alreadyImported: existing.slice(0, 100),
+      newCount: uniqueTns.filter((t) => !existingSet.has(t)).length,
+      consNumberExists: consExists ? {
+        id: consExists.id, consNumber: consExists.consNumber, type: consExists.type,
+        date: consExists.date, numberOfPackages: consExists.numberOfPackages,
+        subsidiary: consExists.subsidiary?.name ?? null,
+      } : null,
+    };
   }
 
   async findByTrackingNumber(trackingNumber: string) {
@@ -3936,7 +4024,7 @@ export class ShipmentsService {
      */
     async persistDhlTrackingResults(results: NormalizedTrackingResult[]) {
       const summary = {
-        updated: [] as { trackingNumber: string; status: string }[],
+        updated: [] as { trackingNumber: string; status: string; subsidiaryId?: string; rawStatus?: string; detail?: string }[],
         unchanged: [] as string[],
         notFound: [] as string[],
         skipped: [] as string[],
@@ -3946,7 +4034,7 @@ export class ShipmentsService {
       for (const r of results || []) {
         const trackingNumber = r.trackingNumber;
         try {
-          const mapped = map17TrackStatusToLocal(r.currentStatus);
+          const mapped = mapWhereParcelStatusToLocal(r.currentStatus);
           if (!mapped) { summary.skipped.push(trackingNumber); continue; }
 
           // Variantes DHL: JJD↔JD + dhlUniqueId (mismo criterio que la búsqueda de detalle).
@@ -3979,7 +4067,7 @@ export class ShipmentsService {
           const ns = new ShipmentStatus();
           ns.status = mapped;
           ns.timestamp = eventDate;
-          ns.notes = `17TRACK: ${r.currentStatus}${r.subStatus ? ` / ${r.subStatus}` : ''}${
+          ns.notes = `WhereParcel: ${r.currentStatus}${r.subStatus ? ` / ${r.subStatus}` : ''}${
             r.latestEvent?.description ? ` - ${r.latestEvent.description}` : ''
           }`.slice(0, 250);
           ns.shipment = shipment;
@@ -4004,7 +4092,13 @@ export class ShipmentsService {
             }
           });
 
-          summary.updated.push({ trackingNumber, status: mapped });
+          summary.updated.push({
+            trackingNumber,
+            status: mapped,
+            subsidiaryId: (shipment.subsidiary as any)?.id,
+            rawStatus: r.currentStatus,
+            detail: r.latestEvent?.description || undefined,
+          });
         } catch (err: any) {
           this.logger.error(`Error persistiendo estatus DHL ${trackingNumber}: ${err?.message}`);
           summary.errors.push({ trackingNumber, reason: err?.message });
@@ -4012,7 +4106,7 @@ export class ShipmentsService {
       }
 
       this.logger.log(
-        `DHL 17TRACK persistencia → actualizados:${summary.updated.length} sin_cambio:${summary.unchanged.length} ` +
+        `DHL WhereParcel persistencia → actualizados:${summary.updated.length} sin_cambio:${summary.unchanged.length} ` +
           `no_encontrados:${summary.notFound.length} omitidos:${summary.skipped.length} errores:${summary.errors.length}`,
       );
       return summary;
@@ -4025,6 +4119,30 @@ export class ShipmentsService {
       const d = new Date();
       d.setMonth(d.getMonth() - 6);
       return d;
+    }
+
+    /**
+     * Guías DHL a CONSULTAR en WhereParcel: recientes (cutoff) y NO terminales.
+     * Se trackea por `dhlUniqueId` (es ÚNICO; el trackingNumber puede repetirse),
+     * por eso se devuelve el `dhlUniqueId` en el campo `trackingNumber` (lo que se
+     * envía a WhereParcel) y solo se incluyen guías que SÍ tienen dhlUniqueId.
+     * `persistDhlTrackingResults` hace match por dhlUniqueId. Se prioriza lo más
+     * nuevo y se acota con `limit` (presupuesto de llamadas del ciclo).
+     */
+    async getDhlToPoll(limit: number): Promise<{ id: string; trackingNumber: string }[]> {
+      if (limit <= 0) return [];
+      const terminal = TERMINAL_SHIPMENT_STATUSES.map((s) => String(s).toLowerCase());
+      return this.shipmentRepository
+        .createQueryBuilder('s')
+        .select(['s.id AS id', 's.dhlUniqueId AS trackingNumber'])
+        .where('LOWER(s.shipmentType) = :type', { type: ShipmentType.DHL.toLowerCase() })
+        .andWhere('s.dhlUniqueId IS NOT NULL')
+        .andWhere("TRIM(s.dhlUniqueId) != ''")
+        .andWhere('s.createdAt > :cutoff', { cutoff: this.dhlTrackingCutoff() })
+        .andWhere('LOWER(s.status) NOT IN (:...terminal)', { terminal })
+        .orderBy('s.createdAt', 'DESC')
+        .limit(limit)
+        .getRawMany();
     }
 
     /** Guías DHL ACTIVAS en 17TRACK (registradas y no liberadas) — para hacer polling. */
@@ -4064,6 +4182,40 @@ export class ShipmentsService {
         .limit(limit)
         .getRawMany();
       return rows;
+    }
+
+    /**
+     * Guías DHL pendientes de REGISTRAR a webhook de WhereParcel: recientes, NO
+     * terminales, con `dhlUniqueId`, y aún sin registrar (`seventeenRegisteredAt`
+     * se reusa como "registrada a webhook"). Devuelve {id, trackingNumber=dhlUniqueId}.
+     */
+    async getDhlToRegisterForWebhook(limit: number): Promise<{ id: string; trackingNumber: string }[]> {
+      if (limit <= 0) return [];
+      const terminal = TERMINAL_SHIPMENT_STATUSES.map((s) => String(s).toLowerCase());
+      return this.shipmentRepository
+        .createQueryBuilder('s')
+        .select(['s.id AS id', 's.dhlUniqueId AS trackingNumber'])
+        .where('LOWER(s.shipmentType) = :type', { type: ShipmentType.DHL.toLowerCase() })
+        .andWhere('s.dhlUniqueId IS NOT NULL')
+        .andWhere("TRIM(s.dhlUniqueId) != ''")
+        .andWhere('s.seventeenRegisteredAt IS NULL')
+        .andWhere('s.createdAt > :cutoff', { cutoff: this.dhlTrackingCutoff() })
+        .andWhere('LOWER(s.status) NOT IN (:...terminal)', { terminal })
+        .orderBy('s.createdAt', 'DESC')
+        .limit(limit)
+        .getRawMany();
+    }
+
+    /** Marca guías como registradas a webhook (por id). Reusa `seventeenRegisteredAt`. */
+    async markDhlWebhookRegistered(ids: string[]): Promise<void> {
+      if (!ids?.length) return;
+      await this.shipmentRepository
+        .createQueryBuilder()
+        .update(Shipment)
+        .set({ seventeenRegisteredAt: () => 'CURRENT_TIMESTAMP' })
+        .where('id IN (:...ids)', { ids })
+        .andWhere('seventeenRegisteredAt IS NULL')
+        .execute();
     }
 
     /** Guías DHL activas en 17TRACK que YA llegaron a terminal → liberar su slot. */
@@ -6856,6 +7008,7 @@ export class ShipmentsService {
       daysWith67: number; daysWithout67: number; missingDates: string[]; last67: string | null;
       events: { date: string; description: string; exceptionCode?: string }[];
       lastMovement: { date: string; description: string } | null;
+      commitDateTime: string | null;
       fedexStatus: string; fedexRaw?: string; derivedCode?: string; exceptionCode?: string;
     }>> {
       const tns = [...new Set((items || []).map((i) => i.trackingNumber).filter(Boolean))];
@@ -6946,6 +7099,17 @@ export class ShipmentsService {
             ...(e.exceptionCode ? { exceptionCode: e.exceptionCode } : {}),
           }));
 
+        // Fecha de entrega/compromiso VIGENTE en FedEx (para reprogramar en DEX17).
+        const commitDateTime = (() => {
+          const fromDT = top?.dateAndTimes?.find(
+            (dt: any) => ['ESTIMATED_DELIVERY', 'COMMIT', 'APPOINTMENT_DELIVERY'].includes(dt?.type),
+          )?.dateTime;
+          const raw = fromDT || top?.estimatedDeliveryTimeWindow?.window?.ends || top?.standardTransitTimeWindow?.window?.ends;
+          if (!raw) return null;
+          const d = new Date(raw);
+          return isNaN(d.getTime()) ? null : d.toISOString();
+        })();
+
         out[tn] = {
           windowStart,
           windowEnd,
@@ -6956,6 +7120,7 @@ export class ShipmentsService {
           last67: days67InWindow.length ? days67InWindow.sort().slice(-1)[0] : null,
           events: movements,
           lastMovement: movements.length ? { date: movements[0].date, description: movements[0].description } : null,
+          commitDateTime,
           fedexStatus,
           fedexRaw,
           derivedCode,
@@ -6964,6 +7129,36 @@ export class ShipmentsService {
       }
 
       return out;
+    }
+
+    /**
+     * Reprograma el `commitDateTime` de una o varias guías (envío o carga) con la
+     * nueva fecha de entrega que envió FedEx. Se usa en DEX17 (cambio de fecha).
+     * Actualiza la copia MÁS RECIENTE por guía (misma regla que el dedup).
+     */
+    async updateCommitDates(
+      items: { trackingNumber: string; isCharge?: boolean; commitDateTime: string }[],
+    ): Promise<{ updated: number; details: { trackingNumber: string; commitDateTime: string }[] }> {
+      let updated = 0;
+      const details: { trackingNumber: string; commitDateTime: string }[] = [];
+      for (const it of items || []) {
+        if (!it?.trackingNumber || !it?.commitDateTime) continue;
+        const d = new Date(it.commitDateTime);
+        if (isNaN(d.getTime())) continue;
+        const repo: Repository<any> = it.isCharge ? this.chargeShipmentRepository : this.shipmentRepository;
+        const found = await repo.find({
+          where: { trackingNumber: it.trackingNumber },
+          order: { createdAt: 'DESC' },
+          take: 1,
+        });
+        if (found[0]) {
+          found[0].commitDateTime = d;
+          await repo.save(found[0]);
+          updated++;
+          details.push({ trackingNumber: it.trackingNumber, commitDateTime: d.toISOString() });
+        }
+      }
+      return { updated, details };
     }
 
     async getFedexComparisonStatuses(

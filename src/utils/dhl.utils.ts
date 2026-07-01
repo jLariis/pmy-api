@@ -45,3 +45,66 @@ export function map17TrackStatusToLocal(status: string): ShipmentStatusType | nu
   };
   return key in map ? map[key] : ShipmentStatusType.PENDIENTE;
 }
+
+/**
+ * Clasifica el texto de una incidencia DHL (descripción del evento de WhereParcel)
+ * a un código DEX de la taxonomía de la app, por palabras clave. WhereParcel NO
+ * entrega el código DEX directo para DHL (solo `exception` + descripción libre,
+ * a veces en otro idioma), por eso se infiere del texto.
+ *
+ * DEX03 = dirección incorrecta · DEX07 = rechazado · DEX08 = cliente no disponible
+ * · DEX17 = cambio de fecha. Devuelve {code,label} o null si no se reconoce.
+ * Ampliar los `keys` conforme veamos descripciones reales (incl. otros idiomas).
+ */
+export function classifyDhlException(
+  text?: string | null,
+): { code: '03' | '07' | '08' | '17'; label: string } | null {
+  const t = (text || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, ''); // sin acentos
+  if (!t) return null;
+
+  const RULES: { code: '03' | '07' | '08' | '17'; label: string; keys: string[] }[] = [
+    { code: '07', label: 'Rechazado', keys: ['rechaz', 'refus', 'reject', 'declin', 'devuelto por el cliente'] },
+    { code: '03', label: 'Dirección incorrecta', keys: ['direccion', 'address', 'incorrect', 'wrong address', 'dom no exist', 'domicilio no exist', 'datos incorrect', 'no existe el domicilio'] },
+    { code: '08', label: 'Cliente no disponible', keys: ['no disponible', 'ausente', 'cerrad', 'closed', 'not available', 'nobody', 'no one', 'recipient not', 'nadie', 'visita', 'sin moradores'] },
+    { code: '17', label: 'Cambio de fecha solicitado', keys: ['cambio de fecha', 'reschedul', 'date change', 'future delivery', 'reprogram'] },
+  ];
+
+  for (const r of RULES) {
+    if (r.keys.some((k) => t.includes(k))) return { code: r.code, label: r.label };
+  }
+  return null;
+}
+
+/**
+ * Mapea el ESTATUS normalizado de WhereParcel (campo `data.status`) al estatus
+ * local de la app. WhereParcel usa un set estándar (delivered, in_transit,
+ * out_for_delivery, …). Normalizamos quitando separadores para tolerar variantes
+ * (snake_case / camelCase / espacios).
+ *
+ * Devuelve `null` para estados que NO conviene persistir (sin info), para que el
+ * servicio simplemente los omita.
+ */
+export function mapWhereParcelStatusToLocal(status: string): ShipmentStatusType | null {
+  const key = (status || '').trim().toLowerCase().replace(/[\s_-]/g, '');
+  const map: Record<string, ShipmentStatusType | null> = {
+    delivered: ShipmentStatusType.ENTREGADO,
+    outfordelivery: ShipmentStatusType.EN_RUTA,
+    intransit: ShipmentStatusType.EN_TRANSITO,
+    inforeceived: ShipmentStatusType.RECOLECCION,
+    pending: ShipmentStatusType.PENDIENTE,
+    availableforpickup: ShipmentStatusType.ES_OCURRE,
+    failedattempt: ShipmentStatusType.NO_ENTREGADO,
+    deliveryfailure: ShipmentStatusType.NO_ENTREGADO,
+    undelivered: ShipmentStatusType.NO_ENTREGADO,
+    returned: ShipmentStatusType.NO_ENTREGADO,
+    returntosender: ShipmentStatusType.NO_ENTREGADO,
+    exception: ShipmentStatusType.PENDIENTE, // incidencia
+    expired: ShipmentStatusType.PENDIENTE,
+    notfound: null,
+    unknown: null,
+  };
+  return key in map ? map[key] : ShipmentStatusType.PENDIENTE;
+}

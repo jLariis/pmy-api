@@ -13,6 +13,7 @@ export function mapFedexStatusToLocalStatus(derivedStatusCode: string, exception
       case '03':
       case 'A12':
       case 'A13': return ShipmentStatusType.DIRECCION_INCORRECTA;
+      case '05': return ShipmentStatusType.RESTRICCION_SEGURIDAD_UBICACION; // "Location security restrictions - Delivery will be reattempted"
       case '41': 
       case '11': 
       case '71':

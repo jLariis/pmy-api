@@ -1,31 +1,47 @@
 import { Logger } from '@nestjs/common';
 import { ShipmentsService } from 'src/shipments/shipments.service';
-import { SeventeenTrackDhlService } from './seventeen-track-dhl.service';
+import { WhereParcelDhlService } from './where-parcel-dhl.service';
 
 export interface DhlCycleSummary {
+  /** Guías DHL consultadas en este ciclo. */
   polledActive: number;
+  /** Guías cuyo estatus cambió/persistió. */
   updated: number;
+  /** Compat: en WhereParcel no hay liberación de slots. Siempre 0. */
   released: number;
+  /** Compat: en WhereParcel no hay alta previa. Siempre 0. */
   registered: number;
+  /** Tope de guías a consultar por ciclo (presupuesto). */
   quotaCap: number;
+  /** Llamadas usadas del mes tras el ciclo (de los headers/contadores). */
   quotaUsedAfter: number;
   durationMin: number;
+  /** true si se omitió porque ya había un ciclo en curso (candado compartido). */
+  skipped?: boolean;
 }
 
 /**
- * Ciclo de RECICLAJE de quota 17TRACK para DHL. Reutilizable por el cron horario
- * y por el endpoint manual (`/shipments/dhl/sync-cron`). Recibe los servicios ya
- * inyectados para NO tocar la DI de ShipmentsService (que se instancia en varios
- * módulos).
- *
- *   1) POLL (gratis): consulta las guías ya registradas y persiste su estatus.
- *   2) LIBERA: borra de 17TRACK (deletetrack) las que llegaron a terminal.
- *   3) REGISTRA: da de alta guías DHL nuevas no-terminales, sin pasar del tope.
+ * Candado a NIVEL PROCESO (módulo = singleton del runtime, aunque el servicio se
+ * provea en varios módulos NestJS). Evita que el cron, el botón manual y los
+ * dobles-clic disparen ciclos en paralelo → eso violaba el mínimo de 3s entre
+ * llamadas de la cuenta y causaba 429 en cascada.
  */
-export async function runDhlRecyclingCycle(
+let dhlCycleInFlight = false;
+
+/**
+ * Ciclo de tracking DHL vía WhereParcel. A diferencia de 17TRACK, WhereParcel
+ * devuelve el estatus directo en cada POST /v2/track (sin register/delete), así
+ * que el ciclo es simple:
+ *
+ *   1) Toma las guías DHL recientes NO terminales (hasta `pollCap`, presupuesto).
+ *   2) Consulta su estatus en WhereParcel (lotes de 5) y persiste.
+ *
+ * Las terminales se excluyen solas en el siguiente ciclo (filtro por status).
+ */
+export async function runDhlTrackingCycle(
   shipmentService: ShipmentsService,
-  seventeen: SeventeenTrackDhlService,
-  quotaCap: number,
+  whereParcel: WhereParcelDhlService,
+  pollCap: number,
   logger: Logger,
 ): Promise<DhlCycleSummary> {
   const start = Date.now();
@@ -34,52 +50,84 @@ export async function runDhlRecyclingCycle(
     updated: 0,
     released: 0,
     registered: 0,
-    quotaCap,
+    quotaCap: pollCap,
     quotaUsedAfter: 0,
     durationMin: 0,
   };
 
-  // 1) POLL de las guías ya registradas (no gasta quota; skipRegister).
-  const active = await shipmentService.getActiveRegisteredDhl();
+  // Candado: si ya hay un ciclo corriendo, NO arrancamos otro (evita 429 por
+  // llamadas concurrentes a WhereParcel).
+  if (dhlCycleInFlight) {
+    logger.warn('⏭️ [DHL/WhereParcel] Ya hay un ciclo en curso; se omite este disparo.');
+    return { ...summary, skipped: true, quotaUsedAfter: whereParcel.getUsage().used };
+  }
+  dhlCycleInFlight = true;
+
+  try {
+  const active = await shipmentService.getDhlToPoll(pollCap);
   summary.polledActive = active.length;
+
   if (active.length > 0) {
     const numbers = active.map((a) => a.trackingNumber);
-    const results = await seventeen.fetchTrackingStatuses(numbers, { skipRegister: true });
+    const results = await whereParcel.fetchTrackingStatuses(numbers);
     const persisted = await shipmentService.persistDhlTrackingResults(results);
     summary.updated = persisted.updated.length;
-    logger.log(`📦 [DHL] Poll: ${active.length} activas → actualizadas ${summary.updated}.`);
+    logger.log(`📦 [DHL/WhereParcel] Consultadas ${active.length} → actualizadas ${summary.updated}.`);
   } else {
-    logger.log('📭 [DHL] No hay guías activas registradas para consultar.');
+    logger.log('📭 [DHL/WhereParcel] No hay guías DHL activas por consultar.');
   }
 
-  // 2) LIBERA quota de las que ya llegaron a terminal.
-  const terminal = await shipmentService.getActiveRegisteredDhlTerminal();
-  if (terminal.length > 0) {
-    await seventeen.deleteNumbers(terminal.map((t) => t.trackingNumber));
-    await shipmentService.markDhlReleased(terminal.map((t) => t.id));
-    summary.released = terminal.length;
-    logger.log(`♻️ [DHL] Liberados ${terminal.length} slot(s) de quota (terminales).`);
-  }
-
-  // 3) REGISTRA guías nuevas hasta el tope de quota.
-  const activeCount = await shipmentService.countActiveRegisteredDhl();
-  const available = quotaCap - activeCount;
-  if (available > 0) {
-    const candidates = await shipmentService.getUnregisteredDhl(available);
-    if (candidates.length > 0) {
-      const { registered } = await seventeen.registerNumbers(candidates.map((c) => c.trackingNumber));
-      await shipmentService.markDhlRegistered(registered);
-      summary.registered = registered.length;
-      logger.log(`🆕 [DHL] Registradas ${registered.length}/${candidates.length} (quota libre: ${available}).`);
-    } else {
-      logger.log('✅ [DHL] No hay guías nuevas por registrar.');
-    }
-  } else {
-    logger.warn(`⚠️ [DHL] Quota llena (${activeCount}/${quotaCap}); no se registran nuevas este ciclo.`);
-  }
-
-  summary.quotaUsedAfter = await shipmentService.countActiveRegisteredDhl();
+  summary.quotaUsedAfter = whereParcel.getUsage().used;
   summary.durationMin = Number(((Date.now() - start) / 1000 / 60).toFixed(2));
-  logger.log(`🏁 [DHL/17TRACK] Ciclo finalizado en ${summary.durationMin} min. Quota usada ≈ ${summary.quotaUsedAfter}/${quotaCap}.`);
+  logger.log(
+    `🏁 [DHL/WhereParcel] Ciclo finalizado en ${summary.durationMin} min. Uso del mes ≈ ${summary.quotaUsedAfter}.`,
+  );
   return summary;
+  } finally {
+    dhlCycleInFlight = false;
+  }
+}
+
+/**
+ * Ciclo de REGISTRO a webhooks: toma guías DHL pendientes (recientes, no
+ * terminales, con dhlUniqueId, sin registrar) y las suscribe en WhereParcel
+ * (push). Es el mecanismo PRINCIPAL: tras registrar, WhereParcel empuja los
+ * cambios de estatus a nuestro callback (sin polling). Idempotente: las ya
+ * registradas se marcan con `seventeenRegisteredAt` y no se vuelven a tomar.
+ */
+let dhlRegInFlight = false;
+
+export async function runDhlWebhookRegistrationCycle(
+  shipmentService: ShipmentsService,
+  whereParcel: WhereParcelDhlService,
+  cap: number,
+  logger: Logger,
+): Promise<{ pending: number; registered: number; failed: number; skipped?: boolean }> {
+  // Candado: evita que el registro manual (setup) y el cron se solapen y registren
+  // doble (doble costo + posibles 429).
+  if (dhlRegInFlight) {
+    logger.warn('⏭️ [DHL/webhook] Ya hay un registro en curso; se omite este disparo.');
+    return { pending: 0, registered: 0, failed: 0, skipped: true };
+  }
+  dhlRegInFlight = true;
+
+  try {
+  const pending = await shipmentService.getDhlToRegisterForWebhook(cap);
+  if (pending.length === 0) {
+    logger.log('✅ [DHL/webhook] No hay guías nuevas por registrar.');
+    return { pending: 0, registered: 0, failed: 0 };
+  }
+  const items = pending.map((p) => ({ trackingNumber: p.trackingNumber, clientId: p.id }));
+  const { registered, failed } = await whereParcel.registerForWebhooks(items);
+
+  // Marca como registradas (por id) solo las que sí quedaron.
+  const idByTn = new Map(pending.map((p) => [p.trackingNumber, p.id]));
+  const ids = registered.map((tn) => idByTn.get(tn)).filter(Boolean) as string[];
+  await shipmentService.markDhlWebhookRegistered(ids);
+
+  logger.log(`📡 [DHL/webhook] Registradas ${registered.length}/${pending.length} (fallidas ${failed.length}).`);
+  return { pending: pending.length, registered: registered.length, failed: failed.length };
+  } finally {
+    dhlRegInFlight = false;
+  }
 }

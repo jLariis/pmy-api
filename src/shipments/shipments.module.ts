@@ -13,12 +13,12 @@ import { ForPickUp } from 'src/entities/for-pick-up.entity';
 import { PackageDispatch } from 'src/entities/package-dispatch.entity';
 import { Unloading } from 'src/entities/unloading.entity';
 import { DhlService } from './dhl.service';
-import { SeventeenTrackDhlService } from 'src/tracking/seventeen-track-dhl.service';
+import { WhereParcelDhlService } from 'src/tracking/where-parcel-dhl.service';
 
 @Module({
   controllers: [ShipmentsController],
   imports: [TypeOrmModule.forFeature([Shipment, ShipmentStatus,Subsidiary, Income, Charge, ChargeShipment, Consolidated, ForPickUp, PackageDispatch, Consolidated, Unloading]), TrackingModule],
-  providers: [ShipmentsService, FedexService, DhlService, SubsidiariesService, ConsolidatedService, MailService, SeventeenTrackDhlService],
+  providers: [ShipmentsService, FedexService, DhlService, SubsidiariesService, ConsolidatedService, MailService, WhereParcelDhlService],
   exports: [ShipmentsService],
 })
 export class ShipmentsModule { }

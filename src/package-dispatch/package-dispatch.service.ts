@@ -3,7 +3,9 @@ import { CreatePackageDispatchDto } from './dto/create-package-dispatch.dto';
 import { UpdatePackageDispatchDto } from './dto/update-package-dispatch.dto';
 import { InjectRepository } from '@nestjs/typeorm';
 import { PackageDispatch } from 'src/entities/package-dispatch.entity';
-import { DataSource, In, Not, Repository } from 'typeorm';
+import { Between, DataSource, In, Not, Repository } from 'typeorm';
+import { differenceInCalendarDays } from 'date-fns';
+import { LD_QUALIFYING_SQL_IN } from 'src/common/ld-codes';
 import { Shipment, ChargeShipment, Consolidated, ShipmentStatus } from 'src/entities';
 import { ValidatedPackageDispatchDto } from './dto/validated-package-dispatch.dto';
 import { Devolution } from 'src/entities/devolution.entity';
@@ -3017,5 +3019,344 @@ export class PackageDispatchService {
 
     const buffer = await workbook.xlsx.writeBuffer();
     return buffer as unknown as Buffer;
+  }
+
+  /**
+   * Reporte "Rutas del día pasado": todo lo que SALIÓ en rutas (package_dispatch)
+   * dentro del rango (por defecto AYER) de la sucursal, enriquecido con:
+   *  - chofer(es) de la salida y vencimiento (commitDateTime)
+   *  - categoría por estatus actual: no_entregado (default) / entregado / dex
+   *  - movedYesterday: hubo algún cambio de estatus AYER (¿los movieron?)
+   *  - has67Yesterday / has67Today: excepción 67 ayer y/o hoy
+   *  - inLastInventoryYesterday: si aparece en el ÚLTIMO inventario de ayer
+   *  - last67 / daysSinceLast67 (motor de visibilidad 67)
+   */
+  async getRoutesReport(subsidiaryId: string, from?: string, to?: string) {
+    const ZONE = 'America/Hermosillo';
+    const now = DateTime.now().setZone(ZONE);
+
+    // Rango de salidas a considerar (por defecto: AYER)
+    const rangeStart = (from ? DateTime.fromISO(from, { zone: ZONE }) : now.minus({ days: 1 })).startOf('day');
+    const rangeEnd = (to ? DateTime.fromISO(to, { zone: ZONE }) : (from ? DateTime.fromISO(from, { zone: ZONE }) : now.minus({ days: 1 }))).endOf('day');
+
+    // Ventanas relativas a HOY para 67 / movimientos
+    const yStart = now.minus({ days: 1 }).startOf('day');
+    const yEnd = now.minus({ days: 1 }).endOf('day');
+    const tStart = now.startOf('day');
+    const tEnd = now.endOf('day');
+
+    const toJs = (dt: DateTime) => dt.toUTC().toJSDate();
+    const fmtSql = (dt: DateTime) => dt.toFormat('yyyy-MM-dd HH:mm:ss'); // para queries raw sobre columnas locales
+    const dayKey = (d: Date | string | null | undefined) =>
+      d ? DateTime.fromJSDate(new Date(d)).setZone(ZONE).toFormat('yyyy-MM-dd') : null;
+    // Días del rango del filtro (para "del día" = vence en el rango).
+    const rangeDays = new Set<string>();
+    for (let dd = rangeStart; dd <= rangeEnd; dd = dd.plus({ days: 1 })) rangeDays.add(dd.toFormat('yyyy-MM-dd'));
+
+    // Costo por paquete de la sucursal (para valorar el LD).
+    const subInfo: any[] = await this.dataSource.query(
+      `SELECT name, fedexCostPackage, dhlCostPackage FROM subsidiary WHERE id = ? LIMIT 1`,
+      [subsidiaryId],
+    );
+    const subsidiaryName = subInfo[0]?.name ?? '';
+    const fedexCost = Number(subInfo[0]?.fedexCostPackage) || 0;
+    const dhlCost = Number(subInfo[0]?.dhlCostPackage) || 0;
+    const costOf = (shipmentType?: string) =>
+      String(shipmentType || '').toLowerCase() === 'dhl' ? dhlCost : fedexCost;
+
+    // 1) Salidas a ruta del rango, con choferes
+    const dispatches = await this.packageDispatchRepository.find({
+      where: {
+        subsidiary: { id: subsidiaryId },
+        createdAt: Between(toJs(rangeStart), toJs(rangeEnd)),
+      },
+      relations: ['drivers'],
+    });
+    const emptyMeta = {
+      rangeStart: rangeStart.toISO(), rangeEnd: rangeEnd.toISO(),
+      subsidiaryName, fedexCost, dhlCost,
+      lastInventoryYesterday: null as null | { id: string; inventoryDate: string; type: string },
+    };
+    if (dispatches.length === 0) {
+      return {
+        summary: { salidas: 0, paquetes: 0, delDia: 0, otros: 0, dev: 0, ld: 0, montoPerdido: 0, noEntregados: 0, entregados: 0, dex: 0, con67Ayer: 0, con67Hoy: 0, sinInventarioAyer: 0, movidosAyer: 0 },
+        details: [],
+        byDriver: [],
+        meta: emptyMeta,
+      };
+    }
+    const dispatchIds = dispatches.map((d) => d.id);
+    const dispatchMeta = new Map<string, { drivers: string; status: string; createdAt: Date }>(
+      dispatches.map((d) => [
+        d.id,
+        {
+          drivers: (d.drivers ?? []).map((dr) => dr?.name).filter(Boolean).join(', '),
+          status: String(d.status ?? ''),
+          createdAt: d.createdAt,
+        },
+      ]),
+    );
+
+    // 2) Paquetes (envíos + cargas) que salieron en esas rutas (FK routeId)
+    const PKG_COLS: [string, string][] = [
+      ['trackingNumber', 'trackingNumber'], ['status', 'status'],
+      ['recipientName', 'recipientName'], ['recipientAddress', 'recipientAddress'],
+      ['recipientCity', 'recipientCity'], ['recipientZip', 'recipientZip'],
+      ['shipmentType', 'shipmentType'], ['commitDateTime', 'commitDateTime'],
+      ['fedexUniqueId', 'fedexUniqueId'], ['createdAt', 'createdAt'], ['routeId', 'routeId'],
+      ['consNumber', 'consNumber'],
+    ];
+    const buildPkgQuery = (repo: Repository<any>, alias: string) => {
+      const qb = repo.createQueryBuilder(alias)
+        .where(`${alias}.routeId IN (:...dispatchIds)`, { dispatchIds })
+        .select(`${alias}.id`, 'id');
+      for (const [col, as] of PKG_COLS) qb.addSelect(`${alias}.${col}`, as);
+      return qb.getRawMany();
+    };
+    const [shipRows, chargeRows] = await Promise.all([
+      buildPkgQuery(this.shipmentRepository, 's'),
+      buildPkgQuery(this.chargeShipmentRepository, 'cs'),
+    ]);
+
+    const chunk = <T,>(arr: T[], n: number) => { const o: T[][] = []; for (let i = 0; i < arr.length; i += n) o.push(arr.slice(i, i + n)); return o; };
+
+    // 3) Agregados de shipment_status: último 67, 67 ayer/hoy, movimiento ayer
+    type StatAgg = { last67: Date | null; c67y: number; c67t: number; movedY: number };
+    const statsBy = async (ids: string[], fkCol: string): Promise<Map<string, StatAgg>> => {
+      const m = new Map<string, StatAgg>();
+      for (const part of chunk([...new Set(ids)], 800)) {
+        if (part.length === 0) continue;
+        const ph = part.map(() => '?').join(',');
+        const rows: any[] = await this.dataSource.query(
+          `SELECT ${fkCol} AS id,
+                  MAX(CASE WHEN exceptionCode = '67' THEN timestamp END) AS last67,
+                  SUM(exceptionCode = '67' AND timestamp BETWEEN ? AND ?) AS c67y,
+                  SUM(exceptionCode = '67' AND timestamp BETWEEN ? AND ?) AS c67t,
+                  SUM(timestamp BETWEEN ? AND ?) AS movedY
+             FROM shipment_status
+            WHERE ${fkCol} IN (${ph})
+            GROUP BY ${fkCol}`,
+          [fmtSql(yStart), fmtSql(yEnd), fmtSql(tStart), fmtSql(tEnd), fmtSql(yStart), fmtSql(yEnd), ...part],
+        );
+        for (const r of rows) if (r.id) m.set(String(r.id), {
+          last67: r.last67 ? new Date(r.last67) : null,
+          c67y: Number(r.c67y) || 0,
+          c67t: Number(r.c67t) || 0,
+          movedY: Number(r.movedY) || 0,
+        });
+      }
+      return m;
+    };
+    const [shipStats, chargeStats] = await Promise.all([
+      statsBy(shipRows.map((r) => r.id), 'shipmentId'),
+      statsBy(chargeRows.map((r) => r.id), 'chargeShipmentId'),
+    ]);
+
+    // 4) Último inventario de AYER + membresías
+    const lastInv: any[] = await this.dataSource.query(
+      `SELECT id, inventoryDate, type FROM inventory
+        WHERE subsidiaryId = ? AND inventoryDate BETWEEN ? AND ?
+        ORDER BY inventoryDate DESC, id DESC LIMIT 1`,
+      [subsidiaryId, fmtSql(yStart), fmtSql(yEnd)],
+    );
+    const lastInventory = lastInv[0] ?? null;
+    const inInvShip = new Set<string>();
+    const inInvCharge = new Set<string>();
+    if (lastInventory) {
+      const memberSet = async (ids: string[], table: string, fkCol: string, set: Set<string>) => {
+        for (const part of chunk([...new Set(ids)], 800)) {
+          if (part.length === 0) continue;
+          const ph = part.map(() => '?').join(',');
+          const rows: any[] = await this.dataSource.query(
+            `SELECT ${fkCol} AS id FROM ${table} WHERE inventoryId = ? AND ${fkCol} IN (${ph})`,
+            [lastInventory.id, ...part],
+          );
+          for (const r of rows) if (r.id) set.add(String(r.id));
+        }
+      };
+      await Promise.all([
+        memberSet(shipRows.map((r) => r.id), 'inventory_shipment', 'shipmentId', inInvShip),
+        memberSet(chargeRows.map((r) => r.id), 'inventory_charge_shipments', 'chargeShipmentId', inInvCharge),
+      ]);
+    }
+
+    // 4.b) Días con DEX 03/07/08/17/42/05 por paquete (para la regla de LD).
+    //      Nota: localmente solo se persisten 03/07 (y 67); 08/17 casi nunca están
+    //      en la BD → el LD LOCAL puede sobreestimar. El botón "Revisar con FedEx"
+    //      del frontend recalcula con los movimientos reales.
+    // 42 = mismo trato que 08 (no causa LD). POD (entregado) también salva.
+    const dexDaysBy = async (ids: string[], fkCol: string): Promise<Map<string, Set<string>>> => {
+      const m = new Map<string, Set<string>>();
+      for (const part of chunk([...new Set(ids)], 800)) {
+        if (part.length === 0) continue;
+        const ph = part.map(() => '?').join(',');
+        const rows: any[] = await this.dataSource.query(
+          `SELECT ${fkCol} AS id, timestamp AS ts FROM shipment_status
+            WHERE ${fkCol} IN (${ph}) AND exceptionCode IN (${LD_QUALIFYING_SQL_IN})`,
+          part,
+        );
+        for (const r of rows) {
+          if (!r.id) continue;
+          const k = dayKey(r.ts);
+          if (!k) continue;
+          if (!m.has(String(r.id))) m.set(String(r.id), new Set());
+          m.get(String(r.id))!.add(k);
+        }
+      }
+      return m;
+    };
+    const [shipDexDays, chargeDexDays] = await Promise.all([
+      dexDaysBy(shipRows.map((r) => r.id), 'shipmentId'),
+      dexDaysBy(chargeRows.map((r) => r.id), 'chargeShipmentId'),
+    ]);
+
+    // 4.c) Devoluciones (DEV): guías de la ruta con registro en `devolution`.
+    const devSet = new Set<string>();
+    const allTns = [...shipRows, ...chargeRows].map((r) => r.trackingNumber).filter(Boolean);
+    for (const part of chunk([...new Set(allTns)], 800)) {
+      if (part.length === 0) continue;
+      const ph = part.map(() => '?').join(',');
+      const rows: any[] = await this.dataSource.query(
+        `SELECT DISTINCT trackingNumber AS tn FROM devolution WHERE subsidiaryId = ? AND trackingNumber IN (${ph})`,
+        [subsidiaryId, ...part],
+      );
+      for (const r of rows) if (r.tn) devSet.add(String(r.tn));
+    }
+
+    // 5) Categorización por estatus actual
+    const DELIVERED = new Set<string>([
+      ShipmentStatusType.ENTREGADO, ShipmentStatusType.ENTREGADO_POR_FEDEX, ShipmentStatusType.ENTREGADO_EN_BODEGA,
+    ]);
+    const DEX = new Set<string>([
+      ShipmentStatusType.RECHAZADO, ShipmentStatusType.DIRECCION_INCORRECTA, ShipmentStatusType.CLIENTE_NO_DISPONIBLE,
+      ShipmentStatusType.CAMBIO_FECHA_SOLICITADO, ShipmentStatusType.DEMORA_EN_ENTREGA, ShipmentStatusType.EMPRESA_CERRADA,
+      ShipmentStatusType.NO_SE_PUDO_RECOLECTAR_EL_COBRO, ShipmentStatusType.DEVUELTO_A_FEDEX, ShipmentStatusType.NO_ENTREGADO,
+      ShipmentStatusType.ES_OCURRE,
+    ]);
+
+    const build = (row: any, isCharge: boolean, stats: Map<string, StatAgg>, invSet: Set<string>, dexDaysMap: Map<string, Set<string>>) => {
+      const st = stats.get(String(row.id)) ?? { last67: null, c67y: 0, c67t: 0, movedY: 0 };
+      const statusLower = String(row.status ?? '').toLowerCase();
+      const category = DELIVERED.has(statusLower) ? 'entregado' : DEX.has(statusLower) ? 'dex' : 'no_entregado';
+      const daysSinceLast67 = st.last67 ? differenceInCalendarDays(now.toJSDate(), st.last67) : null;
+      const disp = dispatchMeta.get(String(row.routeId));
+
+      // Regla de LD: paquete que VENCE en el rango del filtro ("del día") y que NO
+      // fue entregado (POD) ni tuvo un DEX 03/07/08/17/42/05 EN su día de vencimiento.
+      const commitDay = dayKey(row.commitDateTime);
+      const dueOnFilterDate = !!commitDay && rangeDays.has(commitDay);
+      const dexDays = dexDaysMap.get(String(row.id));
+      const dexOnCommitDay = !!(commitDay && dexDays && dexDays.has(commitDay));
+      const isDelivered = category === 'entregado';
+      const isLD = dueOnFilterDate && !isDelivered && !dexOnCommitDay;
+      const isDev = devSet.has(String(row.trackingNumber));
+      const cost = costOf(row.shipmentType);
+
+      return {
+        trackingNumber: row.trackingNumber,
+        status: row.status,
+        category,
+        isCharge,
+        consNumber: row.consNumber || '',
+        recipientName: row.recipientName,
+        recipientAddress: row.recipientAddress,
+        recipientCity: row.recipientCity,
+        recipientZip: row.recipientZip,
+        shipmentType: row.shipmentType,
+        fedexUniqueId: row.fedexUniqueId,
+        commitDateTime: row.commitDateTime ? new Date(row.commitDateTime).toISOString() : null,
+        driver: disp?.drivers || 'Sin chofer',
+        dispatchId: String(row.routeId),
+        dispatchStatus: disp?.status ?? '',
+        dispatchDate: disp?.createdAt ? new Date(disp.createdAt).toISOString() : null,
+        movedYesterday: st.movedY > 0,
+        has67Yesterday: st.c67y > 0,
+        has67Today: st.c67t > 0,
+        last67Date: st.last67 ? st.last67.toISOString() : null,
+        daysSinceLast67,
+        inLastInventoryYesterday: invSet.has(String(row.id)),
+        // Campos de LD
+        dueOnFilterDate,
+        dexOnCommitDay,
+        isDev,
+        isLD,
+        costPackage: cost,
+        // Se rellena en el frontend tras "Revisar con FedEx".
+        ldSource: 'local',
+      };
+    };
+
+    const details = [
+      ...shipRows.map((r) => build(r, false, shipStats, inInvShip, shipDexDays)),
+      ...chargeRows.map((r) => build(r, true, chargeStats, inInvCharge, chargeDexDays)),
+    ];
+
+    // Orden: LD primero, luego por vencimiento (más urgente).
+    details.sort((a, b) => {
+      if (a.isLD !== b.isLD) return a.isLD ? -1 : 1;
+      const av = a.commitDateTime ? new Date(a.commitDateTime).getTime() : Number.MAX_SAFE_INTEGER;
+      const bv = b.commitDateTime ? new Date(b.commitDateTime).getTime() : Number.MAX_SAFE_INTEGER;
+      return av - bv;
+    });
+
+    // Agregado por chofer (una fila por chofer, con contadores). Un paquete puede
+    // ir en varias rutas del mismo chofer, pero el chofer es único por dispatch.
+    const routesByDriver = new Map<string, Set<string>>();
+    for (const d of dispatches) {
+      const drv = (d.drivers ?? []).map((x) => x?.name).filter(Boolean).join(', ') || 'Sin chofer';
+      if (!routesByDriver.has(drv)) routesByDriver.set(drv, new Set());
+      routesByDriver.get(drv)!.add(d.id);
+    }
+    const driverAgg = new Map<string, any>();
+    for (const d of details) {
+      const key = d.driver;
+      if (!driverAgg.has(key)) {
+        driverAgg.set(key, {
+          driver: key, rutas: routesByDriver.get(key)?.size ?? 0,
+          total: 0, delDia: 0, otros: 0, dev: 0, ld: 0, montoPerdido: 0,
+          entregados: 0, dexCount: 0, noEntregados: 0,
+        });
+      }
+      const g = driverAgg.get(key);
+      g.total++;
+      if (d.dueOnFilterDate) g.delDia++; else g.otros++;
+      if (d.isDev) g.dev++;
+      if (d.isLD) { g.ld++; g.montoPerdido += d.costPackage; }
+      if (d.category === 'entregado') g.entregados++;
+      else if (d.category === 'dex') g.dexCount++;
+      else g.noEntregados++;
+    }
+    const byDriver = Array.from(driverAgg.values()).sort((a, b) => b.ld - a.ld || b.total - a.total);
+
+    const ldRows = details.filter((d) => d.isLD);
+    const montoPerdido = ldRows.reduce((s, d) => s + d.costPackage, 0);
+    return {
+      summary: {
+        salidas: dispatches.length,
+        paquetes: details.length,
+        delDia: details.filter((d) => d.dueOnFilterDate).length,
+        otros: details.filter((d) => !d.dueOnFilterDate).length,
+        dev: details.filter((d) => d.isDev).length,
+        ld: ldRows.length,
+        montoPerdido,
+        noEntregados: details.filter((d) => d.category === 'no_entregado').length,
+        entregados: details.filter((d) => d.category === 'entregado').length,
+        dex: details.filter((d) => d.category === 'dex').length,
+        con67Ayer: details.filter((d) => d.has67Yesterday).length,
+        con67Hoy: details.filter((d) => d.has67Today).length,
+        sinInventarioAyer: details.filter((d) => d.category === 'no_entregado' && !d.inLastInventoryYesterday).length,
+        movidosAyer: details.filter((d) => d.category === 'no_entregado' && d.movedYesterday).length,
+      },
+      details,
+      byDriver,
+      meta: {
+        rangeStart: rangeStart.toISO(),
+        rangeEnd: rangeEnd.toISO(),
+        subsidiaryName, fedexCost, dhlCost,
+        lastInventoryYesterday: lastInventory
+          ? { id: String(lastInventory.id), inventoryDate: new Date(lastInventory.inventoryDate).toISOString(), type: String(lastInventory.type ?? '') }
+          : null,
+      },
+    };
   }
 }
