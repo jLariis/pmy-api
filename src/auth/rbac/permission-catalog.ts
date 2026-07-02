@@ -88,4 +88,6 @@ export const RBAC_PERMISSIONS: RbacPermissionDef[] = [
   { code: 'reportes.inventarios', name: 'Reporte: Inventarios', groupName: 'Reportes', roles: ['admin', 'subadmin', 'superadmin', 'user'] },
   { code: 'reportes.desembarques', name: 'Reporte: Desembarques', groupName: 'Reportes', roles: ['admin', 'subadmin', 'superadmin', 'user'] },
   { code: 'reportes.inventario67', name: 'Reporte: Último inventario sin 67', groupName: 'Reportes', roles: ['admin', 'subadmin', 'superadmin', 'user'] },
+  { code: 'reportes.rutas', name: 'Reporte: Rutas del día pasado (LD)', groupName: 'Reportes', roles: ['admin', 'subadmin', 'superadmin', 'user'] },
+  { code: 'reportes.bodega', name: 'Reporte: Inventario sin movimiento (LD)', groupName: 'Reportes', roles: ['admin', 'subadmin', 'superadmin', 'user'] },
 ];
