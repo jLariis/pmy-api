@@ -12,6 +12,16 @@ DESKTOP_USER=juan BACKEND_ENV=/opt/pmy-api/.env VNC_PASSWORD=... \
 Después solo faltan **Nginx** (paso 4) y **reiniciar el backend** (paso 5).
 Si prefieres a mano, sigue los pasos de abajo.
 
+### ¿x11vnc falla? (servidor sin escritorio físico en :0)
+En un *Ubuntu Server* headless no hay sesión Xorg en `:0`, así que x11vnc no
+arranca (la pestaña **SSH sí funciona igual**). Para el escritorio gráfico usa un
+**escritorio VIRTUAL** (TigerVNC + XFCE en `:1`, siempre disponible):
+```bash
+sudo bash deploy/setup-vnc-virtual.sh
+```
+No cambia el `.env` (sigue en `REMOTE_VNC_PORT=5901`). Diagnóstico previo:
+`sudo tail -30 /var/log/x11vnc.log` · `ls -la /tmp/.X11-unix/` · `loginctl`.
+
 ---
 
 Orden de pasos en el servidor físico (Xeon / Xorg, Wayland deshabilitado).

@@ -108,6 +108,8 @@ BACKEND_ENV="${BACKEND_ENV:-}"
 if [ -z "${BACKEND_ENV}" ]; then
   read -rp "Ruta del .env del backend NestJS (enter para omitir y solo imprimir): " BACKEND_ENV || true
 fi
+# Resuelve rutas relativas a absoluto (evita 'no encontrado' por el cwd).
+[ -n "${BACKEND_ENV}" ] && BACKEND_ENV="$(readlink -f "${BACKEND_ENV}" 2>/dev/null || echo "${BACKEND_ENV}")"
 GUAC_KEY="$(openssl rand -hex 32)"
 
 write_env() {
@@ -135,6 +137,7 @@ write_env() {
 if [ -n "${BACKEND_ENV}" ] && [ -f "${BACKEND_ENV}" ]; then
   write_env "${BACKEND_ENV}"
 else
+  [ -n "${BACKEND_ENV}" ] && warn "No existe el archivo: ${BACKEND_ENV}"
   warn "No se parchó ningún .env. Agrega manualmente:"
   cat <<EOF
     GUAC_TOKEN_KEY=${GUAC_KEY}
