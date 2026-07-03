@@ -88,6 +88,12 @@ export class AuthService {
             );
         }
 
+        // Sucursales permitidas: la "main" (subsidiary) + las adicionales asignadas
+        // por un superadmin. Los guards de scoping (SubsidiaryScopeGuard,
+        // IncomeAccessGuard) validan contra este array plano.
+        const additionalSubsidiaries = user.additionalSubsidiaries || [];
+        const subsidiaryIds = [user.subsidiary?.id, ...additionalSubsidiaries.map((s: any) => s.id)].filter(Boolean);
+
         const payload = {
             email: user.email,
             sub: user.id,
@@ -95,6 +101,8 @@ export class AuthService {
             name: user.name,
             lastName: user.lastName,
             subsidiary: user.subsidiary,
+            additionalSubsidiaries,
+            subsidiaryIds,
             permissions,
         };
 
@@ -112,6 +120,7 @@ export class AuthService {
                 name: payload.name,
                 lastName: payload.lastName,
                 subsidiary: user.subsidiary,
+                additionalSubsidiaries,
                 permissions,
             }
 

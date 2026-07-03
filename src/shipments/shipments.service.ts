@@ -54,6 +54,7 @@ import * as isoWeek from 'dayjs/plugin/isoWeek';
 import { ReturnValidationDto } from './dto/returning-validation.dto';
 import { DhlService } from './dhl.service';
 import { BusinessException } from 'src/common/business.exception';
+import { LD_QUALIFYING_SQL_IN } from 'src/common/ld-codes';
 
 dayjs.extend(isoWeek);
 
@@ -4015,6 +4016,128 @@ export class ShipmentsService {
     }
 
     /**
+     * Valida el estatus de "Local Delay" (LD) para una lista arbitraria de guías
+     * (mezcla de shipments y charge-shipments, de cualquier sucursal). A diferencia
+     * del reporte de inventario (`InventoriesService.getInventoryLDReport`, que usa
+     * un rango de fecha compartido de una sucursal/inventario), aquí cada guía se
+     * evalúa contra SU PROPIO `commitDateTime`: "vencida" = su día de compromiso ya
+     * pasó por completo (si es hoy, no cuenta como vencida todavía).
+     */
+    async checkLdStatus(trackingNumbers: string[]): Promise<{
+      trackingNumber: string;
+      found: boolean;
+      isCharge?: boolean;
+      status?: string;
+      commitDateTime?: string | null;
+      recipientName?: string;
+      shipmentType?: string;
+      ldState: 'active' | 'ld' | 'delivered' | 'closed' | null;
+    }[]> {
+      const tns = [...new Set((trackingNumbers || []).map((t) => `${t}`.trim()).filter(Boolean))].slice(0, 300);
+      if (tns.length === 0) return [];
+
+      const [shipments, charges] = await Promise.all([
+        this.shipmentRepository.find({
+          where: { trackingNumber: In(tns) },
+          order: { createdAt: 'DESC' },
+          select: ['id', 'trackingNumber', 'status', 'commitDateTime', 'recipientName', 'shipmentType'],
+        }),
+        this.chargeShipmentRepository.find({
+          where: { trackingNumber: In(tns) },
+          order: { createdAt: 'DESC' },
+          select: ['id', 'trackingNumber', 'status', 'commitDateTime', 'recipientName', 'shipmentType'],
+        }),
+      ]);
+
+      type FoundRec = { id: string; isCharge: boolean; status: string; commitDateTime: Date | null; recipientName?: string; shipmentType?: string };
+      const found = new Map<string, FoundRec>();
+      for (const s of shipments) {
+        if (found.has(s.trackingNumber)) continue; // ya tomamos la copia más reciente (orden DESC)
+        found.set(s.trackingNumber, { id: s.id, isCharge: false, status: s.status, commitDateTime: s.commitDateTime, recipientName: s.recipientName, shipmentType: s.shipmentType });
+      }
+      for (const c of charges) {
+        if (found.has(c.trackingNumber)) continue;
+        found.set(c.trackingNumber, { id: c.id, isCharge: true, status: c.status, commitDateTime: c.commitDateTime, recipientName: c.recipientName, shipmentType: c.shipmentType });
+      }
+
+      const HER = -7 * 3600 * 1000; // America/Hermosillo, sin horario de verano.
+      const herDay = (x: any) => new Date(new Date(x).getTime() + HER).toISOString().slice(0, 10);
+      const today = herDay(new Date());
+
+      const chunk = <T,>(arr: T[], n: number) => { const o: T[][] = []; for (let i = 0; i < arr.length; i += n) o.push(arr.slice(i, i + n)); return o; };
+      // Mismo patrón que `aggBy()` en InventoriesService.getInventoryLDReport, pero sin
+      // acotar por rango de fechas (cada guía compara contra SU commitDay, no uno compartido).
+      const aggDays = async (ids: string[], fkCol: 'shipmentId' | 'chargeShipmentId') => {
+        const moved = new Map<string, Set<string>>();
+        const dex = new Map<string, Set<string>>();
+        for (const part of chunk([...new Set(ids)], 800)) {
+          if (part.length === 0) continue;
+          const ph = part.map(() => '?').join(',');
+          const mv: any[] = await this.dataSource.query(
+            `SELECT ${fkCol} AS id, timestamp AS ts FROM shipment_status WHERE ${fkCol} IN (${ph})`,
+            part,
+          );
+          for (const r of mv) {
+            if (!r.id) continue;
+            const key = String(r.id);
+            if (!moved.has(key)) moved.set(key, new Set());
+            moved.get(key)!.add(herDay(r.ts));
+          }
+          const dx: any[] = await this.dataSource.query(
+            `SELECT ${fkCol} AS id, timestamp AS ts FROM shipment_status WHERE ${fkCol} IN (${ph}) AND exceptionCode IN (${LD_QUALIFYING_SQL_IN})`,
+            part,
+          );
+          for (const r of dx) {
+            if (!r.id) continue;
+            const key = String(r.id);
+            if (!dex.has(key)) dex.set(key, new Set());
+            dex.get(key)!.add(herDay(r.ts));
+          }
+        }
+        return { moved, dex };
+      };
+
+      const shipmentIds = [...found.values()].filter((v) => !v.isCharge).map((v) => v.id);
+      const chargeIds = [...found.values()].filter((v) => v.isCharge).map((v) => v.id);
+      const [shipAgg, chargeAgg] = await Promise.all([
+        aggDays(shipmentIds, 'shipmentId'),
+        aggDays(chargeIds, 'chargeShipmentId'),
+      ]);
+
+      const DELIVERED = new Set<string>([ShipmentStatusType.ENTREGADO, ShipmentStatusType.ENTREGADO_POR_FEDEX, ShipmentStatusType.ENTREGADO_EN_BODEGA]);
+      const CLOSED = new Set<string>(TERMINAL_SHIPMENT_STATUSES);
+
+      return tns.map((trackingNumber) => {
+        const rec = found.get(trackingNumber);
+        if (!rec) return { trackingNumber, found: false, ldState: null };
+
+        const agg = rec.isCharge ? chargeAgg : shipAgg;
+        const statusLower = String(rec.status ?? '').toLowerCase();
+        const commitDay = rec.commitDateTime ? herDay(rec.commitDateTime) : null;
+        const isDelivered = DELIVERED.has(statusLower);
+        const isOtherClosed = !isDelivered && CLOSED.has(statusLower as any);
+        const pastDue = !!commitDay && commitDay < today;
+        const movedOnCommitDay = !!commitDay && !!agg.moved.get(rec.id)?.has(commitDay);
+        const dexOnCommitDay = !!commitDay && !!agg.dex.get(rec.id)?.has(commitDay);
+        const isLD = pastDue && !isDelivered && !dexOnCommitDay && !movedOnCommitDay;
+
+        const ldState: 'active' | 'ld' | 'delivered' | 'closed' =
+          isDelivered ? 'delivered' : isOtherClosed ? 'closed' : isLD ? 'ld' : 'active';
+
+        return {
+          trackingNumber,
+          found: true,
+          isCharge: rec.isCharge,
+          status: rec.status,
+          commitDateTime: rec.commitDateTime ? new Date(rec.commitDateTime).toISOString() : null,
+          recipientName: rec.recipientName,
+          shipmentType: rec.shipmentType,
+          ldState,
+        };
+      });
+    }
+
+    /**
      * Persiste en los envíos DHL los estatus normalizados que devuelve 17TRACK.
      * Por cada resultado: localiza el envío (variantes JJD↔JD + dhlUniqueId, el
      * MÁS RECIENTE por createdAt), mapea el estatus 17TRACK → local y, si es nuevo,
@@ -7500,8 +7623,15 @@ export class ShipmentsService {
 
                 // ⏱️ TIME SHIELD: Movido hacia arriba para poder filtrar el OD Fantasma
                 const OPERATIONAL_STATUSES = [ShipmentStatusType.PENDIENTE, ShipmentStatusType.EN_BODEGA, ShipmentStatusType.EN_RUTA];
-                const lastOpEvent = existingHistory.find((h: any) => OPERATIONAL_STATUSES.includes(h.status));
-                const lastOpTime = lastOpEvent ? new Date(lastOpEvent.timestamp).getTime() : 0;
+                // FIX (jul-2026): lastOpTime = la ÚLTIMA operación interna (MÁS RECIENTE).
+                // El SELECT no trae ORDER BY, así que .find() devolvía el evento operativo
+                // MÁS VIEJO → el Time Shield fallaba y un 67 viejo de FedEx pisaba el en_ruta
+                // de la salida a ruta (lo regresaba a en_bodega sin escribir historial).
+                const lastOpTime = existingHistory.reduce(
+                  (max: number, h: any) => OPERATIONAL_STATUSES.includes(h.status)
+                    ? Math.max(max, new Date(h.timestamp).getTime()) : max,
+                  0,
+                );
 
                 const processedSignatures = new Set(existingHistory.map((h: any) => {
                     const t = new Date(h.timestamp).getTime();
@@ -7922,8 +8052,15 @@ export class ShipmentsService {
 
                 // ⏱️ TIME SHIELD
                 const OPERATIONAL_STATUSES = [ShipmentStatusType.PENDIENTE, ShipmentStatusType.EN_BODEGA, ShipmentStatusType.EN_RUTA];
-                const lastOpEvent = existingHistory.find((h: any) => OPERATIONAL_STATUSES.includes(h.status));
-                const lastOpTime = lastOpEvent ? new Date(lastOpEvent.timestamp).getTime() : 0;
+                // FIX (jul-2026): lastOpTime = la ÚLTIMA operación interna (MÁS RECIENTE).
+                // El SELECT no trae ORDER BY, así que .find() devolvía el evento operativo
+                // MÁS VIEJO → el Time Shield fallaba y un 67 viejo de FedEx pisaba el en_ruta
+                // de la salida a ruta (lo regresaba a en_bodega sin escribir historial).
+                const lastOpTime = existingHistory.reduce(
+                  (max: number, h: any) => OPERATIONAL_STATUSES.includes(h.status)
+                    ? Math.max(max, new Date(h.timestamp).getTime()) : max,
+                  0,
+                );
 
                 const processedSignatures = new Set(existingHistory.map((h: any) => {
                     const t = new Date(h.timestamp).getTime();
@@ -8499,8 +8636,14 @@ export class ShipmentsService {
                   const creationTime = initEvent ? new Date(initEvent.timestamp).getTime() : new Date((entity as any).createdAt || 0).getTime();
                   
                   const OPERATIONAL_STATUSES = [ShipmentStatusType.PENDIENTE, ShipmentStatusType.EN_BODEGA, ShipmentStatusType.EN_RUTA];
-                  const lastOpEvent = existingHistory.find((h: any) => OPERATIONAL_STATUSES.includes(h.status));
-                  const lastOpTime = lastOpEvent ? new Date(lastOpEvent.timestamp).getTime() : 0;
+                  // FIX (jul-2026): la ÚLTIMA operación interna (MÁS RECIENTE), no la 1ª.
+                  // .find() sin ORDER BY devolvía la más vieja → un 67 viejo de FedEx pisaba
+                  // el en_ruta de la salida a ruta (lo regresaba a en_bodega sin historial).
+                  const lastOpTime = existingHistory.reduce(
+                    (max: number, h: any) => OPERATIONAL_STATUSES.includes(h.status)
+                      ? Math.max(max, new Date(h.timestamp).getTime()) : max,
+                    0,
+                  );
                   const timeShieldLimit = Math.max(creationTime, lastOpTime);
 
                   const processedSignatures = new Set(existingHistory.map((h: any) => `${new Date(h.timestamp).getTime()}_${(h.exceptionCode || '').trim()}`));

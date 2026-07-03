@@ -45,3 +45,8 @@ export class SetUserPermissionsDto {
   @IsArray()
   overrides: UserPermissionOverrideDto[];
 }
+
+export class SetUserSubsidiariesDto {
+  @IsArray()
+  subsidiaryIds: string[];
+}

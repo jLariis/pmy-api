@@ -28,6 +28,7 @@ import { InventoriesModule } from './inventories/inventories.module';
 import { MonitoringModule } from './monitoring/monitoring.module';
 import { PickUpModule } from './pick-up/pick-up.module';
 import { JwtAuthGuard } from './auth/guards/jwt-auth.guard';
+import { GuacamoleModule } from './guacamole/guacamole.module';
 import { ResportsModule } from './resports/resports.module';
 import { WarehouseModule } from './warehouse/warehouse.module';
 import { TransferModule } from './transfer/transfer.module';
@@ -100,7 +101,8 @@ import { ServerStatsModule } from './server-stats/server-stats.module';
     CompanySettingsModule,
     CatalogModule,
     GeocodeModule,
-    ServerStatsModule
+    ServerStatsModule,
+    GuacamoleModule,
   ],
   controllers: [AppController],
   providers: [

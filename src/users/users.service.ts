@@ -121,7 +121,7 @@ export class UsersService {
 
   async findAll(): Promise<User[]> {
     return this.userRepository.find({
-      relations: ['subsidiary']
+      relations: ['subsidiary', 'additionalSubsidiaries']
     })
   }
 
@@ -130,7 +130,7 @@ export class UsersService {
   }
 
   async findByEmail(email: string){
-    const foundUser = await this.userRepository.findOne({ where: { email } , relations: ['subsidiary']})
+    const foundUser = await this.userRepository.findOne({ where: { email } , relations: ['subsidiary', 'additionalSubsidiaries']})
     
     console.log("🚀 ~ UsersService ~ findByEmail ~ foundUser:", foundUser)
     return foundUser;

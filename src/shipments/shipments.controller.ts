@@ -197,6 +197,17 @@ export class ShipmentsController {
   }
 
   /**
+   * Valida una lista de guías (lote, sin importar sucursal): por cada una indica si
+   * sigue activa, ya fue entregada/cerrada, o ya causa Local Delay (LD). Read-only,
+   * no persiste. Lo usa la pestaña "Validar LD" del buscador de envíos.
+   */
+  @Post('ld-check')
+  @NoAudit()
+  async checkLdStatus(@Body() body: { trackingNumbers: string[] }) {
+    return this.shipmentsService.checkLdStatus(body?.trackingNumbers || []);
+  }
+
+  /**
    * Confirmación con FedEx de la visibilidad 67: por guía, días con/sin 67 y los
    * días faltantes dentro de la ventana [alta en sistema → entrega/hoy].
    * `includeSundays` (default true) controla si los domingos exigen 67. Read-only.

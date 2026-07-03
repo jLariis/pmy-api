@@ -1,9 +1,15 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, Repository } from 'typeorm';
-import { Permission, Role, User, UserPermission } from 'src/entities';
+import { Permission, Role, Subsidiary, User, UserPermission } from 'src/entities';
 import { PermissionEffect } from 'src/entities/user-permission.entity';
-import { CreateRoleDto, SetRolePermissionsDto, SetUserPermissionsDto, UpdateRoleDto } from './dto/role.dto';
+import {
+  CreateRoleDto,
+  SetRolePermissionsDto,
+  SetUserPermissionsDto,
+  SetUserSubsidiariesDto,
+  UpdateRoleDto,
+} from './dto/role.dto';
 
 @Injectable()
 export class RbacService {
@@ -12,6 +18,7 @@ export class RbacService {
     @InjectRepository(Permission) private readonly permRepo: Repository<Permission>,
     @InjectRepository(UserPermission) private readonly userPermRepo: Repository<UserPermission>,
     @InjectRepository(User) private readonly userRepo: Repository<User>,
+    @InjectRepository(Subsidiary) private readonly subsidiaryRepo: Repository<Subsidiary>,
   ) {}
 
   /* ============ PERMISOS (catálogo) ============ */
@@ -114,6 +121,29 @@ export class RbacService {
     }
     if (rows.length) await this.userPermRepo.save(rows);
     return this.getUserPermissions(userId);
+  }
+
+  /* ============ SUCURSALES ADICIONALES POR USUARIO ============ */
+  async getUserSubsidiaries(userId: string) {
+    const user = await this.userRepo.findOne({ where: { id: userId }, relations: ['subsidiary', 'additionalSubsidiaries'] });
+    if (!user) throw new NotFoundException('Usuario no encontrado.');
+    return {
+      userId,
+      mainSubsidiary: user.subsidiary ? { id: user.subsidiary.id, name: user.subsidiary.name } : null,
+      additionalSubsidiaryIds: (user.additionalSubsidiaries || []).map((s) => s.id),
+    };
+  }
+
+  async setUserSubsidiaries(userId: string, dto: SetUserSubsidiariesDto) {
+    const user = await this.userRepo.findOne({ where: { id: userId }, relations: ['subsidiary'] });
+    if (!user) throw new NotFoundException('Usuario no encontrado.');
+
+    // Excluye la main del set de adicionales (ya está implícita) y deduplica.
+    const mainId = user.subsidiary?.id;
+    const ids = [...new Set((dto.subsidiaryIds || []).filter((id) => id && id !== mainId))];
+    user.additionalSubsidiaries = ids.length ? await this.subsidiaryRepo.find({ where: { id: In(ids) } }) : [];
+    await this.userRepo.save(user);
+    return this.getUserSubsidiaries(userId);
   }
 
   /* ============ PERMISOS EFECTIVOS ============ */

@@ -3,8 +3,9 @@ import { CanActivate, ExecutionContext, ForbiddenException, Injectable } from '@
 /**
  * Acceso a Finanzas/Ingresos: (1) restringe a roles con permiso financiero y
  * (2) ACOTA por sucursal — un usuario no-elevado solo puede consultar las
- * finanzas de SU sucursal. Antes cualquier autenticado podía leer las finanzas
- * de cualquier sucursal pasando el `subsidiaryId` en la URL.
+ * finanzas de sus sucursales asignadas (main + adicionales). Antes cualquier
+ * autenticado podía leer las finanzas de cualquier sucursal pasando el
+ * `subsidiaryId` en la URL.
  *
  * Se apoya en `req.user` (poblado por el JwtAuthGuard global) y en el
  * `subsidiaryId` de los params. Es role-based a propósito (no usa el
@@ -15,8 +16,8 @@ import { CanActivate, ExecutionContext, ForbiddenException, Injectable } from '@
 export class IncomeAccessGuard implements CanActivate {
   /** Roles con acceso a finanzas (= allowed-page-roles de finanzas). */
   private static readonly FINANCE_ROLES = ['admin', 'subadmin', 'superadmin', 'superamin', 'owner', 'auxiliar'];
-  /** Roles que pueden ver TODAS las sucursales (no se acotan). */
-  private static readonly GLOBAL_ROLES = ['admin', 'subadmin', 'superadmin', 'superamin', 'owner'];
+  /** Roles que pueden ver TODAS las sucursales (dueños globales del sistema). */
+  private static readonly GLOBAL_ROLES = ['superadmin', 'superamin', 'owner'];
 
   canActivate(context: ExecutionContext): boolean {
     if (context.getType() !== 'http') return false;
@@ -27,12 +28,12 @@ export class IncomeAccessGuard implements CanActivate {
       throw new ForbiddenException('No tienes acceso al módulo de finanzas.');
     }
 
-    // Scoping por sucursal: los no-elevados solo ven la suya.
+    // Scoping por sucursal: los no-elevados solo ven las suyas (main + adicionales).
     const requested = req.params?.subsidiaryId;
     if (requested && !IncomeAccessGuard.GLOBAL_ROLES.includes(role)) {
-      const own = req.user?.subsidiary?.id;
-      if (!own || requested !== own) {
-        throw new ForbiddenException('Solo puedes consultar las finanzas de tu sucursal.');
+      const allowed: string[] = req.user?.subsidiaryIds || [];
+      if (!allowed.includes(requested)) {
+        throw new ForbiddenException('Solo puedes consultar las finanzas de tus sucursales asignadas.');
       }
     }
 

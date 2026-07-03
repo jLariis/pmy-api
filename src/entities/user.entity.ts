@@ -3,6 +3,8 @@ import {
   Entity,
   PrimaryGeneratedColumn,
   ManyToOne,
+  ManyToMany,
+  JoinTable,
   JoinColumn,
   BeforeInsert,
   BeforeUpdate,
@@ -46,6 +48,19 @@ export class User {
   @ManyToOne(() => Subsidiary, { nullable: true })
   @JoinColumn({ name: 'subsidiaryId' })
   subsidiary: Subsidiary;
+
+  /**
+   * Sucursales adicionales (más allá de la "main" en `subsidiary`) que el
+   * usuario puede consultar/operar. Asignables SOLO por superadmin desde
+   * Configuración → Roles y Permisos → Permisos por usuario.
+   */
+  @ManyToMany(() => Subsidiary, { cascade: false })
+  @JoinTable({
+    name: 'user_subsidiary',
+    joinColumn: { name: 'userId', referencedColumnName: 'id' },
+    inverseJoinColumn: { name: 'subsidiaryId', referencedColumnName: 'id' },
+  })
+  additionalSubsidiaries: Subsidiary[];
 
   @Column({ nullable: true })
   avatar?: string;

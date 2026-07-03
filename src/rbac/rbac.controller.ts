@@ -2,7 +2,13 @@ import { Body, Controller, Delete, Get, Param, Patch, Post, Put, UseGuards } fro
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { SuperAdminGuard } from 'src/audit/super-admin.guard';
 import { RbacService } from './rbac.service';
-import { CreateRoleDto, SetRolePermissionsDto, SetUserPermissionsDto, UpdateRoleDto } from './dto/role.dto';
+import {
+  CreateRoleDto,
+  SetRolePermissionsDto,
+  SetUserPermissionsDto,
+  SetUserSubsidiariesDto,
+  UpdateRoleDto,
+} from './dto/role.dto';
 
 /**
  * Gestión de RBAC (roles, permisos y overrides por usuario). EXCLUSIVO superadmin
@@ -54,5 +60,15 @@ export class RbacController {
   @Put('users/:userId/permissions')
   setUserPermissions(@Param('userId') userId: string, @Body() dto: SetUserPermissionsDto) {
     return this.rbac.setUserPermissions(userId, dto);
+  }
+
+  @Get('users/:userId/subsidiaries')
+  getUserSubsidiaries(@Param('userId') userId: string) {
+    return this.rbac.getUserSubsidiaries(userId);
+  }
+
+  @Put('users/:userId/subsidiaries')
+  setUserSubsidiaries(@Param('userId') userId: string, @Body() dto: SetUserSubsidiariesDto) {
+    return this.rbac.setUserSubsidiaries(userId, dto);
   }
 }
