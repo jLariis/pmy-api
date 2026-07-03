@@ -2932,13 +2932,30 @@ export class ShipmentsService {
     return new Date(Date.now() - this.DEDUP_WINDOW_DAYS * 24 * 60 * 60 * 1000);
   }
 
-  /** Existe la guía en la sucursal DENTRO de la ventana reciente (no las de semanas atrás). */
+  /** Estatus que, si son el ÚLTIMO estatus guardado de la guía, permiten volver a
+   * subirla sin importar cuánto tiempo pasó: FedEx la regresó y no debe quedar
+   * atrapada esperando los 21 días para poder reingresarla. */
+  private static readonly RETURN_STATUSES_BYPASS_DEDUP = [
+    ShipmentStatusType.DEVUELTO_A_FEDEX,
+    ShipmentStatusType.RETORNO_ABANDONO_FEDEX,
+  ];
+
+  /** Existe la guía en la sucursal DENTRO de la ventana reciente (no las de semanas
+   * atrás) Y no está devuelta — una guía devuelta puede volver a subirse en
+   * cualquier momento. */
   private async existShipmentForSubsidiary(trackingNumber: string, subsidiaryId?: string): Promise<boolean> {
     if (!subsidiaryId) return false;
     try {
-      return await this.shipmentRepository.exists({
+      // OJO: sin `select` parcial — combinado con `order by createdAt` sobre un
+      // `where` con relación (subsidiary), TypeORM arma una subquery DISTINCT y
+      // truena con "Unknown column ...createdAt" si createdAt no está en el
+      // select. Costo de traer la fila completa es irrelevante (1 fila).
+      const existing = await this.shipmentRepository.findOne({
         where: { trackingNumber, subsidiary: { id: subsidiaryId }, createdAt: MoreThanOrEqual(this.dedupCutoff()) },
+        order: { createdAt: 'DESC' },
       });
+      if (!existing) return false;
+      return !ShipmentsService.RETURN_STATUSES_BYPASS_DEDUP.includes(existing.status as any);
     } catch (err) {
       this.logger.error(`existShipmentForSubsidiary ${trackingNumber}: ${err.message}`);
       return false;
@@ -2962,6 +2979,8 @@ export class ShipmentsService {
         .where('sub.id = :subsidiaryId', { subsidiaryId })
         .andWhere('s.trackingNumber IN (:...slice)', { slice })
         .andWhere('s.createdAt >= :cutoff', { cutoff: this.dedupCutoff() }) // solo recientes (FedEx reenvía guías viejas)
+        // Devueltas: se pueden re-subir en cualquier momento, no cuentan como "ya importadas".
+        .andWhere('s.status NOT IN (:...returnStatuses)', { returnStatuses: ShipmentsService.RETURN_STATUSES_BYPASS_DEDUP })
         .getRawMany();
       out.push(...rows);
     }

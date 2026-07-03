@@ -25,7 +25,6 @@ export class RouteclosureService {
     private readonly routeClouseRepository: Repository<RouteClosure>,
     @InjectRepository(PackageDispatch)
     private readonly packageDispatchRepository: Repository<PackageDispatch>,
-    @InjectRepository(Income)
     private readonly mailService: MailService,
     private readonly fedexService: FedexService,
     private readonly dataSource: DataSource
