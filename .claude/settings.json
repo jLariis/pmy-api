@@ -1,0 +1,18 @@
+{
+  "extraKnownMarketplaces": [
+    {
+      "name": "superpowers-dev",
+      "source": "github",
+      "repo": "obra/superpowers"
+    },
+    {
+      "name": "claude-plugins-official",
+      "source": "github",
+      "repo": "anthropics/claude-plugins-official"
+    }
+  ],
+  "enabledPlugins": [
+    "superpowers@superpowers-dev",
+    "code-simplifier@claude-plugins-official"
+  ]
+}

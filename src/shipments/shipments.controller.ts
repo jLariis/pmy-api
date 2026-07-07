@@ -220,6 +220,15 @@ export class ShipmentsController {
     return this.shipmentsService.getFedex67Visibility(body?.items || [], body?.includeSundays !== false);
   }
 
+  /** Igual que arriba pero para el código 44 (sucursales con monitorFedexCode44). Read-only. */
+  @Post('visibility-44/fedex-check')
+  @NoAudit()
+  async visibility44FedexCheck(
+    @Body() body: { items: { trackingNumber: string; fedexUniqueId?: string }[]; includeSundays?: boolean },
+  ) {
+    return this.shipmentsService.getFedex44Visibility(body?.items || [], body?.includeSundays !== false);
+  }
+
   /**
    * Actualiza UNA guía (envío o carga) con el mismo negocio de actualización con
    * ingresos (processMasterFedexUpdate / processChargeFedexUpdate). Devuelve el

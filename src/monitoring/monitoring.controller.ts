@@ -1,6 +1,7 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete, Header, Query, Res, StreamableFile } from '@nestjs/common';
+import { Controller, Get, Post, Body, Patch, Param, Delete, Header, Query, Res, StreamableFile, UseGuards } from '@nestjs/common';
 import { MonitoringService } from './monitoring.service';
 import { ApiTags } from '@nestjs/swagger';
+import { SuperAdminGuard } from 'src/audit/super-admin.guard';
 
 @ApiTags('monitoring')
 @Controller('monitoring')
@@ -133,6 +134,35 @@ export class MonitoringController {
         message: error.message
       });
     }
+  }
+
+  // ============ Monitoreo de rutas en tiempo real (experimental, solo superadmin) ============
+
+  @Get('routes/active/:subsidiaryId')
+  @UseGuards(SuperAdminGuard)
+  getActiveRoutes(@Param('subsidiaryId') subsidiaryId: string) {
+    return this.monitoringService.getActiveRoutes(subsidiaryId);
+  }
+
+  /** Tablero general: todas las rutas de una sucursal en un día (YYYY-MM-DD, hora Hermosillo), con su resumen. */
+  @Get('routes/board')
+  @UseGuards(SuperAdminGuard)
+  getRoutesBoard(@Query('subsidiaryId') subsidiaryId: string, @Query('date') date: string) {
+    return this.monitoringService.getRoutesBoard(subsidiaryId, date);
+  }
+
+  /** `force=true` salta el caché de 75s y fuerza un refresh real contra FedEx (botón "Actualizar ahora"). */
+  @Get('routes/:dispatchId/live')
+  @UseGuards(SuperAdminGuard)
+  getLiveRouteStatus(@Param('dispatchId') dispatchId: string, @Query('force') force?: string) {
+    return this.monitoringService.getLiveRouteStatus(dispatchId, force === 'true');
+  }
+
+  /** Coordenadas para el mapa — SEPARADO de /live a propósito (geocoding es lento, no debe bloquear el tablero). */
+  @Get('routes/:dispatchId/coords')
+  @UseGuards(SuperAdminGuard)
+  getRouteStopCoordinates(@Param('dispatchId') dispatchId: string) {
+    return this.monitoringService.getRouteStopCoordinates(dispatchId);
   }
 
   @Get('report/drivers')

@@ -18,10 +18,14 @@ import { InventoriesService } from 'src/inventories/inventories.service';
 import { Inventory } from 'src/entities/inventory.entity';
 import { PackageDispatchHistory } from 'src/entities/package-dispatch-history.entity';
 import { DhlService } from 'src/shipments/dhl.service';
+import { GeocodeModule } from 'src/geocode/geocode.module';
 
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Shipment, ChargeShipment, Consolidated, Subsidiary, PackageDispatch, Devolution, RouteClosure, Income, Charge, ShipmentStatus, ForPickUp, Unloading, Inventory, PackageDispatchHistory])],
+  imports: [
+    TypeOrmModule.forFeature([Shipment, ChargeShipment, Consolidated, Subsidiary, PackageDispatch, Devolution, RouteClosure, Income, Charge, ShipmentStatus, ForPickUp, Unloading, Inventory, PackageDispatchHistory]),
+    GeocodeModule,
+  ],
   controllers: [MonitoringController],
   providers: [
     MonitoringService, 

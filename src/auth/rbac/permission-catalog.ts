@@ -80,6 +80,7 @@ export const RBAC_PERMISSIONS: RbacPermissionDef[] = [
   { code: 'configuracion.roles', name: 'Configuración · Roles y Permisos', groupName: 'Sistema', roles: ['superadmin'] },
   { code: 'configuracion.sucursales', name: 'Configuración · Sucursales (operativa)', groupName: 'Sistema', roles: ['superadmin'] },
   { code: 'auditoria', name: 'Auditoría', groupName: 'Sistema', roles: ['superadmin'] },
+  { code: 'monitoreoRutas', name: 'Monitoreo de Rutas (experimental)', groupName: 'Sistema', roles: ['superadmin'] },
   // Reportes (acceso POR reporte; el code = id del reporte en report-registry).
   // Default = mismos roles que la página Reportes; el superadmin restringe por rol.
   { code: 'reportes.pendientes', name: 'Reporte: Pendientes', groupName: 'Reportes', roles: ['admin', 'subadmin', 'superadmin', 'user'] },
@@ -90,4 +91,5 @@ export const RBAC_PERMISSIONS: RbacPermissionDef[] = [
   { code: 'reportes.inventario67', name: 'Reporte: Último inventario sin 67', groupName: 'Reportes', roles: ['admin', 'subadmin', 'superadmin', 'user'] },
   { code: 'reportes.rutas', name: 'Reporte: Rutas del día pasado (LD)', groupName: 'Reportes', roles: ['admin', 'subadmin', 'superadmin', 'user'] },
   { code: 'reportes.bodega', name: 'Reporte: Inventario sin movimiento (LD)', groupName: 'Reportes', roles: ['admin', 'subadmin', 'superadmin', 'user'] },
+  { code: 'reportes.sin44', name: 'Reporte: Sin código 44 (por sucursal/zona)', groupName: 'Reportes', roles: ['admin', 'subadmin', 'superadmin', 'user'] },
 ];

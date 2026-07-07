@@ -34,6 +34,7 @@ export * from './notification-read.entity';
 export * from './role.entity';
 export * from './permission.entity';
 export * from './company-settings.entity';
+export * from './whatsapp-settings.entity';
 export * from './catalog-item.entity';
 export * from './geocode-cache.entity';
 // Solo la clase entidad en el barrel; el enum PermissionEffect se importa desde el archivo

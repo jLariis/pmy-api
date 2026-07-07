@@ -6,8 +6,10 @@ import { FilesInterceptor } from '@nestjs/platform-express';
 import { ApiOperation, ApiConsumes, ApiBody, ApiTags } from '@nestjs/swagger';
 import { ValidationPayloadDto } from 'src/unloading/dto/validate-payload.dto';
 import { NoAudit } from 'src/audit/audit.decorator';
-import { UseGuards } from '@nestjs/common';
+import { UseGuards, ForbiddenException } from '@nestjs/common';
 import { SubsidiaryScopeGuard } from 'src/auth/guards/subsidiary-scope.guard';
+
+const GLOBAL_ROLES = ['superadmin', 'superamin', 'owner'];
 
 @ApiTags('inventories')
 @Controller('inventories')
@@ -39,6 +41,38 @@ export class InventoriesController {
       throw new BadRequestException('Fechas inválidas (from/to).');
     }
     return this.inventoriesService.getInventoryVisibilityReport(subsidiaryId, f, t);
+  }
+
+  /**
+   * Igual que arriba pero MULTI-sucursal (varias sucursales o toda una zona) y
+   * con el código configurable ('67'/'44'). Body en vez de query porque puede
+   * ir un arreglo largo de sucursales. SubsidiaryScopeGuard no aplica aquí (solo
+   * valida `req.params.subsidiaryId`), así que el scoping se hace a mano: los
+   * roles no-elevados solo pueden pedir sucursales de su `req.user.subsidiaryIds`.
+   */
+  @Post('visibility-report-multi')
+  getInventoryVisibilityReportMulti(
+    @Body() body: { subsidiaryIds: string[]; from?: string; to?: string; code?: '67' | '44' },
+    @Req() req: any,
+  ) {
+    const requested = [...new Set((body?.subsidiaryIds || []).filter(Boolean))];
+    if (requested.length === 0) throw new BadRequestException('Selecciona al menos una sucursal.');
+
+    const role = (req.user?.role || '').toString().toLowerCase();
+    if (!GLOBAL_ROLES.includes(role)) {
+      const allowed: string[] = req.user?.subsidiaryIds || [];
+      const denied = requested.filter((id) => !allowed.includes(id));
+      if (denied.length > 0) {
+        throw new ForbiddenException('Solo puedes consultar datos de tus sucursales asignadas.');
+      }
+    }
+
+    const f = body?.from ? new Date(body.from) : new Date();
+    const t = body?.to ? new Date(body.to) : new Date();
+    if (isNaN(f.getTime()) || isNaN(t.getTime())) {
+      throw new BadRequestException('Fechas inválidas (from/to).');
+    }
+    return this.inventoriesService.getInventoryVisibilityReportMulti(requested, f, t, body?.code || '44');
   }
 
   @Get('ld-report/:subsidiaryId')

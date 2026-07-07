@@ -143,3 +143,5 @@ dist
 # Custom ignores
 package-lock.json
 fedex-token.json
+# Sesión de WhatsApp (Baileys) — credenciales del dispositivo vinculado, NO subir
+whatsapp-session/

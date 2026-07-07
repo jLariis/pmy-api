@@ -11,6 +11,7 @@ import { ValidatedPackageDispatchDto } from './dto/validated-package-dispatch.dt
 import { Devolution } from 'src/entities/devolution.entity';
 import { MailService } from 'src/mail/mail.service';
 import { ShipmentStatusType, TERMINAL_SHIPMENT_STATUSES } from 'src/common/enums/shipment-status-type.enum';
+import { DispatchStatus } from 'src/common/enums/dispatch-enum';
 import { FedexService } from 'src/shipments/fedex.service';
 import { ShipmentsService } from 'src/shipments/shipments.service';
 import { PackageDispatchHistory } from 'src/entities/package-dispatch-history.entity';
@@ -457,6 +458,96 @@ export class PackageDispatchService {
       normalPackages: dispatch.shipments?.length || 0, // 👈 Shipments
       f2Packages: dispatch.chargeShipments?.length || 0, // 👈 ChargeShipments
     }));
+  }
+
+  /**
+   * Rutas ACTIVAS (EN_PROGRESO) de una sucursal, para el tablero de monitoreo en
+   * tiempo real. Solo lo necesario para la lista (sin `history`/relaciones pesadas).
+   */
+  async findActiveBySubsidiary(subsidiaryId: string) {
+    const dispatches = await this.packageDispatchRepository
+      .createQueryBuilder('dispatch')
+      .leftJoinAndSelect('dispatch.vehicle', 'vehicle')
+      .leftJoinAndSelect('dispatch.drivers', 'drivers')
+      .leftJoinAndSelect('dispatch.routes', 'routes')
+      .leftJoinAndSelect('dispatch.shipments', 'shipments')
+      .leftJoinAndSelect('dispatch.chargeShipments', 'chargeShipments')
+      .where('dispatch.subsidiaryId = :subsidiaryId', { subsidiaryId })
+      .andWhere('dispatch.status = :status', { status: DispatchStatus.EN_PROGRESO })
+      .orderBy('dispatch.createdAt', 'DESC')
+      .getMany();
+
+    return dispatches.map((d) => {
+      // Guías normales + cargas (F2) cuentan igual como "parada" para el monitoreo.
+      const all = [...(d.shipments || []), ...(d.chargeShipments || [])];
+      const delivered = all.filter((s) => TERMINAL_SHIPMENT_STATUSES.includes(s.status as any)).length;
+      return {
+        id: d.id,
+        trackingNumber: d.trackingNumber,
+        createdAt: d.createdAt,
+        startTime: d.startTime,
+        kms: d.kms,
+        driverNames: (d.drivers || []).map((dr) => dr.name).join(', ') || null,
+        vehiclePlate: d.vehicle?.plateNumber || null,
+        routeNames: (d.routes || []).map((r) => r.name).join(', ') || null,
+        totalStops: all.length,
+        delivered,
+        pending: all.length - delivered,
+      };
+    });
+  }
+
+  /**
+   * TODAS las rutas (cualquier estatus salvo canceladas) de una sucursal en un
+   * día dado (hora Hermosillo, UTC-7 fijo), para el tablero general de
+   * monitoreo. A diferencia de `findActiveBySubsidiary` no filtra por
+   * EN_PROGRESO — el tablero también debe mostrar las ya cerradas del día.
+   */
+  async findBySubsidiaryAndDate(subsidiaryId: string, date: string) {
+    const start = DateTime.fromISO(date, { zone: 'America/Hermosillo' }).startOf('day').toJSDate();
+    const end = DateTime.fromISO(date, { zone: 'America/Hermosillo' }).endOf('day').toJSDate();
+
+    const dispatches = await this.packageDispatchRepository
+      .createQueryBuilder('dispatch')
+      .leftJoinAndSelect('dispatch.vehicle', 'vehicle')
+      .leftJoinAndSelect('dispatch.drivers', 'drivers')
+      .leftJoinAndSelect('dispatch.routes', 'routes')
+      .where('dispatch.subsidiaryId = :subsidiaryId', { subsidiaryId })
+      .andWhere('dispatch.status != :cancelada', { cancelada: DispatchStatus.CANCELADA })
+      .andWhere('dispatch.createdAt BETWEEN :start AND :end', { start, end })
+      .orderBy('dispatch.createdAt', 'ASC')
+      .getMany();
+
+    return dispatches.map((d) => ({
+      id: d.id,
+      trackingNumber: d.trackingNumber,
+      status: d.status,
+      createdAt: d.createdAt,
+      startTime: d.startTime,
+      driverNames: (d.drivers || []).map((dr) => dr.name).join(', ') || null,
+      vehiclePlate: d.vehicle?.plateNumber || null,
+      routeNames: (d.routes || []).map((r) => r.name).join(', ') || null,
+    }));
+  }
+
+  /**
+   * Un dispatch con sus guías completas (normales Y cargas F2) + el cierre de
+   * ruta (si ya se cerró), para el detalle "en vivo" del monitoreo de rutas.
+   */
+  async findOneWithShipmentsForMonitoring(id: string) {
+    return this.packageDispatchRepository
+      .createQueryBuilder('dispatch')
+      .leftJoinAndSelect('dispatch.vehicle', 'vehicle')
+      .leftJoinAndSelect('dispatch.drivers', 'drivers')
+      .leftJoinAndSelect('dispatch.routes', 'routes')
+      .leftJoinAndSelect('dispatch.subsidiary', 'subsidiary')
+      .leftJoinAndSelect('dispatch.shipments', 'shipments')
+      .leftJoinAndSelect('shipments.payment', 'shipmentPayment')
+      .leftJoinAndSelect('dispatch.chargeShipments', 'chargeShipments')
+      .leftJoinAndSelect('chargeShipments.payment', 'chargePayment')
+      .leftJoinAndSelect('dispatch.routeClosure', 'routeClosure')
+      .where('dispatch.id = :id', { id })
+      .getOne();
   }
 
   async findAllBySubsidiary(

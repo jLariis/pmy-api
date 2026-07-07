@@ -1016,6 +1016,154 @@ export class InventoriesService {
     };
   }
 
+  /**
+   * Igual que `getInventoryVisibilityReport`, pero MULTI-sucursal (o por zona,
+   * resuelto por el caller a una lista de sucursales) y con el código de
+   * excepción CONFIGURABLE ('67' o '44' — algunas sucursales usan 44 en vez de
+   * 67, ver `Subsidiary.monitorFedexCode44`). No toca el método original: es una
+   * copia deliberada para no arriesgar el reporte "Visibilidad 67" en producción.
+   * Cada fila trae `subsidiaryId`/`subsidiaryName` porque los resultados pueden
+   * venir de varias sucursales a la vez.
+   */
+  async getInventoryVisibilityReportMulti(subsidiaryIds: string[], from: Date, to: Date, targetCode: '67' | '44' = '44') {
+    const start = new Date(from); start.setHours(0, 0, 0, 0);
+    const end = new Date(to); end.setHours(23, 59, 59, 999);
+
+    if (!subsidiaryIds?.length) {
+      return { summary: { inventarios: 0, paquetes: 0, conCodigoHoy: 0, sinCodigo: 0, nunca: 0 }, details: [] };
+    }
+
+    const invs = await this.inventoryRepository.find({
+      where: { subsidiary: { id: In(subsidiaryIds) }, inventoryDate: Between(start, end) },
+      select: ['id', 'type', 'inventoryDate'],
+      relations: ['subsidiary'],
+      order: { inventoryDate: 'ASC' },
+    });
+    if (invs.length === 0) {
+      return { summary: { inventarios: 0, paquetes: 0, conCodigoHoy: 0, sinCodigo: 0, nunca: 0 }, details: [] };
+    }
+    const invIds = invs.map((i) => i.id);
+    const invMeta = new Map(invs.map((i) => [i.id, { type: String(i.type ?? 'initial'), inventoryDate: i.inventoryDate, subsidiaryId: i.subsidiary?.id, subsidiaryName: i.subsidiary?.name }]));
+
+    const PKG_COLS: [string, string][] = [
+      ['trackingNumber', 'trackingNumber'], ['status', 'status'],
+      ['recipientName', 'recipientName'], ['recipientAddress', 'recipientAddress'],
+      ['recipientCity', 'recipientCity'], ['recipientZip', 'recipientZip'],
+      ['shipmentType', 'shipmentType'], ['fedexUniqueId', 'fedexUniqueId'], ['createdAt', 'createdAt'],
+    ];
+    const buildPkgQuery = (repo: Repository<any>, alias: string, pivot: string, fk: string) => {
+      const qb = repo.createQueryBuilder(alias)
+        .innerJoin(pivot, 'j', `j.${fk} = ${alias}.id`)
+        .where('j.inventoryId IN (:...invIds)', { invIds })
+        .andWhere(`LOWER(${alias}.status) = :enBodega`, { enBodega: ShipmentStatusType.EN_BODEGA })
+        .select(`${alias}.id`, 'id')
+        .addSelect('j.inventoryId', 'inventoryId');
+      for (const [col, as] of PKG_COLS) qb.addSelect(`${alias}.${col}`, as);
+      return qb.getRawMany();
+    };
+    const [shipRows, chargeRows] = await Promise.all([
+      buildPkgQuery(this.shipmentRepository, 's', 'inventory_shipment', 'shipmentId'),
+      buildPkgQuery(this.chargeShipmentRepository, 'cs', 'inventory_charge_shipments', 'chargeShipmentId'),
+    ]);
+
+    const chunk = <T,>(arr: T[], n: number) => { const o: T[][] = []; for (let i = 0; i < arr.length; i += n) o.push(arr.slice(i, i + n)); return o; };
+    const maxCodeBy = async (ids: string[], fkCol: string): Promise<Map<string, Date>> => {
+      const m = new Map<string, Date>();
+      for (const part of chunk([...new Set(ids)], 1000)) {
+        if (part.length === 0) continue;
+        const ph = part.map(() => '?').join(',');
+        const rows: any[] = await this.dataSource.query(
+          `SELECT ${fkCol} AS id, MAX(timestamp) AS m FROM shipment_status WHERE ${fkCol} IN (${ph}) AND exceptionCode = ? GROUP BY ${fkCol}`,
+          [...part, targetCode],
+        );
+        for (const r of rows) if (r.id) m.set(String(r.id), new Date(r.m));
+      }
+      return m;
+    };
+    const [shipCode, chargeCode] = await Promise.all([
+      maxCodeBy(shipRows.map((r) => r.id), 'shipmentId'),
+      maxCodeBy(chargeRows.map((r) => r.id), 'chargeShipmentId'),
+    ]);
+
+    const maxDate = (a: Date | null, b: Date | null) => (!a ? b : !b ? a : a > b ? a : b);
+    type Agg = {
+      rep: any; isCharge: boolean; maxCode: Date | null; minCreatedAt: Date;
+      inventories: { inventoryId: string; type: string; inventoryDate: Date }[];
+      subsidiaryId?: string; subsidiaryName?: string;
+    };
+    const byGuide = new Map<string, Agg>();
+
+    const ingest = (row: any, isCharge: boolean, maxCodeMap: Map<string, Date>) => {
+      if (!row?.trackingNumber) return;
+      const inv = invMeta.get(row.inventoryId);
+      if (!inv) return;
+      const maxCode = maxCodeMap.get(String(row.id)) ?? null;
+      const createdAt = new Date(row.createdAt);
+      const invRef = { inventoryId: row.inventoryId, type: inv.type, inventoryDate: inv.inventoryDate };
+      // Una guía pertenece a UNA sucursal (la del inventario en que se le encontró);
+      // si aparece en más de un inventario deberían coincidir.
+      const existing = byGuide.get(row.trackingNumber);
+      if (!existing) {
+        byGuide.set(row.trackingNumber, {
+          rep: row, isCharge, maxCode, minCreatedAt: createdAt, inventories: [invRef],
+          subsidiaryId: inv.subsidiaryId, subsidiaryName: inv.subsidiaryName,
+        });
+      } else {
+        if (createdAt > new Date(existing.rep.createdAt)) existing.rep = row;
+        existing.isCharge = existing.isCharge || isCharge;
+        existing.maxCode = maxDate(existing.maxCode, maxCode);
+        if (createdAt < existing.minCreatedAt) existing.minCreatedAt = createdAt;
+        if (!existing.inventories.some((i) => i.inventoryId === row.inventoryId)) existing.inventories.push(invRef);
+      }
+    };
+    shipRows.forEach((r) => ingest(r, false, shipCode));
+    chargeRows.forEach((r) => ingest(r, true, chargeCode));
+
+    const now = new Date();
+    const details = Array.from(byGuide.values()).map(({ rep, isCharge, maxCode, minCreatedAt, inventories, subsidiaryId, subsidiaryName }) => {
+      const daysSinceLastCode = maxCode ? differenceInCalendarDays(now, maxCode) : null;
+      const category = maxCode == null ? 'nunca' : daysSinceLastCode === 0 ? 'hoy' : 'sinCodigo';
+      const invSorted = [...inventories].sort((a, b) => new Date(a.inventoryDate).getTime() - new Date(b.inventoryDate).getTime());
+      return {
+        trackingNumber: rep.trackingNumber,
+        status: rep.status,
+        recipientName: rep.recipientName,
+        recipientAddress: rep.recipientAddress,
+        recipientCity: rep.recipientCity,
+        recipientZip: rep.recipientZip,
+        shipmentType: rep.shipmentType,
+        fedexUniqueId: rep.fedexUniqueId,
+        isCharge,
+        subsidiaryId,
+        subsidiaryName,
+        createdAt: minCreatedAt.toISOString(),
+        lastCodeDate: maxCode ? maxCode.toISOString() : null,
+        daysSinceLastCode,
+        hasCodeToday: category === 'hoy',
+        category, // 'hoy' | 'sinCodigo' | 'nunca'
+        inventories: invSorted.map((i) => ({ type: i.type, inventoryDate: i.inventoryDate, inventoryId: i.inventoryId })),
+        inventoryTypes: invSorted.map((i) => i.type).join(', '),
+        inventoryCount: invSorted.length,
+      };
+    });
+
+    details.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+
+    const conCodigoHoy = details.filter((d) => d.category === 'hoy').length;
+    const nunca = details.filter((d) => d.category === 'nunca').length;
+
+    return {
+      summary: {
+        inventarios: invs.length,
+        paquetes: details.length,
+        conCodigoHoy,
+        sinCodigo: details.length - conCodigoHoy,
+        nunca,
+      },
+      details,
+    };
+  }
+
   // ============ MÉTODOS HELPER CORREGIDOS ============
 
   /**

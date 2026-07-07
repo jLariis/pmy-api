@@ -7274,6 +7274,136 @@ export class ShipmentsService {
     }
 
     /**
+     * Igual que `getFedex67Visibility` pero para el código de excepción '44' (lo
+     * usan las sucursales con `monitorFedexCode44 = true`, en vez de 67 — ver
+     * `MonitoringService.getMonitorConfig`). Copia deliberada, no una
+     * generalización del método de 67, para no arriesgar ese reporte en producción.
+     */
+    async getFedex44Visibility(
+      items: { trackingNumber: string; fedexUniqueId?: string }[],
+      includeSundays = true,
+    ): Promise<Record<string, {
+      windowStart: string | null; windowEnd: string | null; delivered: boolean;
+      daysWith44: number; daysWithout44: number; missingDates: string[]; last44: string | null;
+      events: { date: string; description: string; exceptionCode?: string }[];
+      lastMovement: { date: string; description: string } | null;
+      commitDateTime: string | null;
+      fedexStatus: string; fedexRaw?: string; derivedCode?: string; exceptionCode?: string;
+    }>> {
+      const tns = [...new Set((items || []).map((i) => i.trackingNumber).filter(Boolean))];
+      const out: Record<string, any> = {};
+      if (tns.length === 0) return out;
+
+      const HER = -7 * 3600 * 1000;
+      const herDay = (x: any) => new Date(new Date(x).getTime() + HER).toISOString().slice(0, 10);
+      const dow = (d: string) => new Date(d + 'T12:00:00Z').getUTCDay();
+      const addDay = (d: string) => new Date(new Date(d + 'T12:00:00Z').getTime() + 86400000).toISOString().slice(0, 10);
+      const enumerate = (start: string, end: string) => {
+        const days: string[] = [];
+        let d = start, guard = 0;
+        while (d <= end && guard++ < 800) {
+          if (includeSundays || dow(d) !== 0) days.push(d);
+          d = addDay(d);
+        }
+        return days;
+      };
+
+      const startMap = new Map<string, string>();
+      const collectStarts = async (repo: Repository<any>, alias: string) => {
+        const rows = await repo
+          .createQueryBuilder(alias)
+          .select(`${alias}.trackingNumber`, 'tn')
+          .addSelect(`MIN(${alias}.createdAt)`, 'minCreated')
+          .where(`${alias}.trackingNumber IN (:...tns)`, { tns })
+          .groupBy(`${alias}.trackingNumber`)
+          .getRawMany();
+        for (const r of rows) {
+          const day = herDay(r.minCreated);
+          const cur = startMap.get(r.tn);
+          if (!cur || day < cur) startMap.set(r.tn, day);
+        }
+      };
+      await collectStarts(this.shipmentRepository, 's');
+      await collectStarts(this.chargeShipmentRepository, 'cs');
+
+      const { map } = await this.prefetchFedexBatch(tns, (items || []) as any, '[Visibilidad44-FedEx]');
+      const today = herDay(new Date());
+
+      for (const tn of tns) {
+        const results = map.get(tn) || [];
+        if (results.length > 1) {
+          results.sort((a: any, b: any) => {
+            const seqA = parseInt(a.trackingNumberInfo?.trackingNumberUniqueId?.split('~')[0] || '0');
+            const seqB = parseInt(b.trackingNumberInfo?.trackingNumberUniqueId?.split('~')[0] || '0');
+            return seqB - seqA;
+          });
+        }
+        const top = results[0];
+        const events: any[] = top?.scanEvents || [];
+
+        const days44 = new Set<string>(
+          events.filter((e) => e.exceptionCode === '44' && e.date).map((e) => herDay(e.date)),
+        );
+        const dl = events.find((e) => e.eventType === 'DL' && e.date);
+        const delivered = !!dl;
+
+        const windowStart = startMap.get(tn) || (days44.size ? [...days44].sort()[0] : today);
+        let windowEnd = dl ? herDay(dl.date) : today;
+        if (windowEnd < windowStart) windowEnd = windowStart;
+
+        const windowDays = enumerate(windowStart, windowEnd);
+        const days44InWindow = [...days44].filter((d) => d >= windowStart && d <= windowEnd);
+        const set44 = new Set(days44InWindow);
+        const missingDates = windowDays.filter((d) => !set44.has(d));
+
+        const lsd = top?.latestStatusDetail;
+        const newestEvt = [...events].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())[0];
+        const derivedCode = lsd?.derivedCode || lsd?.code || newestEvt?.derivedStatusCode || '';
+        const exceptionCode = lsd?.ancillaryDetails?.[0]?.reason || newestEvt?.exceptionCode || '';
+        const fedexRaw = lsd?.description || lsd?.statusByLocale || newestEvt?.eventDescription || derivedCode || '';
+        const fedexStatus = derivedCode || exceptionCode || newestEvt ? mapFedexStatusToLocalStatus(derivedCode, exceptionCode) : 'SIN_DATOS';
+
+        const sortedEvents = [...events].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+        const movements = sortedEvents
+          .filter((e) => e.date)
+          .map((e) => ({
+            date: e.date,
+            description: e.eventDescription || e.derivedStatusCode || e.eventType || '',
+            ...(e.exceptionCode ? { exceptionCode: e.exceptionCode } : {}),
+          }));
+
+        const commitDateTime = (() => {
+          const fromDT = top?.dateAndTimes?.find(
+            (dt: any) => ['ESTIMATED_DELIVERY', 'COMMIT', 'APPOINTMENT_DELIVERY'].includes(dt?.type),
+          )?.dateTime;
+          const raw = fromDT || top?.estimatedDeliveryTimeWindow?.window?.ends || top?.standardTransitTimeWindow?.window?.ends;
+          if (!raw) return null;
+          const d = new Date(raw);
+          return isNaN(d.getTime()) ? null : d.toISOString();
+        })();
+
+        out[tn] = {
+          windowStart,
+          windowEnd,
+          delivered,
+          daysWith44: set44.size,
+          daysWithout44: missingDates.length,
+          missingDates,
+          last44: days44InWindow.length ? days44InWindow.sort().slice(-1)[0] : null,
+          events: movements,
+          lastMovement: movements.length ? { date: movements[0].date, description: movements[0].description } : null,
+          commitDateTime,
+          fedexStatus,
+          fedexRaw,
+          derivedCode,
+          exceptionCode,
+        };
+      }
+
+      return out;
+    }
+
+    /**
      * Reprograma el `commitDateTime` de una o varias guías (envío o carga) con la
      * nueva fecha de entrega que envió FedEx. Se usa en DEX17 (cambio de fecha).
      * Actualiza la copia MÁS RECIENTE por guía (misma regla que el dedup).
@@ -7303,14 +7433,27 @@ export class ShipmentsService {
       return { updated, details };
     }
 
+    /**
+     * `scanCode`: código de escaneo local a verificar para `hasScanToday` — 67 por
+     * default, o 44 si así está configurada la sucursal (`monitorFedexCode44`).
+     * No confundir con el resto de la comparación (fedexStatus/derivedCode/etc.),
+     * que no depende de la sucursal.
+     */
     async getFedexComparisonStatuses(
       items: { trackingNumber: string; fedexUniqueId?: string }[],
-    ): Promise<Record<string, { fedexStatus: string; fedexRaw?: string; derivedCode?: string; exceptionCode?: string; reason?: string }>> {
+      scanCode: '67' | '44' = '67',
+    ): Promise<Record<string, { fedexStatus: string; fedexRaw?: string; derivedCode?: string; exceptionCode?: string; reason?: string; lastEventAt?: string; hasScanToday?: boolean }>> {
       const tns = [...new Set((items || []).map((i) => i.trackingNumber).filter(Boolean))];
       if (tns.length === 0) return {};
 
       const { map, networkErrors } = await this.prefetchFedexBatch(tns, (items || []) as any, '[Pendientes-Compare]');
-      const out: Record<string, { fedexStatus: string; fedexRaw?: string; derivedCode?: string; exceptionCode?: string; reason?: string }> = {};
+      const out: Record<string, { fedexStatus: string; fedexRaw?: string; derivedCode?: string; exceptionCode?: string; reason?: string; lastEventAt?: string; hasScanToday?: boolean }> = {};
+
+      // Hermosillo NO tiene horario de verano (UTC-7 fijo todo el año) — mismo
+      // criterio que getFedex67Visibility/getFedex44Visibility.
+      const HER_OFFSET_MS = -7 * 3600 * 1000;
+      const herDay = (x: any) => new Date(new Date(x).getTime() + HER_OFFSET_MS).toISOString().slice(0, 10);
+      const todayHmo = herDay(new Date());
 
       // Diagnóstico agregado: para entender de dónde viene el "sin datos".
       let conDatos = 0, sinResultado = 0, conErrorFedex = 0, vacio = 0;
@@ -7369,8 +7512,19 @@ export class ShipmentsService {
 
         conDatos++;
         const mapped = mapFedexStatusToLocalStatus(derivedCode, exceptionCode);
+        // Fecha del evento MÁS RECIENTE, directo de FedEx (fresco, no lo que tengamos
+        // guardado en BD) — para reconstruir el recorrido real con precisión (monitoreo
+        // de rutas: el timestamp en BD puede venir de un import por lote y no ser exacto).
+        const lastEventAt = newestEvent?.date && !isNaN(new Date(newestEvent.date).getTime())
+          ? new Date(newestEvent.date).toISOString()
+          : undefined;
+        // ¿Tuvo el código de escaneo local (67 o 44, según la sucursal) HOY
+        // (Hermosillo)? — directo del historial de escaneos fresco de FedEx.
+        const hasScanToday = (top.scanEvents || []).some(
+          (e: any) => e.exceptionCode === scanCode && e.date && herDay(e.date) === todayHmo,
+        );
         // derivedCode/exceptionCode se exponen SIEMPRE para diagnosticar (y mapear) los DESCONOCIDO.
-        out[tn] = { fedexStatus: mapped, fedexRaw, derivedCode, exceptionCode };
+        out[tn] = { fedexStatus: mapped, fedexRaw, derivedCode, exceptionCode, lastEventAt, hasScanToday };
       }
 
       // Resumen para diagnosticar el "sin datos": distingue no-encontrada (error FedEx)
