@@ -20,7 +20,7 @@ export class ExpensesService {
   ){}
 
   async create(createExpenseDto: Expense) {
-    createExpenseDto.date = toHermosilloDateString(createExpenseDto.date ?? new Date());
+    createExpenseDto.date = toHermosilloDateString(createExpenseDto.date || new Date());
     const newExpense = this.expenseRepository.create(createExpenseDto);
     return await this.expenseRepository.save(newExpense);
   }
