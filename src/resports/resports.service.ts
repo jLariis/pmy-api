@@ -58,7 +58,7 @@ export class ResportsService {
     const allExpenses = await this.expenseRepository
       .createQueryBuilder('expense')
       .where(expenseSubsidiaryCondition, { subsidiaryIds })
-      .andWhere('expense.date >= :start AND expense.date <= :end', { start: parsedStartDate, end: parsedEndDate })
+      .andWhere('expense.date >= :startDay AND expense.date <= :endDay', { startDay: baseStartDate, endDay: baseEndDate })
       .getMany();
 
     // 3. CÁLCULO DE MATRIZ DE FECHAS (COLUMNAS DIARIAS)
@@ -89,7 +89,7 @@ export class ResportsService {
 
     allExpenses.forEach(exp => {
       const cat = exp.category || 'Gasto General';
-      const dStr = new Date(exp.date).toISOString().split('T')[0];
+      const dStr = String(exp.date).slice(0, 10);
       if (!expenseMatrix.has(cat)) expenseMatrix.set(cat, new Map<string, number>());
       const current = expenseMatrix.get(cat)!.get(dStr) || 0;
       expenseMatrix.get(cat)!.set(dStr, current + Number(exp.amount));
