@@ -1,3 +1,22 @@
+import { formatInTimeZone } from 'date-fns-tz';
+
+const YYYY_MM_DD = /^\d{4}-\d{2}-\d{2}/;
+
+/**
+ * Devuelve el DÍA CALENDARIO 'YYYY-MM-DD' de un gasto, anclado a Hermosillo.
+ * - string: toma el día de reloj tal cual (primeros 10 chars). Esto respeta el
+ *   día que el usuario eligió aunque el front le cuelgue un offset (-06 => 06:00Z).
+ * - Date (instante real, p.ej. importación Excel con new Date()): lo convierte
+ *   al día calendario de Hermosillo (UTC-7).
+ */
+export function toHermosilloDateString(input: string | Date): string {
+  if (typeof input === 'string' && YYYY_MM_DD.test(input)) {
+    return input.slice(0, 10);
+  }
+  const d = input instanceof Date ? input : new Date(input);
+  return formatInTimeZone(d, 'America/Hermosillo', 'yyyy-MM-dd');
+}
+
 export function formatToHermosillo(timestamp: string | Date): string {
   const date = new Date(timestamp);
 
