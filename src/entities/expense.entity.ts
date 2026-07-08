@@ -12,6 +12,7 @@ import { ExpenseCategory } from '../common/enums/category-enum';
 import { User } from './user.entity';
 import { Vehicle } from './vehicle.entity';
 import { Frequency } from 'src/common/enums/frequency-enum';
+import { toHermosilloDateString } from 'src/common/utils';
 
 @Entity('expense')
 export class Expense {
@@ -32,8 +33,8 @@ export class Expense {
   })
   category?: ExpenseCategory;
 
-  @Column({ type: 'datetime' })
-  date: Date;
+  @Column({ type: 'date' })
+  date: string;
 
   @Column('decimal', { precision: 10, scale: 2, nullable: false })
   amount: number;
@@ -79,9 +80,9 @@ export class Expense {
 
   @BeforeInsert()
   setCreatedAt() {
-    this.createdAt = new Date(); // Fecha en UTC
+    this.createdAt = new Date(); // instante UTC (createdAt sigue siendo datetime)
     if (!this.date) {
-      this.date = new Date(); // Asignar fecha actual en UTC si no se proporciona
+      this.date = toHermosilloDateString(new Date()); // día calendario Hermosillo
     }
   }
 

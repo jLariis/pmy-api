@@ -6,6 +6,7 @@ import { Between, In, Repository } from 'typeorm';
 import * as XLSX from 'xlsx';
 import { ExpenseCategory } from 'src/common/enums/category-enum';
 import { Frequency } from 'src/common/enums/frequency-enum';
+import { toHermosilloDateString } from 'src/common/utils';
 
 @Injectable()
 export class ExpensesService {
@@ -19,7 +20,8 @@ export class ExpensesService {
   ){}
 
   async create(createExpenseDto: Expense) {
-    const newExpense = await this.expenseRepository.create(createExpenseDto);
+    createExpenseDto.date = toHermosilloDateString(createExpenseDto.date ?? new Date());
+    const newExpense = this.expenseRepository.create(createExpenseDto);
     return await this.expenseRepository.save(newExpense);
   }
 
@@ -48,12 +50,14 @@ export class ExpensesService {
   }
 
   async findBySubsidiaryAndDates(subsidiaryId: string, firstDay: Date, lastDay: Date) {
+    const startDay = toHermosilloDateString(firstDay);
+    const endDay = toHermosilloDateString(lastDay);
     return await this.expenseRepository.find({
       where: {
         subsidiary: {
           id: subsidiaryId
         },
-        date: Between(firstDay, lastDay)
+        date: Between(startDay, endDay)
       }
     });
   }
