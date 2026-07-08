@@ -45,9 +45,11 @@ export class ExpensesController {
     @Query('firstDay') firstDay: string,
     @Query('lastDay') lastDay: string
   ) {
-    const firstDayOfMonth = new Date(firstDay);
-    const lastDayOfMonth = new Date(lastDay);
-    return this.expensesService.findBySubsidiaryAndDates(subsidiaryId, firstDayOfMonth, lastDayOfMonth)
+    return this.expensesService.findBySubsidiaryAndDates(
+      subsidiaryId,
+      firstDay.slice(0, 10),
+      lastDay.slice(0, 10),
+    );
   }
 
   @Get('detail/:id')

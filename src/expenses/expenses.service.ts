@@ -49,16 +49,12 @@ export class ExpensesService {
     return expenses;
   }
 
-  async findBySubsidiaryAndDates(subsidiaryId: string, firstDay: Date, lastDay: Date) {
-    const startDay = toHermosilloDateString(firstDay);
-    const endDay = toHermosilloDateString(lastDay);
+  async findBySubsidiaryAndDates(subsidiaryId: string, firstDay: string, lastDay: string) {
     return await this.expenseRepository.find({
       where: {
-        subsidiary: {
-          id: subsidiaryId
-        },
-        date: Between(startDay, endDay)
-      }
+        subsidiary: { id: subsidiaryId },
+        date: Between(firstDay, lastDay), // 'YYYY-MM-DD' contra columna DATE
+      },
     });
   }
 
