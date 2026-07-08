@@ -3,6 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Expense, Income, Shipment, Subsidiary } from 'src/entities';
 import { formatCurrency } from 'src/utils/format.util';
 import { DEFAULT_INCOME_RULES, IncomeCountRules, isCountableIncome } from 'src/common/income-rules.util';
+import { toHermosilloDateString } from 'src/common/utils';
 import { Between, Repository } from 'typeorm';
 import { Collection } from 'src/entities/collection.entity';
 import { FormatIncomesDto } from './dto/format-incomes.dto';
@@ -69,11 +70,13 @@ export class IncomeService {
       totalExpenses: number;
       daily: DailyExpenses[];
     }> {
-      // 1) Traer todos los gastos en el rango
+      // 1) Traer todos los gastos en el rango (expense.date es DATE => comparamos por día)
+      const startDay = toHermosilloDateString(fromDate);
+      const endDay = toHermosilloDateString(toDate);
       const expenses = await this.expenseRepository.find({
         where: {
           subsidiary: { id: subsidiaryId },
-          date: Between(fromDate, toDate),
+          date: Between(startDay, endDay),
         },
         order: { date: 'ASC' },
       });
@@ -87,11 +90,10 @@ export class IncomeService {
         return sum + amount;
       }, 0);
 
-      // 3) Agrupar por día
+      // 3) Agrupar por día — g.date YA es 'YYYY-MM-DD'
       const grouped: Record<string, Expense[]> = {};
       expenses.forEach((g) => {
-        // formateamos la fecha a YYYY-MM-DD
-        const dayKey = g.date.toISOString().slice(0, 10);
+        const dayKey = g.date; // string 'YYYY-MM-DD'
         if (!grouped[dayKey]) grouped[dayKey] = [];
         grouped[dayKey].push(g);
       });
