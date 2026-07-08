@@ -175,7 +175,7 @@ export class KpiService {
 
     const msPerDay = 1000 * 60 * 60 * 24;
     const daysInDateRange = Math.floor((endDateObj.getTime() - startDateObj.getTime()) / msPerDay) + 1;
-    
+
     this.logger.log(`Fetching Optimized KPIs: ${baseStartDate} to ${baseEndDate} (${daysInDateRange} days) in Hermosillo TZ`);
 
     // 1. Obtener las sucursales base
@@ -196,7 +196,7 @@ export class KpiService {
       incomeStats,
       consolidatedStats
     ] = await Promise.all([
-      
+
       // -- A. ESTADÍSTICAS DE ENVÍOS --
       this.shipmentRepository.createQueryBuilder('shipment')
         .select('shipment.subsidiaryId', 'subsidiaryId')
@@ -228,7 +228,8 @@ export class KpiService {
         .addSelect('expense.frequency', 'frequency')
         .addSelect('SUM(expense.amount)', 'totalAmount')
         .addSelect('COUNT(expense.id)', 'txCount')
-        .where('expense.date BETWEEN :startDate AND :endDate', { startDate: startDateObj, endDate: endDateObj })
+        // expense.date es DATE (día calendario). Comparamos día contra día, sin TZ.
+        .where('expense.date BETWEEN :startDay AND :endDay', { startDay: baseStartDate, endDay: baseEndDate })
         .andWhere(subsidiaryCondition, { subsidiaryIds })
         .groupBy('expense.subsidiaryId')
         .addGroupBy('expense.frequency')
@@ -362,7 +363,7 @@ export class KpiService {
 
     const msPerDay = 1000 * 60 * 60 * 24;
     const daysInDateRange = Math.floor((endDateObj.getTime() - startDateObj.getTime()) / msPerDay) + 1;
-    
+
     this.logger.log(`Fetching Optimized KPIs: ${baseStartDate} to ${baseEndDate} (${daysInDateRange} days) in Hermosillo TZ`);
 
     // 1. Obtener las sucursales base
@@ -393,7 +394,7 @@ export class KpiService {
       incomeStats,
       consolidatedStats
     ] = await Promise.all([
-      
+
       // -- A. ESTADÍSTICAS DE ENVÍOS (CON BACKLOG OPERATIVO) --
       this.shipmentRepository.createQueryBuilder('shipment')
         .select('shipment.subsidiaryId', 'subsidiaryId')
@@ -430,7 +431,8 @@ export class KpiService {
         .addSelect('expense.frequency', 'frequency')
         .addSelect('SUM(expense.amount)', 'totalAmount')
         .addSelect('COUNT(expense.id)', 'txCount')
-        .where('expense.date BETWEEN :startDate AND :endDate', { startDate: startDateObj, endDate: endDateObj })
+        // expense.date es DATE (día calendario). Comparamos día contra día, sin TZ.
+        .where('expense.date BETWEEN :startDay AND :endDay', { startDay: baseStartDate, endDay: baseEndDate })
         .andWhere(subsidiaryCondition, { subsidiaryIds })
         .groupBy('expense.subsidiaryId')
         .addGroupBy('expense.frequency')
