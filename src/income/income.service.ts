@@ -71,8 +71,8 @@ export class IncomeService {
       daily: DailyExpenses[];
     }> {
       // 1) Traer todos los gastos en el rango (expense.date es DATE => comparamos por día)
-      const startDay = toHermosilloDateString(fromDate);
-      const endDay = toHermosilloDateString(toDate);
+      const startDay = toHermosilloDateString(fromDate.toISOString());
+      const endDay = toHermosilloDateString(toDate.toISOString());
       const expenses = await this.expenseRepository.find({
         where: {
           subsidiary: { id: subsidiaryId },
@@ -140,7 +140,7 @@ export class IncomeService {
 
       const rules = await this.getSubsidiaryIncomeRules(subsidiaryId);
       const formattedIncome = await this.formatIncomesNew(incomes, startDay, adjustedToDate, rules);
-      const { totalExpenses, daily } = await this.getTotalExpenses(subsidiaryId, startDay, adjustedToDate)
+      const { totalExpenses, daily } = await this.getTotalExpenses(subsidiaryId, startDay, endDay)
       const balance = income.totalIncome - totalExpenses;
 
       return {
