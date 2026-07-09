@@ -51,4 +51,17 @@ describe('ExpenseCategoriesService', () => {
     await svc.removeCategory('c1');
     expect(catRepo.remove).toHaveBeenCalled();
   });
+
+  it('getGrouped surfaces ungrouped categories under "Sin grupo"', async () => {
+    const { svc, catRepo, groupRepo } = makeService();
+    groupRepo.find = () => Promise.resolve([{ id: 'g1', name: 'A', icon: null, sortOrder: 1, isSystem: true, active: true }]);
+    catRepo.find = () => Promise.resolve([
+      { id: 'c1', name: 'Grouped', groupId: 'g1', sortOrder: 0, isSystem: false, active: true },
+      { id: 'c2', name: 'Orphan', groupId: null, sortOrder: 1, isSystem: false, active: true },
+    ]);
+    const out = await svc.getGrouped();
+    const sinGrupo = out.find((b: any) => b.group.name === 'Sin grupo');
+    expect(sinGrupo).toBeTruthy();
+    expect(sinGrupo.categories.map((c: any) => c.name)).toContain('Orphan');
+  });
 });

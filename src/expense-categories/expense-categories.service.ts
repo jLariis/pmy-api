@@ -20,12 +20,21 @@ export class ExpenseCategoriesService {
     const groups = await this.groupRepo.find({ order: { sortOrder: 'ASC' } });
     const cats = await this.catRepo.find({ order: { sortOrder: 'ASC' } });
     const visible = (x: { active: boolean }) => includeInactive || x.active;
-    return groups.filter(visible).map((g) => ({
+    const grouped = groups.filter(visible).map((g) => ({
       group: { id: g.id, name: g.name, icon: g.icon, sortOrder: g.sortOrder, isSystem: g.isSystem, active: g.active },
       categories: cats
         .filter((c) => c.groupId === g.id && visible(c))
         .map((c) => ({ id: c.id, name: c.name, sortOrder: c.sortOrder, isSystem: c.isSystem, active: c.active })),
     }));
+    const groupIds = new Set(groups.map((g) => g.id));
+    const ungrouped = cats.filter((c) => visible(c) && (!c.groupId || !groupIds.has(c.groupId)));
+    if (ungrouped.length) {
+      grouped.push({
+        group: { id: null, name: 'Sin grupo', icon: null, sortOrder: Number.MAX_SAFE_INTEGER, isSystem: false, active: true },
+        categories: ungrouped.map((c) => ({ id: c.id, name: c.name, sortOrder: c.sortOrder, isSystem: c.isSystem, active: c.active })),
+      });
+    }
+    return grouped;
   }
 
   // --- Categorías ---
