@@ -14,6 +14,7 @@ import { SubsidiariesModule } from './subsidiaries/subsidiaries.module';
 import { IncomeModule } from './income/income.module';
 import { CollectionModule } from './collections/collections.module';
 import { ExpensesModule } from './expenses/expenses.module';
+import { ExpenseCategoriesModule } from './expense-categories/expense-categories.module';
 import { ConsolidatedModule } from './consolidated/consolidated.module';
 import { DashboardModule } from './dashboard/dashboard.module';
 import { MailerModule } from '@nestjs-modules/mailer';
@@ -80,6 +81,7 @@ import { ServerStatsModule } from './server-stats/server-stats.module';
     IncomeModule,
     CollectionModule,
     ExpensesModule,
+    ExpenseCategoriesModule,
     ConsolidatedModule,
     DashboardModule,
     DevolutionsModule,
