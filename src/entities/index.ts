@@ -37,6 +37,8 @@ export * from './company-settings.entity';
 export * from './whatsapp-settings.entity';
 export * from './catalog-item.entity';
 export * from './geocode-cache.entity';
+export * from './expense-category-group.entity';
+export * from './expense-category.entity';
 // Solo la clase entidad en el barrel; el enum PermissionEffect se importa desde el archivo
 // (evita que `seed.ts`/registro de entidades lo tome como entidad).
 export { UserPermission } from './user-permission.entity';

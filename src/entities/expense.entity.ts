@@ -8,7 +8,7 @@ import {
   BeforeUpdate,
 } from 'typeorm';
 import { Subsidiary } from './subsidiary.entity';
-import { ExpenseCategory } from '../common/enums/category-enum';
+import { ExpenseCategory } from './expense-category.entity';
 import { User } from './user.entity';
 import { Vehicle } from './vehicle.entity';
 import { Frequency } from 'src/common/enums/frequency-enum';
@@ -26,12 +26,12 @@ export class Expense {
   @Column({ nullable: true })
   subsidiaryId: string;
 
-  @Column({
-    type: 'enum',
-    enum: ExpenseCategory,
-    nullable: true,
-  })
+  @ManyToOne(() => ExpenseCategory, { nullable: true })
+  @JoinColumn({ name: 'categoryId' })
   category?: ExpenseCategory;
+
+  @Column({ nullable: true })
+  categoryId?: string;
 
   @Column({ type: 'date' })
   date: string;
