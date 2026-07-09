@@ -1,5 +1,5 @@
 import {
-  ExpenseCategory, ConsolidatedType, DispatchStatus, Frequency, IncomeSourceType, IncomeStatus,
+  ConsolidatedType, DispatchStatus, Frequency, IncomeSourceType, IncomeStatus,
   InventoryType, PaymentStatus, PaymentTypeEnum, Priority, ShipmentStatusType, ShipmentType,
   StatusEnum, TransferType, VehicleStatus, VehicleTypeEnum, ShipmentCanceledStatus, ShipmentFedexStatusType,
 } from 'src/common/enums';
@@ -29,7 +29,6 @@ export const CATALOG_DEFS: CatalogDef[] = [
   { type: 'income_source_type', label: 'Origen de ingreso', enumObj: IncomeSourceType as any },
   { type: 'payment_status', label: 'Estatus de pago', enumObj: PaymentStatus as any },
   { type: 'payment_type', label: 'Tipo de pago', enumObj: PaymentTypeEnum as any },
-  { type: 'expense_category', label: 'Categoría de gasto', enumObj: ExpenseCategory as any },
   { type: 'frequency', label: 'Frecuencia', enumObj: Frequency as any },
   { type: 'consolidated_type', label: 'Tipo de consolidado', enumObj: ConsolidatedType as any },
   { type: 'inventory_type', label: 'Tipo de inventario', enumObj: InventoryType as any },
@@ -82,7 +81,6 @@ export function deriveItems(def: CatalogDef): SeedItem[] {
 export const CATALOG_USAGE: Record<string, { table: string; column: string }[]> = {
   vehicle_type: [{ table: 'vehicle', column: 'type' }],
   vehicle_status: [{ table: 'vehicle', column: 'status' }],
-  expense_category: [{ table: 'expense', column: 'category' }],
   frequency: [{ table: 'expense', column: 'frequency' }],
   priority: [{ table: 'shipment', column: 'priority' }],
   shipment_type: [
