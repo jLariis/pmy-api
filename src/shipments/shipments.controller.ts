@@ -288,6 +288,11 @@ export class ShipmentsController {
     @Res() res: Response,
     @Req() req?: any,
   ) {
+    // Timing para diagnosticar subidas lentas (el proceso consulta FedEx por
+    // guía; si tarda de más, un proxy puede cortar la conexión y el cliente ve
+    // "Network Error" aunque aquí SÍ termine). Queda en logs para compartirlo.
+    const t0 = Date.now();
+    const tag = `[upload] cons=${dto?.consNumber || '—'} suc=${dto?.subsidiaryId || '—'} archivo=${file?.originalname || '—'}`;
     try {
       const isAereoBoolean = String(dto.isAereo).toLowerCase() === 'true';
       let dateForCons = dto.consDate ? new Date(dto.consDate) : null;
@@ -302,9 +307,11 @@ export class ShipmentsController {
         req?.user?.userId,
       );
 
+      this.logger.log(`${tag} OK en ${((Date.now() - t0) / 1000).toFixed(1)}s → guardadas=${result?.saved ?? '?'} dup=${result?.duplicated ?? 0} err=${result?.failed ?? 0}`);
       return res.status(HttpStatus.OK).json(result);
 
   } catch (error) {
+      this.logger.error(`${tag} FALLÓ en ${((Date.now() - t0) / 1000).toFixed(1)}s: ${error?.message}`);
       // Extraemos el estatus (400, 500, etc.)
       const status = error instanceof HttpException 
         ? error.getStatus() 
