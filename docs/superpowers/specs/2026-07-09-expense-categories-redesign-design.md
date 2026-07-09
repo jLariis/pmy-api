@@ -118,8 +118,10 @@ Replace the hardcoded `ExpenseCategory` enum with a **normalized, data-driven** 
 | Viajes y Distribución | Vuelos | false |
 | Viajes y Distribución | Apoyo Carga y Descarga | false |
 | Administrativos y Otros | Servicios de Mensajería | false |
-| Administrativos y Otros | Otros Gastos | true (legacy "Otros gastos") |
+| Administrativos y Otros | Otros gastos | true (legacy — name kept verbatim, NOT renamed to "Otros Gastos") |
 | Administrativos y Otros | Impuestos | true (legacy) |
+
+> **Naming rule (per user):** existing category names are kept **verbatim** — no renaming. The only new-list label that differed by casing was "Otros Gastos"; it collapses into the legacy "Otros gastos" (single row, system), not a duplicate. All other overlaps already match exactly.
 
 ## 5. Migration (deterministic, ~2,322 rows)
 
@@ -129,7 +131,7 @@ Migration number **`1786000000030`+** (note: `…029` is claimed by the unmerged
 1. Create `expense_category_group` and `expense_category` tables.
 2. Seed groups (§4) and categories (§4). Capture each category's generated `id`.
 3. Add `expense.categoryId` uuid NULL + FK (`ON DELETE RESTRICT`).
-4. **Backfill** via an explicit map of the 11 legacy enum strings → target category name (handles casing/accents, e.g. `"Otros gastos"` → "Otros Gastos"):
+4. **Backfill** via an explicit map of the 11 legacy enum strings → target category name. Names are preserved verbatim, so each legacy string maps to a category of the **same name** (the map stays explicit rather than a blind name-join, to fail loudly if a category is missing):
    ```
    'Nómina'      → 'Nómina'
    'Renta'       → 'Renta'
@@ -137,7 +139,7 @@ Migration number **`1786000000030`+** (note: `…029` is claimed by the unmerged
    'Peajes'      → 'Peajes'
    'Servicios'   → 'Servicios'
    'Combustible' → 'Combustible'
-   'Otros gastos'→ 'Otros Gastos'
+   'Otros gastos'→ 'Otros gastos'
    'Mantenimiento'→'Mantenimiento'
    'Impuestos'   → 'Impuestos'
    'Seguros'     → 'Seguros'
