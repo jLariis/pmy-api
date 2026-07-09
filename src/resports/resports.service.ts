@@ -57,6 +57,7 @@ export class ResportsService {
 
     const allExpenses = await this.expenseRepository
       .createQueryBuilder('expense')
+      .leftJoinAndSelect('expense.category', 'category')
       .where(expenseSubsidiaryCondition, { subsidiaryIds })
       .andWhere('expense.date >= :startDay AND expense.date <= :endDay', { startDay: baseStartDate, endDay: baseEndDate })
       .getMany();
@@ -88,7 +89,7 @@ export class ResportsService {
     });
 
     allExpenses.forEach(exp => {
-      const cat = exp.category || 'Gasto General';
+      const cat = exp.category?.name || 'Sin categoría';
       const dStr = String(exp.date).slice(0, 10);
       if (!expenseMatrix.has(cat)) expenseMatrix.set(cat, new Map<string, number>());
       const current = expenseMatrix.get(cat)!.get(dStr) || 0;
@@ -198,7 +199,7 @@ export class ResportsService {
     });
 
     allExpenses.forEach(e => {
-      this.styleDetailedRow(detailSheet.addRow([e.date, 'N/A', 'EGRESO', e.category, e.description || '', e.amount]));
+      this.styleDetailedRow(detailSheet.addRow([e.date, 'N/A', 'EGRESO', e.category?.name || '', e.description || '', e.amount]));
     });
 
     detailSheet.autoFilter = 'A1:F1';

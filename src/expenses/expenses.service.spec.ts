@@ -7,7 +7,7 @@ describe('ExpensesService.create date coercion', () => {
       create: (dto: any) => dto,
       save: (e: any) => { saved.push(e); return Promise.resolve(e); },
     };
-    const service = new ExpensesService(repo, {} as any, {} as any);
+    const service = new ExpensesService(repo, {} as any, {} as any, {} as any);
     return { service, saved };
   };
 

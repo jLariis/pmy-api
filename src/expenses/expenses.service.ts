@@ -1,10 +1,9 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { UpdateExpenseDto } from './dto/update-expense.dto';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Expense, User, Vehicle } from 'src/entities';
+import { Expense, User, Vehicle, ExpenseCategory } from 'src/entities';
 import { Between, In, Repository } from 'typeorm';
 import * as XLSX from 'xlsx';
-import { ExpenseCategory } from 'src/common/enums/category-enum';
 import { Frequency } from 'src/common/enums/frequency-enum';
 import { toHermosilloDateString } from 'src/common/utils';
 
@@ -16,7 +15,9 @@ export class ExpensesService {
     @InjectRepository(Vehicle)
     private vehicleRepository: Repository<Vehicle>,
     @InjectRepository(User)
-    private userRepository: Repository<User>
+    private userRepository: Repository<User>,
+    @InjectRepository(ExpenseCategory)
+    private categoryRepo: Repository<ExpenseCategory>
   ){}
 
   async create(createExpenseDto: Expense) {
@@ -104,6 +105,9 @@ export class ExpensesService {
       // 5. Crear el Diccionario (Map) de vehículos
       const vehicleMap = new Map(vehiclesInDb.map(v => [v.plateNumber, v.id]));
 
+      // 5.1. Resolver la categoría "Combustible" una sola vez
+      const combustible = await this.categoryRepo.findOne({ where: { name: 'Combustible' } });
+
       // 6. Procesar fila por fila y armar las entidades Expense
       const gastosAImportar = jsonData.map((row: any) => {
         const placaRaw = row['Placas']?.toString().trim();
@@ -123,7 +127,7 @@ export class ExpensesService {
         return this.expenseRepository.create({
           subsidiaryId,
           amount: monto,
-          category: ExpenseCategory.Combustible, 
+          categoryId: combustible?.id ?? null,
           description: descriptionText,
           vehicleId: vehicleId,
           notes: notesText,
