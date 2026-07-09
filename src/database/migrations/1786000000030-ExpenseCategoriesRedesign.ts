@@ -10,6 +10,12 @@ export class ExpenseCategoriesRedesign1786000000030 implements MigrationInterfac
   name = 'ExpenseCategoriesRedesign1786000000030';
 
   public async up(q: QueryRunner): Promise<void> {
+    // 0) Detectar collation real de expense.id para que la FK no choque (MySQL 1253/3780).
+    const collRows = await q.query(
+      "SELECT COLLATION_NAME AS c FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'expense' AND COLUMN_NAME = 'id' LIMIT 1",
+    );
+    const collation = collRows?.[0]?.c || 'utf8mb4_0900_ai_ci';
+
     // 1) Tablas
     await q.query(`
       CREATE TABLE IF NOT EXISTS \`expense_category_group\` (
@@ -20,7 +26,7 @@ export class ExpenseCategoriesRedesign1786000000030 implements MigrationInterfac
         \`isSystem\` TINYINT NOT NULL DEFAULT 0,
         \`active\` TINYINT NOT NULL DEFAULT 1,
         \`createdAt\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=${collation};
     `);
     await q.query(`
       CREATE TABLE IF NOT EXISTS \`expense_category\` (
@@ -33,7 +39,7 @@ export class ExpenseCategoriesRedesign1786000000030 implements MigrationInterfac
         \`description\` VARCHAR(255) NULL,
         \`createdAt\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
         KEY \`idx_ec_group\` (\`groupId\`)
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=${collation};
     `);
 
     // 2) Seed grupos (isSystem=1)
@@ -112,7 +118,7 @@ export class ExpenseCategoriesRedesign1786000000030 implements MigrationInterfac
     }
 
     // 4) FK en expense
-    await q.query('ALTER TABLE `expense` ADD COLUMN `categoryId` VARCHAR(36) NULL');
+    await q.query(`ALTER TABLE \`expense\` ADD COLUMN \`categoryId\` VARCHAR(36) COLLATE ${collation} NULL`);
 
     // 5) Backfill: mapa identidad de las 11 (nombres verbatim)
     const legacyMap: Record<string, string> = {
