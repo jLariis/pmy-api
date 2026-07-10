@@ -1558,8 +1558,12 @@ export class UnloadingService {
     allConsolidateds: ConsolidatedItemDto[],
     validShipments: ValidatedUnloadingDto[]
   ): Promise<void> {
-    const validTNs = new Set(validShipments.map(v => v.trackingNumber));
-    
+    // DHL-aware: el lector puede escanear "JJD" y la BD guardar "JD" (o al revés,
+    // y la pieza puede vivir en dhlUniqueId). Indexamos AMBAS variantes de cada
+    // guía validada para que el match de faltantes no marque como faltante un DHL
+    // que sí se escaneó.
+    const validTNs = new Set(validShipments.flatMap(v => this.dhlVariants(v.trackingNumber)));
+
     const f2Consolidateds = allConsolidateds.filter(c => c.typeCode === 'F2');
     const nonF2Consolidateds = allConsolidateds.filter(c => c.typeCode !== 'F2');
 
@@ -1574,7 +1578,7 @@ export class UnloadingService {
             consolidatedId: In(nonF2Ids),
             status: Not(ShipmentStatusType.DEVUELTO_A_FEDEX)
           },
-          select: ['trackingNumber', 'consolidatedId', 'recipientName', 'recipientAddress', 'recipientPhone', 'recipientZip'],
+          select: ['trackingNumber', 'dhlUniqueId', 'consolidatedId', 'recipientName', 'recipientAddress', 'recipientPhone', 'recipientZip'],
         }),
         this.chargeShipmentRepository.find({
           where: {
@@ -1594,9 +1598,12 @@ export class UnloadingService {
         
         const allItems = [...shipments, ...charges];
         const uniqueItems = this.removeDuplicateTNs(allItems);
-        
+
         consolidated.notFound = uniqueItems
-          .filter(item => !validTNs.has(item.trackingNumber))
+          .filter(item => ![
+            ...this.dhlVariants(item.trackingNumber),
+            ...this.dhlVariants((item as any).dhlUniqueId),
+          ].some(k => validTNs.has(k)))
           .map(item => ({
             trackingNumber: item.trackingNumber,
             recipientName: item.recipientName,
