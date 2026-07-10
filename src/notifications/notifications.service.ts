@@ -1,9 +1,14 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, In } from 'typeorm';
 import { AuditLog } from 'src/entities/audit-log.entity';
 import { NotificationRead } from 'src/entities/notification-read.entity';
+import { Notification } from 'src/entities/notification.entity';
+import { User } from 'src/entities/user.entity';
 import { parseDevice, geoFromIp } from 'src/audit/client-info.util';
+import { NotificationEvent, Audience } from './notification.types';
+import { resolvePresentation } from './notification-catalog';
+import { NotificationDispatchService } from './notification-dispatch.service';
 
 const SUPER_ROLES = ['superadmin', 'superamin'];
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -45,6 +50,9 @@ export class NotificationsService {
   constructor(
     @InjectRepository(AuditLog) private readonly auditRepo: Repository<AuditLog>,
     @InjectRepository(NotificationRead) private readonly readRepo: Repository<NotificationRead>,
+    @InjectRepository(Notification) private readonly notifRepo: Repository<Notification>,
+    @InjectRepository(User) private readonly userRepo: Repository<User>,
+    private readonly dispatch: NotificationDispatchService,
   ) {}
 
   private normalizePath(p?: string): string {
@@ -145,6 +153,73 @@ export class NotificationsService {
     } catch (e) {
       this.logger.warn(`notifications.markAllRead degradado: ${e.message}`);
       return { ok: false };
+    }
+  }
+
+  /** Traduce una audiencia a la lista de userIds destinatarios. */
+  async resolveAudience(audience: Audience, excludeActorId?: string): Promise<string[]> {
+    let ids: string[] = [];
+    if ('userId' in audience) ids = [audience.userId];
+    else if ('userIds' in audience) ids = audience.userIds;
+    else if ('global' in audience) {
+      const users = await this.userRepo.find({ where: { active: true }, select: ['id'] });
+      ids = users.map((u) => u.id);
+    } else if ('role' in audience) {
+      const users = await this.userRepo.find({ where: { active: true, role: audience.role as any }, select: ['id'] });
+      ids = users.map((u) => u.id);
+    } else {
+      // subsidiaryId (+ roles opcional)
+      const where: any = { active: true, subsidiary: { id: audience.subsidiaryId } };
+      if (audience.roles?.length) where.role = In(audience.roles as any[]);
+      const users = await this.userRepo.find({ where, select: ['id'] });
+      ids = users.map((u) => u.id);
+    }
+    const set = new Set(ids.filter(Boolean));
+    if (excludeActorId) set.delete(excludeActorId);
+    return [...set];
+  }
+
+  /**
+   * Emite un evento: resuelve audiencia, persiste una fila por destinatario y
+   * despacha canales laterales best-effort. NUNCA lanza al llamador.
+   */
+  async emit(event: NotificationEvent): Promise<void> {
+    try {
+      const p = resolvePresentation(event.type, {
+        category: event.category, icon: event.icon, severity: event.severity, channels: event.channels,
+      });
+      const excludeActor = event.excludeActor ?? true;
+      const recipients = await this.resolveAudience(event.audience, excludeActor ? event.actor?.id : undefined);
+      if (recipients.length === 0) return;
+
+      const now = new Date();
+      const rows = recipients.map((recipientId) =>
+        this.notifRepo.create({
+          recipientId,
+          type: event.type,
+          category: p.category,
+          title: event.title ?? '',
+          body: event.body ?? null,
+          icon: p.icon,
+          severity: p.severity,
+          link: event.link ?? null,
+          entityId: event.entityId ?? null,
+          subsidiaryId: event.subsidiaryId ?? null,
+          actorId: event.actor?.id ?? null,
+          actorName: event.actor?.name ?? null,
+          read: false,
+          readAt: null,
+          createdAt: now,
+        }),
+      );
+      await this.notifRepo.save(rows);
+
+      // Canales laterales (Task 4). Best-effort, no bloquea.
+      void this.dispatch.deliver(event, recipients, p.channels).catch((e) =>
+        this.logger.warn(`dispatch falló: ${e?.message}`),
+      );
+    } catch (e: any) {
+      this.logger.warn(`emit degradado (${event?.type}): ${e?.message}`);
     }
   }
 }
