@@ -36,6 +36,12 @@ export class Expense {
   @Column({ type: 'date' })
   date: string;
 
+  @Column({ type: 'date', nullable: true })
+  periodStart?: string;
+
+  @Column({ type: 'date', nullable: true })
+  periodEnd?: string;
+
   @Column('decimal', { precision: 10, scale: 2, nullable: false })
   amount: number;
 

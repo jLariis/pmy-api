@@ -3,6 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Expense, Income, Subsidiary } from 'src/entities';
 import { Repository } from 'typeorm';
 import * as ExcelJS from 'exceljs';
+import { dailyShareForDay } from 'src/common/expense-proration.util';
 
 @Injectable()
 export class ResportsService {
@@ -59,7 +60,10 @@ export class ResportsService {
       .createQueryBuilder('expense')
       .leftJoinAndSelect('expense.category', 'category')
       .where(expenseSubsidiaryCondition, { subsidiaryIds })
-      .andWhere('expense.date >= :startDay AND expense.date <= :endDay', { startDay: baseStartDate, endDay: baseEndDate })
+      .andWhere(
+        '((expense.periodStart IS NOT NULL AND expense.periodEnd IS NOT NULL AND expense.periodStart <= :endDay AND expense.periodEnd >= :startDay) OR ((expense.periodStart IS NULL OR expense.periodEnd IS NULL) AND expense.date BETWEEN :startDay AND :endDay))',
+        { startDay: baseStartDate, endDay: baseEndDate },
+      )
       .getMany();
 
     // 3. CÁLCULO DE MATRIZ DE FECHAS (COLUMNAS DIARIAS)
@@ -90,10 +94,15 @@ export class ResportsService {
 
     allExpenses.forEach(exp => {
       const cat = exp.category?.name || 'Sin categoría';
-      const dStr = String(exp.date).slice(0, 10);
       if (!expenseMatrix.has(cat)) expenseMatrix.set(cat, new Map<string, number>());
-      const current = expenseMatrix.get(cat)!.get(dStr) || 0;
-      expenseMatrix.get(cat)!.set(dStr, current + Number(exp.amount));
+      const catMap = expenseMatrix.get(cat)!;
+      for (const dKey of dateKeys) {
+        const share = dailyShareForDay(
+          { amount: exp.amount, date: exp.date, periodStart: exp.periodStart, periodEnd: exp.periodEnd },
+          dKey,
+        );
+        if (share !== 0) catMap.set(dKey, (catMap.get(dKey) || 0) + share);
+      }
     });
 
     // 5. CONFIGURACIÓN DEL LIBRO EXCEL

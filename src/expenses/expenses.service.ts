@@ -22,6 +22,22 @@ export class ExpensesService {
 
   async create(createExpenseDto: Expense) {
     createExpenseDto.date = toHermosilloDateString(createExpenseDto.date || new Date());
+
+    const hasStart = !!createExpenseDto.periodStart;
+    const hasEnd = !!createExpenseDto.periodEnd;
+    if (hasStart !== hasEnd) {
+      throw new BadRequestException('periodStart y periodEnd deben especificarse juntos.');
+    }
+    if (hasStart && hasEnd) {
+      const start = toHermosilloDateString(createExpenseDto.periodStart!);
+      const end = toHermosilloDateString(createExpenseDto.periodEnd!);
+      if (start > end) {
+        throw new BadRequestException('periodStart no puede ser posterior a periodEnd.');
+      }
+      createExpenseDto.periodStart = start;
+      createExpenseDto.periodEnd = end;
+    }
+
     const newExpense = this.expenseRepository.create(createExpenseDto);
     return await this.expenseRepository.save(newExpense);
   }
