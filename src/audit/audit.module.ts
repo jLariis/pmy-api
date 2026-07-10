@@ -7,6 +7,7 @@ import { Subsidiary } from 'src/entities/subsidiary.entity';
 import { AuditService } from './audit.service';
 import { AuditController } from './audit.controller';
 import { AuditInterceptor } from './audit.interceptor';
+import { NotificationsModule } from 'src/notifications/notifications.module';
 
 /**
  * @Global: AuditService queda disponible en cualquier módulo sin re-importar,
@@ -15,7 +16,7 @@ import { AuditInterceptor } from './audit.interceptor';
  */
 @Global()
 @Module({
-  imports: [TypeOrmModule.forFeature([AuditLog, User, Subsidiary])],
+  imports: [TypeOrmModule.forFeature([AuditLog, User, Subsidiary]), NotificationsModule],
   controllers: [AuditController],
   providers: [
     AuditService,

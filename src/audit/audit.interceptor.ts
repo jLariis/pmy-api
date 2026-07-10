@@ -18,6 +18,7 @@ import {
 import { getClientIp, redact } from './audit.util';
 import { parseDevice } from './client-info.util';
 import { resolveAudit, normalizeAuditPath, AuditDescribeCtx } from './audit-catalog';
+import { NotificationsService } from 'src/notifications/notifications.service';
 
 const METHOD_ACTION: Record<string, AuditAction> = {
   POST: AuditAction.CREATE,
@@ -32,6 +33,7 @@ export class AuditInterceptor implements NestInterceptor {
   constructor(
     private readonly reflector: Reflector,
     private readonly audit: AuditService,
+    private readonly notifications: NotificationsService,
   ) {}
 
   /** Extrae info del cliente desde headers (la pone el frontend). Fallback: User-Agent. */
@@ -171,6 +173,21 @@ export class AuditInterceptor implements NestInterceptor {
             (response && typeof response === 'object' ? response.id : undefined),
           afterState: meta && !meta.skipBody ? redact(response) : undefined,
         });
+        try {
+          this.notifications.emitFromAudit({
+            module: String(e.module),
+            action: String(e.action),
+            title: e.entityName ?? 'Actividad',
+            body: e.description,
+            entityId:
+              meta?.resolveEntityId?.({ params: req.params, body: req.body, response }) ??
+              req.params?.id ??
+              (response && typeof response === 'object' ? response.id : undefined),
+            subsidiaryId: base.subsidiaryId,
+            actor: { id: base.userId, name: base.userName ?? base.userEmail },
+            isSession: String(e.module) === 'auth',
+          });
+        } catch { /* best-effort: nunca romper la request */ }
       }),
       catchError((err) => {
         const e = enrich('error', undefined, err);

@@ -7,8 +7,19 @@ import { Notification } from 'src/entities/notification.entity';
 import { User } from 'src/entities/user.entity';
 import { parseDevice, geoFromIp } from 'src/audit/client-info.util';
 import { NotificationEvent, Audience } from './notification.types';
-import { resolvePresentation } from './notification-catalog';
+import { resolvePresentation, auditToNotificationType } from './notification-catalog';
 import { NotificationDispatchService } from './notification-dispatch.service';
+
+export interface AuditEmitInput {
+  module: string;
+  action?: string;
+  title?: string;
+  body?: string;
+  entityId?: string;
+  subsidiaryId?: string;
+  actor?: { id?: string; name?: string };
+  isSession?: boolean;
+}
 
 const SUPER_ROLES = ['superadmin', 'superamin'];
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -222,5 +233,28 @@ export class NotificationsService {
     } catch (e: any) {
       this.logger.warn(`emit degradado (${event?.type}): ${e?.message}`);
     }
+  }
+
+  /**
+   * Puente desde el interceptor de auditoría. Fire-and-forget: construye un
+   * NotificationEvent a partir del resultado ya calculado por resolveAudit().
+   */
+  emitFromAudit(input: AuditEmitInput): void {
+    const type = auditToNotificationType(input.module, input.action);
+    // Sesiones (login/logout) → superadmins; operaciones → sucursal del actor.
+    const audience: Audience = input.isSession
+      ? { role: 'superadmin' }
+      : input.subsidiaryId
+        ? { subsidiaryId: input.subsidiaryId, roles: ['admin', 'superadmin', 'subadmin', 'owner'] }
+        : { role: 'superadmin' };
+    void this.emit({
+      type,
+      audience,
+      title: input.title ?? 'Actividad',
+      body: input.body,
+      entityId: input.entityId,
+      subsidiaryId: input.subsidiaryId,
+      actor: input.actor,
+    });
   }
 }

@@ -52,3 +52,17 @@ describe('NotificationsService.emit', () => {
     await expect(svc.emit({ type: 'x', audience: { userId: 'u1' }, title: 't' })).resolves.toBeUndefined();
   });
 });
+
+describe('NotificationsService.emitFromAudit', () => {
+  it('maps an operation to a subsidiary broadcast', async () => {
+    const { svc, saved } = make();
+    svc.emitFromAudit({
+      module: 'consolidados', action: 'create', title: 'Consolidado',
+      body: 'Registró consolidado C-1', entityId: 'c1', subsidiaryId: 's1',
+      actor: { id: 'actor', name: 'Ana' },
+    });
+    await new Promise((r) => setTimeout(r, 0)); // emit is fire-and-forget
+    expect(saved.every((r) => r.type === 'operacion.consolidados')).toBe(true);
+    expect(saved.map((r) => r.recipientId).sort()).toEqual(['u1', 'u2']);
+  });
+});
