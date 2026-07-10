@@ -31,6 +31,7 @@ export * from './warehouse-delivery.entity';
 export * from './package-transfer.entity';
 export * from './audit-log.entity';
 export * from './notification-read.entity';
+export * from './notification.entity';
 export * from './role.entity';
 export * from './permission.entity';
 export * from './company-settings.entity';
