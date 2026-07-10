@@ -43,3 +43,6 @@ export * from './expense-category.entity';
 // Solo la clase entidad en el barrel; el enum PermissionEffect se importa desde el archivo
 // (evita que `seed.ts`/registro de entidades lo tome como entidad).
 export { UserPermission } from './user-permission.entity';
+export * from './support-ticket.entity';
+export * from './support-ticket-comment.entity';
+export * from './support-ticket-attachment.entity';
