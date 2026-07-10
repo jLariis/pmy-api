@@ -66,3 +66,14 @@ describe('NotificationsService.emitFromAudit', () => {
     expect(saved.map((r) => r.recipientId).sort()).toEqual(['u1', 'u2']);
   });
 });
+
+describe('markOneRead', () => {
+  it('marks a single notification read for its owner', async () => {
+    const update = jest.fn(() => Promise.resolve({ affected: 1 }));
+    const { svc } = make();
+    (svc as any).notifRepo.update = update;
+    const res = await svc.markOneRead('u1', 'n1');
+    expect(update).toHaveBeenCalledWith({ id: 'n1', recipientId: 'u1' }, expect.objectContaining({ read: true }));
+    expect(res.ok).toBe(true);
+  });
+});

@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Query, Request } from '@nestjs/common';
+import { Controller, Get, Param, Post, Query, Request } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { NotificationsService } from './notifications.service';
 import { NoAudit } from 'src/audit/audit.decorator';
@@ -20,5 +20,12 @@ export class NotificationsController {
   @Post('mark-read')
   markRead(@Request() req) {
     return this.notifications.markAllRead(req.user?.userId);
+  }
+
+  /** Marca una notificación puntual como leída (propietario). */
+  @NoAudit()
+  @Post(':id/read')
+  markOne(@Request() req, @Param('id') id: string) {
+    return this.notifications.markOneRead(req.user?.userId, id);
   }
 }

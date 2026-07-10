@@ -121,7 +121,7 @@ export class NotificationsService {
     }
   }
 
-  async getFeed(user: any, limit = 30) {
+  private async getLegacyFeed(user: any, limit = 30) {
     try {
       const role = (user?.role || '').toLowerCase();
       const isSuper = SUPER_ROLES.includes(role);
@@ -154,6 +154,57 @@ export class NotificationsService {
     } catch (e) {
       this.logger.warn(`notifications.getFeed degradado: ${e.message}`);
       return { items: [], unreadCount: 0, lastReadAt: null };
+    }
+  }
+
+  /** Notificaciones reales (nuevas) del usuario, mapeadas al shape del feed. */
+  private async getRealFeed(userId: string, limit: number): Promise<NotificationItem[]> {
+    const rows = await this.notifRepo.find({
+      where: { recipientId: userId },
+      order: { createdAt: 'DESC' },
+      take: limit,
+    });
+    return rows.map((r) => ({
+      id: r.id,
+      createdAt: r.createdAt,
+      module: r.category,
+      actor: r.actorName ?? 'Sistema',
+      actorEmail: undefined,
+      message: r.body ?? r.title,
+      entityId: r.entityId ?? undefined,
+      subsidiaryId: r.subsidiaryId ?? undefined,
+      read: r.read,
+      kind: r.category === 'sesion' ? 'session' : 'operation',
+      // extras para la campana enriquecida:
+      title: r.title, icon: r.icon ?? undefined, link: r.link ?? undefined, severity: r.severity,
+    }) as any);
+  }
+
+  /** Feed unión: notificaciones reales (Task 3+) + audit-derivadas (legacy), dedupe por entityId+module. */
+  async getFeed(user: any, limit = 30) {
+    const [legacy, real] = await Promise.all([
+      this.getLegacyFeed(user, limit).catch(() => ({ items: [], unreadCount: 0, lastReadAt: null })),
+      this.getRealFeed(user.userId, limit).catch(() => [] as NotificationItem[]),
+    ]);
+    // Dedup por entityId+module para no duplicar durante la transición.
+    const seen = new Set(real.map((r) => `${r.entityId ?? ''}:${r.module}`));
+    const merged = [
+      ...real,
+      ...legacy.items.filter((l) => !seen.has(`${l.entityId ?? ''}:${l.module}`)),
+    ].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+    const items = merged.slice(0, limit);
+    const unreadCount = real.filter((r) => !r.read).length + legacy.unreadCount;
+    return { items, unreadCount, lastReadAt: legacy.lastReadAt };
+  }
+
+  async markOneRead(userId: string, id: string): Promise<{ ok: boolean }> {
+    try {
+      await this.notifRepo.update({ id, recipientId: userId }, { read: true, readAt: new Date() });
+      return { ok: true };
+    } catch (e: any) {
+      this.logger.warn(`markOneRead degradado: ${e.message}`);
+      return { ok: false };
     }
   }
 
