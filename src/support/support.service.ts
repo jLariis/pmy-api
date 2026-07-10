@@ -72,7 +72,7 @@ export class SupportService {
       actor: { id: user.userId, name: ticket.requesterName ?? undefined },
     });
 
-    return ticket;
+    return this.getOne(ticket.id);
   }
 
   async list(filters: { estado?: string; tipo?: string; q?: string } = {}): Promise<SupportTicket[]> {

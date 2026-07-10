@@ -6,7 +6,7 @@ function make(overrides: any = {}) {
     create: (d: any) => d,
     save: (t: any) => { const row = { id: 't1', ...t }; savedTickets.push(row); return Promise.resolve(row); },
     count: overrides.count ?? (() => Promise.resolve(0)),
-    findOne: overrides.findOne ?? (() => Promise.resolve({ id: 't1', folio: 'SUP-0001', estado: 'pendiente', prioridad: 'media', requesterId: 'r1' })),
+    findOne: overrides.findOne ?? (() => Promise.resolve(savedTickets[savedTickets.length - 1] ?? { id: 't1', folio: 'SUP-0001', estado: 'pendiente', prioridad: 'media', requesterId: 'r1' })),
     find: () => Promise.resolve([]),
   };
   const commentRepo: any = { create: (d: any) => d, save: (c: any) => Promise.resolve({ id: 'c1', ...c }) };
