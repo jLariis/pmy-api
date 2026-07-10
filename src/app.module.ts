@@ -44,6 +44,7 @@ import { WhatsappGatewayModule } from './whatsapp-gateway/whatsapp-gateway.modul
 import { CatalogModule } from './catalog/catalog.module';
 import { GeocodeModule } from './geocode/geocode.module';
 import { ServerStatsModule } from './server-stats/server-stats.module';
+import { SupportModule } from './support/support.module';
 
 @Module({
   imports: [
@@ -109,6 +110,7 @@ import { ServerStatsModule } from './server-stats/server-stats.module';
     GeocodeModule,
     ServerStatsModule,
     GuacamoleModule,
+    SupportModule,
   ],
   controllers: [AppController],
   providers: [

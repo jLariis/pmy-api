@@ -7,6 +7,7 @@ import { WinstonModule } from 'nest-winston';
 import 'winston-daily-rotate-file';
 import { ValidationPipe } from '@nestjs/common';
 import * as express from 'express';
+import { join } from 'path';
 
 async function bootstrap() {
   process.env.TZ = 'UTC';
@@ -47,6 +48,7 @@ async function bootstrap() {
 
   app.use(express.json({ limit: '1mb' }));
   app.use(express.urlencoded({ limit: '1mb', extended: true }));
+  app.use('/api/uploads', express.static(join(process.cwd(), 'uploads')));
 
   const port = process.env.PORT || 3001;
 
