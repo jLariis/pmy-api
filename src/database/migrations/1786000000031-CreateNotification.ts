@@ -12,7 +12,7 @@ export class CreateNotification1786000000031 implements MigrationInterface {
   public async up(q: QueryRunner): Promise<void> {
     await q.query(`
       CREATE TABLE IF NOT EXISTS \`notification\` (
-        \`id\`            CHAR(36)     NOT NULL,
+        \`id\`            VARCHAR(36)  NOT NULL,
         \`recipientId\`   CHAR(36)     NOT NULL,
         \`type\`          VARCHAR(80)  NOT NULL,
         \`category\`      VARCHAR(20)  NOT NULL DEFAULT 'operacion',

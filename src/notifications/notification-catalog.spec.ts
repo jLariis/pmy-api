@@ -8,8 +8,9 @@ describe('notification-catalog', () => {
   });
 
   it('falls back to operacion/bell for unknown types', () => {
-    const p = resolvePresentation('operacion.consolidados');
+    const p = resolvePresentation('operacion.tipo_inexistente');
     expect(p.category).toBe('operacion');
+    expect(p.icon).toBe('bell');
     expect(p.channels).toEqual(['bell']);
   });
 
