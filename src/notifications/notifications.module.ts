@@ -7,6 +7,7 @@ import { User } from 'src/entities/user.entity';
 import { NotificationsService } from './notifications.service';
 import { NotificationsController } from './notifications.controller';
 import { NotificationDispatchService } from './notification-dispatch.service';
+import { NotificationsRetentionService } from './notifications.retention';
 import { WhatsappGatewayModule } from 'src/whatsapp-gateway/whatsapp-gateway.module';
 
 @Module({
@@ -15,7 +16,7 @@ import { WhatsappGatewayModule } from 'src/whatsapp-gateway/whatsapp-gateway.mod
     WhatsappGatewayModule,
   ],
   controllers: [NotificationsController],
-  providers: [NotificationsService, NotificationDispatchService],
+  providers: [NotificationsService, NotificationDispatchService, NotificationsRetentionService],
   exports: [NotificationsService],
 })
 export class NotificationsModule {}
