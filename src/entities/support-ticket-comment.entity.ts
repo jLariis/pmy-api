@@ -9,7 +9,7 @@ export class SupportTicketComment {
   @JoinColumn({ name: 'ticketId' })
   ticket: SupportTicket;
 
-  @Column({ type: 'char', length: 36 }) ticketId: string;
+  @Column({ type: 'varchar', length: 36 }) ticketId: string;
   @Column({ type: 'char', length: 36, nullable: true }) authorId: string | null;
   @Column({ type: 'varchar', length: 160, nullable: true }) authorName: string | null;
   @Column({ type: 'text' }) texto: string;

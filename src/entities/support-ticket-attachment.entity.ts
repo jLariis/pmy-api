@@ -9,7 +9,7 @@ export class SupportTicketAttachment {
   @JoinColumn({ name: 'ticketId' })
   ticket: SupportTicket;
 
-  @Column({ type: 'char', length: 36 }) ticketId: string;
+  @Column({ type: 'varchar', length: 36 }) ticketId: string;
   @Column({ type: 'varchar', length: 260 }) filename: string;
   @Column({ type: 'varchar', length: 400 }) url: string;
   @Column({ type: 'varchar', length: 100, nullable: true }) mime: string | null;
