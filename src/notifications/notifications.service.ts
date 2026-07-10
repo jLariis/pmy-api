@@ -167,7 +167,10 @@ export class NotificationsService {
     return rows.map((r) => ({
       id: r.id,
       createdAt: r.createdAt,
-      module: r.category,
+      // Para eventos operacionales exponemos el módulo específico (p.ej. 'consolidados')
+      // en vez de la categoría genérica ('operacion'), para que el dedup con el feed
+      // legacy (que usa route.module) realmente coincida.
+      module: r.type.startsWith('operacion.') ? r.type.slice('operacion.'.length) : r.category,
       actor: r.actorName ?? 'Sistema',
       actorEmail: undefined,
       message: r.body ?? r.title,
@@ -213,6 +216,11 @@ export class NotificationsService {
   async markAllRead(userId: string) {
     try {
       await this.readRepo.upsert({ userId, lastReadAt: new Date() }, ['userId']);
+      try {
+        await this.notifRepo.update({ recipientId: userId, read: false }, { read: true, readAt: new Date() });
+      } catch (e: any) {
+        this.logger.warn(`notifications.markAllRead (real rows) degradado: ${e.message}`);
+      }
       return { ok: true };
     } catch (e) {
       this.logger.warn(`notifications.markAllRead degradado: ${e.message}`);
@@ -229,7 +237,8 @@ export class NotificationsService {
       const users = await this.userRepo.find({ where: { active: true }, select: ['id'] });
       ids = users.map((u) => u.id);
     } else if ('role' in audience) {
-      const users = await this.userRepo.find({ where: { active: true, role: audience.role as any }, select: ['id'] });
+      const roles = audience.role === 'superadmin' ? ['superadmin', 'superamin'] : [audience.role];
+      const users = await this.userRepo.find({ where: { active: true, role: In(roles as any[]) }, select: ['id'] });
       ids = users.map((u) => u.id);
     } else {
       // subsidiaryId (+ roles opcional)

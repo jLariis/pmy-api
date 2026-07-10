@@ -54,11 +54,12 @@ export class NotificationDispatchService {
   }
 
   private buildEmailHtml(event: NotificationEvent): string {
+    const esc = (s = '') => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
     const link = event.link ? `${process.env.FRONTEND_URL ?? ''}${event.link}` : null;
     return `
       <div style="font-family:Arial,sans-serif;max-width:520px;margin:0 auto;color:#0f172a">
-        <h2 style="margin:0 0 8px">${event.title ?? 'Notificación'}</h2>
-        <p style="margin:0 0 16px;color:#475569">${event.body ?? ''}</p>
+        <h2 style="margin:0 0 8px">${esc(event.title ?? 'Notificación')}</h2>
+        <p style="margin:0 0 16px;color:#475569">${esc(event.body ?? '')}</p>
         ${link ? `<a href="${link}" style="display:inline-block;background:#4f46e5;color:#fff;padding:10px 18px;border-radius:8px;text-decoration:none">Abrir en PMY</a>` : ''}
         <p style="margin:16px 0 0;color:#94a3b8;font-size:12px">PMY App · notificación automática</p>
       </div>`;

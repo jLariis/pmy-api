@@ -8,6 +8,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { randomUUID } from 'crypto';
 import { JwtAuthGuard } from 'src/auth/guards/jwt-auth.guard';
+import { NoAudit } from 'src/audit/audit.decorator';
 import { SupportService } from './support.service';
 import { CreateTicketDto } from './dto/create-ticket.dto';
 import { UpdateTicketDto } from './dto/update-ticket.dto';
@@ -20,6 +21,7 @@ const uploadRoot = path.join(process.cwd(), 'uploads', 'support');
 @ApiBearerAuth()
 @Controller('support')
 @UseGuards(JwtAuthGuard)
+@NoAudit()
 export class SupportController {
   constructor(private readonly service: SupportService) {}
 
