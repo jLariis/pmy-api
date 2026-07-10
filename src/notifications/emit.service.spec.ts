@@ -28,7 +28,7 @@ describe('NotificationsService.emit', () => {
     });
     expect(saved.map((r) => r.recipientId).sort()).toEqual(['u1', 'u2']);
     expect(saved[0].type).toBe('operacion.consolidados');
-    expect(saved[0].icon).toBe('bell'); // default presentation
+    expect(saved[0].icon).toBe('boxes'); // catalog entry (Task 8 enrichment)
   });
 
   it('targets a single user directly', async () => {

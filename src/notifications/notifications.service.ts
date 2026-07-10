@@ -182,8 +182,10 @@ export class NotificationsService {
 
   /** Feed unión: notificaciones reales (Task 3+) + audit-derivadas (legacy), dedupe por entityId+module. */
   async getFeed(user: any, limit = 30) {
+    const legacyEnabled = process.env.NOTIFICATIONS_LEGACY_FEED !== 'false';
     const [legacy, real] = await Promise.all([
-      this.getLegacyFeed(user, limit).catch(() => ({ items: [], unreadCount: 0, lastReadAt: null })),
+      legacyEnabled ? this.getLegacyFeed(user, limit).catch(() => ({ items: [], unreadCount: 0, lastReadAt: null }))
+                    : Promise.resolve({ items: [], unreadCount: 0, lastReadAt: null }),
       this.getRealFeed(user.userId, limit).catch(() => [] as NotificationItem[]),
     ]);
     // Dedup por entityId+module para no duplicar durante la transición.
