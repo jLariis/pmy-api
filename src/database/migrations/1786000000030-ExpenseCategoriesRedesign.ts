@@ -16,6 +16,27 @@ export class ExpenseCategoriesRedesign1786000000030 implements MigrationInterfac
     );
     const collation = collRows?.[0]?.c || 'utf8mb4_0900_ai_ci';
 
+    // 0.1) Limpieza de estado previo. Puede existir una tabla `expense_category` HUÉRFANA
+    //      (entidad vieja: solo id/name/description, SIN groupId, creada por un synchronize en
+    //      dev) o una tabla parcial de una corrida fallida. Con CREATE TABLE IF NOT EXISTS esas
+    //      columnas nuevas no se agregan y el INSERT con `groupId` revienta (ER_BAD_FIELD_ERROR).
+    //      Eliminamos la tabla stale — pero SOLO si está vacía (para no destruir datos reales).
+    //      En este punto `expense.categoryId`/FK aún no existen (la migración falla antes), así
+    //      que no hay constraint que impida el DROP.
+    const ecExists = await q.query("SHOW TABLES LIKE 'expense_category'");
+    if (ecExists.length) {
+      const cnt = await q.query('SELECT COUNT(*) AS c FROM `expense_category`');
+      const n = Number(cnt?.[0]?.c ?? 0);
+      if (n > 0) {
+        throw new Error(
+          `La tabla expense_category ya existe con ${n} fila(s) y esquema desconocido. ` +
+          `Respaldar/revisar antes de continuar (tabla huérfana con datos o corrida previa).`,
+        );
+      }
+      await q.query('DROP TABLE IF EXISTS `expense_category`');
+    }
+    await q.query('DROP TABLE IF EXISTS `expense_category_group`');
+
     // 1) Tablas
     await q.query(`
       CREATE TABLE IF NOT EXISTS \`expense_category_group\` (
