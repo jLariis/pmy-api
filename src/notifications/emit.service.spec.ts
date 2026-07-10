@@ -39,6 +39,13 @@ describe('NotificationsService.emit', () => {
     expect(saved[0].category).toBe('soporte');
   });
 
+  it('does NOT exclude the actor for a direct target (self-assignment still notifies)', async () => {
+    const { svc, saved } = make();
+    await svc.emit({ type: 'ticket.asignado', audience: { userId: 'actor' }, title: 'Asignado', actor: { id: 'actor', name: 'Yo' } });
+    expect(saved).toHaveLength(1);
+    expect(saved[0].recipientId).toBe('actor');
+  });
+
   it('never throws even if persistence fails', async () => {
     const { svc } = make();
     (svc as any).notifRepo.save = () => Promise.reject(new Error('db down'));

@@ -188,7 +188,8 @@ export class NotificationsService {
       const p = resolvePresentation(event.type, {
         category: event.category, icon: event.icon, severity: event.severity, channels: event.channels,
       });
-      const excludeActor = event.excludeActor ?? true;
+      const isDirect = 'userId' in event.audience || 'userIds' in event.audience;
+      const excludeActor = (event.excludeActor ?? true) && !isDirect;
       const recipients = await this.resolveAudience(event.audience, excludeActor ? event.actor?.id : undefined);
       if (recipients.length === 0) return;
 
