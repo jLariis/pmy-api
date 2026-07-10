@@ -60,7 +60,7 @@ export class ExpensesService {
       order: {
         date: 'DESC'
       },
-      relations: ['vehicle']
+      relations: ['vehicle', 'category']
     });
 
     return expenses;
