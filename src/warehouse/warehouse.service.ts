@@ -24,6 +24,7 @@ import { ShipmentStatusType } from 'src/common/enums';
 import { PaginatedResult, parsePagination, resolveDateRange } from 'src/common/pagination.util';
 import { CreateOutboundDto } from './dto/create-outbound.dto';
 import { assertOutboundConsistency } from './warehouse.validation';
+import { splitShipmentIds } from './warehouse.helpers';
 import { MailService } from 'src/mail/mail.service';
 import { format, toZonedTime } from 'date-fns-tz';
 import axios from 'axios';
@@ -105,17 +106,35 @@ export class WarehouseService {
 
       const savedReceiving = await queryRunner.manager.save(WarehouseReceiving, newReceiving);
 
-      // 2. Extraer los IDs de todos los paquetes recibidos en el DTO
-      const shipmentIds = createWarehouseDto.shipments.map((shipment) => shipment.id);
+      // 2. (IDs extraídos vía splitShipmentIds más abajo, por tabla)
 
-      // 3. Ponemos todos los paquetes en estado "en bodega" y los asociamos a la entrada
-      if (shipmentIds.length > 0) {
-        await queryRunner.manager.update(
-          Shipment,
-          { id: In(shipmentIds) },
-          { status: ShipmentStatusType.EN_BODEGA },
+      // 3. Separar normales vs carga y ponerlos EN_BODEGA en su tabla correspondiente,
+      //    creando historial de estado para trazabilidad.
+      const { normalIds, chargeIds } = splitShipmentIds(createWarehouseDto.shipments);
+      const now = new Date();
+
+      const setInWarehouse = async (
+        ids: string[],
+        entity: any,
+        relationKey: 'shipment' | 'chargeShipment',
+      ) => {
+        if (ids.length === 0) return;
+        await queryRunner.manager.update(entity, { id: In(ids) }, {
+          status: ShipmentStatusType.EN_BODEGA,
+        });
+        const history = ids.map((id) =>
+          queryRunner.manager.create(ShipmentStatus, {
+            status: ShipmentStatusType.EN_BODEGA,
+            notes: `Entrada a bodega (Recepción: ${savedReceiving.id})`,
+            timestamp: now,
+            [relationKey]: { id },
+          }),
         );
-      }
+        await queryRunner.manager.save(ShipmentStatus, history);
+      };
+
+      await setInWarehouse(normalIds, Shipment, 'shipment');
+      await setInWarehouse(chargeIds, ChargeShipment, 'chargeShipment');
 
       // 4. Extraer y guardar las remesas (piezas de DHL u otros)
       const remittancesData = createWarehouseDto.shipments.flatMap((shipment) =>
