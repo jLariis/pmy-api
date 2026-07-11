@@ -473,6 +473,11 @@ export class WarehouseService {
   async outbound(dto: CreateOutboundDto, userId?: string) {
     this.logger.log(`Iniciando outbound tipo: ${dto.type}`);
 
+    // Validar ANTES de abrir la transacción: si el DTO es inválido no tiene
+    // sentido abrir un queryRunner/transacción que se abriría y haría
+    // rollback inmediatamente sin haber tocado la BD.
+    assertOutboundConsistency(dto);
+
     const queryRunner = this.dataSource.createQueryRunner();
     await queryRunner.connect();
     await queryRunner.startTransaction();
@@ -481,8 +486,6 @@ export class WarehouseService {
     let dispatchResult: PackageDispatch;
 
     try {
-      assertOutboundConsistency(dto);
-
       // 1. Guardar el registro general
       const newOutbound = queryRunner.manager.create(WarehouseOutbound, {
         warehouseId: dto.warehouse,
@@ -742,6 +745,7 @@ export class WarehouseService {
         subsidiaryName,
         params.kind === 'inbound' ? 'inbound' : 'outbound',
         params.entityId,
+        label,
       );
     } catch (error) {
       this.logger.error(
@@ -981,8 +985,15 @@ export class WarehouseService {
     subsidiaryName: string,
     type: 'inbound' | 'outbound',
     id: string,
+    label?: string,
   ) {
     const timeZone = this.timeZone;
+    // `label` distingue Traspaso de Salida a Ruta en el texto humano del
+    // correo; `type` sigue determinando el lookup en BD (transfer -> outbound)
+    // y por tanto no puede tocarse. Si no se provee (llamada legacy del
+    // controller), cae al wording histórico basado en `type`.
+    const displayLabel =
+      label ?? (type === 'inbound' ? 'Entrada a Bodega' : 'Salida a Bodega');
 
     let info: WarehouseReceiving | WarehouseOutbound = null;
 
@@ -1022,20 +1033,16 @@ export class WarehouseService {
       { filename: excelFile.originalname, content: excelFile.buffer },
     ];
 
-    const subject = `Notificación de ${
-      type === 'inbound' ? 'Entrada' : 'Salida'
-    } a Bodega - ${subsidiaryName}`;
+    const subject = `Notificación de ${displayLabel} - ${subsidiaryName}`;
 
     const htmlContent = `
       <div style="font-family: Arial, sans-serif; color: #2c3e50; max-width: 800px; margin: auto;">
         <h2 style="border-bottom: 3px solid #3498db; padding-bottom: 8px;">
-          📦 Notificación de ${type === 'inbound' ? 'Entrada' : 'Salida'} a Bodega
+          📦 Notificación de ${displayLabel}
         </h2>
 
         <p>
-          Se ha generado un nuevo reporte de <strong>${
-            type === 'inbound' ? 'Entrada' : 'Salida'
-          }</strong> para la sucursal <strong>${subsidiaryName}</strong>.
+          Se ha generado un nuevo reporte de <strong>${displayLabel}</strong> para la sucursal <strong>${subsidiaryName}</strong>.
         </p>
 
         <p><strong>Fecha y hora:</strong> ${format(
