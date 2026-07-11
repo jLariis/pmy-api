@@ -24,7 +24,9 @@ export class WarehouseController {
     @Query('subsidiaryId') subsidiaryId?: string,
     @Query('context') context?: 'inbound' | 'outbound',
   ): Promise<ScannedShipment | { isValid: false; trackingNumber: string; reason: string }> {
-    return await this.warehouseService.validateTrackingNumber(trackingNumber, subsidiaryId, context);
+    // subsidiaryId se recibe por compatibilidad con el contrato HTTP existente,
+    // pero no se usa: validateTrackingNumber ya no filtra por sucursal (tarea 4, limpieza).
+    return await this.warehouseService.validateTrackingNumber(trackingNumber, context);
   }
 
   @Get('inbound/subsidiary/:subsidiaryId')
