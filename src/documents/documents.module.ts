@@ -14,6 +14,7 @@ import { TemplateStore } from './template-store.service';
 import { TemplateService } from './template.service';
 import { EmailRenderer } from './renderers/email.renderer';
 import { DOCUMENT_RENDERERS } from './renderers/renderer.interface';
+import { TemplateAdminService } from './admin/template-admin.service';
 
 @Module({
   imports: [
@@ -31,7 +32,8 @@ import { DOCUMENT_RENDERERS } from './renderers/renderer.interface';
     EmailRenderer,
     { provide: DOCUMENT_RENDERERS, useFactory: (email: EmailRenderer) => [email], inject: [EmailRenderer] },
     RendererRegistry,
+    TemplateAdminService,
   ],
-  exports: [TemplateService, BrandingService, TemplateStore],
+  exports: [TemplateService, BrandingService, TemplateStore, TemplateAdminService],
 })
 export class DocumentsModule {}
