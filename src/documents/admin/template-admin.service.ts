@@ -63,8 +63,8 @@ export class TemplateAdminService {
 
   async publish(templateId: string, versionId: string, _actor: Actor) {
     const template = await this.require(templateId);
-    const version = await this.verRepo.findOne({ where: { id: versionId } });
-    if (!version) throw new NotFoundException(`Versión ${versionId} no existe`);
+    const version = await this.verRepo.findOne({ where: { id: versionId, templateId } });
+    if (!version) throw new NotFoundException(`Versión ${versionId} no existe para la plantilla ${templateId}`);
 
     if (template.currentVersionId) {
       const prev = await this.verRepo.findOne({ where: { id: template.currentVersionId } });
@@ -82,8 +82,8 @@ export class TemplateAdminService {
 
   async restore(templateId: string, fromVersionId: string, actor: Actor) {
     await this.require(templateId);
-    const from = await this.verRepo.findOne({ where: { id: fromVersionId } });
-    if (!from) throw new NotFoundException(`Versión ${fromVersionId} no existe`);
+    const from = await this.verRepo.findOne({ where: { id: fromVersionId, templateId } });
+    if (!from) throw new NotFoundException(`Versión ${fromVersionId} no existe para la plantilla ${templateId}`);
     return this.verRepo.save(this.verRepo.create({
       templateId,
       version: await this.nextVersionNumber(templateId),

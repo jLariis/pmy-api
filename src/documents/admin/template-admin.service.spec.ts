@@ -2,7 +2,10 @@ import { TemplateAdminService } from './template-admin.service';
 
 function make() {
   const versions: any[] = [];
-  const templates: any[] = [{ id: 't1', code: 'c', currentVersionId: null }];
+  const templates: any[] = [
+    { id: 't1', code: 'c', currentVersionId: null },
+    { id: 't2', code: 'c2', currentVersionId: null },
+  ];
   const tplRepo: any = {
     findOne: ({ where }: any) => Promise.resolve(templates.find((t) => t.id === where.id) ?? null),
     create: (d: any) => ({ id: 't' + (templates.length + 1), ...d }),
@@ -10,7 +13,10 @@ function make() {
   };
   const verRepo: any = {
     find: () => Promise.resolve(versions),
-    findOne: ({ where }: any) => Promise.resolve(versions.find((v) => v.id === where.id) ?? null),
+    findOne: ({ where }: any) =>
+      Promise.resolve(
+        versions.find((v) => v.id === where.id && (where.templateId === undefined || v.templateId === where.templateId)) ?? null,
+      ),
     create: (d: any) => ({ id: 'v' + (versions.length + 1), ...d }),
     save: (v: any) => { const i = versions.findIndex((x) => x.id === v.id); if (i >= 0) versions[i] = v; else versions.push(v); return Promise.resolve(v); },
   };
@@ -44,5 +50,12 @@ describe('TemplateAdminService', () => {
     expect(restored.subject).toBe('Orig');
     expect(restored.version).toBe(2);
     expect(restored.status).toBe('draft');
+  });
+
+  it('publish rechaza una versión que pertenece a otra plantilla y no toca currentVersionId', async () => {
+    const { svc, templates } = make();
+    const foreignVersion = await svc.saveDraft('t2', { compiledBody: '<p>foreign</p>' }, {});
+    await expect(svc.publish('t1', foreignVersion.id, {})).rejects.toThrow();
+    expect(templates.find((t) => t.id === 't1').currentVersionId).toBeNull();
   });
 });
