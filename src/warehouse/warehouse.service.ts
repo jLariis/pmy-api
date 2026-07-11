@@ -265,6 +265,10 @@ export class WarehouseService {
           priority: true,
           status: true,
           dhlUniqueId: true,
+          // Necesario en el SELECT: 'order' por createdAt con relaciones genera
+          // una subconsulta DISTINCT que ordena por esta columna; si no se
+          // proyecta, MySQL lanza "Unknown column 'distinctAlias.Shipment_createdAt'".
+          createdAt: true,
           subsidiary: { id: true, name: true },
           payment: { id: true, amount: true, type: true },
         },
@@ -287,6 +291,8 @@ export class WarehouseService {
           isHighValue: true,
           priority: true,
           status: true,
+          // Ver nota arriba: requerido para el ORDER BY createdAt con relaciones.
+          createdAt: true,
           subsidiary: { id: true, name: true },
           payment: { id: true, amount: true, type: true },
         },
