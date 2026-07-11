@@ -24,7 +24,7 @@ import { ShipmentStatusType } from 'src/common/enums';
 import { PaginatedResult, parsePagination, resolveDateRange } from 'src/common/pagination.util';
 import { CreateOutboundDto } from './dto/create-outbound.dto';
 import { assertOutboundConsistency } from './warehouse.validation';
-import { splitShipmentIds } from './warehouse.helpers';
+import { hydratePackageIds, splitShipmentIds } from './warehouse.helpers';
 import { MailService } from 'src/mail/mail.service';
 import { format, toZonedTime } from 'date-fns-tz';
 import axios from 'axios';
@@ -33,6 +33,40 @@ import { PostalCodeResponse } from './dto/postal-code-response';
 import * as ExcelJS from 'exceljs';
 const pdfMake = require('pdfmake');
 import { TDocumentDefinitions, TableCell } from 'pdfmake/interfaces';
+
+/**
+ * Envío re-hidratado desde BD (Shipment o ChargeShipment) con los datos de
+ * destinatario necesarios para generar los archivos de notificación.
+ * Evita el bug #7: el DTO de entrada/salida solo trae {id, trackingNumber,
+ * shipmentType, isCharge, remittances}, sin datos de destinatario.
+ */
+interface HydratedPackage {
+  id: string;
+  trackingNumber: string;
+  dhlUniqueId?: string;
+  recipientName: string;
+  recipientAddress: string;
+  recipientZip: string;
+  recipientPhone: string;
+  commitDateTime: Date;
+  isCharge: boolean;
+  isHighValue: boolean;
+  paymentAmount?: number;
+}
+
+/**
+ * Cabecera genérica que consumen `generateExcelBuffer`/`generatePdfBuffer`.
+ * Reemplaza el `PackageDispatch` estricto para poder servir también a
+ * notificaciones de entrada y traspaso (que no tienen despacho asociado).
+ */
+interface NotificationHeader {
+  subsidiary?: Subsidiary | null;
+  vehicle?: { name: string } | null;
+  drivers?: { name: string }[] | null;
+  routes?: { name: string }[] | null;
+  trackingNumber?: string;
+  title?: string;
+}
 
 @Injectable()
 export class WarehouseService {
@@ -152,6 +186,21 @@ export class WarehouseService {
       }
 
       await queryRunner.commitTransaction();
+
+      // --- NOTIFICACIÓN DESPUÉS DEL COMMIT (fire-and-forget) ---
+      // Si el PDF/email falla NO debe afectar la transacción ya confirmada.
+      this.generateAndSendWarehouseNotification({
+        kind: 'inbound',
+        entityId: savedReceiving.id,
+        warehouseId: createWarehouseDto.warehouse,
+        shipments: createWarehouseDto.shipments,
+      }).catch((err) =>
+        this.logger.error(
+          `Error en flujo asíncrono de notificación: ${err?.message}`,
+          err?.stack,
+        ),
+      );
+
       return savedReceiving;
     } catch (error) {
       await queryRunner.rollbackTransaction();
@@ -577,11 +626,25 @@ export class WarehouseService {
       // --- NOTIFICACIÓN DESPUÉS DEL COMMIT (fire-and-forget) ---
       // Si el PDF/email falla NO debe afectar la transacción ya confirmada.
       if (dto.type === 'dispatch' && dispatchResult) {
-        this.generateAndSendNotification(
-          dispatchResult,
-          dto.shipments,
-          savedOutboundId,
-        ).catch((err) =>
+        this.generateAndSendWarehouseNotification({
+          kind: 'dispatch',
+          entityId: savedOutboundId,
+          warehouseId: dto.warehouse,
+          shipments: dto.shipments,
+          dispatch: dispatchResult,
+        }).catch((err) =>
+          this.logger.error(
+            `Error en flujo asíncrono de notificación: ${err?.message}`,
+            err?.stack,
+          ),
+        );
+      } else if (dto.type === 'transfer') {
+        this.generateAndSendWarehouseNotification({
+          kind: 'transfer',
+          entityId: savedOutboundId,
+          warehouseId: dto.warehouse,
+          shipments: dto.shipments,
+        }).catch((err) =>
           this.logger.error(
             `Error en flujo asíncrono de notificación: ${err?.message}`,
             err?.stack,
@@ -604,72 +667,174 @@ export class WarehouseService {
   }
 
   /**
-   * Método auxiliar para separar la lógica de generación de archivos y envío.
+   * Re-consulta desde BD (Shipment / ChargeShipment) los datos de destinatario
+   * de cada envío por id, conservando el orden recibido. Arregla el bug #7:
+   * los DTOs de entrada/salida solo traen {id, trackingNumber, shipmentType,
+   * isCharge, remittances}, sin nombre/dirección/CP/teléfono del destinatario,
+   * por lo que los archivos generados a partir del DTO salían en blanco.
    */
-  private async generateAndSendNotification(
-    dispatch: PackageDispatch,
-    shipments: any[],
-    outboundId: string,
-  ) {
-    const currentDate = new Date().toLocaleDateString('es-ES', {
-      day: '2-digit',
-      month: '2-digit',
-      year: 'numeric',
-    });
+  private async hydrateShipments(ids: string[]): Promise<HydratedPackage[]> {
+    if (!ids.length) return [];
 
-    try {
+    const [ships, charges] = await Promise.all([
+      this.shipmentRepository.find({
+        where: { id: In(ids) },
+        select: {
+          id: true,
+          trackingNumber: true,
+          dhlUniqueId: true,
+          recipientName: true,
+          recipientAddress: true,
+          recipientZip: true,
+          recipientPhone: true,
+          commitDateTime: true,
+          isHighValue: true,
+          payment: { id: true, amount: true },
+        },
+        relations: ['payment'],
+      }),
+      this.chargeShipmentRepository.find({
+        where: { id: In(ids) },
+        select: {
+          id: true,
+          trackingNumber: true,
+          recipientName: true,
+          recipientAddress: true,
+          recipientZip: true,
+          recipientPhone: true,
+          commitDateTime: true,
+          isHighValue: true,
+          payment: { id: true, amount: true },
+        },
+        relations: ['payment'],
+      }),
+    ]);
+
+    const map = new Map<string, HydratedPackage>();
+    ships.forEach((s) =>
+      map.set(s.id, {
+        ...s,
+        isCharge: false,
+        paymentAmount: s.payment?.amount ?? null,
+      }),
+    );
+    charges.forEach((c) =>
+      map.set(c.id, {
+        ...c,
+        isCharge: true,
+        paymentAmount: c.payment?.amount ?? null,
+      }),
+    );
+
+    // Conservar el orden de `ids` (el orden de escaneo/DTO).
+    return ids.map((id) => map.get(id)).filter(Boolean);
+  }
+
+  /**
+   * Resuelve la cabecera (sucursal, vehículo, choferes, rutas, folio y
+   * título) que consumen los generadores de Excel/PDF, según el tipo de
+   * notificación. Para `dispatch` reutiliza el despacho ya guardado
+   * (re-consultado con relaciones); para `inbound`/`transfer` solo hay
+   * sucursal, ya que no existe un despacho asociado.
+   */
+  private async buildNotificationHeader(params: {
+    kind: 'inbound' | 'dispatch' | 'transfer';
+    warehouseId: string;
+    dispatch?: PackageDispatch;
+  }): Promise<NotificationHeader> {
+    const titleByKind: Record<'inbound' | 'dispatch' | 'transfer', string> = {
+      inbound: 'ENTRADA A BODEGA',
+      dispatch: 'SALIDA A RUTA',
+      transfer: 'TRASPASO',
+    };
+
+    if (params.kind === 'dispatch' && params.dispatch) {
       const fullDispatch = await this.dataSource
         .getRepository(PackageDispatch)
         .findOne({
-          where: { id: dispatch.id },
+          where: { id: params.dispatch.id },
           relations: ['routes', 'drivers', 'vehicle', 'subsidiary'],
         });
 
       if (!fullDispatch) {
-        this.logger.warn(
-          `No se encontró el despacho ${dispatch.id} para generar la notificación.`,
+        throw new Error(
+          `No se encontró el despacho ${params.dispatch.id} para generar la notificación.`,
         );
-        return;
       }
 
-      this.logger.log('Iniciando generación de archivos...');
+      return {
+        subsidiary: fullDispatch.subsidiary,
+        vehicle: fullDispatch.vehicle,
+        drivers: fullDispatch.drivers,
+        routes: fullDispatch.routes,
+        trackingNumber: fullDispatch.trackingNumber,
+        title: titleByKind.dispatch,
+      };
+    }
 
-      console.log("🚀 ~ WarehouseService ~ generateAndSendNotification ~ shipments:", shipments)
-      
-      const excelBuf = await this.generateExcelBuffer(
-        fullDispatch,
-        shipments,
-      ).catch((e) => {
-        this.logger.error(`Error en ExcelJS: ${e?.message}`, e?.stack);
-        throw e;
-      });
+    const subsidiary = await this.dataSource
+      .getRepository(Subsidiary)
+      .findOneBy({ id: params.warehouseId });
 
-      const pdfBuf = await this.generatePdfBuffer(
-        fullDispatch,
-        shipments,
-      ).catch((e) => {
-        this.logger.error(`Error en PDFMake: ${e?.message}`, e?.stack);
-        throw e;
-      });
+    return {
+      subsidiary,
+      title: titleByKind[params.kind],
+    };
+  }
 
-      // Nombre seguro: usamos fullDispatch (con relaciones) y fallbacks.
-      const driverName =
-        fullDispatch.drivers?.[0]?.name?.toUpperCase() ?? 'SIN-CHOFER';
-      const subsidiaryName = fullDispatch.subsidiary?.name ?? 'Sucursal';
-      const safeDate = currentDate.replace(/\//g, '-');
+  /**
+   * Método unificado de notificación: sirve a entrada, salida a ruta y
+   * traspaso. Re-hidrata los envíos desde BD (fix #7), arma la cabecera
+   * (sucursal/vehículo/rutas/folio) y genera+envía PDF/Excel por correo.
+   * Fire-and-forget: cualquier error se registra pero nunca debe afectar
+   * la transacción ya confirmada que la disparó.
+   */
+  private async generateAndSendWarehouseNotification(params: {
+    kind: 'inbound' | 'dispatch' | 'transfer';
+    entityId: string;
+    warehouseId: string;
+    shipments: { id: string }[];
+    dispatch?: PackageDispatch;
+  }): Promise<void> {
+    try {
+      const hydrated = await this.hydrateShipments(
+        hydratePackageIds(params.shipments),
+      );
+      const header = await this.buildNotificationHeader(params);
 
-      const pdfFileName = `${driverName}--${subsidiaryName}--Salida a Ruta--${safeDate}.pdf`;
-      const excelFileName = `${driverName}--${subsidiaryName}--Salida a Ruta--${safeDate}.xlsx`;
+      const excelBuf = await this.generateExcelBuffer(header, hydrated).catch(
+        (e) => {
+          this.logger.error(`Error en ExcelJS: ${e?.message}`, e?.stack);
+          throw e;
+        },
+      );
+
+      const pdfBuf = await this.generatePdfBuffer(header, hydrated).catch(
+        (e) => {
+          this.logger.error(`Error en PDFMake: ${e?.message}`, e?.stack);
+          throw e;
+        },
+      );
+
+      const subsidiaryName = header.subsidiary?.name ?? 'Sucursal';
+      const safeDate = new Date()
+        .toLocaleDateString('es-ES')
+        .replace(/\//g, '-');
+      const label =
+        params.kind === 'inbound'
+          ? 'Entrada a Bodega'
+          : params.kind === 'transfer'
+            ? 'Traspaso'
+            : 'Salida a Ruta';
 
       const pdfFile = this.createMockFile(
         pdfBuf,
-        pdfFileName,
+        `${label}--${subsidiaryName}--${safeDate}.pdf`,
         'application/pdf',
       );
-
       const excelFile = this.createMockFile(
         excelBuf,
-        excelFileName,
+        `${label}--${subsidiaryName}--${safeDate}.xlsx`,
         'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
       );
 
@@ -677,12 +842,12 @@ export class WarehouseService {
         pdfFile,
         excelFile,
         subsidiaryName,
-        'outbound',
-        outboundId,
+        params.kind === 'inbound' ? 'inbound' : 'outbound',
+        params.entityId,
       );
     } catch (error) {
       this.logger.error(
-        `Error crítico en generateAndSendNotification: ${error?.message}`,
+        `Error en notificación unificada (${params.kind}): ${error?.message}`,
         error?.stack,
       );
     }
@@ -1047,14 +1212,14 @@ export class WarehouseService {
   }
 
   private async generateExcelBuffer(
-    dispatch: PackageDispatch,
+    header: NotificationHeader,
     packages: any[],
   ): Promise<Buffer> {
     const workbook = new ExcelJS.Workbook();
     const sheet = workbook.addWorksheet('Despacho');
 
     // Título Principal (Excel sí soporta UTF-8, el emoji aquí es válido)
-    const titleRow = sheet.addRow(['🚚 Salida a Ruta']);
+    const titleRow = sheet.addRow([`🚚 ${header.title ?? 'Salida a Ruta'}`]);
     sheet.mergeCells(`A${titleRow.number}:I${titleRow.number}`);
     titleRow.font = { size: 16, bold: true, color: { argb: 'FFFFFF' } };
     titleRow.alignment = { vertical: 'middle', horizontal: 'center' };
@@ -1075,14 +1240,14 @@ export class WarehouseService {
     );
 
     sheet.addRow([
-      `Ruta: ${dispatch.routes?.map((r) => r.name).join(' -> ') || 'N/A'}`,
+      `Ruta: ${header.routes?.map((r) => r.name).join(' -> ') || 'N/A'}`,
     ]);
     sheet.addRow([
       `Conductores: ${
-        dispatch.drivers?.map((d) => d.name).join(' - ') || 'N/A'
+        header.drivers?.map((d) => d.name).join(' - ') || 'N/A'
       }`,
     ]);
-    sheet.addRow([`Unidad: ${dispatch.vehicle?.name || 'N/A'}`]);
+    sheet.addRow([`Unidad: ${header.vehicle?.name || 'N/A'}`]);
     sheet.addRow([`Fecha: ${createdAt}`]);
     sheet.addRow([`Paquetes: ${packages.length}`]);
     sheet.addRow([]);
@@ -1135,7 +1300,7 @@ export class WarehouseService {
   }
 
   private async generatePdfBuffer(
-    dispatch: PackageDispatch,
+    header: NotificationHeader,
     packages: any[],
   ): Promise<Buffer> {
     try {
@@ -1143,7 +1308,7 @@ export class WarehouseService {
       const formattedDate = format(currentDate, 'yyyy-MM-dd');
       const formattedTime = format(currentDate, 'HH:mm:ss');
 
-      const subsidiaryName = this.toPdfSafe(dispatch.subsidiary?.name);
+      const subsidiaryName = this.toPdfSafe(header.subsidiary?.name);
       const isHermosillo = subsidiaryName.toLowerCase().includes('hermosillo');
 
       // Lógica de anchos de columna
@@ -1243,7 +1408,7 @@ export class WarehouseService {
         content: [
           {
             columns: [
-              { text: 'SALIDA A RUTA', style: 'headerText', width: '*' },
+              { text: header.title ?? 'SALIDA A RUTA', style: 'headerText', width: '*' },
               {
                 text: `Fecha: ${formattedDate}\nHora: ${formattedTime}`,
                 alignment: 'right',
@@ -1259,9 +1424,9 @@ export class WarehouseService {
               body: [
                 [
                   { stack: [{ text: 'SUCURSAL', style: 'gridLabel' }, { text: subsidiaryName, style: 'gridValue' }], fillColor: '#f8f9fa', border: [true, true, true, true] },
-                  { stack: [{ text: 'VEHÍCULO', style: 'gridLabel' }, { text: this.toPdfSafe(dispatch.vehicle?.name) || 'N/A', style: 'gridValue' }], fillColor: '#f8f9fa', border: [true, true, true, true] },
+                  { stack: [{ text: 'VEHÍCULO', style: 'gridLabel' }, { text: this.toPdfSafe(header.vehicle?.name) || 'N/A', style: 'gridValue' }], fillColor: '#f8f9fa', border: [true, true, true, true] },
                   { stack: [{ text: 'TOTAL PAQUETES', style: 'gridLabel' }, { text: `${packages.length}`, style: 'gridValue' }], fillColor: '#f8f9fa', border: [true, true, true, true] },
-                  { stack: [{ text: 'SEGUIMIENTO', style: 'gridLabel' }, { text: this.toPdfSafe(dispatch.trackingNumber), style: 'gridValue' }], fillColor: '#f8f9fa', border: [true, true, true, true] },
+                  { stack: [{ text: 'SEGUIMIENTO', style: 'gridLabel' }, { text: this.toPdfSafe(header.trackingNumber), style: 'gridValue' }], fillColor: '#f8f9fa', border: [true, true, true, true] },
                 ],
               ],
             },

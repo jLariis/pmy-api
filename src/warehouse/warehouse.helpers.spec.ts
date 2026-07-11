@@ -1,4 +1,4 @@
-import { splitShipmentIds } from './warehouse.helpers';
+import { splitShipmentIds, hydratePackageIds } from './warehouse.helpers';
 
 describe('splitShipmentIds', () => {
   it('separa normales y carga', () => {
@@ -13,5 +13,11 @@ describe('splitShipmentIds', () => {
 
   it('maneja lista vacía', () => {
     expect(splitShipmentIds([])).toEqual({ normalIds: [], chargeIds: [] });
+  });
+});
+
+describe('hydratePackageIds', () => {
+  it('devuelve ids únicos', () => {
+    expect(hydratePackageIds([{ id: 'a' }, { id: 'a' }, { id: 'b' }])).toEqual(['a', 'b']);
   });
 });

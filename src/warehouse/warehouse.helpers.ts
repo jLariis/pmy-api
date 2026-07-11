@@ -1,3 +1,7 @@
+export function hydratePackageIds(shipments: { id: string }[]): string[] {
+  return Array.from(new Set((shipments || []).map((s) => s.id).filter(Boolean)));
+}
+
 export function splitShipmentIds(
   shipments: { id: string; isCharge?: boolean }[],
 ): { normalIds: string[]; chargeIds: string[] } {
