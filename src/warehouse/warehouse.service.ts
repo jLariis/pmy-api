@@ -23,6 +23,7 @@ import { PaymentTypeEnum } from 'src/common/enums/payment-type.enum';
 import { ShipmentStatusType } from 'src/common/enums';
 import { PaginatedResult, parsePagination, resolveDateRange } from 'src/common/pagination.util';
 import { CreateOutboundDto } from './dto/create-outbound.dto';
+import { assertOutboundConsistency } from './warehouse.validation';
 import { MailService } from 'src/mail/mail.service';
 import { format, toZonedTime } from 'date-fns-tz';
 import axios from 'axios';
@@ -514,6 +515,8 @@ export class WarehouseService {
     let dispatchResult: PackageDispatch;
 
     try {
+      assertOutboundConsistency(dto);
+
       // 1. Guardar el registro general
       const newOutbound = queryRunner.manager.create(WarehouseOutbound, {
         warehouseId: dto.warehouse,

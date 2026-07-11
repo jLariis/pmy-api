@@ -1,7 +1,6 @@
 import { Type } from "class-transformer";
 import { IsArray, IsEnum, IsNumber, IsOptional, IsUUID, ValidateNested } from "class-validator";
 import { ShipmentWarehouseDto } from "./create-warehouse.dto";
-import { Route } from "src/entities/route.entity";
 import { OutboundType } from "src/common/enums/outbound-type.enum";
 
 export class CreateOutboundDto {
@@ -18,14 +17,16 @@ export class CreateOutboundDto {
     @IsArray()
     drivers: string[];
 
+    @IsOptional()
     @IsArray()
-    routes: Route[];
+    routes?: string[];
 
     @IsEnum(OutboundType)
     type: OutboundType;
 
+    @IsOptional()
     @IsNumber()
-    kms: number;
+    kms?: number;
 
     @IsOptional()
     @IsUUID()
