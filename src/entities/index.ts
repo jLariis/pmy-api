@@ -46,3 +46,8 @@ export { UserPermission } from './user-permission.entity';
 export * from './support-ticket.entity';
 export * from './support-ticket-comment.entity';
 export * from './support-ticket-attachment.entity';
+export * from './brand.entity';
+export * from './document-template.entity';
+export * from './document-template-version.entity';
+export * from './template-variable-def.entity';
+export * from './template-render-log.entity';
