@@ -15,6 +15,9 @@ import { TemplateService } from './template.service';
 import { EmailRenderer } from './renderers/email.renderer';
 import { DOCUMENT_RENDERERS } from './renderers/renderer.interface';
 import { TemplateAdminService } from './admin/template-admin.service';
+import { MailService } from 'src/mail/mail.service';
+import { TemplatesController } from './admin/templates.controller';
+import { BrandController } from './admin/brand.controller';
 
 @Module({
   imports: [
@@ -22,6 +25,7 @@ import { TemplateAdminService } from './admin/template-admin.service';
       Brand, DocumentTemplate, DocumentTemplateVersion, TemplateVariableDef, TemplateRenderLog,
     ]),
   ],
+  controllers: [TemplatesController, BrandController],
   providers: [
     TemplateEngine,
     BrandingService,
@@ -33,6 +37,7 @@ import { TemplateAdminService } from './admin/template-admin.service';
     { provide: DOCUMENT_RENDERERS, useFactory: (email: EmailRenderer) => [email], inject: [EmailRenderer] },
     RendererRegistry,
     TemplateAdminService,
+    MailService,
   ],
   exports: [TemplateService, BrandingService, TemplateStore, TemplateAdminService],
 })
