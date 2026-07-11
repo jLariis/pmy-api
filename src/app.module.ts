@@ -45,6 +45,7 @@ import { CatalogModule } from './catalog/catalog.module';
 import { GeocodeModule } from './geocode/geocode.module';
 import { ServerStatsModule } from './server-stats/server-stats.module';
 import { SupportModule } from './support/support.module';
+import { DocumentsModule } from './documents/documents.module';
 
 @Module({
   imports: [
@@ -111,6 +112,7 @@ import { SupportModule } from './support/support.module';
     ServerStatsModule,
     GuacamoleModule,
     SupportModule,
+    DocumentsModule,
   ],
   controllers: [AppController],
   providers: [
