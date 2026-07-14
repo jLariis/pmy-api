@@ -4,6 +4,7 @@ export interface ConsolidatedDto {
   consolidatedDate: Date;
   numberOfPackages: number;
   consNumber: string;
+  carrier: string;
   type: string;
   subsidiary: {
     id: string;
@@ -29,4 +30,5 @@ export interface ConsolidatedDto {
     other: number;
   };
   shipments: any[];
+  pendingShipments: any[]; // Nuevo: lista de envíos pendientes asociados a este consolidado
 }
