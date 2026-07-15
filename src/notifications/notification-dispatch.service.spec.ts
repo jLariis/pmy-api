@@ -6,8 +6,9 @@ function make() {
   const userRepo: any = {
     find: () => Promise.resolve([{ id: 'u1', email: 'u1@x.com', name: 'Uno' }]),
   };
-  const svc = new NotificationDispatchService(mailer, wa, userRepo);
-  return { svc, mailer, wa };
+  const templates: any = { render: jest.fn(() => Promise.resolve({ subject: 'S', html: '<p>x</p>' })) };
+  const svc = new NotificationDispatchService(mailer, wa, userRepo, templates);
+  return { svc, mailer, wa, templates };
 }
 
 describe('NotificationDispatchService.deliver', () => {

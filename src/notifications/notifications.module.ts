@@ -9,11 +9,13 @@ import { NotificationsController } from './notifications.controller';
 import { NotificationDispatchService } from './notification-dispatch.service';
 import { NotificationsRetentionService } from './notifications.retention';
 import { WhatsappGatewayModule } from 'src/whatsapp-gateway/whatsapp-gateway.module';
+import { DocumentsModule } from 'src/documents/documents.module';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([AuditLog, NotificationRead, Notification, User]),
     WhatsappGatewayModule,
+    DocumentsModule,
   ],
   controllers: [NotificationsController],
   providers: [NotificationsService, NotificationDispatchService, NotificationsRetentionService],
