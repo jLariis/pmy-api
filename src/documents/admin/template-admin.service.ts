@@ -6,6 +6,8 @@ import { DocumentTemplateVersion } from 'src/entities/document-template-version.
 import { Brand } from 'src/entities/brand.entity';
 import { TemplateStore } from '../template-store.service';
 import { BrandingService } from '../branding.service';
+import { TemplateService } from '../template.service';
+import { RenderResult } from '../documents.types';
 
 type Actor = { id?: string; name?: string };
 
@@ -17,6 +19,7 @@ export class TemplateAdminService {
     @InjectRepository(Brand) private readonly brandRepo: Repository<Brand>,
     private readonly store: TemplateStore,
     private readonly branding: BrandingService,
+    private readonly templateService: TemplateService,
   ) {}
 
   createTemplate(input: { code: string; name: string; type: DocumentFormat; description?: string; category?: string }) {
@@ -96,6 +99,14 @@ export class TemplateAdminService {
       createdById: actor.id ?? null,
       createdByName: actor.name ?? null,
     }));
+  }
+
+  /** Previsualiza una versión específica (p.ej. un draft aún no publicado). */
+  async previewVersion(templateId: string, versionId: string, sampleData: Record<string, any>): Promise<RenderResult> {
+    const template = await this.require(templateId);
+    const version = await this.verRepo.findOne({ where: { id: versionId, templateId } });
+    if (!version) throw new NotFoundException(`Versión ${versionId} no existe para la plantilla ${templateId}`);
+    return this.templateService.renderGiven(template, version, sampleData);
   }
 
   listVersions(templateId: string) {

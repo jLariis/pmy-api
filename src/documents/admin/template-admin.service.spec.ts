@@ -23,7 +23,8 @@ function make() {
   const brandRepo: any = { findOne: () => Promise.resolve(null), create: (d: any) => d, save: (b: any) => Promise.resolve({ id: 'b1', ...b }) };
   const store: any = { invalidate: jest.fn() };
   const branding: any = { invalidate: jest.fn() };
-  return { svc: new TemplateAdminService(tplRepo, verRepo, brandRepo, store, branding), versions, templates, store, branding };
+  const templateService: any = { renderGiven: jest.fn(() => Promise.resolve({ format: 'email', mime: 'text/html', html: '<p>preview</p>', subject: 'Preview' })) };
+  return { svc: new TemplateAdminService(tplRepo, verRepo, brandRepo, store, branding, templateService), versions, templates, store, branding, templateService };
 }
 
 describe('TemplateAdminService', () => {
@@ -57,5 +58,24 @@ describe('TemplateAdminService', () => {
     const foreignVersion = await svc.saveDraft('t2', { compiledBody: '<p>foreign</p>' }, {});
     await expect(svc.publish('t1', foreignVersion.id, {})).rejects.toThrow();
     expect(templates.find((t) => t.id === 't1').currentVersionId).toBeNull();
+  });
+
+  it('previewVersion renderiza una versión específica (p.ej. un draft) vía TemplateService.renderGiven', async () => {
+    const { svc, templates, templateService } = make();
+    const draft = await svc.saveDraft('t1', { subject: 'S', compiledBody: '<p>x</p>' }, {});
+    const r = await svc.previewVersion('t1', draft.id, { foo: 'bar' });
+
+    expect(templateService.renderGiven).toHaveBeenCalledWith(
+      templates.find((t) => t.id === 't1'),
+      draft,
+      { foo: 'bar' },
+    );
+    expect(r.html).toBe('<p>preview</p>');
+  });
+
+  it('previewVersion lanza NotFound para una versión de otra plantilla', async () => {
+    const { svc } = make();
+    const foreignVersion = await svc.saveDraft('t2', { compiledBody: '<p>foreign</p>' }, {});
+    await expect(svc.previewVersion('t1', foreignVersion.id, {})).rejects.toThrow();
   });
 });

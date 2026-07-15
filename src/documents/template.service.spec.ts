@@ -29,4 +29,10 @@ describe('TemplateService.render', () => {
     await svc.render('c', {});
     expect(logRepo.save).toHaveBeenCalled();
   });
+
+  it('renderPreview NO registra log', async () => {
+    const { svc, logRepo } = make();
+    await svc.renderPreview('c', {});
+    expect(logRepo.save).not.toHaveBeenCalled();
+  });
 });

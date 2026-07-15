@@ -45,6 +45,11 @@ export class TemplatesController {
     return this.templates.renderPreview(code, dto.sampleData ?? {});
   }
 
+  @Post(':id/versions/:versionId/preview')
+  previewVersion(@Param('id') id: string, @Param('versionId') versionId: string, @Body() dto: PreviewDto) {
+    return this.admin.previewVersion(id, versionId, dto.sampleData ?? {});
+  }
+
   @Post(':code/test-send')
   async testSend(@Param('code') code: string, @Body() dto: TestSendDto) {
     const r = await this.templates.renderPreview(code, dto.sampleData ?? {});

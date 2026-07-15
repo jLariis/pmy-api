@@ -66,15 +66,15 @@ export class MailService {
 
   /** Enviar correo de Envios priotitarios */
   async sendHighPriorityShipmentsEmail(options: { to: string | string[], cc?: string | string[], htmlContent: string }) {
-    //const { to, cc, htmlContent } = options;
     const { to, cc } = this.applyDevFilters(options.to, options.cc);
-    
+    const r = await this.templates.render('high_priority_shipments', { tableHtml: options.htmlContent });
+
     try {
       await this.mailerService.sendMail({
         to,
         cc,
-        subject: '🔴 Envíos con Prioridad Alta en Curso',
-        html: options.htmlContent,
+        subject: r.subject,
+        html: r.html,
         headers: {
           'X-Priority': '1',
           'X-MSMail-Priority': 'High',
@@ -158,13 +158,14 @@ export class MailService {
   /** Enviar correo de prioridades dentro de Desembarque */
   async sendHighPriorityUnloadingPriorityPackages(options: { to: string | string[], cc?: string | string[], htmlContent: string }) {
     const { to, cc } = this.applyDevFilters(options.to, options.cc);
-    
+    const r = await this.templates.render('unloading_priority_packages', { tableHtml: options.htmlContent });
+
     try {
       await this.mailerService.sendMail({
         to,
         cc,
-        subject: '🔴 Envíos con Prioridad Alta en Descarga',
-        html: options.htmlContent,
+        subject: r.subject,
+        html: r.html,
         headers: {
         },
       });
@@ -337,13 +338,14 @@ export class MailService {
   /** Enviar correo de prioridades dentro de Inventario */
   async sendHighPriorityPackagesOnInvetory(options: { to: string | string[], cc?: string | string[], htmlContent: string }) {
     const { to, cc } = this.applyDevFilters(options.to, options.cc);
-    
+    const r = await this.templates.render('inventory_priority_packages', { tableHtml: options.htmlContent });
+
     try {
       await this.mailerService.sendMail({
         to,
         cc,
-        subject: '🔴 Envíos con Prioridad Alta en Inventario',
-        html: options.htmlContent,
+        subject: r.subject,
+        html: r.html,
         headers: {
         },
       });

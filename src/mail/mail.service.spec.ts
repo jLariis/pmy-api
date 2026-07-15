@@ -22,3 +22,18 @@ describe('MailService.sendHighPriorityPackageDispatchEmail', () => {
     expect(arg.attachments).toHaveLength(2);
   });
 });
+
+describe('MailService.sendHighPriorityShipmentsEmail', () => {
+  it('renderiza por plantilla high_priority_shipments con la tabla del llamador y envía el html renderizado', async () => {
+    const { svc, mailer, templates } = make();
+    const htmlContent = '<table><tr><td>T1</td></tr></table>';
+    await svc.sendHighPriorityShipmentsEmail({ to: 'a@x.com', htmlContent });
+
+    expect(templates.render).toHaveBeenCalledWith('high_priority_shipments', { tableHtml: htmlContent });
+    expect(mailer.sendMail).toHaveBeenCalled();
+    const arg = mailer.sendMail.mock.calls[0][0];
+    expect(arg.subject).toBe('Salida a ruta - Juan');
+    expect(arg.html).toBe('<p>ok</p>');
+    expect(arg.headers).toEqual(expect.objectContaining({ 'X-Priority': '1', 'X-MSMail-Priority': 'High', Importance: 'High' }));
+  });
+});
