@@ -29,4 +29,11 @@ describe('NotificationDispatchService.deliver', () => {
     mailer.sendMail = () => Promise.reject(new Error('smtp down'));
     await expect(svc.deliver({ type: 't', audience: { userId: 'u1' }, title: 't' } as any, ['u1'], ['email'])).resolves.toBeUndefined();
   });
+
+  it('never throws when templates.render rejects', async () => {
+    const { svc, templates, mailer } = make();
+    templates.render = jest.fn(() => Promise.reject(new Error('render blew up')));
+    await expect(svc.deliver({ type: 't', audience: { userId: 'u1' }, title: 't' } as any, ['u1'], ['email'])).resolves.toBeUndefined();
+    expect(mailer.sendMail).toHaveBeenCalledTimes(1);
+  });
 });

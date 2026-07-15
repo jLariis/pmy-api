@@ -56,8 +56,13 @@ export class NotificationDispatchService {
   }
 
   private async renderEmail(event: NotificationEvent): Promise<{ subject: string; html: string }> {
-    const link = event.link ? `${process.env.FRONTEND_URL ?? ''}${event.link}` : undefined;
-    const r = await this.templates.render('generic_notification', { title: event.title, body: event.body, link });
-    return { subject: r.subject ?? event.title ?? 'Notificación PMY', html: r.html ?? '' };
+    try {
+      const link = event.link ? `${process.env.FRONTEND_URL ?? ''}${event.link}` : undefined;
+      const r = await this.templates.render('generic_notification', { title: event.title, body: event.body, link });
+      return { subject: r.subject ?? event.title ?? 'Notificación PMY', html: r.html ?? '' };
+    } catch (e: any) {
+      this.logger.warn(`no se pudo renderizar el email: ${e?.message}`);
+      return { subject: event.title ?? 'Notificación PMY', html: '' };
+    }
   }
 }

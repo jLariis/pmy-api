@@ -26,4 +26,12 @@ describe('BrandingService', () => {
     await svc.getTokens();
     expect(repo.findOne).toHaveBeenCalledTimes(1);
   });
+
+  it('si el repo falla => resuelve a defaults y no lanza', async () => {
+    const repo: any = { findOne: jest.fn(() => Promise.reject(new Error('db down'))) };
+    const svc = new BrandingService(repo);
+    await expect(svc.getTokens()).resolves.toBeDefined();
+    const t = await svc.getTokens();
+    expect(t.colors.primary).toBe('#3498db');
+  });
 });
