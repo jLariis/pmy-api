@@ -7,9 +7,10 @@ import { PackageDispatch } from 'src/entities/package-dispatch.entity';
 import { MailService } from 'src/mail/mail.service';
 import { Income } from 'src/entities/income.entity';
 import { FedexService } from 'src/shipments/fedex.service';
+import { DocumentsModule } from 'src/documents/documents.module';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([RouteClosure, PackageDispatch, Income])],
+  imports: [TypeOrmModule.forFeature([RouteClosure, PackageDispatch, Income]), DocumentsModule],
   controllers: [RouteclosureController],
   providers: [RouteclosureService, MailService, FedexService],
 })

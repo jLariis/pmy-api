@@ -4,6 +4,7 @@ import { In, Repository } from 'typeorm';
 import { MailerService } from '@nestjs-modules/mailer';
 import { User } from 'src/entities/user.entity';
 import { WhatsappGatewayService } from 'src/whatsapp-gateway/whatsapp-gateway.service';
+import { TemplateService } from 'src/documents/template.service';
 import { Channel, NotificationEvent } from './notification.types';
 
 @Injectable()
@@ -14,6 +15,7 @@ export class NotificationDispatchService {
     private readonly mailer: MailerService,
     private readonly whatsapp: WhatsappGatewayService,
     @InjectRepository(User) private readonly userRepo: Repository<User>,
+    private readonly templates: TemplateService,
   ) {}
 
   /** Entrega canales laterales. Best-effort: cada canal aislado, jamás lanza. */
@@ -30,11 +32,11 @@ export class NotificationDispatchService {
     }
 
     if (wantEmail) {
-      const html = this.buildEmailHtml(event);
+      const { subject, html } = await this.renderEmail(event);
       for (const u of recipients) {
         if (!u.email) continue;
         try {
-          await this.mailer.sendMail({ to: u.email, subject: event.title || 'Notificación PMY', html });
+          await this.mailer.sendMail({ to: u.email, subject, html });
         } catch (e: any) {
           this.logger.warn(`email a ${u.email} falló: ${e?.message}`);
         }
@@ -53,15 +55,14 @@ export class NotificationDispatchService {
     }
   }
 
-  private buildEmailHtml(event: NotificationEvent): string {
-    const esc = (s = '') => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-    const link = event.link ? `${process.env.FRONTEND_URL ?? ''}${event.link}` : null;
-    return `
-      <div style="font-family:Arial,sans-serif;max-width:520px;margin:0 auto;color:#0f172a">
-        <h2 style="margin:0 0 8px">${esc(event.title ?? 'Notificación')}</h2>
-        <p style="margin:0 0 16px;color:#475569">${esc(event.body ?? '')}</p>
-        ${link ? `<a href="${link}" style="display:inline-block;background:#4f46e5;color:#fff;padding:10px 18px;border-radius:8px;text-decoration:none">Abrir en PMY</a>` : ''}
-        <p style="margin:16px 0 0;color:#94a3b8;font-size:12px">PMY App · notificación automática</p>
-      </div>`;
+  private async renderEmail(event: NotificationEvent): Promise<{ subject: string; html: string }> {
+    try {
+      const link = event.link ? `${process.env.FRONTEND_URL ?? ''}${event.link}` : undefined;
+      const r = await this.templates.render('generic_notification', { title: event.title, body: event.body, link });
+      return { subject: r.subject ?? event.title ?? 'Notificación PMY', html: r.html ?? '' };
+    } catch (e: any) {
+      this.logger.warn(`no se pudo renderizar el email: ${e?.message}`);
+      return { subject: event.title ?? 'Notificación PMY', html: '' };
+    }
   }
 }

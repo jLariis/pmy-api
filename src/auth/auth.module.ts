@@ -13,6 +13,7 @@ import { BlacklistService } from './blacklist.service';
 import { EmailService } from './email.service';
 import { User } from 'src/entities/user.entity';
 import { RbacModule } from '../rbac/rbac.module';
+import { DocumentsModule } from '../documents/documents.module';
 
 @Module({
     controllers: [AuthController],
@@ -25,6 +26,7 @@ import { RbacModule } from '../rbac/rbac.module';
         }),
         TypeOrmModule.forFeature([User]),
         RbacModule,
+        DocumentsModule,
     ],
     providers: [
         AuthService,

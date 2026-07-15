@@ -2,6 +2,10 @@ import { DataSource } from 'typeorm';
 import {
   initialUsers,
 } from './seed-data';
+import { seedEmailTemplates } from '../documents/seeds/email-templates.seed';
+import { DocumentTemplate } from '../entities/document-template.entity';
+import { DocumentTemplateVersion } from '../entities/document-template-version.entity';
+import { TemplateVariableDef } from '../entities/template-variable-def.entity';
 
 import * as bcrypt from 'bcrypt';
 
@@ -48,6 +52,13 @@ export async function runSeeds(dataSource: DataSource) {
       }
     }
   }*/
+
+  console.log('📧 Insertando plantillas de correo...');
+  await seedEmailTemplates({
+    tplRepo: dataSource.getRepository(DocumentTemplate),
+    verRepo: dataSource.getRepository(DocumentTemplateVersion),
+    varRepo: dataSource.getRepository(TemplateVariableDef),
+  });
 
   console.log('✅ Seeds completados');
 }

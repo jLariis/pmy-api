@@ -6,8 +6,9 @@ function make() {
   const userRepo: any = {
     find: () => Promise.resolve([{ id: 'u1', email: 'u1@x.com', name: 'Uno' }]),
   };
-  const svc = new NotificationDispatchService(mailer, wa, userRepo);
-  return { svc, mailer, wa };
+  const templates: any = { render: jest.fn(() => Promise.resolve({ subject: 'S', html: '<p>x</p>' })) };
+  const svc = new NotificationDispatchService(mailer, wa, userRepo, templates);
+  return { svc, mailer, wa, templates };
 }
 
 describe('NotificationDispatchService.deliver', () => {
@@ -27,5 +28,12 @@ describe('NotificationDispatchService.deliver', () => {
     const { svc, mailer } = make();
     mailer.sendMail = () => Promise.reject(new Error('smtp down'));
     await expect(svc.deliver({ type: 't', audience: { userId: 'u1' }, title: 't' } as any, ['u1'], ['email'])).resolves.toBeUndefined();
+  });
+
+  it('never throws when templates.render rejects', async () => {
+    const { svc, templates, mailer } = make();
+    templates.render = jest.fn(() => Promise.reject(new Error('render blew up')));
+    await expect(svc.deliver({ type: 't', audience: { userId: 'u1' }, title: 't' } as any, ['u1'], ['email'])).resolves.toBeUndefined();
+    expect(mailer.sendMail).toHaveBeenCalledTimes(1);
   });
 });

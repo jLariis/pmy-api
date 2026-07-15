@@ -13,9 +13,10 @@ import { ConsolidatedService } from 'src/consolidated/consolidated.service';
 import { PackageDispatch } from 'src/entities/package-dispatch.entity';
 import { Unloading } from 'src/entities/unloading.entity';
 import { DhlService } from 'src/shipments/dhl.service';
+import { DocumentsModule } from 'src/documents/documents.module';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Devolution, Shipment, ShipmentStatus, Subsidiary, Income, Charge, ChargeShipment, Consolidated, ForPickUp, PackageDispatch, Unloading])],
+  imports: [TypeOrmModule.forFeature([Devolution, Shipment, ShipmentStatus, Subsidiary, Income, Charge, ChargeShipment, Consolidated, ForPickUp, PackageDispatch, Unloading]), DocumentsModule],
   controllers: [DevolutionsController],
   providers: [DevolutionsService, MailService, FedexService, DhlService, SubsidiariesService, ConsolidatedService, ShipmentsService],
 })
