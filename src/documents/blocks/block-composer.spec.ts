@@ -48,4 +48,16 @@ describe('BlockComposer.compose', () => {
     expect(mjml).toContain('{{#if link}}');
     expect(mjml).toContain('{{/if}}');
   });
+
+  it('ignora (cadena vacía) un tipo de bloque desconocido sin romper', () => {
+    const mjml = composer.compose({ blocks: [
+      { id: 'x', type: 'no-existe' as any },
+      { id: 'h', type: 'heading', text: 'OK' },
+    ] });
+    expect(mjml).toContain('OK');           // el bloque válido sigue
+    expect(mjml).not.toContain('undefined'); // el desconocido no emite "undefined"
+    // Verificar que blockToMjml retorna cadena vacía (no undefined)
+    const blockComposer = composer as any;
+    expect(blockComposer.blockToMjml({ id: 'x', type: 'unknown' as any })).toBe('');
+  });
 });

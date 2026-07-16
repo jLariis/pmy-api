@@ -48,6 +48,8 @@ ${inner}
       }
       case 'raw':
         return `<mj-raw>${b.html}</mj-raw>`;
+      default:
+        return '';
     }
   }
 }
