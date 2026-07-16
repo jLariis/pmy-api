@@ -21,10 +21,12 @@ function make() {
     save: (v: any) => { const i = versions.findIndex((x) => x.id === v.id); if (i >= 0) versions[i] = v; else versions.push(v); return Promise.resolve(v); },
   };
   const brandRepo: any = { findOne: () => Promise.resolve(null), create: (d: any) => d, save: (b: any) => Promise.resolve({ id: 'b1', ...b }) };
+  const vars: any[] = [{ id: 'v1def', templateId: 't1', name: 'tracking', label: 'Tracking', dataType: 'string', required: true }];
+  const varRepo: any = { find: ({ where }: any) => Promise.resolve(vars.filter((v) => v.templateId === where.templateId)) };
   const store: any = { invalidate: jest.fn() };
   const branding: any = { invalidate: jest.fn() };
   const templateService: any = { renderGiven: jest.fn(() => Promise.resolve({ format: 'email', mime: 'text/html', html: '<p>preview</p>', subject: 'Preview' })) };
-  return { svc: new TemplateAdminService(tplRepo, verRepo, brandRepo, store, branding, templateService), versions, templates, store, branding, templateService };
+  return { svc: new TemplateAdminService(tplRepo, verRepo, brandRepo, varRepo, store, branding, templateService), versions, templates, store, branding, templateService };
 }
 
 describe('TemplateAdminService', () => {
@@ -77,5 +79,21 @@ describe('TemplateAdminService', () => {
     const { svc } = make();
     const foreignVersion = await svc.saveDraft('t2', { compiledBody: '<p>foreign</p>' }, {});
     await expect(svc.previewVersion('t1', foreignVersion.id, {})).rejects.toThrow();
+  });
+
+  describe('getForEdit', () => {
+    it('devuelve template + variables + versiones', async () => {
+      const { svc } = make(); // 't1' existe en templates
+      const res = await svc.getForEdit('t1');
+      expect(res.template.id).toBe('t1');
+      expect(Array.isArray(res.variables)).toBe(true);
+      expect(res.variables[0].name).toBe('tracking');
+      expect(Array.isArray(res.versions)).toBe(true);
+    });
+
+    it('lanza NotFound si la plantilla no existe', async () => {
+      const { svc } = make();
+      await expect(svc.getForEdit('nope')).rejects.toThrow();
+    });
   });
 });

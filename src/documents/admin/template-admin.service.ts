@@ -4,6 +4,7 @@ import { Repository } from 'typeorm';
 import { DocumentTemplate, DocumentFormat } from 'src/entities/document-template.entity';
 import { DocumentTemplateVersion } from 'src/entities/document-template-version.entity';
 import { Brand } from 'src/entities/brand.entity';
+import { TemplateVariableDef } from 'src/entities/template-variable-def.entity';
 import { TemplateStore } from '../template-store.service';
 import { BrandingService } from '../branding.service';
 import { TemplateService } from '../template.service';
@@ -17,6 +18,7 @@ export class TemplateAdminService {
     @InjectRepository(DocumentTemplate) private readonly tplRepo: Repository<DocumentTemplate>,
     @InjectRepository(DocumentTemplateVersion) private readonly verRepo: Repository<DocumentTemplateVersion>,
     @InjectRepository(Brand) private readonly brandRepo: Repository<Brand>,
+    @InjectRepository(TemplateVariableDef) private readonly varRepo: Repository<TemplateVariableDef>,
     private readonly store: TemplateStore,
     private readonly branding: BrandingService,
     private readonly templateService: TemplateService,
@@ -111,6 +113,15 @@ export class TemplateAdminService {
 
   listVersions(templateId: string) {
     return this.verRepo.find({ where: { templateId }, order: { version: 'DESC' } });
+  }
+
+  async getForEdit(id: string) {
+    const template = await this.require(id); // lanza NotFoundException si no existe
+    const [variables, versions] = await Promise.all([
+      this.varRepo.find({ where: { templateId: id } }),
+      this.listVersions(id),
+    ]);
+    return { template, variables, versions };
   }
 
   list() {
