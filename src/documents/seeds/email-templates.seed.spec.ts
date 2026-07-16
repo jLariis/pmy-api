@@ -44,4 +44,20 @@ describe('seedEmailTemplates', () => {
       expect.arrayContaining(['subsidiaryName', 'vehicleName', 'createdAt', 'drivers', 'routes', 'trackingNumber']),
     );
   });
+
+  it('cada correo tiene bloques y la versión sembrada guarda designJson', async () => {
+    const r = repos();
+    await seedEmailTemplates(r as any);
+    expect(EMAIL_TEMPLATE_SEEDS.every((s) => Array.isArray(s.blocks) && s.blocks.length > 0)).toBe(true);
+    const v = r._state.versions.find((x: any) => x.designJson);
+    expect(v.designJson.blocks.length).toBeGreaterThan(0);
+    expect(String(v.compiledBody)).toContain('<mjml');
+  });
+
+  it('route_dispatch conserva sus variables', () => {
+    const seed = EMAIL_TEMPLATE_SEEDS.find((s) => s.code === 'route_dispatch')!;
+    expect(seed.variables.map((v) => v.name)).toEqual(
+      expect.arrayContaining(['subsidiaryName', 'vehicleName', 'createdAt', 'drivers', 'routes', 'trackingNumber']),
+    );
+  });
 });
