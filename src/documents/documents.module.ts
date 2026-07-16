@@ -13,6 +13,7 @@ import { FallbackRenderer } from './fallback.renderer';
 import { TemplateStore } from './template-store.service';
 import { TemplateService } from './template.service';
 import { EmailRenderer } from './renderers/email.renderer';
+import { BlockComposer } from './blocks/block-composer';
 import { DOCUMENT_RENDERERS } from './renderers/renderer.interface';
 import { TemplateAdminService } from './admin/template-admin.service';
 import { MailService } from 'src/mail/mail.service';
@@ -33,6 +34,7 @@ import { BrandController } from './admin/brand.controller';
     FallbackRenderer,
     TemplateStore,
     TemplateService,
+    BlockComposer,
     EmailRenderer,
     { provide: DOCUMENT_RENDERERS, useFactory: (email: EmailRenderer) => [email], inject: [EmailRenderer] },
     RendererRegistry,

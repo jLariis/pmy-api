@@ -1,5 +1,6 @@
 import { EmailRenderer } from './email.renderer';
 import { TemplateEngine } from '../template-engine';
+import { BlockComposer } from '../blocks/block-composer';
 import { DEFAULT_BRAND_TOKENS } from '../documents.types';
 
 function ctx(data: any) {
@@ -7,7 +8,7 @@ function ctx(data: any) {
 }
 
 describe('EmailRenderer', () => {
-  const r = new EmailRenderer(new TemplateEngine());
+  const r = new EmailRenderer(new TemplateEngine(), new BlockComposer());
 
   it('renderiza HTML plano con variables', async () => {
     const v: any = { subject: 'Envío {{tracking}}', compiledBody: '<p>Hola {{cliente}}</p>' };
@@ -22,5 +23,21 @@ describe('EmailRenderer', () => {
     const out = await r.render(v, ctx({ cliente: 'Ana' }));
     expect(out.html).toContain('Hola Ana');
     expect(out.html).toContain('<!doctype html>'); // mjml emite documento completo
+  });
+
+  it('compone desde designJson (bloques) cuando existen', async () => {
+    const v: any = { subject: 'Hola {{cliente}}', designJson: { blocks: [
+      { id: '1', type: 'paragraph', text: 'Hola {{cliente}}' },
+    ] } };
+    const out = await r.render(v, ctx({ cliente: 'Ana' }));
+    expect(out.subject).toBe('Hola Ana');
+    expect(out.html).toContain('Hola Ana');       // compuesto + MJML compilado
+    expect(out.html).toContain('<!doctype html>'); // salida MJML
+  });
+
+  it('cae a compiledBody (MJML legacy) si no hay bloques', async () => {
+    const v: any = { subject: 'X', compiledBody: '<mjml><mj-body><mj-section><mj-column><mj-text>Legacy {{cliente}}</mj-text></mj-column></mj-section></mj-body></mjml>' };
+    const out = await r.render(v, ctx({ cliente: 'Bob' }));
+    expect(out.html).toContain('Legacy Bob');
   });
 });
