@@ -13,7 +13,10 @@ import { FallbackRenderer } from './fallback.renderer';
 import { TemplateStore } from './template-store.service';
 import { TemplateService } from './template.service';
 import { EmailRenderer } from './renderers/email.renderer';
+import { PdfRenderer } from './renderers/pdf.renderer';
 import { BlockComposer } from './blocks/block-composer';
+import { PdfHtmlComposer } from './blocks/pdf-html-composer';
+import { HtmlToPdfService } from './html-to-pdf.service';
 import { DOCUMENT_RENDERERS } from './renderers/renderer.interface';
 import { TemplateAdminService } from './admin/template-admin.service';
 import { MailService } from 'src/mail/mail.service';
@@ -35,8 +38,11 @@ import { BrandController } from './admin/brand.controller';
     TemplateStore,
     TemplateService,
     BlockComposer,
+    PdfHtmlComposer,
+    HtmlToPdfService,
     EmailRenderer,
-    { provide: DOCUMENT_RENDERERS, useFactory: (email: EmailRenderer) => [email], inject: [EmailRenderer] },
+    PdfRenderer,
+    { provide: DOCUMENT_RENDERERS, useFactory: (email: EmailRenderer, pdf: PdfRenderer) => [email, pdf], inject: [EmailRenderer, PdfRenderer] },
     RendererRegistry,
     TemplateAdminService,
     MailService,
