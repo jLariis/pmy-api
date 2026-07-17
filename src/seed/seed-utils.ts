@@ -27,7 +27,13 @@ export async function runSeeds(dataSource: DataSource) {
   );
 
 
-  await dataSource.getRepository('user').save(usersWithHashedPasswords);
+  // Best-effort: en una DB ya sembrada, los usuarios iniciales ya existen
+  // (ER_DUP_ENTRY). No debe abortar el resto de seeds (plantillas, idempotentes).
+  try {
+    await dataSource.getRepository('user').save(usersWithHashedPasswords);
+  } catch (e: any) {
+    console.warn(`⚠️  Usuarios iniciales ya existían u error al insertarlos (se continúa): ${e?.message}`);
+  }
   //await dataSource.getRepository('permission').save(initialPermissions);
   //await dataSource.getRepository('role').save(initialRoles);
   //await dataSource.getRepository('subsidiary').save(initialSubsidiaries);
