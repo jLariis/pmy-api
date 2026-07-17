@@ -5,6 +5,15 @@ import * as ExcelJS from 'exceljs';
 import { AuditService } from './audit.service';
 import { QueryAuditLogDto } from './dto/query-audit-log.dto';
 import { SuperAdminGuard } from './super-admin.guard';
+import { TemplateService } from 'src/documents/template.service';
+
+/** Helper puro: formatea `createdAt` a es-MX (como el armado legacy) y conserva el resto de campos. */
+export function buildAuditExcelRows(rows: any[]): any[] {
+  return (rows ?? []).map((r) => ({
+    ...r,
+    createdAt: r.createdAt ? new Date(r.createdAt).toLocaleString('es-MX') : '',
+  }));
+}
 
 /** Todo el módulo de auditoría es EXCLUSIVO de superadmin (incluye variante legacy 'superamin'). */
 @ApiTags('audit')
@@ -12,7 +21,10 @@ import { SuperAdminGuard } from './super-admin.guard';
 @UseGuards(SuperAdminGuard)
 @Controller('audit')
 export class AuditController {
-  constructor(private readonly audit: AuditService) {}
+  constructor(
+    private readonly audit: AuditService,
+    private readonly templates: TemplateService,
+  ) {}
 
   @Get()
   findAll(@Query() q: QueryAuditLogDto) {
@@ -75,7 +87,23 @@ export class AuditController {
 
   @Get('export/excel')
   async exportExcel(@Query() q: QueryAuditLogDto, @Res() res: Response) {
-    const rows = await this.audit.findForExport(q);
+    const raw = await this.audit.findForExport(q);
+    const rows = buildAuditExcelRows(raw);
+    try {
+      const r = await this.templates.render('audit_log_excel', { rows });
+      if (r.buffer) {
+        res.setHeader(
+          'Content-Type',
+          'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        );
+        res.setHeader('Content-Disposition', 'attachment; filename="auditoria.xlsx"');
+        res.end(r.buffer);
+        return;
+      }
+    } catch {
+      /* cae a legacy */
+    }
+    // ----- LEGACY (armado inline con ExcelJS) como fallback -----
     const wb = new ExcelJS.Workbook();
     const ws = wb.addWorksheet('Auditoría');
     ws.columns = [
@@ -92,7 +120,7 @@ export class AuditController {
       { header: 'Descripción', key: 'description', width: 50 },
     ];
     ws.getRow(1).font = { bold: true };
-    rows.forEach((r) =>
+    raw.forEach((r) =>
       ws.addRow({
         ...r,
         createdAt: r.createdAt ? new Date(r.createdAt).toLocaleString('es-MX') : '',
