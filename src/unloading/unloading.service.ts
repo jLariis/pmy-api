@@ -18,6 +18,7 @@ import { fromZonedTime } from 'date-fns-tz';
 import { differenceInCalendarDays } from 'date-fns';
 import { ValidationPayloadDto } from './dto/validate-payload.dto';
 import { ConsolidatedInitItemDto, UnloadingSessionInitDto } from './dto/unloading-session-init.dto';
+import { ValidatedOneDto } from './dto/validate-one.dto';
 
 
 @Injectable()
@@ -549,6 +550,63 @@ export class UnloadingService {
       ...packageToValidate,
       isValid,
       reason
+    };
+  }
+
+  /**
+   * Valida UN tracking (espejo de inventories.validateTrackingNumber) para el
+   * escaneo en vivo de desembarque. DHL-aware, registro más reciente, regla de
+   * sucursal vía validatePackageResp. No recalcula consolidados.
+   */
+  async validateOne(trackingNumber: string, subsidiaryId: string): Promise<ValidatedOneDto> {
+    const variants = this.dhlVariants(trackingNumber);
+
+    const shipment = await this.shipmentRepository.findOne({
+      where: [
+        { trackingNumber: In(variants), status: Not(ShipmentStatusType.DEVUELTO_A_FEDEX) },
+        { dhlUniqueId: In(variants), status: Not(ShipmentStatusType.DEVUELTO_A_FEDEX) },
+      ],
+      relations: ['subsidiary', 'payment'],
+      order: { createdAt: 'DESC' },
+    });
+
+    const charge = shipment
+      ? null
+      : await this.chargeShipmentRepository.findOne({
+          where: { trackingNumber: In(variants), status: Not(ShipmentStatusType.DEVUELTO_A_FEDEX) },
+          relations: ['subsidiary', 'payment'],
+          order: { createdAt: 'DESC' },
+        });
+
+    const record: any = shipment || charge;
+    const isCharge = !shipment && !!charge;
+
+    if (!record) {
+      return {
+        trackingNumber,
+        isValid: false,
+        isCharge: false,
+        reason: 'No se encontraron datos para el tracking number en la base de datos',
+      };
+    }
+
+    const validated = await this.validatePackageResp({ ...record, isValid: false }, subsidiaryId);
+
+    return {
+      id: record.id,
+      trackingNumber: record.trackingNumber,
+      isValid: validated.isValid,
+      isCharge,
+      reason: validated.reason,
+      consolidatedId: record.consolidatedId,
+      recipientName: record.recipientName,
+      recipientAddress: record.recipientAddress,
+      recipientPhone: record.recipientPhone,
+      recipientZip: record.recipientZip,
+      priority: record.priority,
+      isHighValue: record.isHighValue,
+      payment: record.payment,
+      commitDateTime: record.commitDateTime,
     };
   }
 
