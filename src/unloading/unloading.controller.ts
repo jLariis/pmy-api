@@ -262,4 +262,10 @@ export class UnloadingController {
     return await this.unloadingService.getConsolidateToStartUnloading(subsidiaryId)
   }
 
+  @Get('session-init/:subsidiaryId')
+  @UseGuards(SubsidiaryScopeGuard)
+  getUnloadingSessionInit(@Param('subsidiaryId') subsidiaryId: string) {
+    return this.unloadingService.getUnloadingSessionInit(subsidiaryId);
+  }
+
 }

@@ -10,13 +10,14 @@ import { ValidatedPackageDispatchDto } from 'src/package-dispatch/dto/validated-
 import { ValidatedUnloadingDto } from './dto/validate-package-unloading.dto';
 import { MailService } from 'src/mail/mail.service';
 import { ConsolidatedType } from 'src/common/enums/consolidated-type.enum';
-import { ConsolidatedItemDto, ConsolidatedsDto } from './dto/consolidated.dto';
+import { ConsolidatedItemDto, ConsolidatedsDto, ShortShipmentInfo } from './dto/consolidated.dto';
 import { ShipmentStatusType, TERMINAL_SHIPMENT_STATUSES } from 'src/common/enums/shipment-status-type.enum';
 import { UnloadingReportDto } from './dto/unloading-report.dto';
 import { ShipmentsService } from 'src/shipments/shipments.service';
 import { fromZonedTime } from 'date-fns-tz';
 import { differenceInCalendarDays } from 'date-fns';
 import { ValidationPayloadDto } from './dto/validate-payload.dto';
+import { ConsolidatedInitItemDto, UnloadingSessionInitDto } from './dto/unloading-session-init.dto';
 
 
 @Injectable()
@@ -246,6 +247,102 @@ export class UnloadingService {
     };
 
     return consolidateds;
+  }
+
+  /**
+   * Universo ESPERADO por consolidado (base del conteo de faltantes en el cliente).
+   * Es estático durante la sesión: la membresía de un consolidado no cambia al escanear.
+   * DHL-aware y con dedup por guía (registro más reciente).
+   */
+  private async getExpectedMembersByConsolidated(
+    consolidateds: ConsolidatedItemDto[],
+  ): Promise<Map<string, ShortShipmentInfo[]>> {
+    const result = new Map<string, ShortShipmentInfo[]>();
+
+    const toShort = (item: any): ShortShipmentInfo => ({
+      trackingNumber: item.trackingNumber,
+      recipientName: item.recipientName,
+      recipientAddress: item.recipientAddress,
+      recipientPhone: item.recipientPhone,
+      recipientZip: item.recipientZip,
+    });
+
+    const nonF2 = consolidateds.filter((c) => c.typeCode !== 'F2');
+    const f2 = consolidateds.filter((c) => c.typeCode === 'F2');
+
+    if (nonF2.length > 0) {
+      const ids = nonF2.map((c) => c.id);
+      const [shipments, charges] = await Promise.all([
+        this.shipmentRepository.find({
+          where: { consolidatedId: In(ids), status: Not(ShipmentStatusType.DEVUELTO_A_FEDEX) },
+          select: ['trackingNumber', 'dhlUniqueId', 'consolidatedId', 'recipientName', 'recipientAddress', 'recipientPhone', 'recipientZip', 'createdAt'],
+          order: { createdAt: 'DESC' },
+        }),
+        this.chargeShipmentRepository.find({
+          where: { consolidatedId: In(ids), status: Not(ShipmentStatusType.DEVUELTO_A_FEDEX) },
+          select: ['trackingNumber', 'consolidatedId', 'recipientName', 'recipientAddress', 'recipientPhone', 'recipientZip', 'createdAt'],
+          order: { createdAt: 'DESC' },
+        }),
+      ]);
+
+      const byShip = this.groupByConsolidatedId(shipments);
+      const byCharge = this.groupByConsolidatedId(charges);
+
+      for (const c of nonF2) {
+        const all = [...(byShip.get(c.id) || []), ...(byCharge.get(c.id) || [])];
+        result.set(c.id, this.removeDuplicateTNs(all).map(toShort));
+      }
+    }
+
+    if (f2.length > 0) {
+      const ids = f2.map((c) => c.id);
+      const charges = await this.chargeShipmentRepository.find({
+        where: { charge: { id: In(ids) }, status: Not(ShipmentStatusType.DEVUELTO_A_FEDEX) },
+        relations: ['charge'],
+        select: ['trackingNumber', 'recipientName', 'recipientAddress', 'recipientPhone', 'recipientZip', 'createdAt'],
+        order: { createdAt: 'DESC' },
+      });
+      const byCharge = new Map<string, any[]>();
+      for (const cs of charges) {
+        const key = (cs as any).charge?.id;
+        if (!key) continue;
+        if (!byCharge.has(key)) byCharge.set(key, []);
+        byCharge.get(key)!.push(cs);
+      }
+      for (const c of f2) {
+        const all = byCharge.get(c.id) || [];
+        result.set(c.id, this.removeDuplicateTNs(all).map(toShort));
+      }
+    }
+
+    return result;
+  }
+
+  /**
+   * Inicializa una sesión de desembarque: consolidados del día + su universo
+   * esperado completo (para que el cliente cuente faltantes/escaneados sin volver
+   * a la BD ni reenviar la lista en cada escaneo). Solo lectura.
+   */
+  async getUnloadingSessionInit(subsidiaryId: string): Promise<UnloadingSessionInitDto> {
+    const consolidateds = await this.getConsolidateToStartUnloading(subsidiaryId);
+    const all: ConsolidatedItemDto[] = Object.values(consolidateds).flat();
+    const expectedMap = await this.getExpectedMembersByConsolidated(all);
+
+    const map = (arr: ConsolidatedItemDto[]): ConsolidatedInitItemDto[] =>
+      arr.map((c) => ({
+        id: c.id,
+        type: c.type,
+        typeCode: c.typeCode,
+        numberOfPackages: (c as any).numberOfPackages ?? 0,
+        color: c.color,
+        expected: expectedMap.get(c.id) || [],
+      }));
+
+    return {
+      airConsolidated: map(consolidateds.airConsolidated),
+      groundConsolidated: map(consolidateds.groundConsolidated),
+      f2Consolidated: map(consolidateds.f2Consolidated),
+    };
   }
 
   async createResp1002(createUnloadingDto: CreateUnloadingDto) {
