@@ -14,9 +14,11 @@ import { TemplateStore } from './template-store.service';
 import { TemplateService } from './template.service';
 import { EmailRenderer } from './renderers/email.renderer';
 import { PdfRenderer } from './renderers/pdf.renderer';
+import { ExcelRenderer } from './renderers/excel.renderer';
 import { BlockComposer } from './blocks/block-composer';
 import { PdfHtmlComposer } from './blocks/pdf-html-composer';
 import { HtmlToPdfService } from './html-to-pdf.service';
+import { ExcelWorkbookBuilder } from './blocks/excel-workbook-builder';
 import { DOCUMENT_RENDERERS } from './renderers/renderer.interface';
 import { TemplateAdminService } from './admin/template-admin.service';
 import { MailService } from 'src/mail/mail.service';
@@ -40,9 +42,11 @@ import { BrandController } from './admin/brand.controller';
     BlockComposer,
     PdfHtmlComposer,
     HtmlToPdfService,
+    ExcelWorkbookBuilder,
     EmailRenderer,
     PdfRenderer,
-    { provide: DOCUMENT_RENDERERS, useFactory: (email: EmailRenderer, pdf: PdfRenderer) => [email, pdf], inject: [EmailRenderer, PdfRenderer] },
+    ExcelRenderer,
+    { provide: DOCUMENT_RENDERERS, useFactory: (email: EmailRenderer, pdf: PdfRenderer, excel: ExcelRenderer) => [email, pdf, excel], inject: [EmailRenderer, PdfRenderer, ExcelRenderer] },
     RendererRegistry,
     TemplateAdminService,
     MailService,
