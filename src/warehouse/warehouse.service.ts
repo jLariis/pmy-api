@@ -33,6 +33,7 @@ import { PostalCodeResponse } from './dto/postal-code-response';
 import * as ExcelJS from 'exceljs';
 const pdfMake = require('pdfmake');
 import { TDocumentDefinitions, TableCell } from 'pdfmake/interfaces';
+import { TemplateService } from 'src/documents/template.service';
 
 /**
  * Envío re-hidratado desde BD (Shipment o ChargeShipment) con los datos de
@@ -66,6 +67,44 @@ interface NotificationHeader {
   routes?: { name: string }[] | null;
   trackingNumber?: string;
   title?: string;
+}
+
+/**
+ * Helper puro (fuera de la clase para poder testearlo sin DI) que arma los
+ * datos + flags de presentación (rowClass pago/vencehoy, isHermosillo) que
+ * consume la plantilla `warehouse_dispatch_pdf` del motor de plantillas.
+ */
+export function buildWarehousePdfData(header: any, packages: any[], timeZone: string) {
+  const { format } = require('date-fns');
+  const { toZonedTime } = require('date-fns-tz');
+  const subsidiaryName = String(header?.subsidiary?.name ?? '');
+  const isHermosillo = subsidiaryName.toLowerCase().includes('hermosillo');
+  const todayStr = format(toZonedTime(new Date(), timeZone), 'yyyy-MM-dd');
+  const rows = packages.map((pkg, i) => {
+    const amount = pkg.payment?.amount ?? pkg.paymentAmount ?? 0;
+    const commit = pkg.commitDateTime ? toZonedTime(new Date(pkg.commitDateTime), timeZone) : null;
+    const dateStr = commit ? format(commit, 'yyyy-MM-dd') : '';
+    const venceHoy = dateStr === todayStr;
+    return {
+      index: i + 1,
+      trackingNumber: pkg.trackingNumber || pkg.dhlUniqueId || '',
+      recipientName: pkg.recipientName ?? '',
+      recipientAddress: pkg.recipientAddress ?? '',
+      recipientZip: pkg.recipientZip ?? '',
+      payment: pkg.isCharge ? `$${amount}` : 'N/A',
+      date: dateStr,
+      time: commit ? format(commit, 'HH:mm:ss') : '',
+      recipientPhone: pkg.recipientPhone ?? '',
+      signature: '',
+      rowClass: pkg.isCharge ? 'pago' : (venceHoy ? 'vencehoy' : ''),
+    };
+  });
+  return {
+    title: header?.title ?? 'SALIDA A RUTA',
+    subsidiaryName, vehicleName: header?.vehicle?.name ?? 'N/A',
+    totalPackages: packages.length, trackingNumber: header?.trackingNumber ?? '',
+    isHermosillo, rows,
+  };
 }
 
 @Injectable()
@@ -102,6 +141,7 @@ export class WarehouseService {
     private readonly warehouseOutboundRepository: Repository<WarehouseOutbound>,
     private readonly dataSource: DataSource,
     private readonly mailService: MailService,
+    private readonly templateService: TemplateService,
   ) {
      // Configuración de pdfmake 0.3.x (API unificada por instancia)
     pdfMake.addFonts(this.fonts);
@@ -1210,7 +1250,19 @@ export class WarehouseService {
     return Buffer.from(buffer as ArrayBuffer);
   }
 
-  private async generatePdfBuffer(
+  private async generatePdfBuffer(header: NotificationHeader, packages: any[]): Promise<Buffer> {
+    try {
+      const data = buildWarehousePdfData(header, packages, this.timeZone);
+      const r = await this.templateService.render('warehouse_dispatch_pdf', data);
+      if (r.buffer) return r.buffer;
+      this.logger?.warn?.('PDF por motor sin buffer; usando generador legacy');
+    } catch (e: any) {
+      this.logger?.warn?.(`PDF por motor falló (${e?.message}); usando generador legacy`);
+    }
+    return this.generatePdfBufferLegacy(header, packages);
+  }
+
+  private async generatePdfBufferLegacy(
     header: NotificationHeader,
     packages: any[],
   ): Promise<Buffer> {
