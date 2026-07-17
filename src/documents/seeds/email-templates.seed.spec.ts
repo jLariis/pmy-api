@@ -45,13 +45,40 @@ describe('seedEmailTemplates', () => {
     );
   });
 
-  it('cada correo tiene bloques y la versión sembrada guarda designJson', async () => {
+  it('cada correo tiene bloques y la versión sembrada guarda designJson en formato Unlayer', async () => {
     const r = repos();
     await seedEmailTemplates(r as any);
     expect(EMAIL_TEMPLATE_SEEDS.every((s) => Array.isArray(s.blocks) && s.blocks.length > 0)).toBe(true);
     const v = r._state.versions.find((x: any) => x.designJson);
-    expect(v.designJson.blocks.length).toBeGreaterThan(0);
+    expect(v.designJson.body).toBeDefined();
+    expect(Array.isArray(v.designJson.body.rows)).toBe(true);
+    expect(v.designJson.body.rows.length).toBeGreaterThan(0);
     expect(String(v.compiledBody)).toContain('<mjml');
+  });
+
+  it('re-sembrar refresca designJson a Unlayer si el changelog sigue siendo el del seed', async () => {
+    const r = repos();
+    await seedEmailTemplates(r as any);
+    const before = r._state.versions.find((x: any) => x.templateId && x.version === 1);
+    // Simula una plantilla sembrada previamente en el formato viejo { blocks: [...] }
+    before.designJson = { blocks: [{ id: 'old', type: 'paragraph', text: 'viejo' }] };
+    before.changelog = 'Seed inicial (bloques, paridad con legacy)';
+    await seedEmailTemplates(r as any);
+    const after = r._state.versions.find((x: any) => x.templateId === before.templateId && x.version === 1);
+    expect(after.designJson.body).toBeDefined();
+    expect(Array.isArray(after.designJson.body.rows)).toBe(true);
+  });
+
+  it('no toca designJson si el changelog indica edición del usuario', async () => {
+    const r = repos();
+    await seedEmailTemplates(r as any);
+    const before = r._state.versions.find((x: any) => x.templateId && x.version === 1);
+    before.designJson = { blocks: [{ id: 'user', type: 'paragraph', text: 'editado por usuario' }] };
+    before.changelog = 'Editado manualmente por el usuario';
+    await seedEmailTemplates(r as any);
+    const after = r._state.versions.find((x: any) => x.templateId === before.templateId && x.version === 1);
+    expect(after.designJson.blocks).toBeDefined();
+    expect(after.designJson.blocks[0].text).toBe('editado por usuario');
   });
 
   it('route_dispatch conserva sus variables', () => {

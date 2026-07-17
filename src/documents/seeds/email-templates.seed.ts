@@ -4,6 +4,7 @@ import { DocumentTemplateVersion } from 'src/entities/document-template-version.
 import { TemplateVariableDef } from 'src/entities/template-variable-def.entity';
 import { EmailBlock } from '../blocks/email-doc.types';
 import { BlockComposer } from '../blocks/block-composer';
+import { blocksToUnlayerDesign } from './blocks-to-unlayer';
 
 export interface EmailSeedVar { name: string; label: string; dataType?: string; example?: string; required?: boolean; }
 export interface EmailSeed { code: string; name: string; subject: string; blocks: EmailBlock[]; variables: EmailSeedVar[]; }
@@ -189,11 +190,17 @@ export async function seedEmailTemplates(repos: SeedRepos): Promise<void> {
       version = await repos.verRepo.save(repos.verRepo.create({
         templateId: template.id, version: 1, status: 'published',
         subject: seed.subject,
-        designJson: { blocks: seed.blocks },
+        designJson: blocksToUnlayerDesign(seed.blocks),
         compiledBody: composer.compose({ blocks: seed.blocks }),
         engine: 'handlebars',
         changelog: 'Seed inicial (bloques, paridad con legacy)', publishedAt: new Date(),
       }));
+    } else if (typeof version.changelog === 'string' && version.changelog.startsWith('Seed')) {
+      // No fue editada por el usuario (changelog sigue siendo el del seed): refrescar
+      // designJson al formato Unlayer (el editor no entiende { blocks: [...] }).
+      version.designJson = blocksToUnlayerDesign(seed.blocks);
+      version.compiledBody = composer.compose({ blocks: seed.blocks });
+      await repos.verRepo.save(version);
     }
     if (!template.currentVersionId) {
       template.currentVersionId = version.id;
