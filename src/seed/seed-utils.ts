@@ -3,6 +3,7 @@ import {
   initialUsers,
 } from './seed-data';
 import { seedEmailTemplates } from '../documents/seeds/email-templates.seed';
+import { seedPdfTemplates } from '../documents/seeds/pdf-templates.seed';
 import { DocumentTemplate } from '../entities/document-template.entity';
 import { DocumentTemplateVersion } from '../entities/document-template-version.entity';
 import { TemplateVariableDef } from '../entities/template-variable-def.entity';
@@ -55,6 +56,13 @@ export async function runSeeds(dataSource: DataSource) {
 
   console.log('📧 Insertando plantillas de correo...');
   await seedEmailTemplates({
+    tplRepo: dataSource.getRepository(DocumentTemplate),
+    verRepo: dataSource.getRepository(DocumentTemplateVersion),
+    varRepo: dataSource.getRepository(TemplateVariableDef),
+  });
+
+  console.log('📄 Insertando plantillas de PDF...');
+  await seedPdfTemplates({
     tplRepo: dataSource.getRepository(DocumentTemplate),
     verRepo: dataSource.getRepository(DocumentTemplateVersion),
     varRepo: dataSource.getRepository(TemplateVariableDef),
