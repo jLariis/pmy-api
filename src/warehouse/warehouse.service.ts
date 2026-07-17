@@ -81,7 +81,8 @@ export function buildWarehousePdfData(header: any, packages: any[], timeZone: st
   const isHermosillo = subsidiaryName.toLowerCase().includes('hermosillo');
   const todayStr = format(toZonedTime(new Date(), timeZone), 'yyyy-MM-dd');
   const rows = packages.map((pkg, i) => {
-    const amount = pkg.payment?.amount ?? pkg.paymentAmount ?? 0;
+    const amount = pkg.payment?.amount ?? pkg.paymentAmount ?? null;
+    const hasPayment = amount != null;
     const commit = pkg.commitDateTime ? toZonedTime(new Date(pkg.commitDateTime), timeZone) : null;
     const dateStr = commit ? format(commit, 'yyyy-MM-dd') : '';
     const venceHoy = dateStr === todayStr;
@@ -91,12 +92,12 @@ export function buildWarehousePdfData(header: any, packages: any[], timeZone: st
       recipientName: pkg.recipientName ?? '',
       recipientAddress: pkg.recipientAddress ?? '',
       recipientZip: pkg.recipientZip ?? '',
-      payment: pkg.isCharge ? `$${amount}` : 'N/A',
+      payment: hasPayment ? `$${amount}` : 'N/A',
       date: dateStr,
       time: commit ? format(commit, 'HH:mm:ss') : '',
       recipientPhone: pkg.recipientPhone ?? '',
       signature: '',
-      rowClass: pkg.isCharge ? 'pago' : (venceHoy ? 'vencehoy' : ''),
+      rowClass: venceHoy ? 'vencehoy' : (hasPayment ? 'pago' : ''),
     };
   });
   return {

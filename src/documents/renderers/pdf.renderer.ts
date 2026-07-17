@@ -19,15 +19,15 @@ export class PdfRenderer implements DocumentRenderer {
   ) {}
 
   async render(version: DocumentTemplateVersion, ctx: RenderContext): Promise<RenderResult> {
-    const doc: any = version.designJson;
-    const template = doc && doc.blocks ? this.composer.compose(doc) : '';
-    const html = this.engine.render(template, ctx);
     try {
+      const doc: any = version.designJson;
+      const template = doc && doc.blocks ? this.composer.compose(doc) : '';
+      const html = this.engine.render(template, ctx);
       const buffer = await this.htmlToPdf.convert(html);
       return { format: 'pdf', mime: 'application/pdf', buffer, html };
     } catch (e: any) {
-      this.logger.warn(`conversión PDF falló (sin Chromium?): ${e?.message}`);
-      return { format: 'pdf', mime: 'application/pdf', html }; // sin buffer → el llamador cae a legacy
+      this.logger.warn(`render PDF falló (designJson inválido o sin Chromium?): ${e?.message}`);
+      return { format: 'pdf', mime: 'application/pdf' }; // sin buffer/html → el llamador cae a legacy
     }
   }
 }

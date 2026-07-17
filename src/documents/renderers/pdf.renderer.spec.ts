@@ -32,4 +32,21 @@ describe('PdfRenderer', () => {
     expect(out.format).toBe('pdf');
     expect(out.buffer).toBeUndefined();
   });
+
+  it('nunca lanza: designJson malformado (bloque table sin columns) devuelve result sin buffer', async () => {
+    const htmlToPdf: any = { convert: jest.fn((html: string) => Promise.resolve(Buffer.from('PDF:' + html))) };
+    const r = new PdfRenderer(new TemplateEngine(), new PdfHtmlComposer(), htmlToPdf);
+    const v: any = {
+      designJson: {
+        page: { size: 'LETTER', orientation: 'portrait' },
+        blocks: [{ type: 'table', rowsVar: 'rows' }], // falta "columns" -> composer lanza
+      },
+    };
+    const result = await r.render(v, ctx({ rows: [] }));
+    expect(result.format).toBe('pdf');
+    expect(result.mime).toBe('application/pdf');
+    expect(result.buffer).toBeUndefined();
+    expect(result.html).toBeUndefined();
+    expect(htmlToPdf.convert).not.toHaveBeenCalled();
+  });
 });
