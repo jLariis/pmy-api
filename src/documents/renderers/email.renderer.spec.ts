@@ -40,4 +40,17 @@ describe('EmailRenderer', () => {
     const out = await r.render(v, ctx({ cliente: 'Bob' }));
     expect(out.html).toContain('Legacy Bob');
   });
+
+  it('renderiza HTML de Unlayer (designJson sin blocks) interpolando variables', async () => {
+    const v: any = {
+      subject: 'Hola {{cliente}}',
+      designJson: { body: { rows: [] } },            // diseño Unlayer, NO tiene .blocks
+      compiledBody: '<html><body><h1>Hola {{cliente}}</h1><p>Guía {{tracking}}</p></body></html>',
+    };
+    const out = await r.render(v, ctx({ cliente: 'Ana', tracking: 'T1' }));
+    expect(out.subject).toBe('Hola Ana');
+    expect(out.html).toContain('Hola Ana');
+    expect(out.html).toContain('Guía T1');
+    expect(out.html).not.toContain('<mjml'); // no intenta compilar MJML
+  });
 });
