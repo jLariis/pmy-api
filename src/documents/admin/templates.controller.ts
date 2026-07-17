@@ -40,6 +40,9 @@ export class TemplatesController {
 
   @Get(':id/versions') versions(@Param('id') id: string) { return this.admin.listVersions(id); }
 
+  @Get(':id/edit')
+  getForEdit(@Param('id') id: string) { return this.admin.getForEdit(id); }
+
   @Post(':code/preview')
   preview(@Param('code') code: string, @Body() dto: PreviewDto) {
     return this.templates.renderPreview(code, dto.sampleData ?? {});

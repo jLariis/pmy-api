@@ -6,13 +6,14 @@ function make() {
     { id: 't1', code: 'c', currentVersionId: null },
     { id: 't2', code: 'c2', currentVersionId: null },
   ];
+  const variables: any[] = [];
   const tplRepo: any = {
     findOne: ({ where }: any) => Promise.resolve(templates.find((t) => t.id === where.id) ?? null),
     create: (d: any) => ({ id: 't' + (templates.length + 1), ...d }),
     save: (t: any) => { const i = templates.findIndex((x) => x.id === t.id); if (i >= 0) templates[i] = t; else templates.push(t); return Promise.resolve(t); },
   };
   const verRepo: any = {
-    find: () => Promise.resolve(versions),
+    find: ({ where }: any) => Promise.resolve(where?.templateId ? versions.filter((v) => v.templateId === where.templateId) : versions),
     findOne: ({ where }: any) =>
       Promise.resolve(
         versions.find((v) => v.id === where.id && (where.templateId === undefined || v.templateId === where.templateId)) ?? null,
@@ -20,11 +21,14 @@ function make() {
     create: (d: any) => ({ id: 'v' + (versions.length + 1), ...d }),
     save: (v: any) => { const i = versions.findIndex((x) => x.id === v.id); if (i >= 0) versions[i] = v; else versions.push(v); return Promise.resolve(v); },
   };
+  const varRepo: any = {
+    find: ({ where }: any) => Promise.resolve(where?.templateId ? variables.filter((v) => v.templateId === where.templateId) : variables),
+  };
   const brandRepo: any = { findOne: () => Promise.resolve(null), create: (d: any) => d, save: (b: any) => Promise.resolve({ id: 'b1', ...b }) };
   const store: any = { invalidate: jest.fn() };
   const branding: any = { invalidate: jest.fn() };
   const templateService: any = { renderGiven: jest.fn(() => Promise.resolve({ format: 'email', mime: 'text/html', html: '<p>preview</p>', subject: 'Preview' })) };
-  return { svc: new TemplateAdminService(tplRepo, verRepo, brandRepo, store, branding, templateService), versions, templates, store, branding, templateService };
+  return { svc: new TemplateAdminService(tplRepo, verRepo, varRepo, brandRepo, store, branding, templateService), versions, templates, variables, store, branding, templateService };
 }
 
 describe('TemplateAdminService', () => {
@@ -77,5 +81,22 @@ describe('TemplateAdminService', () => {
     const { svc } = make();
     const foreignVersion = await svc.saveDraft('t2', { compiledBody: '<p>foreign</p>' }, {});
     await expect(svc.previewVersion('t1', foreignVersion.id, {})).rejects.toThrow();
+  });
+
+  it('getForEdit retorna template, variables y versions de una plantilla existente', async () => {
+    const { svc, variables } = make();
+    variables.push({ id: 'var1', templateId: 't1', name: 'name' });
+    const v = await svc.saveDraft('t1', { compiledBody: '<p>x</p>' }, {});
+    const result = await svc.getForEdit('t1');
+    expect(result.template.id).toBe('t1');
+    expect(result.variables).toHaveLength(1);
+    expect(result.variables[0].id).toBe('var1');
+    expect(result.versions).toHaveLength(1);
+    expect(result.versions[0].id).toBe(v.id);
+  });
+
+  it('getForEdit lanza NotFound para una plantilla inexistente', async () => {
+    const { svc } = make();
+    await expect(svc.getForEdit('nonexistent')).rejects.toThrow();
   });
 });
