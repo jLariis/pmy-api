@@ -51,4 +51,20 @@ describe('ExcelWorkbookBuilder.build', () => {
     const ws = wb.getWorksheet('R')!;
     expect(ws.getRow(1).getCell(1).value).toBe('REPORTE - OBREGÓN'); // título interpolado en fila 1
   });
+
+  it('no permite que la alineación de una columna pise el título centrado', async () => {
+    const withTitleAndAlign: ExcelDoc = { sheets: [{
+      name: 'T',
+      title: 'REPORTE',
+      columns: [{ key: 'amount', label: 'Importe', align: 'right' }],
+      rowsVar: 'rows',
+    }] };
+    const buf = await builder.build(withTitleAndAlign, ctx({ rows: [{ amount: 10 }] }));
+    const wb = await load(buf);
+    const ws = wb.getWorksheet('T')!;
+    // Fila 1 = título fusionado: debe seguir centrado, no heredar el align:'right' de la columna.
+    expect(ws.getRow(1).getCell(1).alignment?.horizontal).toBe('center');
+    // Fila 3 = dato: sí debe heredar el default de alineación de la columna.
+    expect(ws.getRow(3).getCell(1).alignment?.horizontal).toBe('right');
+  });
 });

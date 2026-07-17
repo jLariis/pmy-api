@@ -20,6 +20,18 @@ export class ExcelWorkbookBuilder {
     const ws = wb.addWorksheet(sheet.name);
     const lastCol = Math.max(sheet.columns.length, 1);
 
+    // Ancho, numFmt y alineación por columna, ANTES de agregar filas: los setters de
+    // ExcelJS.Column aplican el estilo retroactivamente a toda celda ya existente en la
+    // columna, así que si se aplicaran después pisarían el estilo del título/encabezado.
+    // Al ir primero, las filas de título/encabezado (que fijan su propio row.font/row.alignment
+    // más abajo) quedan por encima del default de columna, y las filas de datos lo heredan.
+    sheet.columns.forEach((c, i) => {
+      const col = ws.getColumn(i + 1);
+      if (c.width != null) col.width = c.width;
+      if (c.numFmt) col.numFmt = c.numFmt;
+      if (c.align) col.alignment = { horizontal: c.align };
+    });
+
     // Título (fila fusionada) + info rows, antes de la tabla.
     if (sheet.title) {
       const row = ws.addRow([this.engine.render(sheet.title, ctx)]);
@@ -40,14 +52,6 @@ export class ExcelWorkbookBuilder {
       headerRow.font = { bold: !!sheet.headerFont.bold, ...(sheet.headerFont.color ? { color: { argb: sheet.headerFont.color } } : {}) };
     }
     if (sheet.headerFill) headerRow.eachCell((cell) => { cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: sheet.headerFill! } }; });
-
-    // Ancho, numFmt y alineación por columna (por índice, no via ws.columns para no pisar filas de título).
-    sheet.columns.forEach((c, i) => {
-      const col = ws.getColumn(i + 1);
-      if (c.width != null) col.width = c.width;
-      if (c.numFmt) col.numFmt = c.numFmt;
-      if (c.align) col.alignment = { horizontal: c.align };
-    });
 
     // Filas de datos.
     const rows: any[] = Array.isArray(ctx.data?.[sheet.rowsVar]) ? ctx.data[sheet.rowsVar] : [];
