@@ -48,7 +48,10 @@ ${body}
       case 'statBoxes':
         return `<div class="stat-boxes">${b.boxes.map((x) => `<div class="stat-box"><div class="v" style="font-size:18px;font-weight:bold">${x.value}</div><div class="k" style="font-size:9px;color:#777">${x.label}</div></div>`).join('')}</div>`;
       case 'table': {
-        const th = b.columns.map((c) => this.wrapCol(c, `<th${c.width ? ` style="width:${c.width}px"` : ''}${c.align ? ` style="text-align:${c.align}"` : ''}>${c.label}</th>`)).join('');
+        const th = b.columns.map((c) => {
+          const styles = [c.width ? `width:${c.width}px` : null, c.align ? `text-align:${c.align}` : null].filter(Boolean).join(';');
+          return this.wrapCol(c, `<th${styles ? ` style="${styles}"` : ''}>${c.label}</th>`);
+        }).join('');
         const td = b.columns.map((c) => this.wrapCol(c, `<td${c.align ? ` style="text-align:${c.align}"` : ''}>{{this.${c.key}}}</td>`)).join('');
         const cls = b.rowClassVar ? ` class="{{this.${b.rowClassVar}}}"` : '';
         return `<table><thead><tr>${th}</tr></thead><tbody>{{#each ${b.rowsVar}}}<tr${cls}>${td}</tr>{{/each}}</tbody></table>`;

@@ -46,4 +46,23 @@ describe('PdfHtmlComposer.compose', () => {
     expect(html).toContain('[C] CARGA');
     expect(html).toContain('pie {{system.env}}');
   });
+
+  it('table con columna que tiene width y align produce UN SOLO style en th', () => {
+    const html = composer.compose({ page: { size: 'LETTER', orientation: 'landscape' }, blocks: [
+      { type: 'table', rowsVar: 'items', columns: [
+        { label: 'ID', key: 'id' },
+        { label: 'MONTO', key: 'amount', width: 80, align: 'center' },
+      ] },
+    ] });
+    // Busca la columna MONTO en la cabecera
+    const thRegex = /<th[^>]*>MONTO<\/th>/;
+    const thMatch = html.match(thRegex);
+    expect(thMatch).toBeTruthy();
+    const th = thMatch![0];
+    // Verifica que hay exactamente UNO style= (no dos)
+    expect((th.match(/style=/g) || []).length).toBe(1);
+    // Verifica que contiene ambos width y text-align en ese style
+    expect(th).toContain('width:80px');
+    expect(th).toContain('text-align:center');
+  });
 });
