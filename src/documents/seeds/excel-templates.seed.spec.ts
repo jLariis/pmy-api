@@ -2,6 +2,7 @@ import { seedExcelTemplates, EXCEL_TEMPLATE_SEEDS } from './excel-templates.seed
 import { ExcelWorkbookBuilder } from '../blocks/excel-workbook-builder';
 import { TemplateEngine } from '../template-engine';
 import { buildRouteDispatchData } from '../data/route-dispatch.mapper';
+import { buildUnloadingData } from '../data/unloading.mapper';
 import { Workbook } from 'exceljs';
 
 function repos() {
@@ -58,5 +59,41 @@ describe('seedExcelTemplates', () => {
     });
     expect(paidFound).toBe(true);
     expect(invalidFound).toBe(true);
+  });
+
+  it('unloading_excel: fiel a C4 (título naranja, header café, faltantes/sobrantes)', async () => {
+    const seed = EXCEL_TEMPLATE_SEEDS.find((s) => s.code === 'unloading_excel')!;
+    expect(seed).toBeTruthy();
+    const data = buildUnloadingData({
+      subsidiaryName: 'Cd. Obregon', vehicleName: 'ECON-01', trackingNumber: 'DESEMB-1',
+      now: new Date('2026-07-18T20:00:00Z'), createdAt: '2026-07-18T18:30:00Z',
+      packages: [
+        { trackingNumber: 'T1', recipientName: 'Ana', recipientAddress: 'Calle 1', recipientZip: '85000',
+          recipientPhone: '6620000000', payment: { amount: 500, type: 'COD' }, commitDateTime: '2026-07-18T20:15:00Z' },
+        { trackingNumber: 'T2', recipientName: 'Beto', recipientZip: '83000' },
+      ],
+      missingPackages: ['X1'],
+      unScannedTrackings: ['Y1'],
+    } as any);
+    const buf = await new ExcelWorkbookBuilder(new TemplateEngine()).build(seed.doc, { data } as any);
+    const wb = new Workbook(); await wb.xlsx.load(buf as any);
+    const ws = wb.getWorksheet('Desembarque')!;
+    expect(ws.getCell('A1').value).toBe('📦 Desembarque');
+    expect((ws.getCell('A1').fill as any).fgColor.argb).toBe('ef883a');
+    let headerRowNum = 0;
+    ws.eachRow({ includeEmpty: true }, (r, n) => { if (r.getCell(1).value === 'No.') headerRowNum = n; });
+    expect(headerRowNum).toBeGreaterThan(0);
+    expect((ws.getRow(headerRowNum).getCell(1).fill as any).fgColor.argb).toBe('8c5e4e');
+    let foundMissing = false; let foundUnScanned = false; let foundZebra = false;
+    ws.eachRow({ includeEmpty: true }, (r) => {
+      if (r.getCell(1).value === '❌ Paquetes faltantes') foundMissing = true;
+      if (r.getCell(1).value === '📍 Guías sobrantes') foundUnScanned = true;
+      if (String(r.getCell(1).value).includes('X1')) foundMissing = true;
+      if (String(r.getCell(1).value).includes('Y1')) foundUnScanned = true;
+      if ((r.getCell(1).fill as any)?.fgColor?.argb === 'F2F2F2') foundZebra = true;
+    });
+    expect(foundMissing).toBe(true);
+    expect(foundUnScanned).toBe(true);
+    expect(foundZebra).toBe(true);
   });
 });

@@ -56,6 +56,37 @@ const routeDispatch: ExcelDoc = {
   }],
 };
 
+/** unloading_excel — "Desembarque" rica (fiel a C4, frontend). Hoja "Desembarque" por secciones. */
+const unloading: ExcelDoc = {
+  sheets: [{
+    name: 'Desembarque',
+    sections: [
+      { kind: 'title', text: '📦 Desembarque', fill: 'ef883a', font: { size: 16, bold: true, color: 'FFFFFF' }, mergeTo: 9 },
+      { kind: 'spacer' },
+      { kind: 'info', mergeTo: 9, rows: [
+        { text: 'Unidad: {{vehicleName}}' }, { text: 'Fecha: {{createdDateTime}}' }, { text: 'Paquetes: {{totalPackages}}' },
+      ] },
+      { kind: 'spacer' },
+      { kind: 'table', rowsVar: 'rows',
+        headerFill: '8c5e4e', headerFont: { bold: true, color: 'FFFFFF' }, headerHeight: 20, headerAlign: 'center',
+        bordered: true, cellAlign: 'center', wrap: true, rowFillKey: 'rowFill',
+        columns: [
+          { key: 'index', label: 'No.', width: 5 }, { key: 'trackingNumber', label: 'Guía', width: 18 },
+          { key: 'recipientNameXlsx', label: 'Nombre', width: 45 }, { key: 'recipientAddressXlsx', label: 'Dirección', width: 45 },
+          { key: 'recipientZip', label: 'C.P.', width: 12 }, { key: 'payment', label: 'Cobro', width: 20 },
+          { key: 'date', label: 'Fecha', width: 12 }, { key: 'timeXlsx', label: 'Hora', width: 12 },
+          { key: 'recipientPhone', label: 'Celular', width: 18 },
+        ] },
+      { kind: 'spacer' },
+      { kind: 'title', text: '❌ Paquetes faltantes', fill: 'ef883a', font: { bold: true, color: 'FFFFFF' }, mergeTo: 9 },
+      { kind: 'band', rowsVar: 'missingTrackings', mergeTo: 9 },
+      { kind: 'spacer' },
+      { kind: 'title', text: '📍 Guías sobrantes', fill: '8c5e4e', font: { bold: true, color: 'FFFFFF' }, mergeTo: 9 },
+      { kind: 'band', rowsVar: 'unScannedTrackings', mergeTo: 9 },
+    ],
+  }],
+};
+
 export const EXCEL_TEMPLATE_SEEDS: ExcelSeed[] = [
   { code: 'route_dispatch_excel', name: 'Salida a Ruta (Excel)', doc: routeDispatch,
     variables: [
@@ -65,6 +96,12 @@ export const EXCEL_TEMPLATE_SEEDS: ExcelSeed[] = [
     ] },
   { code: 'audit_log_excel', name: 'Auditoría (Excel)', doc: auditLog,
     variables: [{ name: 'rows', label: 'Filas de auditoría (createdAt ya formateado es-MX en código)' }] },
+  { code: 'unloading_excel', name: 'Desembarque (Excel)', doc: unloading,
+    variables: [
+      { name: 'vehicleName', label: 'Unidad' }, { name: 'createdDateTime', label: 'Fecha' },
+      { name: 'totalPackages', label: 'Total de paquetes', dataType: 'number' }, { name: 'rows', label: 'Filas' },
+      { name: 'missingTrackings', label: 'Guías faltantes' }, { name: 'unScannedTrackings', label: 'Guías sobrantes' },
+    ] },
 ];
 
 interface SeedRepos { tplRepo: Repository<DocumentTemplate>; verRepo: Repository<DocumentTemplateVersion>; varRepo: Repository<TemplateVariableDef>; }
