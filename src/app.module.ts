@@ -41,6 +41,7 @@ import { RbacModule } from './rbac/rbac.module';
 import { CompanySettingsModule } from './company-settings/company-settings.module';
 import { WhatsappSettingsModule } from './whatsapp-settings/whatsapp-settings.module';
 import { WhatsappGatewayModule } from './whatsapp-gateway/whatsapp-gateway.module';
+import { WhatsappTemplatesModule } from './whatsapp-templates/whatsapp-templates.module';
 import { CatalogModule } from './catalog/catalog.module';
 import { GeocodeModule } from './geocode/geocode.module';
 import { ServerStatsModule } from './server-stats/server-stats.module';
@@ -107,6 +108,7 @@ import { DocumentsModule } from './documents/documents.module';
     CompanySettingsModule,
     WhatsappSettingsModule,
     WhatsappGatewayModule,
+    WhatsappTemplatesModule,
     CatalogModule,
     GeocodeModule,
     ServerStatsModule,

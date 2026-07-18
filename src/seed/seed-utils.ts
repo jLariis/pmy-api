@@ -8,6 +8,8 @@ import { seedExcelTemplates } from '../documents/seeds/excel-templates.seed';
 import { DocumentTemplate } from '../entities/document-template.entity';
 import { DocumentTemplateVersion } from '../entities/document-template-version.entity';
 import { TemplateVariableDef } from '../entities/template-variable-def.entity';
+import { WhatsappTemplate } from '../entities/whatsapp-template.entity';
+import { seedWhatsappTemplates } from '../whatsapp-templates/whatsapp-templates.seed';
 
 import * as bcrypt from 'bcrypt';
 
@@ -81,6 +83,9 @@ export async function runSeeds(dataSource: DataSource) {
     verRepo: dataSource.getRepository(DocumentTemplateVersion),
     varRepo: dataSource.getRepository(TemplateVariableDef),
   });
+
+  console.log('💬 Insertando plantillas de WhatsApp...');
+  await seedWhatsappTemplates(dataSource.getRepository(WhatsappTemplate));
 
   console.log('✅ Seeds completados');
 }
