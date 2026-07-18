@@ -1,4 +1,8 @@
 import { seedExcelTemplates, EXCEL_TEMPLATE_SEEDS } from './excel-templates.seed';
+import { ExcelWorkbookBuilder } from '../blocks/excel-workbook-builder';
+import { TemplateEngine } from '../template-engine';
+import { buildRouteDispatchData } from '../data/route-dispatch.mapper';
+import { Workbook } from 'exceljs';
 
 function repos() {
   const templates: any[] = []; const versions: any[] = []; const vars: any[] = [];
@@ -24,5 +28,35 @@ describe('seedExcelTemplates', () => {
   it('es idempotente', async () => {
     const r = repos(); await seedExcelTemplates(r as any); await seedExcelTemplates(r as any);
     expect(r._state.templates.filter((t: any) => t.code === 'audit_log_excel').length).toBe(1);
+  });
+
+  it('route_dispatch_excel: fiel a C2 (título naranja, header café, pago amarillo, inválidos)', async () => {
+    const seed = EXCEL_TEMPLATE_SEEDS.find((s) => s.code === 'route_dispatch_excel')!;
+    expect(seed).toBeTruthy();
+    const data = buildRouteDispatchData({
+      subsidiaryName: 'Cd. Obregon', vehicleName: 'ECON-01', drivers: [{ name: 'Juan' }], routes: [{ name: 'R1' }, { name: 'R2' }],
+      trackingNumber: 'S1', now: new Date('2026-07-18T20:00:00Z'), createdAt: '2026-07-18T20:00:00Z',
+      packages: [
+        { trackingNumber: 'T1', recipientName: 'Ana', recipientAddress: 'Calle 1', recipientZip: '85000', recipientPhone: '6620000000', payment: { amount: 500, type: 'COD' }, commitDateTime: '2026-07-18T20:00:00Z' },
+        { trackingNumber: 'T2', recipientName: 'Beto', recipientZip: '83000' },
+      ],
+      invalidTrackings: ['X1', 'X2'],
+    } as any);
+    const buf = await new ExcelWorkbookBuilder(new TemplateEngine()).build(seed.doc, { data } as any);
+    const wb = new Workbook(); await wb.xlsx.load(buf as any);
+    const ws = wb.getWorksheet('Despacho')!;
+    expect(ws.getCell('A1').value).toBe('🚚 Salida a Ruta');
+    expect((ws.getCell('A1').fill as any).fgColor.argb).toBe('ef883a');
+    let headerRowNum = 0;
+    ws.eachRow({ includeEmpty: true }, (r, n) => { if (r.getCell(1).value === 'No.') headerRowNum = n; });
+    expect(headerRowNum).toBeGreaterThan(0);
+    expect((ws.getRow(headerRowNum).getCell(1).fill as any).fgColor.argb).toBe('8c5e4e');
+    let paidFound = false; let invalidFound = false;
+    ws.eachRow({ includeEmpty: true }, (r) => {
+      if ((r.getCell(1).fill as any)?.fgColor?.argb === 'fff2cc') paidFound = true;
+      if (String(r.getCell(1).value).includes('📦 X1')) invalidFound = true;
+    });
+    expect(paidFound).toBe(true);
+    expect(invalidFound).toBe(true);
   });
 });

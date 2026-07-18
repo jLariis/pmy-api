@@ -29,7 +29,40 @@ const auditLog: ExcelDoc = {
   }],
 };
 
+/** route_dispatch_excel — "Salida a Ruta" rica (fiel a C2, frontend). Hoja "Despacho" por secciones. */
+const routeDispatch: ExcelDoc = {
+  sheets: [{
+    name: 'Despacho',
+    sections: [
+      { kind: 'title', text: '🚚 Salida a Ruta', fill: 'ef883a', font: { size: 16, bold: true, color: 'FFFFFF' }, mergeTo: 9 },
+      { kind: 'spacer' },
+      { kind: 'info', mergeTo: 9, rows: [
+        { text: 'Ruta: {{routeNamesArrow}}' }, { text: 'Conductores: {{driverNames}}' },
+        { text: 'Unidad: {{vehicleName}}' }, { text: 'Fecha: {{dispatchDateTime}}' }, { text: 'Paquetes: {{stats.total}}' },
+      ] },
+      { kind: 'spacer' },
+      { kind: 'band', rowsVar: 'invalidChunks', fill: 'FFE6E6', font: { bold: true, color: 'CC0000' }, mergeTo: 9 },
+      { kind: 'table', rowsVar: 'rows',
+        headerFill: '8c5e4e', headerFont: { bold: true, color: 'FFFFFF' }, headerHeight: 20, headerAlign: 'center',
+        bordered: true, cellAlign: 'center', wrap: true, rowFillKey: 'rowFill',
+        columns: [
+          { key: 'index', label: 'No.', width: 5 }, { key: 'trackingNumber', label: 'Guía', width: 18 },
+          { key: 'recipientNameXlsx', label: 'Recibe', width: 30 }, { key: 'recipientAddressXlsx', label: 'Dirección', width: 40 },
+          { key: 'recipientZip', label: 'CP', width: 10 }, { key: 'paymentXlsx', label: 'Cobro', width: 18 },
+          { key: 'date', label: 'Fecha', width: 12 }, { key: 'time', label: 'Hora', width: 12 },
+          { key: 'recipientPhone', label: 'Celular', width: 18 },
+        ] },
+    ],
+  }],
+};
+
 export const EXCEL_TEMPLATE_SEEDS: ExcelSeed[] = [
+  { code: 'route_dispatch_excel', name: 'Salida a Ruta (Excel)', doc: routeDispatch,
+    variables: [
+      { name: 'routeNamesArrow', label: 'Rutas' }, { name: 'driverNames', label: 'Conductores' },
+      { name: 'vehicleName', label: 'Unidad' }, { name: 'dispatchDateTime', label: 'Fecha' },
+      { name: 'stats', label: 'Métricas' }, { name: 'invalidChunks', label: 'Guías inválidas' }, { name: 'rows', label: 'Filas' },
+    ] },
   { code: 'audit_log_excel', name: 'Auditoría (Excel)', doc: auditLog,
     variables: [{ name: 'rows', label: 'Filas de auditoría (createdAt ya formateado es-MX en código)' }] },
 ];
