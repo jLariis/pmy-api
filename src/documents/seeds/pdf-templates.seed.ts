@@ -4,6 +4,7 @@ import { DocumentTemplateVersion } from 'src/entities/document-template-version.
 import { TemplateVariableDef } from 'src/entities/template-variable-def.entity';
 import { PdfDoc } from '../blocks/pdf-doc.types';
 import { ROUTE_DISPATCH_PDF_HTML } from './templates/route-dispatch.pdf.html';
+import { UNLOADING_PDF_HTML } from './templates/unloading.pdf.html';
 
 export interface PdfSeedVar { name: string; label: string; dataType?: string; }
 export interface PdfSeed { code: string; name: string; doc: PdfDoc; variables: PdfSeedVar[]; }
@@ -41,6 +42,12 @@ const routeDispatch: PdfDoc = {
   html: ROUTE_DISPATCH_PDF_HTML,
 };
 
+/** unloading_pdf — "Desembarque" rica (fiel a C3, frontend). Presentación HTML; datos en el data-provider. */
+const unloading: PdfDoc = {
+  page: { size: 'LETTER', orientation: 'landscape', margins: '20px' },
+  html: UNLOADING_PDF_HTML,
+};
+
 export const PDF_TEMPLATE_SEEDS: PdfSeed[] = [
   { code: 'route_dispatch_pdf', name: 'Salida a Ruta (PDF)', doc: routeDispatch,
     variables: [
@@ -60,6 +67,16 @@ export const PDF_TEMPLATE_SEEDS: PdfSeed[] = [
       { name: 'trackingNumber', label: 'Número de seguimiento' },
       { name: 'isHermosillo', label: 'Es Hermosillo (oculta HORA)', dataType: 'boolean' },
       { name: 'rows', label: 'Filas de paquetes' },
+    ] },
+  { code: 'unloading_pdf', name: 'Desembarque (PDF)', doc: unloading,
+    variables: [
+      { name: 'subsidiaryName', label: 'Sucursal' }, { name: 'vehicleName', label: 'Unidad' },
+      { name: 'totalPackages', label: 'Total de paquetes', dataType: 'number' },
+      { name: 'trackingNumber', label: 'Número de seguimiento' },
+      { name: 'nowDateTime', label: 'Fecha de generación' },
+      { name: 'rows', label: 'Filas de paquetes' },
+      { name: 'missingRows', label: 'Guías faltantes' }, { name: 'hasMissing', label: 'Hay faltantes', dataType: 'boolean' },
+      { name: 'unScannedTrackings', label: 'Guías sobrantes' }, { name: 'hasUnScanned', label: 'Hay sobrantes', dataType: 'boolean' },
     ] },
 ];
 

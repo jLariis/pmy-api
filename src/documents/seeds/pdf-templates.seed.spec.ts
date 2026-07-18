@@ -2,6 +2,7 @@ import { seedPdfTemplates, PDF_TEMPLATE_SEEDS } from './pdf-templates.seed';
 import { PdfHtmlComposer } from '../blocks/pdf-html-composer';
 import { TemplateEngine } from '../template-engine';
 import { buildRouteDispatchData } from '../data/route-dispatch.mapper';
+import { buildUnloadingData } from '../data/unloading.mapper';
 
 function repos() {
   const templates: any[] = []; const versions: any[] = []; const vars: any[] = [];
@@ -71,5 +72,38 @@ describe('seedPdfTemplates', () => {
     const data = buildRouteDispatchData({ subsidiaryName: 'Hermosillo', drivers: [], routes: [], trackingNumber: 'S', packages: [] } as any);
     const out = new TemplateEngine().render(html, { data, brand: { logoLight: null, colors: {}, typography: {} }, system: { now: new Date() } } as any);
     expect(out).not.toContain('>HORA<');
+  });
+
+  it('unloading_pdf: HTML fiel a C3 (título, simbología, seguimiento, columnas, cobro, faltantes/sobrantes)', () => {
+    const seed = PDF_TEMPLATE_SEEDS.find((s) => s.code === 'unloading_pdf')!;
+    expect(seed).toBeTruthy();
+    const html = new PdfHtmlComposer().compose(seed.doc);
+    const data = buildUnloadingData({
+      subsidiaryName: 'Cd. Obregon', vehicleName: 'ECON-01', trackingNumber: 'DESEMB-1',
+      now: new Date('2026-07-18T20:00:00Z'), createdAt: '2026-07-18T18:30:00Z',
+      packages: [{ trackingNumber: 'T1', recipientName: 'Ana', recipientAddress: 'Calle 1', recipientZip: '85000',
+        payment: { amount: 500, type: 'COD' }, commitDateTime: '2026-07-18T20:15:00Z' }],
+      missingPackages: ['X1'],
+      unScannedTrackings: ['Y1'],
+    } as any);
+    const out = new TemplateEngine().render(html, { data, brand: { logoLight: null, colors: {}, typography: {} }, system: { now: new Date() } } as any);
+    expect(out).toContain('Desembarque');
+    expect(out).toContain('Simbología: [C] Carga/F2/31.5 [$] Pago [H] Valor alto');
+    expect(out).toContain('Número de seguimiento');
+    expect(out).toContain('No. Guía');
+    expect(out).toContain('COD $500.00');
+    expect(out).toContain('* Guías faltantes');
+    expect(out).toContain('X1');
+    expect(out).toContain('** Guías sobrantes');
+    expect(out).toContain('Y1');
+  });
+
+  it('unloading_pdf: sin faltantes/sobrantes, no muestra esas secciones', () => {
+    const seed = PDF_TEMPLATE_SEEDS.find((s) => s.code === 'unloading_pdf')!;
+    const html = new PdfHtmlComposer().compose(seed.doc);
+    const data = buildUnloadingData({ subsidiaryName: 'S', trackingNumber: 'T', packages: [] } as any);
+    const out = new TemplateEngine().render(html, { data, brand: { logoLight: null, colors: {}, typography: {} }, system: { now: new Date() } } as any);
+    expect(out).not.toContain('* Guías faltantes');
+    expect(out).not.toContain('** Guías sobrantes');
   });
 });
