@@ -21,7 +21,7 @@ export class PdfRenderer implements DocumentRenderer {
   async render(version: DocumentTemplateVersion, ctx: RenderContext): Promise<RenderResult> {
     try {
       const doc: any = version.designJson;
-      const template = doc && doc.blocks ? this.composer.compose(doc) : '';
+      const template = doc && (doc.html || doc.blocks) ? this.composer.compose(doc) : '';
       const html = this.engine.render(template, ctx);
       const buffer = await this.htmlToPdf.convert(html);
       return { format: 'pdf', mime: 'application/pdf', buffer, html };

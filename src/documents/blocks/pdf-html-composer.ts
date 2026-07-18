@@ -10,6 +10,15 @@ import { PdfBlock, PdfDoc } from './pdf-doc.types';
 export class PdfHtmlComposer {
   compose(doc: PdfDoc): string {
     const margins = doc.page.margins ?? '20px';
+    if (doc.html) {
+      return `<!doctype html><html><head><meta charset="utf-8"><style>
+      @page { size: ${doc.page.size} ${doc.page.orientation}; margin: ${margins}; }
+      * { box-sizing: border-box; font-family: {{brand.typography.fontFamily}}; }
+      body { color: {{brand.colors.text}}; margin: 0; }
+    </style></head><body>
+${doc.html}
+</body></html>`;
+    }
     const header = doc.header
       ? `<div class="doc-header"><div class="doc-title">${doc.header.title}</div>${doc.header.showDateTime ? `<div class="doc-datetime">{{system.now}}</div>` : ''}</div>`
       : '';

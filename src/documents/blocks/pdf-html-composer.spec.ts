@@ -39,6 +39,16 @@ describe('PdfHtmlComposer.compose', () => {
     expect(html).toContain('{{#unless isHermosillo}}'); // columna condicional
   });
 
+  it('rama html: envuelve la plantilla cruda con branding y @page, sin interpolar', () => {
+    const html = composer.compose({
+      page: { size: 'LETTER', orientation: 'landscape', margins: '5px' },
+      html: '<div class="x">{{title}} {{brand.colors.primary}}</div>',
+    } as any);
+    expect(html).toContain('@page { size: LETTER landscape; margin: 5px; }');
+    expect(html).toContain('<div class="x">{{title}} {{brand.colors.primary}}</div>'); // no interpola
+    expect(html).toContain('font-family: {{brand.typography.fontFamily}}');
+  });
+
   it('symbology y footer', () => {
     const html = composer.compose({ page: { size: 'LETTER', orientation: 'landscape' }, blocks: [
       { type: 'symbology', text: '[C] CARGA' }, { type: 'footer', text: 'pie {{system.env}}' },

@@ -15,5 +15,7 @@ export type PdfBlock =
 export interface PdfDoc {
   page: PdfPage;
   header?: { title: string; showDateTime?: boolean };
-  blocks: PdfBlock[];
+  /** Plantilla Handlebars completa (fiel al diseño). Si existe, gana sobre `blocks`. */
+  html?: string;
+  blocks?: PdfBlock[];
 }
