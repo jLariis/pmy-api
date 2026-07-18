@@ -23,6 +23,37 @@ describe('MailService.sendHighPriorityPackageDispatchEmail', () => {
   });
 });
 
+describe('MailService — detailLink', () => {
+  const OLD = process.env.FRONTEND_URL;
+  beforeAll(() => { process.env.FRONTEND_URL = 'https://app.example.com/'; });
+  afterAll(() => { process.env.FRONTEND_URL = OLD; });
+
+  it('desembarque manda detailLink a /operaciones/desembarques con seguimiento', async () => {
+    const { svc, templates } = make();
+    const unloading: any = {
+      subsidiary: { officeEmail: 'a@b.com', officeEmailToCopy: 'c@d.com' },
+      vehicle: { name: 'U1' }, createdAt: new Date(), trackingNumber: 'ABC123',
+    };
+    const file: any = { originalname: 'a.pdf', buffer: Buffer.from('') };
+    await svc.sendHighPriorityUnloadingEmail(file, file, 'SUC', unloading);
+    const data = (templates.render as jest.Mock).mock.calls[0][1];
+    expect(data.detailLink).toBe('https://app.example.com/operaciones/desembarques?seguimiento=ABC123');
+  });
+
+  it('cierre de ruta manda trackingNumber y detailLink a salidas-a-ruta', async () => {
+    const { svc, templates } = make();
+    const rc: any = {
+      subsidiary: { name: 'SUC', officeEmail: 'a@b.com', officeEmailToCopy: 'c@d.com' },
+      packageDispatch: { drivers: [{ name: 'Juan' }], trackingNumber: 'RC9' },
+    };
+    const file: any = { originalname: 'a.pdf', buffer: Buffer.from('') };
+    await svc.sendHighPriorityRouteClosureEmail(file, file, rc);
+    const data = (templates.render as jest.Mock).mock.calls[0][1];
+    expect(data.trackingNumber).toBe('RC9');
+    expect(data.detailLink).toBe('https://app.example.com/operaciones/salidas-a-ruta?seguimiento=RC9');
+  });
+});
+
 describe('MailService.sendHighPriorityShipmentsEmail', () => {
   it('renderiza por plantilla high_priority_shipments con la tabla del llamador y envía el html renderizado', async () => {
     const { svc, mailer, templates } = make();

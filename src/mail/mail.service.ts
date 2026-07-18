@@ -44,6 +44,17 @@ export class MailService {
     return { to, cc };
   }
 
+  /** Base del frontend sin barra final, para componer links de correo. */
+  private detailBase(): string {
+    return (process.env.FRONTEND_URL ?? 'https://app-pmy.vercel.app').replace(/\/+$/, '');
+  }
+
+  /** Link "ver en el sistema": ruta de módulo + ?seguimiento= (si hay guía). */
+  private buildDetailLink(path: string, tracking?: string): string {
+    const url = `${this.detailBase()}${path}`;
+    return tracking ? `${url}?seguimiento=${encodeURIComponent(tracking)}` : url;
+  }
+
   formatMexicanPhoneNumber = (phone: string): string => {
     // Quita todo lo que no sea dígito
     let cleaned = phone.replace(/\D/g, "");
@@ -103,6 +114,7 @@ export class MailService {
       routes: packageDispatch.routes.map((r) => r.name).join(' -> '),
       trackingNumber: packageDispatch.trackingNumber,
       driverName: packageDispatch.drivers?.[0]?.name ?? 'Sin chofer',
+      detailLink: this.buildDetailLink('/operaciones/salidas-a-ruta', packageDispatch.trackingNumber),
     });
     const { to, cc } = this.applyDevFilters(
       packageDispatch.subsidiary.officeEmail,
@@ -133,6 +145,7 @@ export class MailService {
       vehicleName: unloading.vehicle?.name,
       createdAt: unloading.createdAt,
       trackingNumber: unloading.trackingNumber,
+      detailLink: this.buildDetailLink('/operaciones/desembarques', unloading.trackingNumber),
     });
 
     const { to, cc } = this.applyDevFilters(
@@ -189,6 +202,7 @@ export class MailService {
     const rendered = await this.templates.render('devolutions', {
       subsidiaryName: subsidiary.name,
       createdAt: new Date(),
+      detailLink: this.buildDetailLink('/operaciones/devoluciones'),
     });
 
     const { to, cc } = this.applyDevFilters(
@@ -230,6 +244,7 @@ export class MailService {
         doItByUser: s.doItByUser,
         recipientPhone: this.formatMexicanPhoneNumber(s.recipientPhone),
       })),
+      detailLink: this.buildDetailLink('/reportes'),
     });
 
     const { to, cc } = this.applyDevFilters(
@@ -271,6 +286,8 @@ export class MailService {
       subsidiaryName: routeClosure.subsidiary.name,
       driverName: routeClosure.packageDispatch.drivers[0]?.name,
       createdAt: new Date(),
+      trackingNumber: routeClosure.packageDispatch?.trackingNumber,
+      detailLink: this.buildDetailLink('/operaciones/salidas-a-ruta', routeClosure.packageDispatch?.trackingNumber),
     });
 
     const { to, cc } = this.applyDevFilters(
@@ -313,6 +330,7 @@ export class MailService {
       subsidiaryName,
       inventoryDate: inventory.inventoryDate,
       trackingNumber: inventory.trackingNumber,
+      detailLink: this.buildDetailLink('/operaciones/inventarios', inventory.trackingNumber),
     });
 
     const { to, cc } = this.applyDevFilters(
