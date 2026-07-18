@@ -18,6 +18,8 @@ import { PackageDispatchHistory } from 'src/entities/package-dispatch-history.en
 import { DateTime } from 'luxon';
 import * as ExcelJS from 'exceljs';
 import { PaginatedResult, parsePagination, resolveDateRange } from 'src/common/pagination.util';
+import { TemplateService } from 'src/documents/template.service';
+import { buildRouteDispatchData, RouteDispatchInput, RouteDispatchPackage } from 'src/documents/data/route-dispatch.mapper';
 
 @Injectable()
 export class PackageDispatchService {
@@ -43,6 +45,7 @@ export class PackageDispatchService {
     @InjectRepository(PackageDispatchHistory)
     private readonly packageDispatchHistoryRepository: Repository<PackageDispatchHistory>,
     private readonly dataSource: DataSource,
+    private readonly templateService: TemplateService,
 
   ){ }
 
@@ -1077,13 +1080,73 @@ export class PackageDispatchService {
     console.log("🚀 ~ PackageDispatchService ~ sendByEmail ~ packageDispatchId:", packageDispatchId)
 
     const packageDispatch = await this.packageDispatchRepository.findOne(
-      { 
+      {
         where: {id: packageDispatchId},
         relations: ['drivers', 'routes', 'vehicle', 'subsidiary']
       });
     console.log("🚀 ~ PackageDispatchService ~ sendByEmail ~ packageDispatch:", packageDispatch)
 
+    // Unificación "Salida a Ruta": detrás de flag, el backend genera PDF/Excel por el
+    // Motor de Plantillas (plantilla canónica única). Si algo falla, se conservan los
+    // archivos subidos por el frontend (respaldo). Flag OFF => comportamiento actual intacto.
+    if (process.env.DOC_ENGINE_ROUTE_DISPATCH === 'true') {
+      try {
+        const input = await this.loadRouteDispatchInput(packageDispatchId, subsidiaryName);
+        const gen = await this.renderRouteDispatchDocuments(input);
+        if (gen.pdf) pdfFile = { ...pdfFile, buffer: gen.pdf };
+        if (gen.excel) excelfile = { ...excelfile, buffer: gen.excel };
+      } catch (e: any) {
+        this.logger.warn(`Motor route_dispatch falló; uso archivos subidos: ${e?.message}`);
+      }
+    }
+
     return await this.mailService.sendHighPriorityPackageDispatchEmail(pdfFile, excelfile, subsidiaryName, packageDispatch)
+  }
+
+  /** Genera PDF+Excel de "Salida a Ruta" por el motor. Si un formato no entrega buffer, queda undefined (respaldo). */
+  async renderRouteDispatchDocuments(input: RouteDispatchInput): Promise<{ pdf?: Buffer; excel?: Buffer }> {
+    const data = buildRouteDispatchData(input);
+    const [pdf, excel] = await Promise.all([
+      this.templateService.render('route_dispatch_pdf', data).then((r) => r.buffer).catch(() => undefined),
+      this.templateService.render('route_dispatch_excel', data).then((r) => r.buffer).catch(() => undefined),
+    ]);
+    return { pdf, excel };
+  }
+
+  /** Carga el despacho + sus envíos y arma el RouteDispatchInput (espejo backend de mapToPackageInfo). */
+  private async loadRouteDispatchInput(packageDispatchId: string, subsidiaryName: string): Promise<RouteDispatchInput> {
+    const dispatch = await this.packageDispatchRepository.findOne({
+      where: { id: packageDispatchId },
+      relations: ['drivers', 'routes', 'vehicle', 'subsidiary'],
+    });
+    const [shipments, chargeShipments] = await Promise.all([
+      this.shipmentRepository.find({ where: { packageDispatch: { id: packageDispatchId } }, relations: ['payment'] }),
+      this.chargeShipmentRepository.find({ where: { packageDispatch: { id: packageDispatchId } }, relations: ['payment'] }),
+    ]);
+    const map = (s: any, isCharge: boolean): RouteDispatchPackage => ({
+      trackingNumber: s.trackingNumber,
+      recipientName: s.recipientName,
+      recipientAddress: s.recipientAddress,
+      recipientZip: s.recipientZip,
+      recipientPhone: s.recipientPhone,
+      commitDateTime: s.commitDateTime ? new Date(s.commitDateTime).toISOString() : undefined,
+      isCharge,
+      isHighValue: s.isHighValue,
+      payment: s.payment ? { amount: s.payment.amount, type: s.payment.type } : null,
+      shipmentType: s.shipmentType,
+      consolidated: undefined, // aereo ([A]) no disponible aquí sin cargar Consolidated — gap conocido del pattern-setter
+    });
+    return {
+      subsidiaryName: dispatch?.subsidiary?.name ?? subsidiaryName,
+      vehicleName: dispatch?.vehicle?.name,
+      drivers: (dispatch?.drivers ?? []).map((d: any) => ({ name: d.name })),
+      routes: (dispatch?.routes ?? []).map((r: any) => ({ name: r.name })),
+      trackingNumber: dispatch?.trackingNumber ?? '',
+      packages: [...shipments.map((s) => map(s, false)), ...chargeShipments.map((s) => map(s, true))],
+      invalidTrackings: [],
+      sortByPostalCode: true,
+      createdAt: dispatch?.createdAt,
+    };
   }
 
   async updateFedexDataByPackageDispatchId(packageDispatchId: string) {
