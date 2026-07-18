@@ -12,7 +12,7 @@ export interface EmailSeed { code: string; name: string; subject: string; blocks
 /** Inventario de correos (spec §9). Paridad: cada variable actual está declarada. */
 export const EMAIL_TEMPLATE_SEEDS: EmailSeed[] = [
   { code: 'route_dispatch', name: 'Salida a Ruta',
-    subject: 'Salida a ruta - {{driverName}} - {{formatDate createdAt}}',
+    subject: '🚚 Salida a Ruta - {{driverName}} - {{subsidiaryName}} - {{formatDate createdAt}}',
     blocks: [
       { id: 'h', type: 'heading', text: '🚚 Reporte de Salida a Ruta' },
       { id: 'p', type: 'paragraph', text: 'Se generó un reporte de <b>Salida a Ruta</b> para la sucursal <b>{{subsidiaryName}}</b> en la unidad <b>{{vehicleName}}</b>.' },
@@ -22,6 +22,7 @@ export const EMAIL_TEMPLATE_SEEDS: EmailSeed[] = [
         { label: 'Ruta(s)', value: '{{routes}}' },
         { label: 'Seguimiento', value: '{{trackingNumber}}' },
       ] },
+      { id: 'link', type: 'button', text: 'Ver en el sistema', url: '{{detailLink}}', when: 'detailLink' },
     ],
     variables: [
       { name: 'subsidiaryName', label: 'Sucursal', required: true },
@@ -31,10 +32,11 @@ export const EMAIL_TEMPLATE_SEEDS: EmailSeed[] = [
       { name: 'routes', label: 'Rutas' },
       { name: 'trackingNumber', label: 'Número de seguimiento' },
       { name: 'driverName', label: 'Chofer principal' },
+      { name: 'detailLink', label: 'Enlace al sistema' },
     ] },
 
   { code: 'unloading', name: 'Desembarque',
-    subject: '🚚 Desembarque {{formatDate createdAt}} de {{subsidiaryName}}',
+    subject: '🚚 Desembarque - {{subsidiaryName}} - {{formatDate createdAt}}',
     blocks: [
       { id: 'h', type: 'heading', text: '🚚 Reporte de Desembarque' },
       { id: 'p', type: 'paragraph', text: 'Se generó un reporte de <b>Desembarque</b> para la sucursal <b>{{subsidiaryName}}</b> descargado de la unidad <b>{{vehicleName}}</b>.' },
@@ -42,28 +44,38 @@ export const EMAIL_TEMPLATE_SEEDS: EmailSeed[] = [
         { label: 'Fecha y hora', value: '{{formatDate createdAt}}' },
         { label: 'Seguimiento', value: '{{trackingNumber}}' },
       ] },
+      { id: 'link', type: 'button', text: 'Ver en el sistema', url: '{{detailLink}}', when: 'detailLink' },
     ],
     variables: [
       { name: 'subsidiaryName', label: 'Sucursal', required: true },
       { name: 'vehicleName', label: 'Unidad' },
       { name: 'createdAt', label: 'Fecha y hora', dataType: 'date' },
       { name: 'trackingNumber', label: 'Número de seguimiento' },
+      { name: 'detailLink', label: 'Enlace al sistema' },
     ] },
 
   { code: 'route_closure', name: 'Cierre de Ruta',
-    subject: '🚚 CIERRE DE RUTA - {{driverName}} - {{formatDate createdAt}} DE {{subsidiaryName}}',
+    subject: '🚚 Cierre de Ruta - {{driverName}} - {{subsidiaryName}} - {{formatDate createdAt}}',
     blocks: [
       { id: 'h', type: 'heading', text: '🚚 Reporte de Cierre de Ruta' },
       { id: 'p', type: 'paragraph', text: 'Se generó un reporte de <b>Cierre de Ruta</b> para la sucursal <b>{{subsidiaryName}}</b>.' },
+      { id: 'kv', type: 'keyValue', items: [
+        { label: 'Fecha y hora', value: '{{formatDate createdAt}}' },
+        { label: 'Chofer', value: '{{driverName}}' },
+        { label: 'Seguimiento', value: '{{trackingNumber}}' },
+      ] },
+      { id: 'link', type: 'button', text: 'Ver en el sistema', url: '{{detailLink}}', when: 'detailLink' },
     ],
     variables: [
       { name: 'subsidiaryName', label: 'Sucursal', required: true },
       { name: 'driverName', label: 'Chofer' },
       { name: 'createdAt', label: 'Fecha y hora', dataType: 'date' },
+      { name: 'trackingNumber', label: 'Número de seguimiento' },
+      { name: 'detailLink', label: 'Enlace al sistema' },
     ] },
 
   { code: 'inventory_report', name: 'Inventario',
-    subject: '📦 Inventario {{formatDate inventoryDate}} de {{subsidiaryName}}',
+    subject: '📦 Inventario - {{subsidiaryName}} - {{formatDate inventoryDate}}',
     blocks: [
       { id: 'h', type: 'heading', text: '📦 Reporte de Inventario' },
       { id: 'p', type: 'paragraph', text: 'Se generó un reporte de <b>Inventario</b> para la sucursal <b>{{subsidiaryName}}</b>.' },
@@ -71,22 +83,26 @@ export const EMAIL_TEMPLATE_SEEDS: EmailSeed[] = [
         { label: 'Fecha', value: '{{formatDate inventoryDate}}' },
         { label: 'Seguimiento', value: '{{trackingNumber}}' },
       ] },
+      { id: 'link', type: 'button', text: 'Ver en el sistema', url: '{{detailLink}}', when: 'detailLink' },
     ],
     variables: [
       { name: 'subsidiaryName', label: 'Sucursal', required: true },
       { name: 'inventoryDate', label: 'Fecha de inventario', dataType: 'date' },
       { name: 'trackingNumber', label: 'Número de seguimiento' },
+      { name: 'detailLink', label: 'Enlace al sistema' },
     ] },
 
   { code: 'devolutions', name: 'Devoluciones/Recolecciones',
-    subject: '🚚 Devoluciones/Recolecciones {{formatDate createdAt}} de {{subsidiaryName}}',
+    subject: '🔄 Devoluciones/Recolecciones - {{subsidiaryName}} - {{formatDate createdAt}}',
     blocks: [
       { id: 'h', type: 'heading', text: '🚚 Reporte de Devoluciones/Recolecciones' },
       { id: 'p', type: 'paragraph', text: 'Se generó un reporte de <b>Devoluciones/Recolecciones</b> para la sucursal <b>{{subsidiaryName}}</b>.' },
+      { id: 'link', type: 'button', text: 'Ver en el sistema', url: '{{detailLink}}', when: 'detailLink' },
     ],
     variables: [
       { name: 'subsidiaryName', label: 'Sucursal', required: true },
       { name: 'createdAt', label: 'Fecha y hora', dataType: 'date' },
+      { name: 'detailLink', label: 'Enlace al sistema' },
     ] },
 
   { code: 'dex03_report', name: 'Paquetes con status DEX03',
@@ -103,11 +119,13 @@ export const EMAIL_TEMPLATE_SEEDS: EmailSeed[] = [
         { label: 'Por', key: 'doItByUser' },
         { label: 'Teléfono', key: 'recipientPhone' },
       ] },
+      { id: 'link', type: 'button', text: 'Ver en el sistema', url: '{{detailLink}}', when: 'detailLink' },
     ],
     variables: [
       { name: 'subsidiaryName', label: 'Sucursal', required: true },
       { name: 'today', label: 'Fecha del reporte', dataType: 'date' },
       { name: 'rows', label: 'Filas (envíos DEX03)' },
+      { name: 'detailLink', label: 'Enlace al sistema' },
     ] },
 
   { code: 'high_priority_shipments', name: 'Envíos Prioridad Alta en Curso',

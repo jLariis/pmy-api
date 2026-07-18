@@ -88,3 +88,36 @@ describe('seedEmailTemplates', () => {
     );
   });
 });
+
+const byCode = (c: string) => EMAIL_TEMPLATE_SEEDS.find((s) => s.code === c)!;
+
+describe('EMAIL_TEMPLATE_SEEDS — asuntos y link al sistema', () => {
+  const reportCodes = ['route_dispatch', 'unloading', 'route_closure', 'inventory_report', 'devolutions', 'dex03_report'];
+
+  it('route_dispatch incluye chofer y sucursal en el asunto', () => {
+    expect(byCode('route_dispatch').subject).toContain('{{driverName}}');
+    expect(byCode('route_dispatch').subject).toContain('{{subsidiaryName}}');
+  });
+
+  it('todos los reportes declaran la variable detailLink', () => {
+    for (const code of reportCodes) {
+      const seed = byCode(code);
+      expect(seed.variables.some((v) => v.name === 'detailLink')).toBe(true);
+    }
+  });
+
+  it('todos los reportes tienen un botón "Ver en el sistema" condicionado a detailLink', () => {
+    for (const code of reportCodes) {
+      const btn = byCode(code).blocks.find((b: any) => b.type === 'button' && b.when === 'detailLink');
+      expect(btn).toBeTruthy();
+      expect((btn as any).url).toBe('{{detailLink}}');
+    }
+  });
+
+  it('cierre de ruta declara y muestra el número de seguimiento', () => {
+    const seed = byCode('route_closure');
+    expect(seed.variables.some((v) => v.name === 'trackingNumber')).toBe(true);
+    const kv = seed.blocks.find((b: any) => b.type === 'keyValue') as any;
+    expect(kv.items.some((i: any) => i.value === '{{trackingNumber}}')).toBe(true);
+  });
+});
