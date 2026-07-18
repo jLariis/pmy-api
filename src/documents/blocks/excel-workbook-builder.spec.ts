@@ -52,6 +52,43 @@ describe('ExcelWorkbookBuilder.build', () => {
     expect(ws.getRow(1).getCell(1).value).toBe('REPORTE - OBREGÓN'); // título interpolado en fila 1
   });
 
+  it('renderiza secciones: title, info, band y table con rowFill', async () => {
+    const doc2: any = { sheets: [{
+      name: 'Despacho',
+      sections: [
+        { kind: 'title', text: '🚚 {{title}}', fill: 'ef883a', font: { size: 16, bold: true, color: 'FFFFFF' }, mergeTo: 9 },
+        { kind: 'spacer' },
+        { kind: 'info', mergeTo: 9, rows: [{ text: 'Ruta: {{routeNamesArrow}}' }, { text: 'Paquetes: {{stats.total}}' }] },
+        { kind: 'band', rowsVar: 'invalidChunks', fill: 'FFE6E6', font: { bold: true, color: 'CC0000' }, mergeTo: 9 },
+        { kind: 'table', rowsVar: 'rows',
+          headerFill: '8c5e4e', headerFont: { bold: true, color: 'FFFFFF' }, headerHeight: 20, headerAlign: 'center',
+          bordered: true, cellAlign: 'center', wrap: true, rowFillKey: 'rowFill',
+          columns: [ { key: 'index', label: 'No.', width: 5 }, { key: 'trackingNumber', label: 'Guía', width: 18 } ] },
+      ],
+    }] };
+    const buf = await builder.build(doc2, ctx({
+      title: 'Salida a Ruta', routeNamesArrow: 'R1 -> R2', stats: { total: 2 },
+      invalidChunks: ['📦 AAA'],
+      rows: [{ index: 1, trackingNumber: 'T1', rowFill: 'F2F2F2' }, { index: 2, trackingNumber: 'T2', rowFill: 'fff2cc' }],
+    }));
+    const wb = await load(buf);
+    const ws = wb.getWorksheet('Despacho')!;
+    expect(ws.getCell('A1').value).toBe('🚚 Salida a Ruta');
+    expect((ws.getCell('A1').fill as any).fgColor.argb).toBe('ef883a');
+    expect(String(ws.getRow(3).getCell(1).value)).toBe('Ruta: R1 -> R2');
+    const values: string[] = [];
+    let headerRowNum = 0;
+    ws.eachRow({ includeEmpty: true }, (r, n) => {
+      values.push(String(r.getCell(1).value));
+      if (r.getCell(1).value === 'No.') headerRowNum = n;
+    });
+    expect(values).toContain('📦 AAA');
+    expect(headerRowNum).toBeGreaterThan(0);
+    expect((ws.getRow(headerRowNum).getCell(1).fill as any).fgColor.argb).toBe('8c5e4e');
+    const paidRow = headerRowNum + 2; // segunda fila de datos
+    expect((ws.getRow(paidRow).getCell(1).fill as any).fgColor.argb).toBe('fff2cc');
+  });
+
   it('no permite que la alineación de una columna pise el título centrado', async () => {
     const withTitleAndAlign: ExcelDoc = { sheets: [{
       name: 'T',

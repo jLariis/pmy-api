@@ -27,4 +27,10 @@ export class TemplateEngine {
     const tpl = this.hb.compile(source ?? '', { noEscape: false });
     return tpl({ ...ctx.data, brand: ctx.brand, system: ctx.system });
   }
+
+  /** Interpolación SIN escape HTML — para destinos no-HTML (Excel), donde `->`, `'`, etc. deben quedar literales. */
+  renderRaw(source: string, ctx: RenderContext): string {
+    const tpl = this.hb.compile(source ?? '', { noEscape: true });
+    return tpl({ ...ctx.data, brand: ctx.brand, system: ctx.system });
+  }
 }
