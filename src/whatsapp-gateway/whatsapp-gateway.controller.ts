@@ -2,7 +2,6 @@ import { Body, Controller, Get, Post, UseGuards, BadRequestException } from '@ne
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { AdminGuard } from 'src/auth/guards/admin.guard';
 import { WhatsappGatewayService } from './whatsapp-gateway.service';
-import { WhatsappSettingsService } from 'src/whatsapp-settings/whatsapp-settings.service';
 
 @ApiTags('whatsapp')
 @ApiBearerAuth()
@@ -10,7 +9,6 @@ import { WhatsappSettingsService } from 'src/whatsapp-settings/whatsapp-settings
 export class WhatsappGatewayController {
   constructor(
     private readonly gateway: WhatsappGatewayService,
-    private readonly settings: WhatsappSettingsService,
   ) {}
 
   /** Estado de la conexión + QR (si está pendiente de vincular). Solo admin. */
@@ -36,17 +34,15 @@ export class WhatsappGatewayController {
 
   /**
    * Envía un mensaje. Cualquier usuario autenticado (el monitoreo lo usa).
-   * Si no se manda `to`, usa el número del chofer configurado en whatsapp-settings.
+   * El número destino `to` es obligatorio: el frontend lo resuelve al enviar
+   * (custom / chofer / encargado).
    */
   @Post('send')
   async send(@Body() dto: { message?: string; to?: string }) {
     const message = (dto?.message || '').trim();
     if (!message) throw new BadRequestException('El mensaje no puede estar vacío.');
-    let to = (dto?.to || '').replace(/\D/g, '');
-    if (!to) {
-      const cfg = await this.settings.get();
-      to = (cfg.driverPhone || '').replace(/\D/g, '');
-    }
+    const to = (dto?.to || '').replace(/\D/g, '');
+    if (!to) throw new BadRequestException('Falta el número destino.');
     return this.gateway.sendText(to, message);
   }
 }
