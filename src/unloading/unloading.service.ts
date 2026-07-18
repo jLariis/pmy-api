@@ -17,6 +17,8 @@ import { ShipmentsService } from 'src/shipments/shipments.service';
 import { fromZonedTime } from 'date-fns-tz';
 import { differenceInCalendarDays } from 'date-fns';
 import { ValidationPayloadDto } from './dto/validate-payload.dto';
+import { TemplateService } from 'src/documents/template.service';
+import { buildUnloadingData, UnloadingInput, UnloadingPackage } from 'src/documents/data/unloading.mapper';
 
 
 @Injectable()
@@ -40,6 +42,7 @@ export class UnloadingService {
     @InjectRepository(ShipmentStatus)
     private readonly shipmentStatusRepository: Repository<ShipmentStatus>,
     private readonly dataSource: DataSource,
+    private readonly templateService: TemplateService,
   ) {}
 
   /**
@@ -3172,6 +3175,20 @@ export class UnloadingService {
       this.logger.error(`Error enviando correo de prioridades para unloading ${unloading.id}`, err);
     }
 
+    // Unificación "Desembarque": detrás de flag, el backend genera PDF/Excel por el
+    // Motor de Plantillas (plantilla canónica única). Si algo falla, se conservan los
+    // archivos subidos por el frontend (respaldo). Flag OFF => comportamiento actual intacto.
+    if (process.env.DOC_ENGINE_UNLOADING === 'true') {
+      try {
+        const input = this.loadUnloadingInput(unloading, subsidiaryName);
+        const gen = await this.renderUnloadingDocuments(input);
+        if (gen.pdf) file = { ...file, buffer: gen.pdf };
+        if (gen.excel) excelFile = { ...excelFile, buffer: gen.excel };
+      } catch (e: any) {
+        this.logger.warn(`Motor unloading falló; uso archivos subidos: ${e?.message}`);
+      }
+    }
+
     // segundo correo con los archivos adjuntos
     try {
       return await this.mailService.sendHighPriorityUnloadingEmail(
@@ -3184,6 +3201,45 @@ export class UnloadingService {
       this.logger.error(`Error enviando correo de unloading con archivos adjuntos para ${unloading.id}`, err);
       throw err; // importante propagar para que el flujo lo sepa
     }
+  }
+
+  /** Genera PDF+Excel de "Desembarque" por el motor. Si un formato no entrega buffer, queda undefined (respaldo). */
+  async renderUnloadingDocuments(input: UnloadingInput): Promise<{ pdf?: Buffer; excel?: Buffer }> {
+    const data = buildUnloadingData(input);
+    const [pdf, excel] = await Promise.all([
+      this.templateService.render('unloading_pdf', data).then((r) => r.buffer).catch(() => undefined),
+      this.templateService.render('unloading_excel', data).then((r) => r.buffer).catch(() => undefined),
+    ]);
+    return { pdf, excel };
+  }
+
+  /** Arma el UnloadingInput a partir del Unloading ya cargado (espejo backend de UnloadingPDFReport/generateUnloadingExcelClient).
+   * Gap conocido: `missingTrackings`/`unScannedTrackings` solo guardan el tracking (sin datos del
+   * destinatario), aunque el frontend soporta una versión enriquecida; el data-provider degrada sin romper. */
+  private loadUnloadingInput(unloading: Unloading, subsidiaryName: string): UnloadingInput {
+    const map = (s: any, isCharge: boolean): UnloadingPackage => ({
+      trackingNumber: s.trackingNumber,
+      recipientName: s.recipientName,
+      recipientAddress: s.recipientAddress,
+      recipientZip: s.recipientZip,
+      recipientPhone: s.recipientPhone,
+      commitDateTime: s.commitDateTime ? new Date(s.commitDateTime).toISOString() : undefined,
+      isCharge,
+      isHighValue: s.isHighValue,
+      payment: s.payment ? { amount: s.payment.amount, type: s.payment.type } : null,
+    });
+    return {
+      subsidiaryName: unloading.subsidiary?.name ?? subsidiaryName,
+      vehicleName: unloading.vehicle?.name,
+      trackingNumber: unloading.trackingNumber ?? '',
+      packages: [
+        ...(unloading.shipments ?? []).map((s) => map(s, false)),
+        ...(unloading.chargeShipments ?? []).map((s) => map(s, true)),
+      ],
+      missingPackages: unloading.missingTrackings ?? [],
+      unScannedTrackings: unloading.unScannedTrackings ?? [],
+      createdAt: unloading.createdAt,
+    };
   }
 
   async findShipmentsByUnloadingId(id: string) {
