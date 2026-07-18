@@ -36,6 +36,7 @@ export * from './role.entity';
 export * from './permission.entity';
 export * from './company-settings.entity';
 export * from './whatsapp-settings.entity';
+export * from './whatsapp-template.entity';
 export * from './catalog-item.entity';
 export * from './geocode-cache.entity';
 export * from './expense-category-group.entity';
