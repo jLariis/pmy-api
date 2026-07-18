@@ -3,6 +3,7 @@ import { DocumentTemplate } from 'src/entities/document-template.entity';
 import { DocumentTemplateVersion } from 'src/entities/document-template-version.entity';
 import { TemplateVariableDef } from 'src/entities/template-variable-def.entity';
 import { PdfDoc } from '../blocks/pdf-doc.types';
+import { ROUTE_DISPATCH_PDF_HTML } from './templates/route-dispatch.pdf.html';
 
 export interface PdfSeedVar { name: string; label: string; dataType?: string; }
 export interface PdfSeed { code: string; name: string; doc: PdfDoc; variables: PdfSeedVar[]; }
@@ -34,7 +35,22 @@ const warehouseDispatch: PdfDoc = {
   ],
 };
 
+/** route_dispatch_pdf — "Salida a Ruta" rica (fiel a C1, frontend). Presentación HTML; datos en el data-provider. */
+const routeDispatch: PdfDoc = {
+  page: { size: 'LETTER', orientation: 'landscape', margins: '5px' },
+  html: ROUTE_DISPATCH_PDF_HTML,
+};
+
 export const PDF_TEMPLATE_SEEDS: PdfSeed[] = [
+  { code: 'route_dispatch_pdf', name: 'Salida a Ruta (PDF)', doc: routeDispatch,
+    variables: [
+      { name: 'subsidiaryName', label: 'Sucursal' }, { name: 'vehicleName', label: 'Vehículo' },
+      { name: 'mainDriver', label: 'Chofer principal' }, { name: 'routeNames', label: 'Rutas' },
+      { name: 'trackingNumber', label: 'Seguimiento' }, { name: 'isHermosillo', label: 'Es Hermosillo', dataType: 'boolean' },
+      { name: 'generatedDate', label: 'Fecha generación' }, { name: 'generatedTime', label: 'Hora generación' },
+      { name: 'stats', label: 'Métricas' }, { name: 'rows', label: 'Filas de paquetes' },
+      { name: 'invalidRows', label: 'Trackings inválidos' }, { name: 'hasInvalid', label: 'Hay inválidos', dataType: 'boolean' },
+    ] },
   { code: 'warehouse_dispatch_pdf', name: 'Salida a Ruta / Bodega (PDF)', doc: warehouseDispatch,
     variables: [
       { name: 'title', label: 'Título' },
