@@ -69,6 +69,18 @@ describe('seedEmailTemplates', () => {
     expect(Array.isArray(after.designJson.body.rows)).toBe(true);
   });
 
+  it('re-sembrar refresca el asunto si el changelog sigue siendo el del seed', async () => {
+    const r = repos();
+    await seedEmailTemplates(r as any);
+    const before = r._state.versions.find((x: any) => x.templateId && x.version === 1);
+    before.subject = 'ASUNTO VIEJO';
+    before.changelog = 'Seed inicial (bloques, paridad con legacy)';
+    await seedEmailTemplates(r as any);
+    const after = r._state.versions.find((x: any) => x.templateId === before.templateId && x.version === 1);
+    expect(after.subject).not.toBe('ASUNTO VIEJO');
+    expect(String(after.subject).length).toBeGreaterThan(0);
+  });
+
   it('no toca designJson si el changelog indica edición del usuario', async () => {
     const r = repos();
     await seedEmailTemplates(r as any);

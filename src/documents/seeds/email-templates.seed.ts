@@ -215,7 +215,8 @@ export async function seedEmailTemplates(repos: SeedRepos): Promise<void> {
       }));
     } else if (typeof version.changelog === 'string' && version.changelog.startsWith('Seed')) {
       // No fue editada por el usuario (changelog sigue siendo el del seed): refrescar
-      // designJson al formato Unlayer (el editor no entiende { blocks: [...] }).
+      // asunto + designJson (Unlayer) + compiledBody con el contenido actual del seed.
+      version.subject = seed.subject;
       version.designJson = blocksToUnlayerDesign(seed.blocks);
       version.compiledBody = composer.compose({ blocks: seed.blocks });
       await repos.verRepo.save(version);
