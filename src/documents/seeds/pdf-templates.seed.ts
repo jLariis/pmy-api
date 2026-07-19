@@ -6,6 +6,7 @@ import { PdfDoc } from '../blocks/pdf-doc.types';
 import { ROUTE_DISPATCH_PDF_HTML } from './templates/route-dispatch.pdf.html';
 import { UNLOADING_PDF_HTML } from './templates/unloading.pdf.html';
 import { INVENTORY_PDF_HTML } from './templates/inventory.pdf.html';
+import { ROUTE_CLOSURE_PDF_HTML } from './templates/route-closure.pdf.html';
 
 export interface PdfSeedVar { name: string; label: string; dataType?: string; }
 export interface PdfSeed { code: string; name: string; doc: PdfDoc; variables: PdfSeedVar[]; }
@@ -55,6 +56,12 @@ const inventory: PdfDoc = {
   html: INVENTORY_PDF_HTML,
 };
 
+/** route_closure_pdf — "Cierre de Ruta" rica (fiel a C7, frontend). LETTER portrait, 2 columnas (flex). */
+const routeClosure: PdfDoc = {
+  page: { size: 'LETTER', orientation: 'portrait', margins: '12px' },
+  html: ROUTE_CLOSURE_PDF_HTML,
+};
+
 export const PDF_TEMPLATE_SEEDS: PdfSeed[] = [
   { code: 'route_dispatch_pdf', name: 'Salida a Ruta (PDF)', doc: routeDispatch,
     variables: [
@@ -95,6 +102,16 @@ export const PDF_TEMPLATE_SEEDS: PdfSeed[] = [
       { name: 'rows', label: 'Filas de paquetes' },
       { name: 'missingPreview', label: 'Guías faltantes (máx. 15)' }, { name: 'hasMissing', label: 'Hay faltantes', dataType: 'boolean' },
       { name: 'unScannedPreview', label: 'Guías sin escaneo (máx. 15)' }, { name: 'hasUnScanned', label: 'Hay sin escaneo', dataType: 'boolean' },
+    ] },
+  { code: 'route_closure_pdf', name: 'Cierre de Ruta (PDF)', doc: routeClosure,
+    variables: [
+      { name: 'subsidiaryName', label: 'Sucursal' }, { name: 'vehicleName', label: 'Vehículo' },
+      { name: 'mainDriver', label: 'Chofer' }, { name: 'routeNames', label: 'Rutas' },
+      { name: 'dispatchDate', label: 'Fecha de despacho' }, { name: 'stats', label: 'Métricas (desglose, DEX, %devolución)' },
+      { name: 'returnedRows', label: 'Paquetes devueltos' }, { name: 'hasReturned', label: 'Hay devueltos', dataType: 'boolean' },
+      { name: 'noVanRows', label: 'Paquetes No VAN' }, { name: 'hasNoVan', label: 'Hay No VAN', dataType: 'boolean' },
+      { name: 'collections', label: 'Guías de recolección' }, { name: 'hasCollections', label: 'Hay recolecciones', dataType: 'boolean' },
+      { name: 'podCharges', label: 'Cobros (POD entregados)' }, { name: 'hasPodCharges', label: 'Hay cobros', dataType: 'boolean' },
     ] },
 ];
 

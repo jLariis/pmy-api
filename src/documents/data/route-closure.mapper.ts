@@ -139,6 +139,7 @@ export function buildRouteClosureData(input: RouteClosureInput): Record<string, 
       recipientAddress: p.recipientAddress || 'N/A',
       date: format(z, 'yyyy-MM-dd'),
       time: format(z, 'HH:mm:ss'),
+      rowClass: i % 2 === 0 ? 'even' : '',
       rowFill: i % 2 === 0 ? 'F8F9FA' : null,
     };
   });

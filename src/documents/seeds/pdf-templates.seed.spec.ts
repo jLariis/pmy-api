@@ -4,6 +4,7 @@ import { TemplateEngine } from '../template-engine';
 import { buildRouteDispatchData } from '../data/route-dispatch.mapper';
 import { buildUnloadingData } from '../data/unloading.mapper';
 import { buildInventoryData } from '../data/inventory.mapper';
+import { buildRouteClosureData } from '../data/route-closure.mapper';
 
 function repos() {
   const templates: any[] = []; const versions: any[] = []; const vars: any[] = [];
@@ -164,5 +165,60 @@ describe('seedPdfTemplates', () => {
     const out = new TemplateEngine().render(html, { data, brand: { logoLight: null, colors: {}, typography: {} }, system: { now: new Date() } } as any);
     expect(out).toContain('...y 3 más');
     expect(out).not.toContain('M16');
+  });
+
+  it('route_closure_pdf: LETTER portrait', () => {
+    const seed = PDF_TEMPLATE_SEEDS.find((s) => s.code === 'route_closure_pdf')!;
+    expect(seed).toBeTruthy();
+    expect(seed.doc.page.size).toBe('LETTER');
+    expect(seed.doc.page.orientation).toBe('portrait');
+  });
+
+  it('route_closure_pdf: HTML fiel a C7 (título, grid, 2 columnas, devueltos, NO VAN, DEX, desglose, recolecciones, cobros, stats, firmas)', () => {
+    const seed = PDF_TEMPLATE_SEEDS.find((s) => s.code === 'route_closure_pdf')!;
+    const html = new PdfHtmlComposer().compose(seed.doc);
+    expect(html).toContain('class="rc-left"');
+    expect(html).toContain('class="rc-right"');
+    const data = buildRouteClosureData({
+      subsidiaryName: 'Cd. Obregon', vehicleName: 'ECON-01', drivers: [{ name: 'Juan' }], routes: [{ name: 'R1' }],
+      trackingNumber: 'DESP-1', kmsInitial: '100', kmsFinal: '250', dispatchCreatedAt: '2026-07-18T15:00:00Z',
+      now: new Date('2026-07-18T20:00:00Z'),
+      allPackages: [
+        { trackingNumber: 'A1', shipmentType: 'fedex' },
+        { trackingNumber: 'A2', shipmentType: 'dhl', status: 'direccion_incorrecta', exceptionCode: '03', payment: { amount: 200, type: 'COD' } },
+      ],
+      returnedPackages: [{ trackingNumber: 'A2', shipmentType: 'dhl', status: 'direccion_incorrecta', exceptionCode: '03', recipientName: 'Ana' }],
+      podPackages: [{ trackingNumber: 'A1', shipmentType: 'fedex', payment: { amount: 500, type: 'COD' } }],
+      noVanPackages: [{ trackingNumber: 'X1', status: 'Entregado' }],
+      collections: ['REC-1'],
+    } as any);
+    const out = new TemplateEngine().render(html, { data, brand: { logoLight: null, colors: {}, typography: {} }, system: { now: new Date() } } as any);
+    expect(out).toContain('CIERRE DE RUTA');
+    expect(out).toContain('DEVUELTOS (1)');
+    expect(out).toContain('DEX03');
+    expect(out).toContain('PAQUETES NO VAN (1)');
+    expect(out).toContain('DEX - EXCEPCIONES');
+    expect(out).toContain('DESGLOSE POR PAQUETERÍA');
+    expect(out).toContain('RECOLECCIONES (1)');
+    expect(out).toContain('REC-1');
+    expect(out).toContain('COBROS (1)');
+    expect(out).toContain('$500');
+    expect(out).toContain('% DEVOLUCIÓN');
+    expect(out).toContain('FIRMA DE CONFORMIDAD');
+    expect(out).toContain('FIRMA DE CONFIRMACIÓN');
+  });
+
+  it('route_closure_pdf: sin devueltos/No VAN/recolecciones/cobros, muestra los placeholders "No hay..."', () => {
+    const seed = PDF_TEMPLATE_SEEDS.find((s) => s.code === 'route_closure_pdf')!;
+    const html = new PdfHtmlComposer().compose(seed.doc);
+    const data = buildRouteClosureData({
+      subsidiaryName: 'S', drivers: [], routes: [], trackingNumber: 'T',
+      allPackages: [], returnedPackages: [], podPackages: [],
+    } as any);
+    const out = new TemplateEngine().render(html, { data, brand: { logoLight: null, colors: {}, typography: {} }, system: { now: new Date() } } as any);
+    expect(out).toContain('No hay devueltos');
+    expect(out).toContain('No hay paquetes No VAN');
+    expect(out).toContain('No hay recolecciones');
+    expect(out).toContain('No hay cobros');
   });
 });
