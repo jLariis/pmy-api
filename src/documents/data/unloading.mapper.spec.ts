@@ -66,6 +66,26 @@ it('formatPaymentLabel: vacío sin payment, formateado con payment', () => {
   expect(formatPaymentLabel({ amount: 1234.5, type: 'ROD' })).toBe('ROD $1,234.50');
 });
 
+// Cubre el fix del Lote 2 (Critical): el mapper debe honrar `payment` cuando el enganche
+// (unloading.service.sendByEmail) SÍ carga la relation `shipments.payment`/`chargeShipments.payment`.
+// Este test no toca DB: fija el contrato del mapper (dado payment, produce icono [$] + etiqueta de cobro)
+// para que una regresión futura en las `relations` del repo se detecte contra este contrato.
+it('paquete con payment: produce icono [$] y etiqueta de cobro; sin payment, ninguno de los dos', () => {
+  const d = buildUnloadingData({
+    subsidiaryName: 'S', trackingNumber: 'T',
+    packages: [
+      { trackingNumber: 'P1', payment: { amount: 250, type: 'COD' } },
+      { trackingNumber: 'P2', payment: null },
+    ],
+  } as any);
+  const p1 = d.rows.find((r: any) => r.trackingNumber === 'P1');
+  const p2 = d.rows.find((r: any) => r.trackingNumber === 'P2');
+  expect(p1.icons).toContain('[$]');
+  expect(p1.payment).toBe('COD $250.00');
+  expect(p2.icons).not.toContain('[$]');
+  expect(p2.payment).toBe('');
+});
+
 it('missingPackages: normaliza strings y objetos, defaults para PDF, lista plana para Excel', () => {
   const d = buildUnloadingData(baseInput() as any);
   expect(d.hasMissing).toBe(true);

@@ -3153,12 +3153,17 @@ export class UnloadingService {
     const unloading = await this.unloadingRepository.findOne({
       where: { id: unloadingId },
       relations: [
-        'vehicle', 
-        'shipments', 
+        'vehicle',
+        'shipments',
         'subsidiary',
-        'shipments.subsidiary', 
-        'chargeShipments', 
-        'chargeShipments.subsidiary'
+        'shipments.subsidiary',
+        // `payment` es @OneToOne NO-eager en Shipment/ChargeShipment: sin cargarla aquí,
+        // `loadUnloadingInput()` recibe `s.payment === undefined` y el motor de plantillas
+        // nunca renderiza "Cobro"/[$] (flag DOC_ENGINE_UNLOADING) aunque el paquete sí tenga cobro.
+        'shipments.payment',
+        'chargeShipments',
+        'chargeShipments.subsidiary',
+        'chargeShipments.payment'
       ],
     });
 

@@ -14,7 +14,7 @@ describe('UnloadingService.renderUnloadingDocuments', () => {
     const svc = Object.create(UnloadingService.prototype) as any;
     svc.templateService = { render };
     const out = await svc.renderUnloadingDocuments(baseInput);
-    expect(render).toHaveBeenNthCalledWith(1, 'unloading_pdf', expect.objectContaining({ title: 'DESEMBARQUE' }));
+    expect(render).toHaveBeenNthCalledWith(1, 'unloading_pdf', expect.objectContaining({ subsidiaryName: 'Obregon' }));
     expect(render).toHaveBeenNthCalledWith(2, 'unloading_excel', expect.any(Object));
     expect(out.pdf?.toString()).toBe('PDF');
     expect(out.excel?.toString()).toBe('XLSX');

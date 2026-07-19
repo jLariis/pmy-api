@@ -101,7 +101,6 @@ export function buildUnloadingData(input: UnloadingInput): Record<string, any> {
   const unScannedTrackings = input.unScannedTrackings ?? [];
 
   return {
-    title: 'DESEMBARQUE',
     subsidiaryName: input.subsidiaryName || 'N/A',
     vehicleName: input.vehicleName || 'N/A',
     trackingNumber: input.trackingNumber || '',
