@@ -13,6 +13,8 @@ import * as ExcelJS from 'exceljs';
 import { fromZonedTime } from 'date-fns-tz';
 import { differenceInCalendarDays } from 'date-fns';
 import { LD_QUALIFYING_SQL_IN } from 'src/common/ld-codes';
+import { TemplateService } from 'src/documents/template.service';
+import { buildInventoryData, InventoryInput } from 'src/documents/data/inventory.mapper';
 
 export interface ShipmentWithout67 {
   trackingNumber: string;
@@ -53,7 +55,8 @@ export class InventoriesService {
     @InjectRepository(Subsidiary)
     private readonly subsidiaryRepository: Repository<Subsidiary>,
     private readonly mailService: MailService,
-    private readonly dataSource: DataSource
+    private readonly dataSource: DataSource,
+    private readonly templateService: TemplateService,
   ){}
 
 
@@ -703,17 +706,70 @@ export class InventoriesService {
       throw err;
     }
 
+    // Unificación "Inventario": detrás de flag, el backend genera PDF/Excel por el
+    // Motor de Plantillas (plantilla canónica única). Si algo falla, se conservan los
+    // archivos subidos por el frontend (respaldo). Flag OFF => comportamiento actual intacto.
+    if (process.env.DOC_ENGINE_INVENTORY === 'true') {
+      try {
+        const input = this.loadInventoryInput(inventory, subsidiaryName);
+        const gen = await this.renderInventoryDocuments(input);
+        if (gen.pdf) file = { ...file, buffer: gen.pdf };
+        if (gen.excel) excelFile = { ...excelFile, buffer: gen.excel };
+      } catch (e: any) {
+        this.logger.warn(`Motor inventario falló; uso archivos subidos: ${e?.message}`);
+      }
+    }
+
     try {
       return await this.mailService.sendHighPriorityInventoryEmail(
-        file, 
-        excelFile, 
-        subsidiaryName, 
+        file,
+        excelFile,
+        subsidiaryName,
         inventory
       );
     } catch (err) {
       this.logger.error(`Error al enviar correo de inventario con archivos adjuntos para ${inventory.id}`, err);
       throw err;
     }
+  }
+
+  /** Genera PDF+Excel de "Inventario" por el motor. Si un formato no entrega buffer, queda undefined (respaldo). */
+  async renderInventoryDocuments(input: InventoryInput): Promise<{ pdf?: Buffer; excel?: Buffer }> {
+    const data = buildInventoryData(input);
+    const [pdf, excel] = await Promise.all([
+      this.templateService.render('inventory_pdf', data).then((r) => r.buffer).catch(() => undefined),
+      this.templateService.render('inventory_excel', data).then((r) => r.buffer).catch(() => undefined),
+    ]);
+    return { pdf, excel };
+  }
+
+  /** Arma el InventoryInput a partir del Inventory ya cargado (espejo backend de InventoryPDFReport/generateInventoryExcel).
+   * Gap conocido: `Inventory` (entidad) NO persiste `missingTrackings`/`unScannedTrackings` (solo viven en el
+   * payload transitorio del frontend antes de guardar el inventario); el data-provider degrada sin romper
+   * (las secciones correspondientes simplemente no aparecen). */
+  private loadInventoryInput(inventory: Inventory, subsidiaryName: string): InventoryInput {
+    const map = (s: any, isCharge: boolean) => ({
+      trackingNumber: s.trackingNumber,
+      recipientName: s.recipientName,
+      recipientAddress: s.recipientAddress,
+      recipientZip: s.recipientZip,
+      recipientPhone: s.recipientPhone,
+      commitDateTime: s.commitDateTime ? new Date(s.commitDateTime).toISOString() : undefined,
+      isCharge,
+      isHighValue: s.isHighValue,
+      payment: s.payment ? { amount: s.payment.amount, type: s.payment.type } : null,
+    });
+    return {
+      subsidiaryName: inventory.subsidiary?.name ?? subsidiaryName,
+      trackingNumber: inventory.trackingNumber ?? '',
+      inventoryDate: inventory.inventoryDate,
+      packages: [
+        ...(inventory.shipments ?? []).map((s) => map(s, false)),
+        ...(inventory.chargeShipments ?? []).map((s) => map(s, true)),
+      ],
+      missingTrackings: [],
+      unScannedTrackings: [],
+    };
   }
 
   async checkInventory67BySubsidiaryResp(subsidiaryId: string) {
