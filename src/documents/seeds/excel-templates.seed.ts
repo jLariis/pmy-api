@@ -118,6 +118,69 @@ const inventory: ExcelDoc = {
   }],
 };
 
+/** route_closure_excel — "Cierre de Ruta" rica (fiel a C8, frontend). Hoja "Cierre de Ruta", 6 secciones. */
+const routeClosure: ExcelDoc = {
+  sheets: [{
+    name: 'Cierre de Ruta',
+    sections: [
+      { kind: 'title', text: '📋 CIERRE DE RUTA', fill: '8c5e4e', font: { size: 16, bold: true, color: 'FFFFFF' }, mergeTo: 8 },
+      { kind: 'spacer' },
+      // (1) INFORMACIÓN GENERAL
+      { kind: 'title', text: 'INFORMACIÓN GENERAL', fill: '8c5e4e', font: { bold: true, color: 'FFFFFF' }, mergeTo: 8 },
+      { kind: 'table', rowsVar: 'generalInfoRows',
+        headerFill: '6d4c41', headerFont: { bold: true, color: 'FFFFFF' }, headerAlign: 'center', rowFillKey: 'rowFill',
+        columns: [
+          { key: 'label', label: 'CAMPO', width: 22 }, { key: 'value', label: 'VALOR', width: 30, numFmt: '#,##0' },
+        ] },
+      { kind: 'spacer' },
+      // (2) ESTADÍSTICAS
+      { kind: 'title', text: 'ESTADÍSTICAS', fill: '8c5e4e', font: { bold: true, color: 'FFFFFF' }, mergeTo: 8 },
+      { kind: 'table', rowsVar: 'statsRows',
+        headerFill: '6d4c41', headerFont: { bold: true, color: 'FFFFFF' }, headerAlign: 'center', rowFillKey: 'rowFill',
+        columns: [
+          { key: 'label', label: 'ESTADÍSTICA', width: 22 }, { key: 'value', label: 'VALOR', width: 16, numFmt: '#,##0' },
+        ] },
+      { kind: 'spacer' },
+      // (3) PAQUETES DEVUELTOS
+      { kind: 'title', text: 'PAQUETES DEVUELTOS', fill: '8c5e4e', font: { bold: true, color: 'FFFFFF' }, mergeTo: 8, when: 'returnedRows' },
+      { kind: 'table', rowsVar: 'returnedRows', when: 'returnedRows',
+        headerFill: '6d4c41', headerFont: { bold: true, color: 'FFFFFF' }, headerAlign: 'center', rowFillKey: 'rowFill',
+        columns: [
+          { key: 'index', label: 'No.', width: 6 }, { key: 'trackingNumber', label: 'GUÍA', width: 18 },
+          { key: 'motivoExcel', label: 'MOTIVO', width: 14 }, { key: 'recipientName', label: 'DESTINATARIO', width: 26 },
+          { key: 'recipientPhone', label: 'TELÉFONO', width: 16 }, { key: 'recipientAddress', label: 'DIRECCIÓN', width: 34 },
+          { key: 'date', label: 'FECHA', width: 12 }, { key: 'time', label: 'HORA', width: 12 },
+        ] },
+      { kind: 'band', rowsVar: 'returnedTotalRow', fill: 'E8E8E8', font: { bold: true }, mergeTo: 8, when: 'returnedRows' },
+      { kind: 'spacer' },
+      // (4) CONTEO POR CÓDIGO DEX
+      { kind: 'title', text: 'CONTEO POR CÓDIGO DEX', fill: '8c5e4e', font: { bold: true, color: 'FFFFFF' }, mergeTo: 8 },
+      { kind: 'table', rowsVar: 'dexCounts',
+        headerFill: '6d4c41', headerFont: { bold: true, color: 'FFFFFF' }, headerAlign: 'center', rowFillKey: 'rowFill',
+        columns: [
+          { key: 'code', label: 'CÓDIGO DEX', width: 20 }, { key: 'count', label: 'CANTIDAD', width: 14, numFmt: '#,##0' },
+        ] },
+      { kind: 'spacer' },
+      // (5) RECOLECCIONES
+      { kind: 'title', text: 'RECOLECCIONES', fill: '8c5e4e', font: { bold: true, color: 'FFFFFF' }, mergeTo: 8, when: 'collections' },
+      { kind: 'table', rowsVar: 'collectionRows', when: 'collections',
+        headerFill: '6d4c41', headerFont: { bold: true, color: 'FFFFFF' }, headerAlign: 'center', rowFillKey: 'rowFill',
+        columns: [
+          { key: 'index', label: 'No.', width: 6 }, { key: 'trackingNumber', label: 'GUÍA DE RECOLECCIÓN', width: 24 },
+        ] },
+      { kind: 'spacer' },
+      // (6) COBROS
+      { kind: 'title', text: 'COBROS', fill: '8c5e4e', font: { bold: true, color: 'FFFFFF' }, mergeTo: 8, when: 'allCharges' },
+      { kind: 'table', rowsVar: 'allCharges', when: 'allCharges',
+        headerFill: '6d4c41', headerFont: { bold: true, color: 'FFFFFF' }, headerAlign: 'center', rowFillKey: 'rowFill',
+        columns: [
+          { key: 'index', label: 'No.', width: 6 }, { key: 'trackingNumber', label: 'GUÍA', width: 18 },
+          { key: 'amount', label: 'MONTO', width: 14, numFmt: '"$"#,##0.00' }, { key: 'type', label: 'TIPO', width: 14 },
+        ] },
+    ],
+  }],
+};
+
 export const EXCEL_TEMPLATE_SEEDS: ExcelSeed[] = [
   { code: 'route_dispatch_excel', name: 'Salida a Ruta (Excel)', doc: routeDispatch,
     variables: [
@@ -138,6 +201,15 @@ export const EXCEL_TEMPLATE_SEEDS: ExcelSeed[] = [
       { name: 'subsidiaryName', label: 'Sucursal' }, { name: 'inventoryDateTime', label: 'Fecha' },
       { name: 'totalPackages', label: 'Total de paquetes', dataType: 'number' }, { name: 'rows', label: 'Filas' },
       { name: 'missingTrackings', label: 'Guías faltantes' }, { name: 'unScannedTrackings', label: 'Guías sin escaneo' },
+    ] },
+  { code: 'route_closure_excel', name: 'Cierre de Ruta (Excel)', doc: routeClosure,
+    variables: [
+      { name: 'generalInfoRows', label: 'Información general (sucursal/unidad/conductor/rutas/km/fechas)' },
+      { name: 'statsRows', label: 'Estadísticas' },
+      { name: 'returnedRows', label: 'Paquetes devueltos' }, { name: 'returnedTotalRow', label: 'Total de devoluciones (banda)' },
+      { name: 'dexCounts', label: 'Conteo por código DEX' },
+      { name: 'collectionRows', label: 'Recolecciones (+ total)' },
+      { name: 'allCharges', label: 'Cobros de todo el despacho (+ total)' },
     ] },
 ];
 

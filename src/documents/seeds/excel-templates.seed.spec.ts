@@ -4,6 +4,7 @@ import { TemplateEngine } from '../template-engine';
 import { buildRouteDispatchData } from '../data/route-dispatch.mapper';
 import { buildUnloadingData } from '../data/unloading.mapper';
 import { buildInventoryData } from '../data/inventory.mapper';
+import { buildRouteClosureData } from '../data/route-closure.mapper';
 import { Workbook } from 'exceljs';
 
 function repos() {
@@ -168,5 +169,83 @@ describe('seedExcelTemplates', () => {
     ws.eachRow({ includeEmpty: true }, (r) => values.push(String(r.getCell(1).value)));
     expect(values).not.toContain('❌ Missing Trackings');
     expect(values).not.toContain('📍 UnScanned Trackings');
+  });
+
+  it('route_closure_excel: fiel a C8 (título, 6 secciones, headers café, totales gris)', async () => {
+    const seed = EXCEL_TEMPLATE_SEEDS.find((s) => s.code === 'route_closure_excel')!;
+    expect(seed).toBeTruthy();
+    const data = buildRouteClosureData({
+      subsidiaryName: 'Cd. Obregon', vehicleName: 'ECON-01', drivers: [{ name: 'Juan' }], routes: [{ name: 'R1' }],
+      trackingNumber: 'DESP-1', kmsInitial: '100', kmsFinal: '250', dispatchCreatedAt: '2026-07-18T15:00:00Z',
+      now: new Date('2026-07-18T20:00:00Z'),
+      allPackages: [
+        { trackingNumber: 'A1', shipmentType: 'fedex' },
+        { trackingNumber: 'A2', shipmentType: 'dhl', status: 'direccion_incorrecta', exceptionCode: '03', payment: { amount: 200, type: 'COD' } },
+      ],
+      returnedPackages: [{ trackingNumber: 'A2', shipmentType: 'dhl', status: 'direccion_incorrecta', exceptionCode: '03', recipientName: 'Ana' }],
+      podPackages: [{ trackingNumber: 'A1', shipmentType: 'fedex', payment: { amount: 500, type: 'COD' } }],
+      collections: ['REC-1'],
+    } as any);
+    const buf = await new ExcelWorkbookBuilder(new TemplateEngine()).build(seed.doc, { data } as any);
+    const wb = new Workbook(); await wb.xlsx.load(buf as any);
+    const ws = wb.getWorksheet('Cierre de Ruta')!;
+    expect(ws.getCell('A1').value).toBe('📋 CIERRE DE RUTA');
+    expect((ws.getCell('A1').fill as any).fgColor.argb).toBe('8c5e4e');
+
+    const values: { row: number; v: any; fill?: string }[] = [];
+    ws.eachRow({ includeEmpty: true }, (r, n) => {
+      values.push({ row: n, v: r.getCell(1).value, fill: (r.getCell(1).fill as any)?.fgColor?.argb });
+    });
+    const find = (v: string) => values.find((x) => x.v === v);
+    // Título de sección: coincide con el texto Y con el fill 8c5e4e (algunos textos, p.ej.
+    // "PAQUETES DEVUELTOS", se repiten como etiqueta de fila dentro de ESTADÍSTICAS —fiel al
+    // frontend original— así que se busca la ocurrencia con el fill de título, no la primera).
+    const findTitle = (v: string) => values.find((x) => x.v === v && x.fill === '8c5e4e');
+
+    // Títulos de sección (naranja/café primario 8c5e4e)
+    for (const title of ['INFORMACIÓN GENERAL', 'ESTADÍSTICAS', 'PAQUETES DEVUELTOS', 'CONTEO POR CÓDIGO DEX', 'RECOLECCIONES', 'COBROS']) {
+      expect(findTitle(title)).toBeTruthy();
+    }
+    // Headers de tabla (café secundario 6d4c41)
+    for (const header of ['CAMPO', 'ESTADÍSTICA', 'No.', 'CÓDIGO DEX']) {
+      expect(find(header)?.fill).toBe('6d4c41');
+    }
+    // Totales (gris E8E8E8)
+    expect(values.some((x) => String(x.v).includes('TOTAL DEVOLUCIONES: 1') && x.fill === 'E8E8E8')).toBe(true);
+    expect(find('TOTAL DEVOLUCIONES')?.fill).toBe('E8E8E8'); // fila del conteo DEX
+    expect(find('TOTAL RECOLECCIONES')?.fill).toBe('E8E8E8');
+    expect(find('TOTAL COBROS')?.fill).toBe('E8E8E8');
+
+    // Datos de negocio presentes (GUÍA está en la columna 2 de estas tablas)
+    let foundA2 = false; let foundRec1 = false;
+    ws.eachRow({ includeEmpty: true }, (r) => {
+      if (r.getCell(2).value === 'A2') foundA2 = true;
+      if (r.getCell(2).value === 'REC-1') foundRec1 = true;
+    });
+    expect(foundA2).toBe(true); // guía devuelta
+    expect(foundRec1).toBe(true); // recolección
+  });
+
+  it('route_closure_excel: sin devueltos/recolecciones/cobros, sus títulos/tablas NO aparecen (`when`)', async () => {
+    const seed = EXCEL_TEMPLATE_SEEDS.find((s) => s.code === 'route_closure_excel')!;
+    const data = buildRouteClosureData({
+      subsidiaryName: 'S', drivers: [], routes: [], trackingNumber: 'T',
+      allPackages: [], returnedPackages: [], podPackages: [],
+    } as any);
+    const buf = await new ExcelWorkbookBuilder(new TemplateEngine()).build(seed.doc, { data } as any);
+    const wb = new Workbook(); await wb.xlsx.load(buf as any);
+    const ws = wb.getWorksheet('Cierre de Ruta')!;
+    const values: { v: any; fill?: string }[] = [];
+    ws.eachRow({ includeEmpty: true }, (r) => values.push({ v: String(r.getCell(1).value), fill: (r.getCell(1).fill as any)?.fgColor?.argb }));
+    // "PAQUETES DEVUELTOS" sigue apareciendo como etiqueta de fila en ESTADÍSTICAS (incondicional),
+    // pero el TÍTULO de sección (fill 8c5e4e) de la tabla de devueltos debe estar ausente.
+    expect(values.some((x) => x.v === 'PAQUETES DEVUELTOS' && x.fill === '8c5e4e')).toBe(false);
+    expect(values.some((x) => x.v === 'RECOLECCIONES')).toBe(false);
+    expect(values.some((x) => x.v === 'COBROS')).toBe(false);
+    // Secciones incondicionales siempre presentes
+    const plain = values.map((x) => x.v);
+    expect(plain).toContain('INFORMACIÓN GENERAL');
+    expect(plain).toContain('ESTADÍSTICAS');
+    expect(plain).toContain('CONTEO POR CÓDIGO DEX');
   });
 });
