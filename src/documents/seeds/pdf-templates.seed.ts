@@ -5,6 +5,7 @@ import { TemplateVariableDef } from 'src/entities/template-variable-def.entity';
 import { PdfDoc } from '../blocks/pdf-doc.types';
 import { ROUTE_DISPATCH_PDF_HTML } from './templates/route-dispatch.pdf.html';
 import { UNLOADING_PDF_HTML } from './templates/unloading.pdf.html';
+import { INVENTORY_PDF_HTML } from './templates/inventory.pdf.html';
 
 export interface PdfSeedVar { name: string; label: string; dataType?: string; }
 export interface PdfSeed { code: string; name: string; doc: PdfDoc; variables: PdfSeedVar[]; }
@@ -48,6 +49,12 @@ const unloading: PdfDoc = {
   html: UNLOADING_PDF_HTML,
 };
 
+/** inventory_pdf — "Inventario" rica (fiel a C5, frontend). Presentación HTML; datos en el data-provider. */
+const inventory: PdfDoc = {
+  page: { size: 'LETTER', orientation: 'portrait', margins: '15px' },
+  html: INVENTORY_PDF_HTML,
+};
+
 export const PDF_TEMPLATE_SEEDS: PdfSeed[] = [
   { code: 'route_dispatch_pdf', name: 'Salida a Ruta (PDF)', doc: routeDispatch,
     variables: [
@@ -77,6 +84,17 @@ export const PDF_TEMPLATE_SEEDS: PdfSeed[] = [
       { name: 'rows', label: 'Filas de paquetes' },
       { name: 'missingRows', label: 'Guías faltantes' }, { name: 'hasMissing', label: 'Hay faltantes', dataType: 'boolean' },
       { name: 'unScannedTrackings', label: 'Guías sobrantes' }, { name: 'hasUnScanned', label: 'Hay sobrantes', dataType: 'boolean' },
+    ] },
+  { code: 'inventory_pdf', name: 'Inventario (PDF)', doc: inventory,
+    variables: [
+      { name: 'subsidiaryName', label: 'Sucursal' }, { name: 'trackingNumber', label: 'Folio de inventario' },
+      { name: 'inventoryDate', label: 'Fecha de inventario' },
+      { name: 'generatedDate', label: 'Fecha de generación' }, { name: 'generatedTime', label: 'Hora de generación' },
+      { name: 'totalPackages', label: 'Total de paquetes', dataType: 'number' },
+      { name: 'stats', label: 'Métricas (válidos/carga/alto valor)' },
+      { name: 'rows', label: 'Filas de paquetes' },
+      { name: 'missingPreview', label: 'Guías faltantes (máx. 15)' }, { name: 'hasMissing', label: 'Hay faltantes', dataType: 'boolean' },
+      { name: 'unScannedPreview', label: 'Guías sin escaneo (máx. 15)' }, { name: 'hasUnScanned', label: 'Hay sin escaneo', dataType: 'boolean' },
     ] },
 ];
 

@@ -3,6 +3,7 @@ import { PdfHtmlComposer } from '../blocks/pdf-html-composer';
 import { TemplateEngine } from '../template-engine';
 import { buildRouteDispatchData } from '../data/route-dispatch.mapper';
 import { buildUnloadingData } from '../data/unloading.mapper';
+import { buildInventoryData } from '../data/inventory.mapper';
 
 function repos() {
   const templates: any[] = []; const versions: any[] = []; const vars: any[] = [];
@@ -105,5 +106,63 @@ describe('seedPdfTemplates', () => {
     const out = new TemplateEngine().render(html, { data, brand: { logoLight: null, colors: {}, typography: {} }, system: { now: new Date() } } as any);
     expect(out).not.toContain('* Guías faltantes');
     expect(out).not.toContain('** Guías sobrantes');
+  });
+
+  it('inventory_pdf: LETTER portrait', () => {
+    const seed = PDF_TEMPLATE_SEEDS.find((s) => s.code === 'inventory_pdf')!;
+    expect(seed).toBeTruthy();
+    expect(seed.doc.page.size).toBe('LETTER');
+    expect(seed.doc.page.orientation).toBe('portrait');
+  });
+
+  it('inventory_pdf: HTML fiel a C5 (título, grid, badges, cobro crudo, stats, faltantes/sin-escaneo, firmas)', () => {
+    const seed = PDF_TEMPLATE_SEEDS.find((s) => s.code === 'inventory_pdf')!;
+    const html = new PdfHtmlComposer().compose(seed.doc);
+    const data = buildInventoryData({
+      subsidiaryName: 'Cd. Obregon', trackingNumber: 'INV-1',
+      inventoryDate: '2026-07-18T18:30:00Z', now: new Date('2026-07-18T20:00:00Z'),
+      packages: [
+        { trackingNumber: 'T1', recipientName: 'Ana', recipientAddress: 'Calle 1', recipientZip: '85000',
+          isCharge: true, payment: { amount: 500, type: 'COD' }, commitDateTime: '2026-07-18T20:15:00Z' },
+        { trackingNumber: 'T2', recipientName: 'Beto', isHighValue: true },
+      ],
+      missingTrackings: ['X1'],
+      unScannedTrackings: ['Y1'],
+    } as any);
+    const out = new TemplateEngine().render(html, { data, brand: { logoLight: null, colors: {}, typography: {} }, system: { now: new Date() } } as any);
+    expect(out).toContain('INVENTARIO DE PAQUETES');
+    expect(out).toContain('SUCURSAL');
+    expect(out).toContain('FECHA INVENTARIO');
+    expect(out).toContain('VÁLIDOS');
+    expect(out).toContain('ALTO VALOR');
+    expect(out).toContain('badge-c');
+    expect(out).toContain('badge-p');
+    expect(out).toContain('COD $500'); // crudo, sin Intl
+    expect(out).toContain('GUIAS FALTANTES');
+    expect(out).toContain('X1');
+    expect(out).toContain('GUIAS SIN ESCANEO');
+    expect(out).toContain('Y1');
+    expect(out).toContain('RESPONSABLE DE INVENTARIO');
+    expect(out).toContain('SUPERVISOR');
+    expect(out).not.toContain('CELULAR'); // fiel a C5: la tabla de inventario NO tiene columna Celular
+  });
+
+  it('inventory_pdf: sin faltantes/sin-escaneo, no muestra esas secciones', () => {
+    const seed = PDF_TEMPLATE_SEEDS.find((s) => s.code === 'inventory_pdf')!;
+    const html = new PdfHtmlComposer().compose(seed.doc);
+    const data = buildInventoryData({ subsidiaryName: 'S', packages: [] } as any);
+    const out = new TemplateEngine().render(html, { data, brand: { logoLight: null, colors: {}, typography: {} }, system: { now: new Date() } } as any);
+    expect(out).not.toContain('GUIAS FALTANTES');
+    expect(out).not.toContain('GUIAS SIN ESCANEO');
+  });
+
+  it('inventory_pdf: con más de 15 faltantes, muestra "...y N más"', () => {
+    const seed = PDF_TEMPLATE_SEEDS.find((s) => s.code === 'inventory_pdf')!;
+    const html = new PdfHtmlComposer().compose(seed.doc);
+    const many = Array.from({ length: 18 }, (_, i) => `M${i + 1}`);
+    const data = buildInventoryData({ subsidiaryName: 'S', packages: [], missingTrackings: many } as any);
+    const out = new TemplateEngine().render(html, { data, brand: { logoLight: null, colors: {}, typography: {} }, system: { now: new Date() } } as any);
+    expect(out).toContain('...y 3 más');
+    expect(out).not.toContain('M16');
   });
 });
