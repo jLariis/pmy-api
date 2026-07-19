@@ -87,6 +87,37 @@ const unloading: ExcelDoc = {
   }],
 };
 
+/** inventory_excel — "Inventario" rica (fiel a C6, frontend). Hoja "Inventario" por secciones. */
+const inventory: ExcelDoc = {
+  sheets: [{
+    name: 'Inventario',
+    sections: [
+      { kind: 'title', text: '📦 Inventario', fill: 'ef883a', font: { size: 16, bold: true, color: 'FFFFFF' }, mergeTo: 9 },
+      { kind: 'spacer' },
+      { kind: 'info', mergeTo: 9, rows: [
+        { text: 'Sucursal: {{subsidiaryName}}' }, { text: 'Fecha: {{inventoryDateTime}}' }, { text: 'Paquetes: {{totalPackages}}' },
+      ] },
+      { kind: 'spacer' },
+      { kind: 'table', rowsVar: 'rows',
+        headerFill: '8c5e4e', headerFont: { bold: true, color: 'FFFFFF' }, headerHeight: 20, headerAlign: 'center',
+        bordered: true, cellAlign: 'center', wrap: true, rowFillKey: 'rowFill',
+        columns: [
+          { key: 'index', label: 'No.', width: 5 }, { key: 'trackingNumber', label: 'Guía', width: 18 },
+          { key: 'recipientNameXlsx', label: 'Nombre', width: 40 }, { key: 'recipientAddressXlsx', label: 'Dirección', width: 45 },
+          { key: 'recipientZip', label: 'CP', width: 12 }, { key: 'payment', label: 'Cobro', width: 20 },
+          { key: 'date', label: 'Fecha', width: 12 }, { key: 'timeXlsx', label: 'Hora', width: 12 },
+          { key: 'recipientPhone', label: 'Celular', width: 18 },
+        ] },
+      { kind: 'spacer' },
+      { kind: 'title', text: '❌ Missing Trackings', fill: 'ef883a', font: { bold: true, color: 'FFFFFF' }, mergeTo: 9, when: 'missingTrackings' },
+      { kind: 'band', rowsVar: 'missingTrackings', mergeTo: 9, when: 'missingTrackings' },
+      { kind: 'spacer' },
+      { kind: 'title', text: '📍 UnScanned Trackings', fill: '8c5e4e', font: { bold: true, color: 'FFFFFF' }, mergeTo: 9, when: 'unScannedTrackings' },
+      { kind: 'band', rowsVar: 'unScannedTrackings', mergeTo: 9, when: 'unScannedTrackings' },
+    ],
+  }],
+};
+
 export const EXCEL_TEMPLATE_SEEDS: ExcelSeed[] = [
   { code: 'route_dispatch_excel', name: 'Salida a Ruta (Excel)', doc: routeDispatch,
     variables: [
@@ -101,6 +132,12 @@ export const EXCEL_TEMPLATE_SEEDS: ExcelSeed[] = [
       { name: 'vehicleName', label: 'Unidad' }, { name: 'createdDateTime', label: 'Fecha' },
       { name: 'totalPackages', label: 'Total de paquetes', dataType: 'number' }, { name: 'rows', label: 'Filas' },
       { name: 'missingTrackings', label: 'Guías faltantes' }, { name: 'unScannedTrackings', label: 'Guías sobrantes' },
+    ] },
+  { code: 'inventory_excel', name: 'Inventario (Excel)', doc: inventory,
+    variables: [
+      { name: 'subsidiaryName', label: 'Sucursal' }, { name: 'inventoryDateTime', label: 'Fecha' },
+      { name: 'totalPackages', label: 'Total de paquetes', dataType: 'number' }, { name: 'rows', label: 'Filas' },
+      { name: 'missingTrackings', label: 'Guías faltantes' }, { name: 'unScannedTrackings', label: 'Guías sin escaneo' },
     ] },
 ];
 

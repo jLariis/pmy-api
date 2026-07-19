@@ -3,6 +3,7 @@ import { ExcelWorkbookBuilder } from '../blocks/excel-workbook-builder';
 import { TemplateEngine } from '../template-engine';
 import { buildRouteDispatchData } from '../data/route-dispatch.mapper';
 import { buildUnloadingData } from '../data/unloading.mapper';
+import { buildInventoryData } from '../data/inventory.mapper';
 import { Workbook } from 'exceljs';
 
 function repos() {
@@ -113,5 +114,59 @@ describe('seedExcelTemplates', () => {
     ws.eachRow({ includeEmpty: true }, (r) => values.push(String(r.getCell(1).value)));
     expect(values).not.toContain('❌ Paquetes faltantes');
     expect(values).not.toContain('📍 Guías sobrantes');
+  });
+
+  it('inventory_excel: fiel a C6 (título naranja, header café, celular, faltantes/sin-escaneo)', async () => {
+    const seed = EXCEL_TEMPLATE_SEEDS.find((s) => s.code === 'inventory_excel')!;
+    expect(seed).toBeTruthy();
+    const data = buildInventoryData({
+      subsidiaryName: 'Cd. Obregon', trackingNumber: 'INV-1',
+      inventoryDate: '2026-07-18T18:30:00Z', now: new Date('2026-07-18T20:00:00Z'),
+      packages: [
+        { trackingNumber: 'T1', recipientName: 'Ana', recipientAddress: 'Calle 1', recipientZip: '85000',
+          recipientPhone: '6620000000', payment: { amount: 500, type: 'COD' }, commitDateTime: '2026-07-18T20:15:00Z' },
+        { trackingNumber: 'T2', recipientName: 'Beto', recipientZip: '83000' },
+      ],
+      missingTrackings: ['X1'],
+      unScannedTrackings: ['Y1'],
+    } as any);
+    const buf = await new ExcelWorkbookBuilder(new TemplateEngine()).build(seed.doc, { data } as any);
+    const wb = new Workbook(); await wb.xlsx.load(buf as any);
+    const ws = wb.getWorksheet('Inventario')!;
+    expect(ws.getCell('A1').value).toBe('📦 Inventario');
+    expect((ws.getCell('A1').fill as any).fgColor.argb).toBe('ef883a');
+    let headerRowNum = 0;
+    ws.eachRow({ includeEmpty: true }, (r, n) => { if (r.getCell(1).value === 'No.') headerRowNum = n; });
+    expect(headerRowNum).toBeGreaterThan(0);
+    expect((ws.getRow(headerRowNum).getCell(1).fill as any).fgColor.argb).toBe('8c5e4e');
+    expect(ws.getRow(headerRowNum).getCell(9).value).toBe('Celular');
+    let foundMissing = false; let foundUnScanned = false; let foundZebra = false; let foundPayment = false;
+    ws.eachRow({ includeEmpty: true }, (r) => {
+      if (r.getCell(1).value === '❌ Missing Trackings') foundMissing = true;
+      if (r.getCell(1).value === '📍 UnScanned Trackings') foundUnScanned = true;
+      if (String(r.getCell(1).value).includes('X1')) foundMissing = true;
+      if (String(r.getCell(1).value).includes('Y1')) foundUnScanned = true;
+      if ((r.getCell(1).fill as any)?.fgColor?.argb === 'F2F2F2') foundZebra = true;
+      if (r.getCell(6).value === 'COD $500') foundPayment = true; // crudo, sin Intl
+    });
+    expect(foundMissing).toBe(true);
+    expect(foundUnScanned).toBe(true);
+    expect(foundZebra).toBe(true);
+    expect(foundPayment).toBe(true);
+  });
+
+  it('inventory_excel: sin faltantes ni sin-escaneo, sus títulos/bandas NO aparecen (secciones `when`)', async () => {
+    const seed = EXCEL_TEMPLATE_SEEDS.find((s) => s.code === 'inventory_excel')!;
+    const data = buildInventoryData({
+      subsidiaryName: 'Cd. Obregon', packages: [{ trackingNumber: 'T1', recipientName: 'Ana' }],
+      missingTrackings: [], unScannedTrackings: [],
+    } as any);
+    const buf = await new ExcelWorkbookBuilder(new TemplateEngine()).build(seed.doc, { data } as any);
+    const wb = new Workbook(); await wb.xlsx.load(buf as any);
+    const ws = wb.getWorksheet('Inventario')!;
+    const values: string[] = [];
+    ws.eachRow({ includeEmpty: true }, (r) => values.push(String(r.getCell(1).value)));
+    expect(values).not.toContain('❌ Missing Trackings');
+    expect(values).not.toContain('📍 UnScanned Trackings');
   });
 });
