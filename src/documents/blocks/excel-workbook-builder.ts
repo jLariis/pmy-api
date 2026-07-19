@@ -10,6 +10,14 @@ function thin(): Partial<ExcelJS.Borders> {
   return { top: b, left: b, bottom: b, right: b };
 }
 
+/** "Vacío" para efectos de `when`: null/undefined/''/array de length 0. */
+function isEmptyVar(v: any): boolean {
+  if (v == null) return true;
+  if (typeof v === 'string') return v === '';
+  if (Array.isArray(v)) return v.length === 0;
+  return false;
+}
+
 /** Construye un xlsx desde un ExcelDoc + datos (ctx.data[rowsVar]). Presentación en la plantilla. */
 @Injectable()
 export class ExcelWorkbookBuilder {
@@ -72,6 +80,9 @@ export class ExcelWorkbookBuilder {
 
   private buildSections(ws: ExcelJS.Worksheet, sections: ExcelSection[], ctx: RenderContext) {
     for (const s of sections) {
+      // Sección condicional: si `when` está seteado y ctx.data[when] es vacío, se omite entera
+      // (título incluido) — evita, p.ej., mostrar "❌ Paquetes faltantes" sin faltantes que listar.
+      if (s.kind !== 'spacer' && s.when && isEmptyVar(ctx.data?.[s.when])) continue;
       switch (s.kind) {
         case 'spacer': ws.addRow([]); break;
         case 'title': {

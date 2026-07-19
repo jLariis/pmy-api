@@ -8,10 +8,10 @@ export interface ExcelColumn {
 
 /** Sección de una hoja heterogénea (título, espaciador, info, banda de filas fusionadas, o tabla). */
 export type ExcelSection =
-  | { kind: 'title'; text: string; fill?: string; font?: { size?: number; bold?: boolean; color?: string }; mergeTo: number; height?: number }
+  | { kind: 'title'; text: string; fill?: string; font?: { size?: number; bold?: boolean; color?: string }; mergeTo: number; height?: number; when?: string }
   | { kind: 'spacer' }
-  | { kind: 'info'; rows: { text: string }[]; mergeTo: number }
-  | { kind: 'band'; rowsVar: string; fill?: string; font?: { bold?: boolean; color?: string }; mergeTo: number }
+  | { kind: 'info'; rows: { text: string }[]; mergeTo: number; when?: string }
+  | { kind: 'band'; rowsVar: string; fill?: string; font?: { bold?: boolean; color?: string }; mergeTo: number; when?: string }
   | {
       kind: 'table';
       columns: ExcelColumn[];
@@ -27,6 +27,8 @@ export type ExcelSection =
       rowFillKey?: string;
       freezeHeader?: boolean;
       autoFilter?: boolean;
+      /** Si se setea y `ctx.data[when]` está "vacío" (null/undefined/''/[]), la sección se omite. */
+      when?: string;
     };
 
 export interface ExcelSheet {

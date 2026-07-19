@@ -96,4 +96,22 @@ describe('seedExcelTemplates', () => {
     expect(foundUnScanned).toBe(true);
     expect(foundZebra).toBe(true);
   });
+
+  it('unloading_excel: sin faltantes ni sobrantes, sus títulos/bandas NO aparecen (fix Lote 2)', async () => {
+    const seed = EXCEL_TEMPLATE_SEEDS.find((s) => s.code === 'unloading_excel')!;
+    const data = buildUnloadingData({
+      subsidiaryName: 'Cd. Obregon', vehicleName: 'ECON-01', trackingNumber: 'DESEMB-1',
+      now: new Date('2026-07-18T20:00:00Z'), createdAt: '2026-07-18T18:30:00Z',
+      packages: [{ trackingNumber: 'T1', recipientName: 'Ana' }],
+      missingPackages: [],
+      unScannedTrackings: [],
+    } as any);
+    const buf = await new ExcelWorkbookBuilder(new TemplateEngine()).build(seed.doc, { data } as any);
+    const wb = new Workbook(); await wb.xlsx.load(buf as any);
+    const ws = wb.getWorksheet('Desembarque')!;
+    const values: string[] = [];
+    ws.eachRow({ includeEmpty: true }, (r) => values.push(String(r.getCell(1).value)));
+    expect(values).not.toContain('❌ Paquetes faltantes');
+    expect(values).not.toContain('📍 Guías sobrantes');
+  });
 });

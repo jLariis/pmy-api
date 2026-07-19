@@ -89,6 +89,27 @@ describe('ExcelWorkbookBuilder.build', () => {
     expect((ws.getRow(paidRow).getCell(1).fill as any).fgColor.argb).toBe('fff2cc');
   });
 
+  it('sección `title`/`band` con `when` se omite si el valor es vacío, y aparece si no lo es', async () => {
+    const docWhen: any = { sheets: [{
+      name: 'Cond',
+      sections: [
+        { kind: 'title', text: '❌ Faltantes', mergeTo: 1, when: 'faltantes' },
+        { kind: 'band', rowsVar: 'faltantes', mergeTo: 1, when: 'faltantes' },
+      ],
+    }] };
+
+    const bufEmpty = await builder.build(docWhen, ctx({ faltantes: [] }));
+    const wsEmpty = (await load(bufEmpty)).getWorksheet('Cond')!;
+    expect(wsEmpty.rowCount).toBe(0);
+
+    const bufFilled = await builder.build(docWhen, ctx({ faltantes: ['X1'] }));
+    const wsFilled = (await load(bufFilled)).getWorksheet('Cond')!;
+    const values: string[] = [];
+    wsFilled.eachRow({ includeEmpty: true }, (r) => values.push(String(r.getCell(1).value)));
+    expect(values).toContain('❌ Faltantes');
+    expect(values).toContain('X1');
+  });
+
   it('no permite que la alineación de una columna pise el título centrado', async () => {
     const withTitleAndAlign: ExcelDoc = { sheets: [{
       name: 'T',
