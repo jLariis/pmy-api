@@ -15,6 +15,8 @@ import { ShipmentType } from 'src/common/enums/shipment-type.enum';
 import { IncomeStatus } from 'src/common/enums/income-status.enum';
 import { IncomeSourceType } from 'src/common/enums/income-source-type.enum';
 import { FedexService } from 'src/shipments/fedex.service';
+import { TemplateService } from 'src/documents/template.service';
+import { buildRouteClosureData, RouteClosureInput, RouteClosurePackage, RouteClosureNoVanPackage } from 'src/documents/data/route-closure.mapper';
 
 @Injectable()
 export class RouteclosureService {
@@ -27,7 +29,8 @@ export class RouteclosureService {
     private readonly packageDispatchRepository: Repository<PackageDispatch>,
     private readonly mailService: MailService,
     private readonly fedexService: FedexService,
-    private readonly dataSource: DataSource
+    private readonly dataSource: DataSource,
+    private readonly templateService: TemplateService,
   ) {}
 
   async create(createRouteclosureDto: CreateRouteclosureDto, userId?: string) {
@@ -489,14 +492,113 @@ export class RouteclosureService {
 
   async sendByEmail(pdfFile: Express.Multer.File, excelFile: Express.Multer.File, routeClosureId: string){
     const routeClosure = await this.routeClouseRepository.findOne(
-      { 
+      {
         where: {
           id: routeClosureId
         },
         relations: ['subsidiary', 'packageDispatch', 'packageDispatch.drivers']
       });
 
+    // Unificación "Cierre de Ruta": detrás de flag, el backend genera PDF/Excel por el
+    // Motor de Plantillas (plantilla canónica única). Si algo falla, se conservan los
+    // archivos subidos por el frontend (respaldo). Flag OFF => comportamiento actual intacto.
+    if (process.env.DOC_ENGINE_ROUTE_CLOSURE === 'true') {
+      try {
+        const input = await this.loadRouteClosureInput(routeClosureId);
+        const gen = await this.renderRouteClosureDocuments(input);
+        if (gen.pdf) pdfFile = { ...pdfFile, buffer: gen.pdf };
+        if (gen.excel) excelFile = { ...excelFile, buffer: gen.excel };
+      } catch (e: any) {
+        this.logger.warn(`Motor route_closure falló; uso archivos subidos: ${e?.message}`);
+      }
+    }
+
     return await this.mailService.sendHighPriorityRouteClosureEmail(pdfFile, excelFile, routeClosure);
+  }
+
+  /** Genera PDF+Excel de "Cierre de Ruta" por el motor. Si un formato no entrega buffer, queda undefined (respaldo). */
+  async renderRouteClosureDocuments(input: RouteClosureInput): Promise<{ pdf?: Buffer; excel?: Buffer }> {
+    const data = buildRouteClosureData(input);
+    const [pdf, excel] = await Promise.all([
+      this.templateService.render('route_closure_pdf', data).then((r) => r.buffer).catch(() => undefined),
+      this.templateService.render('route_closure_excel', data).then((r) => r.buffer).catch(() => undefined),
+    ]);
+    return { pdf, excel };
+  }
+
+  /**
+   * Carga el RouteClosure + su despacho y arma el RouteClosureInput (espejo backend de
+   * RouteClosurePDF/generateRouteClosureExcel). `payment` incluido en las relations de
+   * shipments/chargeShipments/returnedPackages/podPackages (cobros del data-provider).
+   *
+   * Gaps conocidos (no rompen: flag OFF por defecto):
+   * - `ShipmentNotInFiles` (paquetes "No VAN") no persiste `status` (solo transitorio en el
+   *   flujo de validación FedEx del frontend) → se manda vacío ('N/A').
+   * - Los ChargeShipment devueltos/entregados NO están en `returnedPackages`/`podPackages`
+   *   (limitación existente de esas relaciones M2M, ver comentario en `create()`); sí cuentan
+   *   en `allPackages` (para conteos totales/cobros).
+   */
+  private async loadRouteClosureInput(routeClosureId: string): Promise<RouteClosureInput> {
+    const closure = await this.routeClouseRepository.findOne({
+      where: { id: routeClosureId },
+      relations: [
+        'subsidiary',
+        'packageDispatch', 'packageDispatch.drivers', 'packageDispatch.routes', 'packageDispatch.vehicle', 'packageDispatch.subsidiary',
+        'packageDispatch.shipments', 'packageDispatch.shipments.payment',
+        'packageDispatch.chargeShipments', 'packageDispatch.chargeShipments.payment',
+        'returnedPackages', 'returnedPackages.payment', 'returnedPackages.statusHistory',
+        'podPackages', 'podPackages.payment',
+      ],
+    });
+
+    const lastExceptionCode = (s: any): string | undefined => {
+      const history = (s.statusHistory ?? []).slice().sort(
+        (a: any, b: any) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime(),
+      );
+      return history[0]?.exceptionCode || undefined;
+    };
+    const mapPkg = (s: any): RouteClosurePackage => ({
+      trackingNumber: s.trackingNumber,
+      recipientName: s.recipientName,
+      recipientAddress: s.recipientAddress,
+      recipientPhone: s.recipientPhone,
+      commitDateTime: s.commitDateTime ? new Date(s.commitDateTime).toISOString() : undefined,
+      shipmentType: s.shipmentType,
+      status: s.status,
+      exceptionCode: lastExceptionCode(s),
+      payment: s.payment ? { amount: s.payment.amount, type: s.payment.type } : null,
+    });
+
+    const dispatch = closure?.packageDispatch;
+    const allPackages: RouteClosurePackage[] = [
+      ...((dispatch as any)?.shipments ?? []).map(mapPkg),
+      ...((dispatch as any)?.chargeShipments ?? []).map(mapPkg),
+    ];
+
+    // "No VAN" (ShipmentNotInFiles): no es relation de RouteClosure, se consulta aparte por routeClosureId.
+    let noVanPackages: RouteClosureNoVanPackage[] = [];
+    try {
+      const noVanRows = await this.dataSource.getRepository(ShipmentNotInFiles).find({ where: { routeClosureId } });
+      noVanPackages = noVanRows.map((r) => ({ trackingNumber: r.trackingNumber, status: 'N/A' }));
+    } catch (e: any) {
+      this.logger.warn(`No se pudieron cargar paquetes No VAN para ${routeClosureId}: ${e?.message}`);
+    }
+
+    return {
+      subsidiaryName: closure?.subsidiary?.name ?? dispatch?.subsidiary?.name ?? 'N/A',
+      vehicleName: dispatch?.vehicle?.name,
+      drivers: (dispatch?.drivers ?? []).map((d: any) => ({ name: d.name })),
+      routes: (dispatch?.routes ?? []).map((r: any) => ({ name: r.name })),
+      trackingNumber: dispatch?.trackingNumber ?? '',
+      kmsInitial: dispatch?.kms,
+      kmsFinal: closure?.actualKms,
+      dispatchCreatedAt: dispatch?.createdAt,
+      allPackages,
+      returnedPackages: (closure?.returnedPackages ?? []).map(mapPkg),
+      podPackages: (closure?.podPackages ?? []).map(mapPkg),
+      noVanPackages,
+      collections: closure?.collections ?? [],
+    };
   }
 
   async remove(id: string) {
