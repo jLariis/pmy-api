@@ -3551,7 +3551,10 @@ export class ShipmentsService {
           ShipmentStatusType.RECHAZADO,
           ShipmentStatusType.LLEGADO_DESPUES,
           ShipmentStatusType.CAMBIO_FECHA_SOLICITADO,
-          ShipmentStatusType.NO_ENTREGADO // Lo agregué al array para simplificar el OR
+          ShipmentStatusType.NO_ENTREGADO, // Lo agregué al array para simplificar el OR
+          ShipmentStatusType.EMPRESA_CERRADA,
+          ShipmentStatusType.NO_SE_PUDO_RECOLECTAR_EL_COBRO,
+          ShipmentStatusType.RESTRICCION_SEGURIDAD_UBICACION,
         ].map(s => String(s).toLowerCase());
 
         const query = this.shipmentRepository
@@ -3599,7 +3602,10 @@ export class ShipmentsService {
           ShipmentStatusType.LLEGADO_DESPUES,
           ShipmentStatusType.CAMBIO_FECHA_SOLICITADO,
           ShipmentStatusType.ESTACION_FEDEX,
-          ShipmentStatusType.NO_ENTREGADO // Lo agregué al array para simplificar el OR
+          ShipmentStatusType.NO_ENTREGADO, // Lo agregué al array para simplificar el OR
+          ShipmentStatusType.EMPRESA_CERRADA,
+          ShipmentStatusType.NO_SE_PUDO_RECOLECTAR_EL_COBRO,
+          ShipmentStatusType.RESTRICCION_SEGURIDAD_UBICACION,
         ].map(s => String(s).toLowerCase());
 
         const query = this.chargeShipmentRepository
