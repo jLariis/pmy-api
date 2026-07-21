@@ -4404,7 +4404,7 @@ export class ShipmentsService {
         .execute();
     }
 
-    async getShipmentDetailsByTrackingNumber(trackingNumber: string): Promise<SearchShipmentDto | null> {
+     async getShipmentDetailsByTrackingNumber(trackingNumber: string): Promise<SearchShipmentDto | null> {
       
       // 1. Generar tracking alternativo para casos de DHL (JJD vs JD)
       let alternateTrackingNumber: string | undefined;
@@ -4432,10 +4432,12 @@ export class ShipmentsService {
           relations: [
               'packageDispatch',
               'packageDispatch.drivers',
+              'packageDispatch.vehicle', // ⚠️ Ajusta el nombre de esta relación si en tu entidad PackageDispatch la unidad se llama distinto (ej. 'truck', 'unit')
               'unloading',
               'unloading.subsidiary',
               'payment',
-              'subsidiary'
+              'subsidiary',
+              'statusHistory'
           ],
           order: { commitDateTime: 'DESC' }
       });
@@ -4446,10 +4448,12 @@ export class ShipmentsService {
           .leftJoinAndSelect('chargeShipment.payment', 'payment')
           .leftJoinAndSelect('chargeShipment.packageDispatch', 'packageDispatch')
           .leftJoinAndSelect('packageDispatch.drivers', 'drivers')
+          .leftJoinAndSelect('packageDispatch.vehicle', 'vehicle') // ⚠️ mismo ajuste que arriba si aplica
           .leftJoinAndSelect('chargeShipment.unloading', 'unloading')
           .leftJoinAndSelect('unloading.subsidiary', 'unloadingSubsidiary')
           .leftJoinAndSelect('chargeShipment.charge', 'charge')
           .leftJoinAndSelect('chargeShipment.subsidiary', 'subsidiary')
+          .leftJoinAndSelect('chargeShipment.statusHistory', 'statusHistory')
           .where('chargeShipment.trackingNumber IN (:...trackings)', { trackings: trackingNumbersToSearch })
           .orderBy('chargeShipment.commitDateTime', 'DESC')
           .getMany();
@@ -4485,7 +4489,83 @@ export class ShipmentsService {
 
       // Determinar si es un chargeShipment
       const isChargeShipment = 'charge' in targetShipment;
-      
+
+      // Ordenar el historial de estatus cronológicamente (más antiguo -> más reciente)
+      const sortedStatusHistory = [...(targetShipment.statusHistory || [])].sort(
+          (a, b) => new Date(a.timestamp || a.createdAt).getTime() - new Date(b.timestamp || b.createdAt).getTime()
+      );
+
+      // El último estatus registrado en el historial (no el campo status "cacheado" del shipment)
+      const lastStatusEntry = sortedStatusHistory[sortedStatusHistory.length - 1] || null;
+      const isCurrentlyEnRuta = lastStatusEntry?.status === ShipmentStatusType.EN_RUTA;
+
+      // --- Timeline enriquecido -------------------------------------------------
+      // Las notas de los eventos "en_ruta" traen el folio del package_dispatch, ej:
+      // "Salida a ruta (Folio Despacho: 2abb0b69-6414-478b-b194-93b1d6549886)"
+      // Ese folio es el ID real del package_dispatch, así que lo extraemos para
+      // poder mostrar chofer y unidad de CADA salida a ruta que tuvo el envío,
+      // no solo de la más reciente.
+      const dispatchIdFromNotes = (notes?: string | null): string | undefined =>
+          notes?.match(/Folio Despacho:\s*([0-9a-fA-F-]{36})/i)?.[1];
+
+      const dispatchIds = Array.from(new Set(
+          sortedStatusHistory
+              .filter(h => h.status === ShipmentStatusType.EN_RUTA)
+              .map(h => dispatchIdFromNotes(h.notes))
+              .filter((id): id is string => !!id)
+      ));
+
+      const dispatchesById = new Map<string, PackageDispatch>();
+      if (dispatchIds.length > 0) {
+          const dispatches = await this.packageDispatchRepository.find({
+              where: { id: In(dispatchIds) },
+              relations: ['drivers', 'vehicle'], // ⚠️ mismo ajuste de nombre de relación que arriba si aplica
+          });
+          dispatches.forEach(d => dispatchesById.set(d.id, d));
+      }
+
+      // Etiqueta legible de la unidad. Prueba los nombres de campo más comunes;
+      // ajusta según cómo se llame realmente en tu entidad Vehicle/Unit.
+      const getVehicleLabel = (dispatch: PackageDispatch | undefined): string | null => {
+          const vehicle: any = (dispatch as any)?.vehicle;
+          if (!vehicle) return null;
+          return vehicle.code || vehicle.name || null;
+      };
+
+      const STATUS_LABELS: Record<string, string> = {
+          [ShipmentStatusType.PENDIENTE]: 'Pendiente',
+          [ShipmentStatusType.RECOLECCION]: 'Recolección',
+          [ShipmentStatusType.EN_BODEGA]: 'En bodega',
+          [ShipmentStatusType.EN_RUTA]: 'En ruta',
+          [ShipmentStatusType.ENTREGADO]: 'Entregado',
+          [ShipmentStatusType.NO_ENTREGADO]: 'No entregado',
+      };
+      const humanizeStatus = (status: string) =>
+          STATUS_LABELS[status] || status.replace(/_/g, ' ').replace(/^\w/, c => c.toUpperCase());
+
+      // Historial completo (todos los estatus, no solo "en_ruta") con contexto de
+      // chofer/unidad cuando el evento sí es una salida a ruta identificable.
+      const statusTimeline = sortedStatusHistory.map(h => {
+          const dispatchId = h.status === ShipmentStatusType.EN_RUTA ? dispatchIdFromNotes(h.notes) : undefined;
+          const dispatch = dispatchId ? dispatchesById.get(dispatchId) : undefined;
+          const driver = dispatch?.drivers?.[0];
+
+          return {
+              status: h.status,
+              statusLabel: humanizeStatus(h.status),
+              date: (h.timestamp || h.createdAt)?.toISOString?.() || null,
+              notes: h.notes || null,
+              exceptionCode: h.exceptionCode || null,
+              dispatch: dispatch ? {
+                  id: dispatch.id,
+                  folio: dispatch.trackingNumber,
+                  driverName: driver?.name || 'Sin conductor',
+                  vehicle: getVehicleLabel(dispatch),
+              } : undefined,
+          };
+      });
+      // ---------------------------------------------------------------------------
+
       // Crear objeto base de respuesta
       // Nota: Devolvemos el tracking original que se encontró en la BD (targetShipment.trackingNumber)
       const response: SearchShipmentDto = {
@@ -4510,13 +4590,21 @@ export class ShipmentsService {
               trackingNumber: unloading?.trackingNumber || ''
           },
           isCharge: isChargeShipment,
-          route: packageDispatch ? {
+          // Solo mostramos la ruta actual si el último estatus del historial sigue siendo "en_ruta".
+          // Si ya avanzó (entregado, no entregado, etc.) la ruta activa dejó de ser relevante.
+          route: (packageDispatch && isCurrentlyEnRuta) ? {
               id: packageDispatch.id,
               trackingNumber: packageDispatch.trackingNumber,
               driver: {
                   name: firstDriver?.name || 'Sin conductor'
-              }
-          } : undefined
+              },
+              vehicle: getVehicleLabel(packageDispatch),
+              // Fecha en la que entró al estatus "en_ruta" vigente
+              date: lastStatusEntry?.timestamp?.toISOString?.() || lastStatusEntry?.createdAt?.toISOString?.() || null
+          } : undefined,
+          // Historial completo del envío (todos los estatus), con chofer/unidad
+          // en cada evento "en_ruta" que se haya podido asociar a un despacho
+          statusTimeline
       };
 
       // Agregar consolidated o charge según el tipo
@@ -4544,6 +4632,9 @@ export class ShipmentsService {
           unloading: response.unloading?.id || 'N/A',
           route: response.route?.trackingNumber || 'Sin ruta',
           driver: response.route?.driver?.name || 'N/A',
+          vehicle: response.route?.vehicle || 'N/A',
+          statusTimelineCount: response.statusTimeline?.length || 0,
+          isCurrentlyEnRuta,
           priority: response.priority,
           recipient: response.recipient,
           payment: response.payment,
