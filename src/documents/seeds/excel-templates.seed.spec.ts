@@ -8,6 +8,7 @@ import { buildRouteClosureData } from '../data/route-closure.mapper';
 import { buildReturningData } from '../data/returning.mapper';
 import { buildWarehouseExcelData } from '../../warehouse/warehouse.service';
 import { buildDriverReportData } from '../data/driver-report.mapper';
+import { buildIncomeStatementData } from '../data/income-statement.mapper';
 import { Workbook } from 'exceljs';
 
 function repos() {
@@ -436,5 +437,89 @@ describe('seedExcelTemplates', () => {
     expect(row5.getCell(7).value).toBe(0);
     expect(ws.getCell(8, 1).value).toBe('No.'); // encabezado sigue presente
     expect(ws.getCell(9, 2).value ?? '').toBe(''); // sin datos
+  });
+
+  it('income_statement_excel: fiel a B4 (título 1F4E78, columnas dinámicas por día, secciones, hoja2 autoFilter, hoja3)', async () => {
+    const seed = EXCEL_TEMPLATE_SEEDS.find((s) => s.code === 'income_statement_excel')!;
+    expect(seed).toBeTruthy();
+    const data = buildIncomeStatementData({
+      subsidiaryName: 'Cd. Obregon',
+      dateKeys: ['2026-07-18', '2026-07-19'],
+      incomeMatrix: { 'Envío': { '2026-07-18': 100, '2026-07-19': 50 } },
+      expenseMatrix: { 'Renta': { '2026-07-18': 30 } },
+      detailRows: [
+        { date: '2026-07-18', type: 'INGRESO', category: 'Envío', amount: 100 },
+        { date: '2026-07-18', type: 'EGRESO', category: 'Renta', desc: 'Pago mensual', amount: 30, ref: 'F-001' },
+      ],
+    });
+    const buf = await new ExcelWorkbookBuilder(new TemplateEngine()).build(seed.doc, { data } as any);
+    const wb = new Workbook(); await wb.xlsx.load(buf as any);
+
+    // --- Hoja 1: título + columnas dinámicas por día ---
+    const ws1 = wb.getWorksheet('Estado de Resultados')!;
+    const titleCell = ws1.getCell('A1');
+    expect(titleCell.value).toBe('ESTADO DE RESULTADOS - CD. OBREGON');
+    expect(titleCell.font?.color?.argb).toBe('1F4E78');
+    expect(titleCell.font?.size).toBe(16);
+    // El título se fusiona hasta la última columna dinámica (variable + 2 días + total = 4 -> D1)
+    expect(ws1.getCell('D1').master.address).toBe('A1');
+
+    const headerRow = ws1.getRow(3); // fila 1 título, fila 2 spacer, fila 3 encabezado de tabla
+    expect(headerRow.getCell(1).value).toBe('VARIABLES');
+    expect(headerRow.getCell(4).value).toBe('TOTAL ACUMULADO');
+    expect((headerRow.getCell(1).fill as any).fgColor.argb).toBe('1F4E78');
+
+    const values: { row: number; v: any }[] = [];
+    ws1.eachRow({ includeEmpty: true }, (r, n) => values.push({ row: n, v: r.getCell(1).value }));
+    const findRow = (v: string) => ws1.getRow(values.find((x) => x.v === v)!.row);
+
+    // Secciones ingresos/egresos/utilidad
+    expect(findRow('INGRESOS OPERATIVOS').getCell(1).font?.color?.argb).toBe('1F4E78');
+    expect(findRow('EGRESOS OPERATIVOS').getCell(1).font?.color?.argb).toBe('C00000');
+    const totalIncomes = findRow('TOTAL INGRESOS');
+    expect(totalIncomes.getCell(2).value).toBe(100); // día 1
+    expect(totalIncomes.getCell(4).value).toBe(150); // total acumulado
+    const netRow = findRow('UTILIDAD NETA');
+    expect(netRow.getCell(2).value).toBe(70); // 100 - 30
+    expect(netRow.getCell(4).value).toBe(120); // 150 - 30
+    expect((netRow.getCell(2).fill as any).fgColor.argb).toBe('27AE60'); // positivo -> verde
+
+    // Montos con formato "$"#,##0.00
+    expect(totalIncomes.getCell(2).numFmt).toBe('"$"#,##0.00');
+
+    // --- Hoja 2: Desglose Detallado ---
+    const ws2 = wb.getWorksheet('Desglose Detallado')!;
+    expect(ws2.autoFilter).toBe('A1:F1');
+    expect(ws2.getRow(1).getCell(1).value).toBe('FECHA');
+    const detailRow2 = ws2.getRow(3); // fila 2 = ingreso, fila 3 = egreso
+    expect(detailRow2.getCell(2).value).toBe('F-001');
+    expect(detailRow2.getCell(3).font?.color?.argb).toBe('C00000');
+
+    // --- Hoja 3: Dashboard ---
+    const ws3 = wb.getWorksheet('Dashboard')!;
+    expect(ws3.getCell('A1').value).toBe('RESUMEN EJECUTIVO DE OPERACIÓN');
+    const dashHeader = ws3.getRow(3);
+    expect(dashHeader.getCell(1).value).toBe('CATEGORÍA INGRESO');
+    expect((dashHeader.getCell(1).fill as any).fgColor.argb).toBe('4472C4');
+    const dashDataRow = ws3.getRow(4);
+    expect(dashDataRow.getCell(1).value).toBe('Envío');
+    expect(dashDataRow.getCell(2).value).toBe(150);
+    expect(dashDataRow.getCell(3).value).toBe('Renta');
+    expect(dashDataRow.getCell(4).value).toBe(30);
+  });
+
+  it('income_statement_excel: 3 días en el rango -> 3 columnas dinámicas (ancho de tabla y título consistentes)', async () => {
+    const seed = EXCEL_TEMPLATE_SEEDS.find((s) => s.code === 'income_statement_excel')!;
+    const data = buildIncomeStatementData({
+      subsidiaryName: 'S', dateKeys: ['2026-07-18', '2026-07-19', '2026-07-20'],
+      incomeMatrix: {}, expenseMatrix: {}, detailRows: [],
+    });
+    const buf = await new ExcelWorkbookBuilder(new TemplateEngine()).build(seed.doc, { data } as any);
+    const wb = new Workbook(); await wb.xlsx.load(buf as any);
+    const ws1 = wb.getWorksheet('Estado de Resultados')!;
+    // variable + 3 días + total = 5 columnas -> título fusiona hasta E1
+    expect(ws1.getCell('E1').master.address).toBe('A1');
+    const headerRow = ws1.getRow(3);
+    expect(headerRow.getCell(5).value).toBe('TOTAL ACUMULADO');
   });
 });

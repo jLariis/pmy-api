@@ -310,6 +310,65 @@ const driverReport: ExcelDoc = {
   ],
 };
 
+/** income_statement_excel — "Estado de Resultados" (fiel a B4, `ResportsService
+ * .generateIncomeStatementReportLegacy`). 3 hojas; hoja 1 con COLUMNAS DINÁMICAS por día
+ * (`dynamicColumnsVar: 'dayColumns'`, una por día del rango) entre `variable` y `total`. */
+const incomeStatement: ExcelDoc = {
+  sheets: [
+    {
+      name: 'Estado de Resultados',
+      sections: [
+        { kind: 'title', text: 'ESTADO DE RESULTADOS - {{subsidiaryNameUpper}}', font: { size: 16, bold: true, color: '1F4E78' }, mergeTo: { fromVar: 'totalColumnsCount' } },
+        { kind: 'spacer' },
+        {
+          kind: 'table', rowsVar: 'sheet1Rows',
+          columns: [{ key: 'variable', label: 'VARIABLES', width: 40, align: 'left' }],
+          dynamicColumnsVar: 'dayColumns',
+          columnsEnd: [{ key: 'total', label: 'TOTAL ACUMULADO', width: 22, numFmt: '"$"#,##0.00', align: 'center', fillFromKey: 'total_fill' }],
+          headerFill: '1F4E78', headerFont: { bold: true, color: 'FFFFFF' }, headerAlign: 'center',
+          cellAlign: 'center', rowFillKey: 'rowFill', rowBoldKey: 'rowBold', rowFontColorKey: 'rowFontColor',
+        },
+      ],
+    },
+    {
+      name: 'Desglose Detallado',
+      sections: [
+        {
+          kind: 'table', rowsVar: 'detailRows',
+          headerFill: '1F4E78', headerFont: { bold: true, color: 'FFFFFF' }, headerAlign: 'center', autoFilter: true,
+          columns: [
+            { key: 'date', label: 'FECHA', width: 20, numFmt: 'dd/mm/yyyy', align: 'center' },
+            { key: 'ref', label: 'REFERENCIA / GUÍA', width: 25, align: 'center' },
+            { key: 'type', label: 'TIPO', width: 15, align: 'center', fontColorFromKey: 'typeColor' },
+            { key: 'category', label: 'CATEGORÍA', width: 30, align: 'center' },
+            { key: 'desc', label: 'DESCRIPCIÓN', width: 45, align: 'center' },
+            { key: 'amount', label: 'IMPORTE', width: 20, numFmt: '"$"#,##0.00', align: 'center' },
+          ],
+        },
+      ],
+    },
+    {
+      name: 'Dashboard',
+      sections: [
+        { kind: 'title', text: 'RESUMEN EJECUTIVO DE OPERACIÓN', font: { size: 16, bold: true, color: '1F4E78' }, mergeTo: 4 },
+        { kind: 'spacer' },
+        {
+          kind: 'table', rowsVar: 'dashboardRows',
+          headerFill: '4472C4', headerFont: { bold: true, color: 'FFFFFF' }, headerAlign: 'center',
+          bordered: true, cellAlign: 'center',
+          columns: [
+            { key: 'incCategory', label: 'CATEGORÍA INGRESO', width: 35 },
+            { key: 'incAmount', label: 'MONTO', width: 20, numFmt: '"$"#,##0.00' },
+            { key: 'expCategory', label: 'CATEGORÍA EGRESO', width: 35 },
+            { key: 'expAmount', label: 'MONTO', width: 20, numFmt: '"$"#,##0.00' },
+          ],
+          colorScale: [{ col: 2, to: 'FF63BE7B' }, { col: 4, to: 'FFF8696B' }],
+        },
+      ],
+    },
+  ],
+};
+
 export const EXCEL_TEMPLATE_SEEDS: ExcelSeed[] = [
   { code: 'route_dispatch_excel', name: 'Salida a Ruta (Excel)', doc: routeDispatch,
     variables: [
@@ -362,6 +421,15 @@ export const EXCEL_TEMPLATE_SEEDS: ExcelSeed[] = [
       { name: 'periodLabel', label: 'Periodo analizado (ya formateado)' },
       { name: 'driverRows', label: 'Filas por chofer + fila TOTALES GLOBALES (semáforo pctEffFill/pctRetFill)' },
       { name: 'detailRows', label: 'Detalle de paquetes (hoja 2, dexColor si hay código DEX)' },
+    ] },
+  { code: 'income_statement_excel', name: 'Estado de Resultados (Excel)', doc: incomeStatement,
+    variables: [
+      { name: 'subsidiaryNameUpper', label: 'Sucursal (mayúsculas), título hoja 1' },
+      { name: 'dayColumns', label: 'Columnas dinámicas por día (una por día del rango, ExcelColumn[])' },
+      { name: 'totalColumnsCount', label: 'Ancho del título (variable + días + total)', dataType: 'number' },
+      { name: 'sheet1Rows', label: 'Filas hoja 1: secciones INGRESOS/EGRESOS OPERATIVOS, totales, UTILIDAD NETA' },
+      { name: 'detailRows', label: 'Desglose detallado (hoja 2)' },
+      { name: 'dashboardRows', label: 'Resumen por categoría (hoja 3, semáforo colorScale)' },
     ] },
 ];
 
