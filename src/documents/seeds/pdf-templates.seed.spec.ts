@@ -5,6 +5,7 @@ import { buildRouteDispatchData } from '../data/route-dispatch.mapper';
 import { buildUnloadingData } from '../data/unloading.mapper';
 import { buildInventoryData } from '../data/inventory.mapper';
 import { buildRouteClosureData } from '../data/route-closure.mapper';
+import { buildReturningData } from '../data/returning.mapper';
 
 function repos() {
   const templates: any[] = []; const versions: any[] = []; const vars: any[] = [];
@@ -220,5 +221,53 @@ describe('seedPdfTemplates', () => {
     expect(out).toContain('No hay paquetes No VAN');
     expect(out).toContain('No hay recolecciones');
     expect(out).toContain('No hay cobros');
+  });
+
+  it('returning_pdf: A4 portrait', () => {
+    const seed = PDF_TEMPLATE_SEEDS.find((s) => s.code === 'returning_pdf')!;
+    expect(seed).toBeTruthy();
+    expect(seed.doc.page.size).toBe('A4');
+    expect(seed.doc.page.orientation).toBe('portrait');
+  });
+
+  it('returning_pdf: HTML fiel a C9 (branding FedEx, localidad, resumen, 2 columnas, DEX, leyenda)', () => {
+    const seed = PDF_TEMPLATE_SEEDS.find((s) => s.code === 'returning_pdf')!;
+    const html = new PdfHtmlComposer().compose(seed.doc);
+    const data = buildReturningData({
+      subsidiaryName: 'Cd. Obregon',
+      now: new Date('2026-07-22T18:00:00Z'),
+      devolutions: [{ trackingNumber: 'D1', reason: '03' }],
+      collections: [{ trackingNumber: 'C1' }, { trackingNumber: 'C2' }],
+    } as any);
+    const out = new TemplateEngine().render(html, { data, brand: { logoLight: null, colors: {}, typography: {} }, system: { now: new Date() } } as any);
+    expect(out).toContain('Fed');
+    expect(out).toContain('Ex');
+    expect(out).toContain('CD. OBREGON');
+    expect(out).toContain('DEVOLUCIONES Y RECOLECCIONES');
+    expect(out).toContain('TOTAL RECOLECCIONES');
+    expect(out).toContain('TOTAL DEVOLUCIONES');
+    expect(out).toContain('TOTAL GENERAL');
+    expect(out).toContain('DEVOLUCION (Envío no entregado)');
+    expect(out).toContain('RECOLECCIONES');
+    expect(out).toContain('D1');
+    expect(out).toContain('DEX03');
+    expect(out).toContain('rt-dex');
+    expect(out).toContain('C1');
+    expect(out).toContain('CD.'); // sucursal 3 letras
+    expect(out).toContain('DEX 03: DATOS INCORRECTOS');
+    expect(out).toContain('DEX 17: CAMBIO DE FECHA SOLICITADO');
+    expect(out).toContain('Nombre y Firma');
+  });
+
+  it('returning_pdf: rellena filas hasta 15 cuando hay al menos un dato', () => {
+    const seed = PDF_TEMPLATE_SEEDS.find((s) => s.code === 'returning_pdf')!;
+    const html = new PdfHtmlComposer().compose(seed.doc);
+    const data = buildReturningData({
+      subsidiaryName: 'S', devolutions: [{ trackingNumber: 'D1', reason: '03' }], collections: [],
+    } as any);
+    const out = new TemplateEngine().render(html, { data, brand: { logoLight: null, colors: {}, typography: {} }, system: { now: new Date() } } as any);
+    const rows = (out.match(/<tr class="[^"]*">/g) || []).length;
+    // 15 filas de devoluciones + 0 de recolecciones (sin datos, sin relleno)
+    expect(rows).toBe(15);
   });
 });

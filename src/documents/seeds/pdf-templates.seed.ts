@@ -7,6 +7,7 @@ import { ROUTE_DISPATCH_PDF_HTML } from './templates/route-dispatch.pdf.html';
 import { UNLOADING_PDF_HTML } from './templates/unloading.pdf.html';
 import { INVENTORY_PDF_HTML } from './templates/inventory.pdf.html';
 import { ROUTE_CLOSURE_PDF_HTML } from './templates/route-closure.pdf.html';
+import { RETURNING_PDF_HTML } from './templates/returning.pdf.html';
 
 export interface PdfSeedVar { name: string; label: string; dataType?: string; }
 export interface PdfSeed { code: string; name: string; doc: PdfDoc; variables: PdfSeedVar[]; }
@@ -62,6 +63,12 @@ const routeClosure: PdfDoc = {
   html: ROUTE_CLOSURE_PDF_HTML,
 };
 
+/** returning_pdf — "Devoluciones y Recolecciones" (fiel a C9, frontend). A4 portrait, 2 columnas (flex). */
+const returning: PdfDoc = {
+  page: { size: 'A4', orientation: 'portrait', margins: '15px' },
+  html: RETURNING_PDF_HTML,
+};
+
 export const PDF_TEMPLATE_SEEDS: PdfSeed[] = [
   { code: 'route_dispatch_pdf', name: 'Salida a Ruta (PDF)', doc: routeDispatch,
     variables: [
@@ -112,6 +119,15 @@ export const PDF_TEMPLATE_SEEDS: PdfSeed[] = [
       { name: 'noVanRows', label: 'Paquetes No VAN' }, { name: 'hasNoVan', label: 'Hay No VAN', dataType: 'boolean' },
       { name: 'collections', label: 'Guías de recolección' }, { name: 'hasCollections', label: 'Hay recolecciones', dataType: 'boolean' },
       { name: 'podCharges', label: 'Cobros (POD entregados)' }, { name: 'hasPodCharges', label: 'Hay cobros', dataType: 'boolean' },
+    ] },
+  { code: 'returning_pdf', name: 'Devoluciones y Recolecciones (PDF)', doc: returning,
+    variables: [
+      { name: 'subsidiaryNameUpper', label: 'Sucursal (mayúsculas)' }, { name: 'generatedDate', label: 'Fecha de generación' },
+      { name: 'totalDevoluciones', label: 'Total devoluciones', dataType: 'number' },
+      { name: 'totalRecolecciones', label: 'Total recolecciones', dataType: 'number' },
+      { name: 'totalGeneral', label: 'Total general', dataType: 'number' },
+      { name: 'devolucionRowsPdf', label: 'Filas de devoluciones (con relleno a 15)' },
+      { name: 'recoleccionRowsPdf', label: 'Filas de recolecciones (con relleno a 15)' },
     ] },
 ];
 
