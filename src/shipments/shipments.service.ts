@@ -58,6 +58,7 @@ import { LD_QUALIFYING_SQL_IN } from 'src/common/ld-codes';
 import { TemplateService } from 'src/documents/template.service';
 import { buildShipmentsNo67Data } from 'src/documents/data/shipments-no67.mapper';
 import { buildReceived67Data } from 'src/documents/data/received-67.mapper';
+import { buildPendingShipmentsData } from 'src/documents/data/pending-shipments.mapper';
 
 dayjs.extend(isoWeek);
 
@@ -6950,7 +6951,33 @@ export class ShipmentsService {
       }).format(new Date(date));
     }
 
-    async generatePendingShipmentsExcel(
+    /**
+     * Genera el Excel del reporte "Pendientes" (B8). Unificación: detrás de flag, el backend
+     * genera el Excel por el Motor de Plantillas (`pending_shipments_excel`). Si el motor no
+     * entrega buffer (o falla), se conserva el armado inline exceljs original
+     * (`generatePendingShipmentsExcelLegacy`). Flag OFF => comportamiento actual intacto.
+     */
+    async generatePendingShipmentsExcel(shipments: Shipment[]): Promise<Buffer> {
+      if (process.env.DOC_ENGINE_PENDING_SHIPMENTS === 'true') {
+        try {
+          const buf = await this.renderPendingShipmentsExcel(shipments);
+          if (buf) return buf;
+        } catch (e: any) {
+          this.logger.warn(`Motor pending_shipments_excel falló; uso armado legacy: ${e?.message}`);
+        }
+      }
+      return this.generatePendingShipmentsExcelLegacy(shipments);
+    }
+
+    /** Arma los datos vía data-provider y renderiza por el Motor. `undefined` si el motor no entrega buffer. */
+    async renderPendingShipmentsExcel(shipments: Shipment[]): Promise<Buffer | undefined> {
+      const data = buildPendingShipmentsData({ shipments: shipments as any });
+      const result = await this.templateService.render('pending_shipments_excel', data);
+      return result.buffer;
+    }
+
+    /** Excel del reporte "Pendientes" (armado inline exceljs, legacy — retrocompat con Flag OFF). */
+    async generatePendingShipmentsExcelLegacy(
       shipments: Shipment[]
     ): Promise<Buffer> {
 
