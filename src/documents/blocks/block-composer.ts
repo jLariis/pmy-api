@@ -10,7 +10,7 @@ import { EmailBlock, EmailDoc } from './email-doc.types';
 export class BlockComposer {
   compose(doc: EmailDoc): string {
     const inner = (doc?.blocks ?? []).map((b) => this.renderBlock(b)).join('\n');
-    return `<mjml><mj-body background-color="#f4f4f4">
+    return `<mjml><mj-body background-color="#f4f4f4" width="800px">
   <mj-section background-color="#ffffff"><mj-column>
     <mj-text font-size="18px" font-weight="bold" color="{{brand.colors.secondary}}">{{brand.fiscal.razonSocial}}</mj-text>
 ${inner}
