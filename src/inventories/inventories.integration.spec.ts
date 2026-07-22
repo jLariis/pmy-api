@@ -68,3 +68,87 @@ describe('InventoriesService.loadInventoryInput', () => {
     expect(input.subsidiaryName).toBe('Fallback Sub');
   });
 });
+
+describe('InventoriesService.renderInventoryNo67Excel', () => {
+  const inventoryData = {
+    summary: { totalShipments: 4, withoutCode67: 2, withCode67: 2, percentageWithout67: 50 },
+    details: [],
+  };
+
+  it('usa el motor para el Excel de "Shipments sin código 67"', async () => {
+    const render = jest.fn().mockResolvedValue({ format: 'excel', mime: 'x', buffer: Buffer.from('XLSX') });
+    const svc = Object.create(InventoriesService.prototype) as any;
+    svc.templateService = { render };
+    svc.checkInventory67BySubsidiary = jest.fn().mockResolvedValue(inventoryData);
+    const buf = await svc.renderInventoryNo67Excel('sub-1');
+    expect(svc.checkInventory67BySubsidiary).toHaveBeenCalledWith('sub-1');
+    expect(render).toHaveBeenCalledWith('inventory_no67_excel', expect.objectContaining({ totalShipments: 4 }));
+    expect(buf?.toString()).toBe('XLSX');
+  });
+
+  it('sin buffer → undefined', async () => {
+    const svc = Object.create(InventoriesService.prototype) as any;
+    svc.templateService = { render: jest.fn().mockResolvedValue({ format: 'excel', mime: 'x' }) };
+    svc.checkInventory67BySubsidiary = jest.fn().mockResolvedValue(inventoryData);
+    const buf = await svc.renderInventoryNo67Excel('sub-1');
+    expect(buf).toBeUndefined();
+  });
+});
+
+describe('InventoriesService.generateExcelReport (flag + fallback)', () => {
+  const OLD_ENV = process.env.DOC_ENGINE_INVENTORY_NO67;
+  afterEach(() => { process.env.DOC_ENGINE_INVENTORY_NO67 = OLD_ENV; });
+
+  function makeService() {
+    const svc = Object.create(InventoriesService.prototype) as any;
+    svc.logger = { warn: jest.fn(), log: jest.fn(), error: jest.fn(), debug: jest.fn() };
+    return svc;
+  }
+
+  it('flag OFF (default): usa directo el armado legacy, sin llamar al motor', async () => {
+    delete process.env.DOC_ENGINE_INVENTORY_NO67;
+    const svc = makeService();
+    const render = jest.fn();
+    svc.templateService = { render };
+    const legacyBuf = Buffer.from('LEGACY');
+    svc.generateExcelReportLegacy = jest.fn().mockResolvedValue(legacyBuf);
+    const out = await svc.generateExcelReport('sub-1');
+    expect(render).not.toHaveBeenCalled();
+    expect(out).toBe(legacyBuf);
+  });
+
+  it('flag ON + motor entrega buffer: usa el buffer del motor (no llama al legacy)', async () => {
+    process.env.DOC_ENGINE_INVENTORY_NO67 = 'true';
+    const svc = makeService();
+    svc.checkInventory67BySubsidiary = jest.fn().mockResolvedValue({ summary: {}, details: [] });
+    const engineBuf = Buffer.from('ENGINE');
+    svc.templateService = { render: jest.fn().mockResolvedValue({ format: 'excel', mime: 'x', buffer: engineBuf }) };
+    svc.generateExcelReportLegacy = jest.fn().mockResolvedValue(Buffer.from('LEGACY'));
+    const out = await svc.generateExcelReport('sub-1');
+    expect(out).toBe(engineBuf);
+    expect(svc.generateExcelReportLegacy).not.toHaveBeenCalled();
+  });
+
+  it('flag ON + motor sin buffer: cae a legacy', async () => {
+    process.env.DOC_ENGINE_INVENTORY_NO67 = 'true';
+    const svc = makeService();
+    svc.checkInventory67BySubsidiary = jest.fn().mockResolvedValue({ summary: {}, details: [] });
+    svc.templateService = { render: jest.fn().mockResolvedValue({ format: 'excel', mime: 'x' }) };
+    const legacyBuf = Buffer.from('LEGACY');
+    svc.generateExcelReportLegacy = jest.fn().mockResolvedValue(legacyBuf);
+    const out = await svc.generateExcelReport('sub-1');
+    expect(out).toBe(legacyBuf);
+  });
+
+  it('flag ON + motor lanza: no propaga, cae a legacy', async () => {
+    process.env.DOC_ENGINE_INVENTORY_NO67 = 'true';
+    const svc = makeService();
+    svc.checkInventory67BySubsidiary = jest.fn().mockRejectedValue(new Error('boom'));
+    svc.templateService = { render: jest.fn() };
+    const legacyBuf = Buffer.from('LEGACY');
+    svc.generateExcelReportLegacy = jest.fn().mockResolvedValue(legacyBuf);
+    const out = await svc.generateExcelReport('sub-1');
+    expect(out).toBe(legacyBuf);
+    expect(svc.logger.warn).toHaveBeenCalled();
+  });
+});

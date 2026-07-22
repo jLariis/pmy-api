@@ -15,6 +15,7 @@ import { differenceInCalendarDays } from 'date-fns';
 import { LD_QUALIFYING_SQL_IN } from 'src/common/ld-codes';
 import { TemplateService } from 'src/documents/template.service';
 import { buildInventoryData, InventoryInput } from 'src/documents/data/inventory.mapper';
+import { buildInventoryNo67Data } from 'src/documents/data/inventory-no67.mapper';
 
 export interface ShipmentWithout67 {
   trackingNumber: string;
@@ -1382,33 +1383,59 @@ export class InventoriesService {
     };
   }
 
-  // ============ GENERADOR DE EXCEL CORREGIDO ============
+  // ============ GENERADOR DE EXCEL ============
 
   /**
-   * Genera reporte Excel optimizado
+   * Genera el Excel de "Shipments sin código 67" (B5). Unificación: detrás de flag, el backend
+   * genera el Excel por el Motor de Plantillas (`inventory_no67_excel`). Si el motor no entrega
+   * buffer (o falla), se conserva el armado inline exceljs original
+   * (`generateExcelReportLegacy`). Flag OFF => comportamiento actual intacto.
    */
   async generateExcelReport(subsidiaryId: string): Promise<Buffer> {
+    if (process.env.DOC_ENGINE_INVENTORY_NO67 === 'true') {
+      try {
+        const buf = await this.renderInventoryNo67Excel(subsidiaryId);
+        if (buf) return buf;
+      } catch (e: any) {
+        this.logger.warn(`Motor inventory_no67_excel falló; uso armado legacy: ${e?.message}`);
+      }
+    }
+    return this.generateExcelReportLegacy(subsidiaryId);
+  }
+
+  /** Consulta los shipments-sin-67 y renderiza vía el Motor. `undefined` si el motor no entrega buffer. */
+  async renderInventoryNo67Excel(subsidiaryId: string): Promise<Buffer | undefined> {
+    const inventoryData = await this.checkInventory67BySubsidiary(subsidiaryId);
+    const data = buildInventoryNo67Data(inventoryData);
+    const result = await this.templateService.render('inventory_no67_excel', data);
+    return result.buffer;
+  }
+
+  /**
+   * Genera reporte Excel optimizado (armado inline exceljs, legacy — retrocompat con Flag OFF).
+   */
+  async generateExcelReportLegacy(subsidiaryId: string): Promise<Buffer> {
     const startTime = Date.now();
-    
+
     try {
       // 1. Obtener datos
       const inventoryData = await this.checkInventory67BySubsidiary(subsidiaryId);
-      
+
       // 2. Crear workbook
       const workbook = new ExcelJS.Workbook();
       workbook.creator = 'Sistema de Inventario';
       workbook.created = new Date();
-      
+
       // 3. Agregar hojas
       this.addSummarySheet(workbook, inventoryData);
       this.addDetailsSheet(workbook, inventoryData.details);
       this.addStatisticsSheet(workbook, inventoryData);
-      
+
       // 4. Generar buffer
       this.logger.log(`📊 Excel generado en: ${Date.now() - startTime}ms`);
       const arrayBuffer = await workbook.xlsx.writeBuffer();
-      return Buffer.from(arrayBuffer);  
-            
+      return Buffer.from(arrayBuffer);
+
     } catch (error) {
       this.logger.error(`❌ Error generando Excel: ${error.message}`);
       throw error;
