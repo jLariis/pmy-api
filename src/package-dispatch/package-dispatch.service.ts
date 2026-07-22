@@ -20,6 +20,7 @@ import * as ExcelJS from 'exceljs';
 import { PaginatedResult, parsePagination, resolveDateRange } from 'src/common/pagination.util';
 import { TemplateService } from 'src/documents/template.service';
 import { buildRouteDispatchData, RouteDispatchInput, RouteDispatchPackage } from 'src/documents/data/route-dispatch.mapper';
+import { buildDriverReportData } from 'src/documents/data/driver-report.mapper';
 
 @Injectable()
 export class PackageDispatchService {
@@ -2822,11 +2823,39 @@ export class PackageDispatchService {
     return buffer as unknown as Buffer;
   }
 
+  /**
+   * "Reporte de Choferes" (B3): intenta el Motor de Plantillas (`driver_report_excel`, con
+   * semáforo por celda vía `fillFromKey`); si no entrega buffer (plantilla ausente, motor
+   * lanza, etc.) cae al armado legacy inline (`generateDriverReportExcelLegacy`), que se
+   * conserva intacto como respaldo. Sin flag: mismo criterio que `audit_log_excel`.
+   */
   async generateDriverReportExcel(
     startDate: string,
     endDate: string,
     subsidiaryId: string
   ): Promise<Buffer> {
+    try {
+      const { summaryData, detailsData } = await this.fetchDriverReportRawData(startDate, endDate, subsidiaryId);
+      const data = buildDriverReportData({ startDate, endDate, summaryData, detailsData });
+      const r = await this.templateService.render('driver_report_excel', data);
+      if (r.buffer) return r.buffer;
+      this.logger.warn('Excel Reporte de Choferes por motor sin buffer; uso generador legacy');
+    } catch (e: any) {
+      this.logger.warn(`Excel Reporte de Choferes por motor falló (${e?.message}); uso generador legacy`);
+    }
+    return this.generateDriverReportExcelLegacy(startDate, endDate, subsidiaryId);
+  }
+
+  /**
+   * Ejecuta las dos queries agregadas del reporte de choferes (resumen por chofer + detalle de
+   * paquetes). Compartida entre `generateDriverReportExcel` (motor) y
+   * `generateDriverReportExcelLegacy` (respaldo) para no duplicar el SQL.
+   */
+  private async fetchDriverReportRawData(
+    startDate: string,
+    endDate: string,
+    subsidiaryId: string
+  ): Promise<{ summaryData: any[]; detailsData: any[] }> {
 
     const startUtc = DateTime
       .fromISO(startDate, { zone: 'America/Hermosillo' })
@@ -2961,6 +2990,22 @@ export class PackageDispatchService {
       summaryQuery.getRawMany(),
       detailsQuery.getRawMany()
     ]);
+
+    return { summaryData, detailsData };
+  }
+
+  /**
+   * Armado legacy inline (exceljs) del "Reporte de Choferes" (B3). Se conserva intacto como
+   * respaldo de `generateDriverReportExcel` (Motor de Plantillas) — mismo resultado byte-a-byte
+   * que antes de la unificación, salvo por reusar `fetchDriverReportRawData` en vez de repetir
+   * las queries inline.
+   */
+  async generateDriverReportExcelLegacy(
+    startDate: string,
+    endDate: string,
+    subsidiaryId: string
+  ): Promise<Buffer> {
+    const { summaryData, detailsData } = await this.fetchDriverReportRawData(startDate, endDate, subsidiaryId);
 
     // =========================================================================
     // 📄 CREACIÓN DEL WORKBOOK EXCEL
