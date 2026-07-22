@@ -500,6 +500,27 @@ const shipmentsNo67: ExcelDoc = {
   ],
 };
 
+/** received_67_excel — hoja "Recibidas con 67", 9 columnas, encabezado en negrita (B7, fiel a
+ * `ShipmentsService.exportReceived67Excel`). Ruta de tabla única (como `audit_log_excel`). */
+const received67: ExcelDoc = {
+  sheets: [{
+    name: 'Recibidas con 67',
+    headerFont: { bold: true },
+    columns: [
+      { key: 'trackingNumber', label: 'Guía', width: 22 },
+      { key: 'fecha67', label: 'Fecha 67', width: 20 },
+      { key: 'diasDesde67', label: 'Días desde 67', width: 14 },
+      { key: 'status', label: 'Estatus', width: 22 },
+      { key: 'recipientName', label: 'Destinatario', width: 26 },
+      { key: 'recipientAddress', label: 'Dirección', width: 34 },
+      { key: 'recipientCity', label: 'Ciudad', width: 18 },
+      { key: 'recipientZip', label: 'CP', width: 10 },
+      { key: 'tipo', label: 'Tipo', width: 10 },
+    ],
+    rowsVar: 'rows',
+  }],
+};
+
 export const EXCEL_TEMPLATE_SEEDS: ExcelSeed[] = [
   { code: 'route_dispatch_excel', name: 'Salida a Ruta (Excel)', doc: routeDispatch,
     variables: [
@@ -592,6 +613,8 @@ export const EXCEL_TEMPLATE_SEEDS: ExcelSeed[] = [
       { name: 'codigosRows', label: 'Códigos de excepción por frecuencia desc' },
       { name: 'topRows', label: 'Top 5 shipments más antiguos sin código 67' },
     ] },
+  { code: 'received_67_excel', name: 'Recibidas con 67 (Excel)', doc: received67,
+    variables: [{ name: 'rows', label: 'Filas de recibidas con 67 (fecha67 ya formateada es-MX/Hermosillo, tipo Carga/Envío)' }] },
 ];
 
 interface SeedRepos { tplRepo: Repository<DocumentTemplate>; verRepo: Repository<DocumentTemplateVersion>; varRepo: Repository<TemplateVariableDef>; }

@@ -11,6 +11,7 @@ import { buildDriverReportData } from '../data/driver-report.mapper';
 import { buildIncomeStatementData } from '../data/income-statement.mapper';
 import { buildInventoryNo67Data } from '../data/inventory-no67.mapper';
 import { buildShipmentsNo67Data } from '../data/shipments-no67.mapper';
+import { buildReceived67Data } from '../data/received-67.mapper';
 import { Workbook } from 'exceljs';
 
 function repos() {
@@ -645,5 +646,31 @@ describe('seedExcelTemplates', () => {
     expect(values2.some((x) => x.a === '03' && x.b === 2)).toBe(true);
     expect(values2.some((x) => x.a === 'SHIPMENTS MÁS ANTIGUOS SIN CÓDIGO 67')).toBe(true);
     expect(values2.some((x) => x.a === '1. T8' && x.b === '8 días')).toBe(true);
+  });
+
+  it('received_67_excel: fiel a B7 (1 hoja "Recibidas con 67", 9 columnas, encabezado bold, ruta de tabla única)', async () => {
+    const seed = EXCEL_TEMPLATE_SEEDS.find((s) => s.code === 'received_67_excel')!;
+    expect(seed).toBeTruthy();
+    expect(seed.doc.sheets.length).toBe(1);
+    expect(seed.doc.sheets[0].name).toBe('Recibidas con 67');
+    expect(seed.doc.sheets[0].columns?.length).toBe(9);
+    expect(seed.doc.sheets[0].headerFont).toEqual({ bold: true });
+    expect(seed.doc.sheets[0].sections).toBeUndefined();
+
+    const data = buildReceived67Data({
+      rows: [{
+        trackingNumber: 'T1', fecha67: '2026-07-20T18:00:00Z', diasDesde67: 2, status: 'en_bodega',
+        recipientName: 'Juan Pérez', recipientAddress: 'Calle 1 #23', recipientCity: 'Hermosillo',
+        recipientZip: '83000', isCharge: false,
+      }],
+    });
+    const buf = await new ExcelWorkbookBuilder(new TemplateEngine()).build(seed.doc, { data } as any);
+    const wb = new Workbook(); await wb.xlsx.load(buf as any);
+    const ws = wb.getWorksheet('Recibidas con 67')!;
+    expect(ws.getCell('A1').value).toBe('Guía');
+    expect(ws.getCell('A1').font?.bold).toBe(true);
+    expect(ws.getCell('I1').value).toBe('Tipo');
+    expect(ws.getRow(2).getCell(1).value).toBe('T1');
+    expect(ws.getRow(2).getCell(9).value).toBe('Envío');
   });
 });
