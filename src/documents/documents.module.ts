@@ -24,6 +24,7 @@ import { TemplateAdminService } from './admin/template-admin.service';
 import { MailService } from 'src/mail/mail.service';
 import { TemplatesController } from './admin/templates.controller';
 import { BrandController } from './admin/brand.controller';
+import { TemplatesBootstrapSeeder } from './templates-bootstrap.seeder';
 
 @Module({
   imports: [
@@ -50,6 +51,7 @@ import { BrandController } from './admin/brand.controller';
     RendererRegistry,
     TemplateAdminService,
     MailService,
+    TemplatesBootstrapSeeder,
   ],
   exports: [TemplateService, BrandingService, TemplateStore, TemplateAdminService],
 })
