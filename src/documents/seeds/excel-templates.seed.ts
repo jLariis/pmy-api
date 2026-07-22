@@ -434,6 +434,72 @@ const inventoryNo67: ExcelDoc = {
   ],
 };
 
+/** shipments_no67_excel — "Shipments sin código 67" (fiel a B6, `ShipmentsService
+ * .exportNo67Shipments`). 2 hojas: "Shipments Sin Código 67" (9 cols, semáforo por celda —
+ * gradiente de fila cuando crítico >3 días vía `rowFillKey`/`rowFontColorKey`/`rowBoldKey`, y
+ * semáforo por columna vía `fillFromKey`/`fontColorFromKey` en Estado (col 3) y Días (col 8) —
+ * mutuamente excluyentes, fiel al legacy) y "Resumen" (estadísticas, alertas por tiempo, códigos
+ * de excepción desc, top 5 más antiguos). */
+const shipmentsNo67: ExcelDoc = {
+  sheets: [
+    {
+      name: 'Shipments Sin Código 67',
+      sections: [
+        { kind: 'title', text: '🚨 REPORTE: SHIPMENTS SIN CÓDIGO 67', fill: 'FF6B6B', font: { size: 16, bold: true, color: 'FFFFFF' }, mergeTo: 9 },
+        { kind: 'spacer' },
+        { kind: 'info', mergeTo: 9, rows: [
+          { text: 'Fecha de generación: {{generatedDateLabel}}' },
+          { text: 'Hora de generación: {{generatedTimeLabel}}' },
+          { text: 'Total de shipments sin código 67: {{totalCount}}' },
+        ] },
+        { kind: 'spacer' },
+        { kind: 'table', rowsVar: 'detailRows',
+          headerFill: '8C5E4E', headerFont: { bold: true, color: 'FFFFFF' }, headerAlign: 'center',
+          bordered: true, wrap: true, rowFillKey: 'rowFill', rowFontColorKey: 'rowFont', rowBoldKey: 'rowBold',
+          columns: [
+            { key: 'index', label: 'No.', width: 5, align: 'center' },
+            { key: 'trackingNumber', label: 'Número de Tracking', width: 22, align: 'left' },
+            { key: 'estadoActual', label: 'Estado Actual', width: 15, align: 'center', fillFromKey: 'estadoFill', fontColorFromKey: 'estadoFont' },
+            { key: 'statusHistoryCount', label: 'Cantidad de Estados', width: 12, align: 'center' },
+            { key: 'exceptionCodesLabel', label: 'Códigos de Excepción', width: 25, align: 'left' },
+            { key: 'fechaPrimerEstado', label: 'Fecha Primer Estado', width: 18, align: 'left' },
+            { key: 'fechaUltimoEstado', label: 'Fecha Último Estado', width: 18, align: 'center' },
+            { key: 'diasSinCodigo67', label: 'Días Sin Código 67', width: 15, align: 'center', fillFromKey: 'diasFill', fontColorFromKey: 'diasFont' },
+            { key: 'observaciones', label: 'Observaciones', width: 25, align: 'left' },
+          ] },
+      ],
+    },
+    {
+      name: 'Resumen',
+      columnWidths: [35, 15],
+      sections: [
+        { kind: 'title', text: '📊 RESUMEN', fill: 'FF6B6B', font: { size: 14, bold: true, color: 'FFFFFF' }, mergeTo: 2 },
+        { kind: 'spacer' },
+        { kind: 'title', text: 'ESTADÍSTICAS GENERALES', fill: '8C5E4E', font: { bold: true, color: 'FFFFFF' }, mergeTo: 2 },
+        { kind: 'row', cells: [{ col: 1, text: 'Total de shipments sin código 67:', bold: true }, { col: 2, key: 'totalCount' }] },
+        { kind: 'row', cells: [{ col: 1, text: 'En bodega:', bold: true }, { col: 2, key: 'enBodegaCount' }] },
+        { kind: 'row', cells: [{ col: 1, text: 'En ruta:', bold: true }, { col: 2, key: 'enRutaCount' }] },
+        { kind: 'row', cells: [{ col: 1, text: 'Entregados:', bold: true }, { col: 2, key: 'entregadosCount' }] },
+        { kind: 'row', cells: [{ col: 1, text: 'Devueltos:', bold: true }, { col: 2, key: 'devueltosCount' }] },
+        { kind: 'row', cells: [{ col: 1, text: 'Promedio de días sin código 67:', bold: true }, { col: 2, key: 'promedioDiasLabel' }] },
+        { kind: 'spacer' },
+        { kind: 'title', text: '🚨 ALERTAS POR TIEMPO SIN CÓDIGO 67', fill: 'FFF0F0', font: { bold: true, color: 'B30000' }, mergeTo: 2 },
+        { kind: 'row', cells: [{ col: 1, text: 'Críticos (>3 días):', bold: true }, { col: 2, key: 'criticosCount' }] },
+        { kind: 'row', cells: [{ col: 1, text: 'En alerta (2-3 días):', bold: true }, { col: 2, key: 'alertaCount' }] },
+        { kind: 'row', cells: [{ col: 1, text: 'Normales (0-1 día):', bold: true }, { col: 2, key: 'normalesCount' }] },
+        { kind: 'spacer' },
+        { kind: 'title', text: 'CÓDIGOS DE EXCEPCIÓN ENCONTRADOS', fill: '8C5E4E', font: { bold: true, color: 'FFFFFF' }, mergeTo: 2 },
+        { kind: 'table', rowsVar: 'codigosRows', bordered: true,
+          columns: [{ key: 'codigo', label: 'Código' }, { key: 'frecuencia', label: 'Frecuencia' }] },
+        { kind: 'spacer' },
+        { kind: 'title', text: 'SHIPMENTS MÁS ANTIGUOS SIN CÓDIGO 67', fill: '8C5E4E', font: { bold: true, color: 'FFFFFF' }, mergeTo: 2 },
+        { kind: 'table', rowsVar: 'topRows', bordered: true,
+          columns: [{ key: 'label', label: 'Tracking' }, { key: 'diasLabel', label: 'Días sin código 67' }] },
+      ],
+    },
+  ],
+};
+
 export const EXCEL_TEMPLATE_SEEDS: ExcelSeed[] = [
   { code: 'route_dispatch_excel', name: 'Salida a Ruta (Excel)', doc: routeDispatch,
     variables: [
@@ -508,6 +574,23 @@ export const EXCEL_TEMPLATE_SEEDS: ExcelSeed[] = [
       { name: 'detailRows', label: 'Filas de detalle (hoja 2, 9 columnas + rowFill zebra)' },
       { name: 'statusStatsRows', label: 'Distribución por estado (hoja 3)' },
       { name: 'dayStatsRows', label: 'Distribución por días en sistema (hoja 3, incluye "Sin fecha")' },
+    ] },
+  { code: 'shipments_no67_excel', name: 'Shipments sin código 67 (Excel)', doc: shipmentsNo67,
+    variables: [
+      { name: 'generatedDateLabel', label: 'Fecha de generación (dd/MM/yyyy)' },
+      { name: 'generatedTimeLabel', label: 'Hora de generación (HH:mm:ss)' },
+      { name: 'totalCount', label: 'Total de shipments sin código 67', dataType: 'number' },
+      { name: 'detailRows', label: 'Filas de detalle (hoja 1, semáforo rowFill/estadoFill/diasFill)' },
+      { name: 'enBodegaCount', label: 'En bodega', dataType: 'number' },
+      { name: 'enRutaCount', label: 'En ruta', dataType: 'number' },
+      { name: 'entregadosCount', label: 'Entregados', dataType: 'number' },
+      { name: 'devueltosCount', label: 'Devueltos', dataType: 'number' },
+      { name: 'promedioDiasLabel', label: 'Promedio de días sin código 67 (ya formateado)' },
+      { name: 'criticosCount', label: 'Críticos (>3 días)', dataType: 'number' },
+      { name: 'alertaCount', label: 'En alerta (2-3 días)', dataType: 'number' },
+      { name: 'normalesCount', label: 'Normales (0-1 día)', dataType: 'number' },
+      { name: 'codigosRows', label: 'Códigos de excepción por frecuencia desc' },
+      { name: 'topRows', label: 'Top 5 shipments más antiguos sin código 67' },
     ] },
 ];
 

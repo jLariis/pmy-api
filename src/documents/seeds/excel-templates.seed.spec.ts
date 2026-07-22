@@ -10,6 +10,7 @@ import { buildWarehouseExcelData } from '../../warehouse/warehouse.service';
 import { buildDriverReportData } from '../data/driver-report.mapper';
 import { buildIncomeStatementData } from '../data/income-statement.mapper';
 import { buildInventoryNo67Data } from '../data/inventory-no67.mapper';
+import { buildShipmentsNo67Data } from '../data/shipments-no67.mapper';
 import { Workbook } from 'exceljs';
 
 function repos() {
@@ -578,5 +579,71 @@ describe('seedExcelTemplates', () => {
     expect(values3.some((x) => x.v === 'Distribución por Días')).toBe(true);
     expect(values3.some((x) => x.v === 'en_bodega')).toBe(true);
     expect(values3.some((x) => x.v === 'Sin fecha')).toBe(true);
+  });
+
+  it('shipments_no67_excel: fiel a B6 (título FF6B6B, header 8C5E4E, semáforo por celda vía fillFromKey, hoja2 secciones)', async () => {
+    const seed = EXCEL_TEMPLATE_SEEDS.find((s) => s.code === 'shipments_no67_excel')!;
+    expect(seed).toBeTruthy();
+    const now = new Date('2026-07-22T15:00:00Z'); // 08:00 America/Hermosillo
+    const mk = (days: number, status: string, extra: any = {}) => ({
+      trackingNumber: `T${days}`, currentStatus: status,
+      firstStatusDate: new Date(now.getTime() - days * 86400000).toISOString(),
+      exceptionCodes: [], ...extra,
+    });
+    const data = buildShipmentsNo67Data({
+      now,
+      shipments: [
+        mk(0, 'en_ruta', { exceptionCodes: ['03'] }), // normal, col3 amarillo
+        mk(3, 'en_bodega', { exceptionCodes: ['03'] }), // no crítico, col8 ámbar
+        mk(8, 'entregado'), // muy crítico -> fila roja intensa, sin override de columna
+      ],
+    } as any);
+    const buf = await new ExcelWorkbookBuilder(new TemplateEngine()).build(seed.doc, { data } as any);
+    const wb = new Workbook(); await wb.xlsx.load(buf as any);
+
+    // Hoja 1
+    const ws1 = wb.getWorksheet('Shipments Sin Código 67')!;
+    expect(ws1.getCell('A1').value).toBe('🚨 REPORTE: SHIPMENTS SIN CÓDIGO 67');
+    expect((ws1.getCell('A1').fill as any).fgColor.argb).toBe('FF6B6B');
+    expect(ws1.getCell('A1').font?.size).toBe(16);
+
+    let headerRowNum = 0;
+    ws1.eachRow({ includeEmpty: true }, (r, n) => { if (r.getCell(1).value === 'No.') headerRowNum = n; });
+    expect(headerRowNum).toBeGreaterThan(0);
+    const headerRow = ws1.getRow(headerRowNum);
+    expect((headerRow.getCell(1).fill as any).fgColor.argb).toBe('8C5E4E');
+    expect(headerRow.getCell(3).value).toBe('Estado Actual');
+    expect(headerRow.getCell(8).value).toBe('Días Sin Código 67');
+
+    const row1 = ws1.getRow(headerRowNum + 1); // 0 días, en ruta -> col3 amarillo, sin fill de fila (zebra par)
+    expect((row1.getCell(3).fill as any).fgColor.argb).toBe('FFF2CC');
+    expect(row1.getCell(3).font?.color?.argb).toBe('7F6000');
+    expect((row1.getCell(1).fill as any).fgColor.argb).toBe('F2F2F2'); // zebra (índice 0)
+
+    const row2 = ws1.getRow(headerRowNum + 2); // 3 días, no crítico -> col8 ámbar
+    expect((row2.getCell(8).fill as any).fgColor.argb).toBe('FFEB9C');
+    expect(row2.getCell(8).font?.color?.argb).toBe('9C6500');
+
+    const row3 = ws1.getRow(headerRowNum + 3); // 8 días, muy crítico -> fila completa roja intensa
+    expect((row3.getCell(1).fill as any).fgColor.argb).toBe('FFE6E6');
+    expect(row3.getCell(1).font?.color?.argb).toBe('990000');
+    expect(row3.getCell(1).font?.bold).toBe(true);
+    expect((row3.getCell(3).fill as any).fgColor.argb).toBe('FFE6E6'); // col3 NO tiene su color de estado propio
+    expect((row3.getCell(8).fill as any).fgColor.argb).toBe('FFE6E6'); // col8 NO tiene su ámbar propio
+
+    // Hoja 2 "Resumen": secciones
+    const ws2 = wb.getWorksheet('Resumen')!;
+    expect(ws2.getCell('A1').value).toBe('📊 RESUMEN');
+    expect((ws2.getCell('A1').fill as any).fgColor.argb).toBe('FF6B6B');
+    const values2: { row: number; a: any; b: any }[] = [];
+    ws2.eachRow({ includeEmpty: true }, (r, n) => values2.push({ row: n, a: r.getCell(1).value, b: r.getCell(2).value }));
+    expect(values2.some((x) => x.a === 'ESTADÍSTICAS GENERALES')).toBe(true);
+    expect(values2.some((x) => x.a === 'Total de shipments sin código 67:' && x.b === 3)).toBe(true);
+    expect(values2.some((x) => x.a === '🚨 ALERTAS POR TIEMPO SIN CÓDIGO 67')).toBe(true);
+    expect(values2.some((x) => x.a === 'Críticos (>3 días):' && x.b === 1)).toBe(true);
+    expect(values2.some((x) => x.a === 'CÓDIGOS DE EXCEPCIÓN ENCONTRADOS')).toBe(true);
+    expect(values2.some((x) => x.a === '03' && x.b === 2)).toBe(true);
+    expect(values2.some((x) => x.a === 'SHIPMENTS MÁS ANTIGUOS SIN CÓDIGO 67')).toBe(true);
+    expect(values2.some((x) => x.a === '1. T8' && x.b === '8 días')).toBe(true);
   });
 });
