@@ -4,6 +4,13 @@ export interface ExcelColumn {
   width?: number;
   numFmt?: string;
   align?: 'left' | 'center' | 'right';
+  /** Nombre del campo de la fila cuyo valor (argb) se usa como fill de ESTA celda (semáforo por
+   * celda, distinto de `rowFillKey` que pinta toda la fila). Se aplica DESPUÉS del `rowFillKey`
+   * de la fila, así que gana sobre la zebra en esta columna. Ver B3 Reporte de Choferes. */
+  fillFromKey?: string;
+  /** Ídem para color de fuente por celda (siempre en negrita, fiel a `redFontKey` de las tablas
+   * espejo). Útil cuando el semáforo se expresa con texto coloreado en vez de fondo. */
+  fontColorFromKey?: string;
 }
 
 /** Tabla individual dentro de un `tableGroup` (ver más abajo): título + encabezado + filas de
@@ -55,6 +62,12 @@ export type ExcelSection =
       autoFilter?: boolean;
       /** Si se setea y `ctx.data[when]` está "vacío" (null/undefined/''/[]), la sección se omite. */
       when?: string;
+      /** Borde superior+inferior del encabezado (p.ej. 'medium' #1E3A8A). Si se setea, reemplaza
+       * al borde genérico de `bordered` en la fila de encabezado. */
+      headerBorder?: { style: 'thin' | 'medium' | 'double'; color: string };
+      /** Borde superior+inferior aplicado SOLO a la última fila de datos (p.ej. fila de
+       * "TOTALES GLOBALES" con borde double). Ver B3 Reporte de Choferes. */
+      lastRowBorder?: { style: 'thin' | 'medium' | 'double'; color: string };
     }
   /** Una sola fila con celdas en columnas arbitrarias (no necesariamente contiguas), p.ej. un
    * resumen "TOTAL A: 1   TOTAL B: 2" repartido en columnas específicas (fiel a C10, fila 5). */

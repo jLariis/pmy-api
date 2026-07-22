@@ -200,6 +200,62 @@ describe('ExcelWorkbookBuilder.build', () => {
     expect(ws.getCell(4, 2).font?.color?.argb).toBeUndefined(); // MOTIVO de L2 (no DEX)
   });
 
+  it('sección `table`: `fillFromKey`/`fontColorFromKey` pintan una celda puntual (semáforo por celda, B3)', async () => {
+    const doc2: any = { sheets: [{ name: 'Sem', sections: [
+      { kind: 'table', rowsVar: 'rows', rowFillKey: 'rowFill', cellAlign: 'center',
+        columns: [
+          { key: 'driverName', label: 'Chofer', align: 'left' },
+          { key: 'pctEff', label: '% Efectividad', numFmt: '0.0%', fillFromKey: 'pctEffFill' },
+          { key: 'dex', label: 'Cód. DEX', fontColorFromKey: 'dexColor' },
+        ] },
+    ] }] };
+    const buf = await builder.build(doc2, ctx({
+      rows: [
+        { driverName: 'Juan', pctEff: 0.95, pctEffFill: '059669', dex: '-', dexColor: null, rowFill: 'FFFFFF' },
+        { driverName: 'Beto', pctEff: 0.5, pctEffFill: 'E11D48', dex: 'DEX03', dexColor: 'E11D48', rowFill: 'F8FAFC' },
+      ],
+    }));
+    const ws = (await load(buf)).getWorksheet('Sem')!;
+    // Fila 1 de datos: la celda de % Efectividad se pinta de verde, PESE a que la fila es blanca.
+    const r1 = ws.getRow(2);
+    expect((r1.getCell(2).fill as any).fgColor.argb).toBe('059669');
+    expect((r1.getCell(1).fill as any).fgColor.argb).toBe('FFFFFF'); // resto de la fila conserva el rowFill
+    expect(r1.getCell(3).font?.color?.argb).toBeUndefined(); // sin DEX -> sin color de fuente
+    // Fila 2: rojo tanto en fill (col 2) como en fuente en negrita (col 3, DEX)
+    const r2 = ws.getRow(3);
+    expect((r2.getCell(2).fill as any).fgColor.argb).toBe('E11D48');
+    expect(r2.getCell(3).font?.color?.argb).toBe('E11D48');
+    expect(r2.getCell(3).font?.bold).toBe(true);
+    // Alineación por columna (driverName:'left') gana sobre el cellAlign:'center' de la sección
+    expect(r1.getCell(1).alignment?.horizontal).toBe('left');
+    expect(r1.getCell(2).alignment?.horizontal).toBe('center');
+  });
+
+  it('sección `table`: `headerBorder` y `lastRowBorder` (cabecera medium + fila de totales double, B3)', async () => {
+    const doc2: any = { sheets: [{ name: 'Bord', sections: [
+      { kind: 'table', rowsVar: 'rows', rowFillKey: 'rowFill',
+        headerBorder: { style: 'medium', color: '1E3A8A' },
+        lastRowBorder: { style: 'double', color: '94A3B8' },
+        columns: [{ key: 'driverName', label: 'Chofer' }, { key: 'total', label: 'Total' }] },
+    ] }] };
+    const buf = await builder.build(doc2, ctx({
+      rows: [
+        { driverName: 'Juan', total: 10, rowFill: 'FFFFFF' },
+        { driverName: 'TOTALES GLOBALES', total: 10, rowFill: 'E2E8F0' },
+      ],
+    }));
+    const ws = (await load(buf)).getWorksheet('Bord')!;
+    const header = ws.getRow(1);
+    expect(header.getCell(1).border?.top?.style).toBe('medium');
+    expect((header.getCell(1).border?.top as any)?.color?.argb).toBe('1E3A8A');
+    expect(header.getCell(1).border?.bottom?.style).toBe('medium');
+    const firstDataRow = ws.getRow(2);
+    expect(firstDataRow.getCell(1).border?.top).toBeUndefined();
+    const totalsRow = ws.getRow(3);
+    expect(totalsRow.getCell(1).border?.top?.style).toBe('double');
+    expect((totalsRow.getCell(1).border?.top as any)?.color?.argb).toBe('94A3B8');
+  });
+
   it('no permite que la alineación de una columna pise el título centrado', async () => {
     const withTitleAndAlign: ExcelDoc = { sheets: [{
       name: 'T',

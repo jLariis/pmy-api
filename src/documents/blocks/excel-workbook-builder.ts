@@ -190,24 +190,39 @@ export class ExcelWorkbookBuilder {
     s.columns.forEach((c, i) => { if (c.width != null) ws.getColumn(i + 1).width = c.width; });
     const headerRow = ws.addRow(s.columns.map((c) => c.label));
     if (s.headerHeight) headerRow.height = s.headerHeight;
+    const headerBorder = s.headerBorder
+      ? { top: { style: s.headerBorder.style, color: { argb: s.headerBorder.color } }, bottom: { style: s.headerBorder.style, color: { argb: s.headerBorder.color } } }
+      : null;
     headerRow.eachCell((cell) => {
       if (s.headerFont) cell.font = { bold: s.headerFont.bold, ...(s.headerFont.color ? { color: { argb: s.headerFont.color } } : {}) };
       if (s.headerFill) cell.fill = solid(s.headerFill);
       cell.alignment = { vertical: 'middle', horizontal: s.headerAlign ?? 'left' };
-      if (s.bordered) cell.border = thin();
+      if (headerBorder) cell.border = headerBorder as any;
+      else if (s.bordered) cell.border = thin();
     });
     const rows: any[] = Array.isArray(ctx.data?.[s.rowsVar]) ? ctx.data[s.rowsVar] : [];
-    for (const r of rows) {
+    const lastRowBorder = s.lastRowBorder
+      ? { top: { style: s.lastRowBorder.style, color: { argb: s.lastRowBorder.color } }, bottom: { style: s.lastRowBorder.style, color: { argb: s.lastRowBorder.color } } }
+      : null;
+    rows.forEach((r, idx) => {
       const dataRow = ws.addRow(s.columns.map((c) => r?.[c.key] ?? ''));
       const fill = s.rowFillKey ? r?.[s.rowFillKey] : null;
+      const isLastRow = idx === rows.length - 1;
       dataRow.eachCell((cell, col) => {
         const c = s.columns[col - 1];
         if (fill) cell.fill = solid(fill);
         if (s.bordered) cell.border = thin();
-        cell.alignment = { vertical: 'middle', horizontal: s.cellAlign ?? 'left', ...(s.wrap ? { wrapText: true } : {}) };
+        cell.alignment = { vertical: 'middle', horizontal: c?.align ?? s.cellAlign ?? 'left', ...(s.wrap ? { wrapText: true } : {}) };
         if (c?.numFmt) cell.numFmt = c.numFmt;
+        // Semáforo por celda (fiel a B3 Reporte de Choferes): fillFromKey/fontColorFromKey leen
+        // el argb de un campo de LA FILA, distinto por columna, y ganan sobre rowFillKey/thin().
+        const colFill = c?.fillFromKey ? r?.[c.fillFromKey] : null;
+        if (colFill) cell.fill = solid(colFill);
+        const colFontColor = c?.fontColorFromKey ? r?.[c.fontColorFromKey] : null;
+        if (colFontColor) cell.font = { bold: true, color: { argb: colFontColor } };
+        if (isLastRow && lastRowBorder) cell.border = lastRowBorder as any;
       });
-    }
+    });
     if (s.freezeHeader) ws.views = [{ state: 'frozen', ySplit: headerRow.number }];
     if (s.autoFilter) ws.autoFilter = { from: { row: headerRow.number, column: 1 }, to: { row: headerRow.number, column: s.columns.length } };
   }
