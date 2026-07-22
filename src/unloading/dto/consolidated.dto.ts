@@ -11,6 +11,8 @@ export class ConsolidatedItemDto {
 export class ShortShipmentInfo {
   id?: string;
   trackingNumber: string;
+  /** Variante DHL (JD/JJD) del paquete; necesaria para casar faltantes DHL en el cliente. */
+  dhlUniqueId?: string;
   recipientName?: string;
   recipientAddress?: string;
   recipientPhone?: string;

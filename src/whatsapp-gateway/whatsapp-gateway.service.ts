@@ -182,15 +182,86 @@ export class WhatsappGatewayService implements OnModuleInit, OnModuleDestroy {
     return this.getStatus();
   }
 
-  async sendText(toPhone: string, text: string) {
+  /**
+   * Envía un mensaje de texto.
+   *
+   * Acepta cualquiera de estos formatos:
+   *
+   * Número:
+   * 5216441234567
+   * 6441234567
+   *
+   * JID de contacto:
+   * 5216441234567@s.whatsapp.net
+   *
+   * JID de grupo:
+   * 120363123456789012@g.us
+   */
+  async sendText(to: string, text: string) {
     if (this.status !== 'connected' || !this.sock) {
-      throw new ServiceUnavailableException('WhatsApp no está conectado. Vincula un número en Configuración → WhatsApp.');
+      throw new ServiceUnavailableException(
+        'WhatsApp no está conectado. Vincula un número en Configuración → WhatsApp.',
+      );
     }
-    const digits = String(toPhone || '').replace(/\D/g, '');
-    if (!digits) throw new ServiceUnavailableException('Número de destino inválido.');
-    const jid = `${digits}@s.whatsapp.net`;
-    await this.sock.sendMessage(jid, { text });
-    return { ok: true, to: digits };
+
+    let jid: string;
+
+    // Grupo
+    if (to.endsWith('@g.us')) {
+      jid = to;
+    }
+    // Ya viene como JID de contacto
+    else if (to.endsWith('@s.whatsapp.net')) {
+      jid = to;
+    }
+    // Número telefónico
+    else {
+      const digits = String(to || '').replace(/\D/g, '');
+
+      if (!digits) {
+        throw new ServiceUnavailableException(
+          'Número de destino inválido.',
+        );
+      }
+
+      jid = `${digits}@s.whatsapp.net`;
+    }
+
+    await this.sock.sendMessage(jid, {
+      text,
+    });
+
+    return {
+      ok: true,
+      to: jid,
+      type: jid.endsWith('@g.us') ? 'group' : 'contact',
+    };
+  }
+
+  /**
+   * Obtiene todos los grupos donde participa la cuenta conectada.
+   */
+  async getGroups() {
+    if (this.status !== 'connected' || !this.sock) {
+      throw new ServiceUnavailableException(
+        'WhatsApp no está conectado.',
+      );
+    }
+
+    const groups = await this.sock.groupFetchAllParticipating();
+
+    return Object.values(groups)
+      .map((group: any) => ({
+        id: group.id,
+        subject: group.subject,
+        description: group.desc || null,
+        participants: group.participants?.length || 0,
+        owner: group.owner || null,
+        creation: group.creation || null,
+        announce: group.announce ?? false,
+        restrict: group.restrict ?? false,
+      }))
+      .sort((a, b) => a.subject.localeCompare(b.subject));
   }
 
   private async clearSession() {

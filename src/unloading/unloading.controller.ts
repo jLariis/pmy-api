@@ -7,6 +7,7 @@ import { FilesInterceptor } from '@nestjs/platform-express';
 import { ApiTags, ApiBearerAuth, ApiOperation, ApiConsumes, ApiBody, ApiResponse, ApiQuery } from '@nestjs/swagger';
 import { ValidateTrackingNumbersDto } from './dto/validate-tracking-numbers.dto';
 import { ValidationPayloadDto } from './dto/validate-payload.dto';
+import { ValidateOneRequestDto } from './dto/validate-one.dto';
 import { NoAudit } from 'src/audit/audit.decorator';
 
 @ApiTags('unloadings')
@@ -191,6 +192,12 @@ export class UnloadingController {
     return this.unloadingService.validateTrackingNumbers(trackingNumbers, subsidiaryId);
   }
 
+  @NoAudit() // Validación por escaneo: muy frecuente, no auditable.
+  @Post('validate-one')
+  validateOne(@Body() body: ValidateOneRequestDto) {
+    return this.unloadingService.validateOne(body.trackingNumber, body.subsidiaryId);
+  }
+
   @Patch(':id')
   update(@Param('id') id: string, @Body() updateUnloadingDto: UpdateUnloadingDto) {
     return this.unloadingService.update(+id, updateUnloadingDto);
@@ -260,6 +267,12 @@ export class UnloadingController {
   async getConsolidatedForStartUnloading(@Param('subsidiaryId') subsidiaryId: string){
     console.log("🚀 ~ UnloadingController ~ getConsolidatedForStartUnloading ~ subsidiaryId:", subsidiaryId)
     return await this.unloadingService.getConsolidateToStartUnloading(subsidiaryId)
+  }
+
+  @Get('session-init/:subsidiaryId')
+  @UseGuards(SubsidiaryScopeGuard)
+  getUnloadingSessionInit(@Param('subsidiaryId') subsidiaryId: string) {
+    return this.unloadingService.getUnloadingSessionInit(subsidiaryId);
   }
 
 }
