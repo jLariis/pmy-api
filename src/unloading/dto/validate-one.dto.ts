@@ -11,6 +11,8 @@ export class ValidateOneRequestDto {
 export class ValidatedOneDto {
   id?: string;
   trackingNumber: string;
+  /** Variante DHL (JD/JJD) del registro; permite casar la guía escaneada por DHL en el cliente. */
+  dhlUniqueId?: string;
   isValid: boolean;
   isCharge: boolean;
   reason?: string;

@@ -262,6 +262,7 @@ export class UnloadingService {
 
     const toShort = (item: any): ShortShipmentInfo => ({
       trackingNumber: item.trackingNumber,
+      dhlUniqueId: item.dhlUniqueId ?? undefined,
       recipientName: item.recipientName,
       recipientAddress: item.recipientAddress,
       recipientPhone: item.recipientPhone,
@@ -335,6 +336,7 @@ export class UnloadingService {
         type: c.type,
         typeCode: c.typeCode,
         numberOfPackages: (c as any).numberOfPackages ?? 0,
+        consNumber: (c as any).consNumber ?? undefined,
         color: c.color,
         expected: expectedMap.get(c.id) || [],
       }));
@@ -595,6 +597,7 @@ export class UnloadingService {
     return {
       id: record.id,
       trackingNumber: record.trackingNumber,
+      dhlUniqueId: record.dhlUniqueId ?? undefined,
       isValid: validated.isValid,
       isCharge,
       reason: validated.reason,

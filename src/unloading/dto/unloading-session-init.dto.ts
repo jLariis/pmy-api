@@ -5,6 +5,8 @@ export class ConsolidatedInitItemDto {
   type: string;
   typeCode: string;
   numberOfPackages: number;
+  /** Número de consolidado (para mostrarlo/identificarlo en el cliente). */
+  consNumber?: string;
   color: string;
   expected: ShortShipmentInfo[];
 }

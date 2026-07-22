@@ -43,13 +43,13 @@ describe('UnloadingService.getUnloadingSessionInit', () => {
   it('devuelve el universo esperado completo por consolidado', async () => {
     const consolidatedReporsitory = repo();
     consolidatedReporsitory.find.mockResolvedValue([
-      { id: 'c1', type: ConsolidatedType.AEREO, numberOfPackages: 2 },
+      { id: 'c1', type: ConsolidatedType.AEREO, numberOfPackages: 2, consNumber: 'CN-001' },
     ]);
 
     const shipmentRepository = repo();
     shipmentRepository.find.mockResolvedValue([
       { trackingNumber: '111', consolidatedId: 'c1', recipientName: 'Ana' },
-      { trackingNumber: '222', consolidatedId: 'c1', recipientName: 'Beto' },
+      { trackingNumber: '222', dhlUniqueId: 'JD00222', consolidatedId: 'c1', recipientName: 'Beto' },
     ]);
 
     const chargeShipmentRepository = repo();
@@ -66,8 +66,12 @@ describe('UnloadingService.getUnloadingSessionInit', () => {
     expect(result.airConsolidated).toHaveLength(1);
     expect(result.airConsolidated[0].id).toBe('c1');
     expect(result.airConsolidated[0].numberOfPackages).toBe(2);
+    expect(result.airConsolidated[0].consNumber).toBe('CN-001');
     expect(result.airConsolidated[0].expected.map((e) => e.trackingNumber).sort())
       .toEqual(['111', '222']);
+    // El universo esperado conserva el dhlUniqueId para casar guías DHL en el cliente.
+    const beto = result.airConsolidated[0].expected.find((e) => e.trackingNumber === '222');
+    expect(beto?.dhlUniqueId).toBe('JD00222');
     expect(result.groundConsolidated).toHaveLength(0);
   });
 

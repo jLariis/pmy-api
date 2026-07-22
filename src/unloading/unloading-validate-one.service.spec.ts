@@ -42,20 +42,22 @@ describe('UnloadingService.validateOne', () => {
   it('valida un shipment de la sucursal correcta', async () => {
     const shipmentRepository = repo();
     shipmentRepository.findOne.mockResolvedValue({
-      id: 'ship-1', trackingNumber: '111', consolidatedId: 'c1', subsidiary: { id: 'sub-1' },
+      id: 'ship-1', trackingNumber: '111', dhlUniqueId: 'JD00111', consolidatedId: 'c1', subsidiary: { id: 'sub-1' },
       recipientName: 'Ana', priority: 'alta',
     });
     const chargeShipmentRepository = repo();
     chargeShipmentRepository.findOne.mockResolvedValue(null);
 
     const { svc } = makeService({ shipmentRepository, chargeShipmentRepository });
-    const r = await svc.validateOne('111', 'sub-1');
+    const r = await svc.validateOne('JD00111', 'sub-1');
 
     expect(r.isValid).toBe(true);
     expect(r.isCharge).toBe(false);
     expect(r.id).toBe('ship-1');
     expect(r.consolidatedId).toBe('c1');
     expect(r.recipientName).toBe('Ana');
+    // Devuelve el dhlUniqueId para que el cliente pueda casar la guía DHL escaneada.
+    expect(r.dhlUniqueId).toBe('JD00111');
   });
 
   it('marca inválido si el paquete es de otra sucursal', async () => {
