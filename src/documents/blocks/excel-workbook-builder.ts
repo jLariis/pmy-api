@@ -32,7 +32,11 @@ export class ExcelWorkbookBuilder {
 
   private buildSheet(wb: ExcelJS.Workbook, sheet: ExcelSheet, ctx: RenderContext) {
     const ws = wb.addWorksheet(sheet.name);
-    if (sheet.sections?.length) { this.buildSections(ws, sheet.sections, ctx); return; }
+    if (sheet.sections?.length) {
+      if (sheet.columnWidths) sheet.columnWidths.forEach((w, i) => { if (w != null) ws.getColumn(i + 1).width = w; });
+      this.buildSections(ws, sheet.sections, ctx);
+      return;
+    }
 
     const columns = sheet.columns ?? [];
     const lastCol = Math.max(columns.length, 1);
@@ -105,14 +109,80 @@ export class ExcelWorkbookBuilder {
           for (const item of items) {
             const row = ws.addRow([this.engine.renderRaw(String(item), ctx)]);
             ws.mergeCells(row.number, 1, row.number, s.mergeTo);
-            row.font = { bold: s.font?.bold, ...(s.font?.color ? { color: { argb: s.font.color } } : {}) };
-            row.alignment = { vertical: 'middle', horizontal: 'left' };
+            row.font = { bold: s.font?.bold, italic: s.font?.italic, ...(s.font?.color ? { color: { argb: s.font.color } } : {}) };
+            row.alignment = { vertical: 'middle', horizontal: s.align ?? 'left' };
             if (s.fill) for (let c = 1; c <= s.mergeTo; c++) ws.getCell(row.number, c).fill = solid(s.fill);
           }
           break;
         }
         case 'table': this.buildTableSection(ws, s, ctx); break;
+        case 'row': {
+          const row = ws.addRow([]);
+          for (const c of s.cells) {
+            const cell = row.getCell(c.col);
+            cell.value = c.key ? (ctx.data?.[c.key] ?? '') : this.engine.renderRaw(c.text ?? '', ctx);
+            if (c.bold) cell.font = { bold: true };
+          }
+          break;
+        }
+        case 'tableGroup': this.buildTableGroup(ws, s, ctx); break;
       }
+    }
+  }
+
+  /** Tablas "espejo": comparten filas (título propio, encabezado propio, N filas de datos) pero
+   * cada una arranca en su propia columna (`startCol`). El "cursor" de filas avanza naturalmente
+   * porque `ws.getCell(row, col)` extiende `ws.rowCount` al tocar la última fila del grupo. */
+  private buildTableGroup(ws: ExcelJS.Worksheet, s: Extract<ExcelSection, { kind: 'tableGroup' }>, ctx: RenderContext) {
+    const tables = s.tables;
+    const dataArrays = tables.map((t) => (Array.isArray(ctx.data?.[t.rowsVar]) ? ctx.data[t.rowsVar] : []));
+    const maxRows = Math.max(0, ...dataArrays.map((a) => a.length));
+
+    let row = ws.rowCount + 1;
+
+    if (tables.some((t) => t.title)) {
+      for (const t of tables) {
+        if (!t.title) continue;
+        const endCol = t.startCol + t.columns.length - 1;
+        const cell = ws.getCell(row, t.startCol);
+        cell.value = this.engine.renderRaw(t.title.text, ctx);
+        ws.mergeCells(row, t.startCol, row, endCol);
+        cell.font = { bold: t.title.font?.bold, ...(t.title.font?.color ? { color: { argb: t.title.font.color } } : {}) };
+        cell.alignment = { vertical: 'middle', horizontal: 'center' };
+        if (t.title.fill) for (let c = t.startCol; c <= endCol; c++) ws.getCell(row, c).fill = solid(t.title.fill);
+      }
+      row++;
+    }
+
+    // Encabezado de columnas (propio por tabla).
+    for (const t of tables) {
+      t.columns.forEach((c, i) => {
+        const col = t.startCol + i;
+        if (c.width != null) ws.getColumn(col).width = c.width;
+        if (c.numFmt) ws.getColumn(col).numFmt = c.numFmt;
+        const cell = ws.getCell(row, col);
+        cell.value = c.label;
+        if (t.headerFont) cell.font = { bold: t.headerFont.bold, size: t.headerFont.size, ...(t.headerFont.color ? { color: { argb: t.headerFont.color } } : {}) };
+      });
+    }
+    row++;
+
+    const dataStartRow = row;
+    for (let i = 0; i < maxRows; i++) {
+      const isEven = i % 2 === 0;
+      tables.forEach((t, ti) => {
+        const item = dataArrays[ti][i];
+        t.columns.forEach((c, ci) => {
+          const cell = ws.getCell(dataStartRow + i, t.startCol + ci);
+          if (item) cell.value = item[c.key] ?? '';
+          if (t.bordered) cell.border = thin();
+          cell.alignment = { vertical: 'middle', horizontal: t.cellAlign ?? 'left' };
+          if (isEven && t.zebraFill) cell.fill = solid(t.zebraFill);
+          if (item && t.redFontKey && item[t.redFontKey]) {
+            cell.font = { bold: true, color: { argb: t.redFontColor ?? 'FF0000' } };
+          }
+        });
+      });
     }
   }
 
