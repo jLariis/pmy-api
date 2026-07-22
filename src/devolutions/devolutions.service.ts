@@ -1,14 +1,18 @@
 import { BadRequestException, forwardRef, Inject, Injectable, Logger } from '@nestjs/common';
 import { CreateDevolutionDto } from './dto/create-devolution.dto';
-import { DataSource, Repository } from 'typeorm';
+import { Between, DataSource, Repository } from 'typeorm';
 import { Devolution } from 'src/entities/devolution.entity';
 import { InjectRepository } from '@nestjs/typeorm';
-import { ChargeShipment, Income, Shipment, ShipmentStatus, Subsidiary } from 'src/entities';
+import { ChargeShipment, Collection, Income, Shipment, ShipmentStatus, Subsidiary } from 'src/entities';
 import { ShipmentStatusType } from 'src/common/enums/shipment-status-type.enum';
 import { ValidateShipmentDto } from './dto/valiation-devolution.dto';
 import { MailService } from 'src/mail/mail.service';
 import { ShipmentsService } from 'src/shipments/shipments.service';
-import { fromZonedTime } from 'date-fns-tz';
+import { fromZonedTime, toZonedTime } from 'date-fns-tz';
+import { TemplateService } from 'src/documents/template.service';
+import { buildReturningData, ReturningInput } from 'src/documents/data/returning.mapper';
+
+const RETURNING_TZ = 'America/Hermosillo';
 
 @Injectable()
 export class DevolutionsService {
@@ -25,10 +29,13 @@ export class DevolutionsService {
     private readonly chargeShipmentRepository: Repository<ChargeShipment>,
     @InjectRepository(Subsidiary)
     private readonly subsidiaryRepository: Repository<Subsidiary>,
+    @InjectRepository(Collection)
+    private readonly collectionRepository: Repository<Collection>,
     private readonly mailService: MailService,
     @Inject(forwardRef(() => ShipmentsService))
     private readonly shipmentService: ShipmentsService,
-    private dataSource: DataSource
+    private dataSource: DataSource,
+    private readonly templateService: TemplateService,
   ) {}
 
   async createResp1002(devolutions: CreateDevolutionDto[]): Promise<{
@@ -450,6 +457,72 @@ export class DevolutionsService {
       );
     }
 
+    // Unificación "Devoluciones y Recolecciones": detrás de flag, el backend genera PDF/Excel
+    // por el Motor de Plantillas (plantilla canónica única, fiel a C9/C10). Si algo falla, se
+    // conservan los archivos subidos por el frontend (respaldo). Flag OFF => comportamiento
+    // actual intacto.
+    if (process.env.DOC_ENGINE_RETURNING === 'true') {
+      try {
+        const input = await this.loadReturningInput(subsidiary.id);
+        const gen = await this.renderReturningDocuments(input);
+        if (gen.pdf) pdfFile = { ...pdfFile, buffer: gen.pdf };
+        if (gen.excel) excelfile = { ...excelfile, buffer: gen.excel };
+      } catch (e: any) {
+        this.logger.warn(`Motor returning falló; uso archivos subidos: ${e?.message}`);
+      }
+    }
+
     return await this.mailService.sendHighPriorityDevolutionsEmail(pdfFile, excelfile, subsidiary);
+  }
+
+  /** Genera PDF+Excel de "Devoluciones y Recolecciones" por el motor. Si un formato no entrega
+   * buffer, queda undefined (respaldo frontend). */
+  async renderReturningDocuments(input: ReturningInput): Promise<{ pdf?: Buffer; excel?: Buffer }> {
+    const data = buildReturningData(input);
+    const [pdf, excel] = await Promise.all([
+      this.templateService.render('returning_pdf', data).then((r) => r.buffer).catch(() => undefined),
+      this.templateService.render('returning_excel', data).then((r) => r.buffer).catch(() => undefined),
+    ]);
+    return { pdf, excel };
+  }
+
+  /**
+   * Arma el `ReturningInput` (espejo backend de `EnhancedFedExPDF`/`generateFedExExcel`) para
+   * una sucursal.
+   *
+   * GAP CONOCIDO (no rompe: flag OFF por defecto): a diferencia de "Cierre de Ruta"
+   * (`RouteClosure`, con un id que agrupa exactamente los paquetes de ESE cierre), aquí no existe
+   * un identificador de lote/sesión persistido — `ReturningHistory` (que enlazaría
+   * `Devolution`/`Collection` a una "sesión" de guardado) existe como entidad pero NUNCA se
+   * asigna en ningún flujo (`returningHistoryId` siempre queda null). El endpoint
+   * `POST /devolutions/upload` tampoco recibe ningún id de lote, solo `subsidiaryName`/`subsidiaryId`.
+   *
+   * Aproximación adoptada: se toman todas las `Devolution`/`Collection` de la sucursal creadas
+   * en el DÍA EN CURSO (America/Hermosillo), que es la unidad natural de operación de este
+   * formulario (un chofer guarda sus devoluciones/recolecciones del día). Riesgo documentado: si
+   * la misma sucursal genera más de un envío en el mismo día, el motor incluiría ambos lotes
+   * mezclados (a diferencia del PDF/Excel que arma el frontend en el momento, que solo ve el
+   * lote recién capturado en memoria). No se resuelve en este lote por no existir el dato
+   * persistido para acotarlo correctamente; requeriría enlazar `returningHistoryId` en
+   * `create()`/`saveCollections` (fuera de alcance aquí).
+   */
+  private async loadReturningInput(subsidiaryId: string): Promise<ReturningInput> {
+    const subsidiary = await this.subsidiaryRepository.findOneBy({ id: subsidiaryId });
+
+    const now = new Date();
+    const zoned = toZonedTime(now, RETURNING_TZ);
+    const startOfDay = fromZonedTime(new Date(zoned.getFullYear(), zoned.getMonth(), zoned.getDate(), 0, 0, 0, 0), RETURNING_TZ);
+    const endOfDay = fromZonedTime(new Date(zoned.getFullYear(), zoned.getMonth(), zoned.getDate(), 23, 59, 59, 999), RETURNING_TZ);
+
+    const [devolutions, collections] = await Promise.all([
+      this.devolutionRepository.find({ where: { subsidiary: { id: subsidiaryId }, date: Between(startOfDay, endOfDay) } }),
+      this.collectionRepository.find({ where: { subsidiary: { id: subsidiaryId }, createdAt: Between(startOfDay, endOfDay) } }),
+    ]);
+
+    return {
+      subsidiaryName: subsidiary?.name ?? 'N/A',
+      devolutions: devolutions.map((d) => ({ trackingNumber: d.trackingNumber, reason: d.reason })),
+      collections: collections.map((c) => ({ trackingNumber: c.trackingNumber })),
+    };
   }
 }
