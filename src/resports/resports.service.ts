@@ -1,12 +1,16 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Expense, Income, Subsidiary } from 'src/entities';
 import { Repository } from 'typeorm';
 import * as ExcelJS from 'exceljs';
 import { dailyShareForDay } from 'src/common/expense-proration.util';
+import { TemplateService } from 'src/documents/template.service';
+import { buildIncomeStatementData, dayLabel, IncomeStatementDetailRow, IncomeStatementInput } from 'src/documents/data/income-statement.mapper';
 
 @Injectable()
 export class ResportsService {
+  private readonly logger = new Logger(ResportsService.name);
+
   constructor(
     @InjectRepository(Expense)
     private readonly expenseRepository: Repository<Expense>,
@@ -14,14 +18,53 @@ export class ResportsService {
     private readonly incomeRepository: Repository<Income>,
     @InjectRepository(Subsidiary)
     private readonly subsidiaryRepository: Repository<Subsidiary>,
+    private readonly templateService: TemplateService,
   ) {}
 
+  /**
+   * Genera el Excel de "Estado de Resultados" (B4). Unificación: detrás de flag, el backend
+   * genera el Excel por el Motor de Plantillas (`income_statement_excel`, columnas dinámicas por
+   * día). Si el motor no entrega buffer (o falla), se conserva el armado inline exceljs original
+   * (`generateIncomeStatementReportLegacy`). Flag OFF => comportamiento actual intacto.
+   */
   public async generateIncomeStatementReport(
     subsidiaryIds: string[],
     startDate: string | Date,
     endDate: string | Date,
   ): Promise<ExcelJS.Buffer> {
-    
+    if (process.env.DOC_ENGINE_INCOME_STATEMENT === 'true') {
+      try {
+        const buf = await this.renderIncomeStatementViaEngine(subsidiaryIds, startDate, endDate);
+        if (buf) return buf as unknown as ExcelJS.Buffer;
+      } catch (e: any) {
+        this.logger.warn(`Motor income_statement_excel falló; uso armado legacy: ${e?.message}`);
+      }
+    }
+    return this.generateIncomeStatementReportLegacy(subsidiaryIds, startDate, endDate);
+  }
+
+  /** Arma el `IncomeStatementInput` (data-provider) y renderiza vía el Motor. `undefined` si el motor no entrega buffer. */
+  async renderIncomeStatementViaEngine(
+    subsidiaryIds: string[],
+    startDate: string | Date,
+    endDate: string | Date,
+  ): Promise<Buffer | undefined> {
+    const aggregates = await this.loadIncomeStatementAggregates(subsidiaryIds, startDate, endDate);
+    const data = buildIncomeStatementData(aggregates);
+    const result = await this.templateService.render('income_statement_excel', data);
+    return result.buffer;
+  }
+
+  /**
+   * Consulta Income/Expense del rango (con prorrateo diario `dailyShareForDay`, igual que el
+   * armado legacy) y arma el `IncomeStatementInput` que consume tanto el motor (vía
+   * `buildIncomeStatementData`) como el armado legacy de abajo (sin duplicar las queries).
+   */
+  private async loadIncomeStatementAggregates(
+    subsidiaryIds: string[],
+    startDate: string | Date,
+    endDate: string | Date,
+  ): Promise<IncomeStatementInput> {
     // Aplicamos la misma corrección de zona horaria (Hermosillo UTC-7) para evitar desfases
     const baseStartDate = startDate.toString().split('T')[0];
     const baseEndDate = endDate.toString().split('T')[0];
@@ -30,13 +73,13 @@ export class ResportsService {
 
     // 1. OBTENCIÓN DE NOMBRES DE LAS SUCURSALES
     const subsidiariesQuery = this.subsidiaryRepository.createQueryBuilder('subsidiary');
-    
+
     // Si subsidiaryIds está vacío (gracias al blindaje del controller), ignora este WHERE
     if (subsidiaryIds && subsidiaryIds.length > 0) {
       subsidiariesQuery.where('subsidiary.id IN (:...subsidiaryIds)', { subsidiaryIds });
     }
     const subsidiaries = await subsidiariesQuery.select(['subsidiary.name']).getMany();
-    
+
     let subsidiaryName = 'TODAS LAS SUCURSALES';
     if (subsidiaries.length > 0 && subsidiaryIds && subsidiaryIds.length > 0) {
       const names = subsidiaries.map(s => s.name).join(', ');
@@ -67,43 +110,57 @@ export class ResportsService {
       .getMany();
 
     // 3. CÁLCULO DE MATRIZ DE FECHAS (COLUMNAS DIARIAS)
-    const datesMap = new Map<string, string>();
+    const dateKeys: string[] = [];
     const currentDate = new Date(parsedStartDate);
-    
     while (currentDate <= parsedEndDate) {
-      const isoDate = currentDate.toISOString().split('T')[0];
-      const spanishLabel = currentDate.toLocaleString('es-MX', { month: 'short', day: '2-digit', timeZone: 'UTC' }).toUpperCase();
-      datesMap.set(isoDate, spanishLabel);
+      dateKeys.push(currentDate.toISOString().split('T')[0]);
       currentDate.setUTCDate(currentDate.getUTCDate() + 1);
     }
-    
-    const dateKeys = Array.from(datesMap.keys());
-    const dateLabels = Array.from(datesMap.values());
 
-    // 4. ESTRUCTURACIÓN DE DATOS (PIVOT)
-    const incomeMatrix = new Map<string, Map<string, number>>();
-    const expenseMatrix = new Map<string, Map<string, number>>();
+    // 4. ESTRUCTURACIÓN DE DATOS (PIVOT), como Records planos (category -> dateKey -> monto)
+    const incomeMatrix: Record<string, Record<string, number>> = {};
+    const expenseMatrix: Record<string, Record<string, number>> = {};
 
     allIncomes.forEach(inc => {
       const cat = inc.sourceType || 'Ingreso General';
       const dStr = new Date(inc.date).toISOString().split('T')[0];
-      if (!incomeMatrix.has(cat)) incomeMatrix.set(cat, new Map<string, number>());
-      const current = incomeMatrix.get(cat)!.get(dStr) || 0;
-      incomeMatrix.get(cat)!.set(dStr, current + Number(inc.cost));
+      if (!incomeMatrix[cat]) incomeMatrix[cat] = {};
+      incomeMatrix[cat][dStr] = (incomeMatrix[cat][dStr] || 0) + Number(inc.cost);
     });
 
     allExpenses.forEach(exp => {
       const cat = exp.category?.name || 'Sin categoría';
-      if (!expenseMatrix.has(cat)) expenseMatrix.set(cat, new Map<string, number>());
-      const catMap = expenseMatrix.get(cat)!;
+      if (!expenseMatrix[cat]) expenseMatrix[cat] = {};
       for (const dKey of dateKeys) {
         const share = dailyShareForDay(
           { amount: exp.amount, date: exp.date, periodStart: exp.periodStart, periodEnd: exp.periodEnd },
           dKey,
         );
-        if (share !== 0) catMap.set(dKey, (catMap.get(dKey) || 0) + share);
+        if (share !== 0) expenseMatrix[cat][dKey] = (expenseMatrix[cat][dKey] || 0) + share;
       }
     });
+
+    // 5. HOJA 2 (desglose): mismo orden que el legacy (ingresos primero, luego egresos)
+    const detailRows: IncomeStatementDetailRow[] = [
+      ...allIncomes.map((i): IncomeStatementDetailRow => ({
+        date: i.date, ref: (i as any).trackingNumber || 'N/A', type: 'INGRESO', category: i.sourceType, desc: '', amount: Number(i.cost),
+      })),
+      ...allExpenses.map((e): IncomeStatementDetailRow => ({
+        date: e.date, ref: 'N/A', type: 'EGRESO', category: e.category?.name || '', desc: e.description || '', amount: Number(e.amount),
+      })),
+    ];
+
+    return { subsidiaryName, dateKeys, incomeMatrix, expenseMatrix, detailRows };
+  }
+
+  /** Armado original (inline exceljs, matriz diaria). Conservado como fallback del Motor. */
+  private async generateIncomeStatementReportLegacy(
+    subsidiaryIds: string[],
+    startDate: string | Date,
+    endDate: string | Date,
+  ): Promise<ExcelJS.Buffer> {
+    const { subsidiaryName, dateKeys, incomeMatrix, expenseMatrix, detailRows } = await this.loadIncomeStatementAggregates(subsidiaryIds, startDate, endDate);
+    const dateLabels = dateKeys.map((k) => dayLabel(k));
 
     // 5. CONFIGURACIÓN DEL LIBRO EXCEL
     const workbook = new ExcelJS.Workbook();
@@ -114,7 +171,7 @@ export class ResportsService {
     // HOJA 1: ESTADO DIARIO (MATRIZ)
     // =========================================================================
     const mainSheet = workbook.addWorksheet('Estado de Resultados', { views: [{ showGridLines: false }] });
-    
+
     const columns = [
       { header: '', key: 'variable', width: 40 },
       ...dateKeys.map(k => ({ header: '', key: k, width: 16 })),
@@ -142,11 +199,11 @@ export class ResportsService {
     const totalDailyIncomes = new Array(dateKeys.length).fill(0);
     let grandTotalIncomes = 0;
 
-    Array.from(incomeMatrix.keys()).forEach(category => {
+    Object.keys(incomeMatrix).forEach(category => {
       const rowData: any[] = [`   ${category}`];
       let rowTotal = 0;
       dateKeys.forEach((dKey, i) => {
-        const val = incomeMatrix.get(category)?.get(dKey) || 0;
+        const val = incomeMatrix[category]?.[dKey] || 0;
         rowData.push(val);
         rowTotal += val;
         totalDailyIncomes[i] += val;
@@ -166,11 +223,11 @@ export class ResportsService {
     const totalDailyExpenses = new Array(dateKeys.length).fill(0);
     let grandTotalExpenses = 0;
 
-    Array.from(expenseMatrix.keys()).forEach(category => {
+    Object.keys(expenseMatrix).forEach(category => {
       const rowData: any[] = [`   ${category}`];
       let rowTotal = 0;
       dateKeys.forEach((dKey, i) => {
-        const val = expenseMatrix.get(category)?.get(dKey) || 0;
+        const val = expenseMatrix[category]?.[dKey] || 0;
         rowData.push(val);
         rowTotal += val;
         totalDailyExpenses[i] += val;
@@ -203,12 +260,8 @@ export class ResportsService {
 
     this.styleSectionHeader(detailSheet.getRow(1), headerBlue, white);
 
-    allIncomes.forEach(i => {
-      this.styleDetailedRow(detailSheet.addRow([i.date, (i as any).trackingNumber || 'N/A', 'INGRESO', i.sourceType, '', i.cost]));
-    });
-
-    allExpenses.forEach(e => {
-      this.styleDetailedRow(detailSheet.addRow([e.date, 'N/A', 'EGRESO', e.category?.name || '', e.description || '', e.amount]));
+    detailRows.forEach(row => {
+      this.styleDetailedRow(detailSheet.addRow([row.date, row.ref, row.type, row.category, row.desc, row.amount]));
     });
 
     detailSheet.autoFilter = 'A1:F1';
@@ -218,7 +271,7 @@ export class ResportsService {
     // =========================================================================
     const dashSheet = workbook.addWorksheet('Dashboard');
     dashSheet.columns = [{ width: 35 }, { width: 20 }, { width: 35 }, { width: 20 }];
-    
+
     dashSheet.mergeCells('A1:D1');
     const dTitle = dashSheet.getCell('A1');
     dTitle.value = 'RESUMEN EJECUTIVO DE OPERACIÓN';
@@ -228,15 +281,15 @@ export class ResportsService {
     dashSheet.addRow([]);
     this.styleSectionHeader(dashSheet.addRow(['CATEGORÍA INGRESO', 'MONTO', 'CATEGORÍA EGRESO', 'MONTO']), 'FF4472C4', white);
 
-    const incCats = Array.from(incomeMatrix.keys());
-    const expCats = Array.from(expenseMatrix.keys());
+    const incCats = Object.keys(incomeMatrix);
+    const expCats = Object.keys(expenseMatrix);
     const maxRows = Math.max(incCats.length, expCats.length, 1);
 
     for (let i = 0; i < maxRows; i++) {
       const iCat = incCats[i];
       const eCat = expCats[i];
-      let iSum = 0; if (iCat) incomeMatrix.get(iCat)?.forEach(v => iSum += v);
-      let eSum = 0; if (eCat) expenseMatrix.get(eCat)?.forEach(v => eSum += v);
+      let iSum = 0; if (iCat) iSum = Object.values(incomeMatrix[iCat] || {}).reduce((a, b) => a + b, 0);
+      let eSum = 0; if (eCat) eSum = Object.values(expenseMatrix[eCat] || {}).reduce((a, b) => a + b, 0);
 
       const r = dashSheet.addRow([iCat || '', iSum, eCat || '', eSum]);
       r.eachCell((c, col) => {
