@@ -226,6 +226,32 @@ const returning: ExcelDoc = {
   }],
 };
 
+/** warehouse_dispatch_excel — Excel de bodega/salida (fiel a B2, `generateExcelBufferLegacy`
+ * exceljs actual). Hoja "Despacho": título naranja + info rows + tabla 9 cols ancho 18. */
+const warehouseDispatch: ExcelDoc = {
+  sheets: [{
+    name: 'Despacho',
+    sections: [
+      { kind: 'title', text: '🚚 {{title}}', fill: 'ef883a', font: { size: 16, bold: true, color: 'FFFFFF' }, mergeTo: 9 },
+      { kind: 'spacer' },
+      { kind: 'info', mergeTo: 9, rows: [
+        { text: 'Ruta: {{rutas}}' }, { text: 'Conductores: {{conductores}}' },
+        { text: 'Unidad: {{unidad}}' }, { text: 'Fecha: {{fechaDateTime}}' }, { text: 'Paquetes: {{totalPackages}}' },
+      ] },
+      { kind: 'spacer' },
+      { kind: 'table', rowsVar: 'rows',
+        headerFill: 'ef883a', headerFont: { bold: true, color: 'FFFFFF' }, headerAlign: 'center',
+        columns: [
+          { key: 'index', label: 'No.', width: 18 }, { key: 'trackingNumber', label: 'Guía', width: 18 },
+          { key: 'recipientName', label: 'Recibe', width: 18 }, { key: 'recipientAddress', label: 'Dirección', width: 18 },
+          { key: 'recipientZip', label: 'CP', width: 18 }, { key: 'payment', label: 'Cobro', width: 18 },
+          { key: 'date', label: 'Fecha', width: 18 }, { key: 'recipientPhone', label: 'Teléfono', width: 18 },
+          { key: 'signature', label: 'Firma', width: 18 },
+        ] },
+    ],
+  }],
+};
+
 export const EXCEL_TEMPLATE_SEEDS: ExcelSeed[] = [
   { code: 'route_dispatch_excel', name: 'Salida a Ruta (Excel)', doc: routeDispatch,
     variables: [
@@ -255,6 +281,13 @@ export const EXCEL_TEMPLATE_SEEDS: ExcelSeed[] = [
       { name: 'dexCounts', label: 'Conteo por código DEX' },
       { name: 'collectionRows', label: 'Recolecciones (+ total)' },
       { name: 'allCharges', label: 'Cobros de todo el despacho (+ total)' },
+    ] },
+  { code: 'warehouse_dispatch_excel', name: 'Salida a Ruta / Bodega (Excel)', doc: warehouseDispatch,
+    variables: [
+      { name: 'title', label: 'Título' }, { name: 'rutas', label: 'Rutas (unidas con ->)' },
+      { name: 'conductores', label: 'Conductores (unidos con -)' }, { name: 'unidad', label: 'Unidad' },
+      { name: 'fechaDateTime', label: 'Fecha (yyyy-MM-dd HH:mm)' },
+      { name: 'totalPackages', label: 'Total de paquetes', dataType: 'number' }, { name: 'rows', label: 'Filas' },
     ] },
   { code: 'returning_excel', name: 'Devoluciones y Recolecciones (Excel)', doc: returning,
     variables: [

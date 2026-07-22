@@ -6,6 +6,7 @@ import { buildUnloadingData } from '../data/unloading.mapper';
 import { buildInventoryData } from '../data/inventory.mapper';
 import { buildRouteClosureData } from '../data/route-closure.mapper';
 import { buildReturningData } from '../data/returning.mapper';
+import { buildWarehouseExcelData } from '../../warehouse/warehouse.service';
 import { Workbook } from 'exceljs';
 
 function repos() {
@@ -310,6 +311,53 @@ describe('seedExcelTemplates', () => {
     expect(legend?.italic).toBe(true);
     expect(legend?.align).toBe('center');
     expect(values.some((x) => String(x.v).startsWith('DEX 17'))).toBe(true);
+  });
+
+  it('warehouse_dispatch_excel: fiel a B2 (título naranja, info rows, header naranja, 9 cols w18)', async () => {
+    const seed = EXCEL_TEMPLATE_SEEDS.find((s) => s.code === 'warehouse_dispatch_excel')!;
+    expect(seed).toBeTruthy();
+    const data = buildWarehouseExcelData(
+      {
+        title: 'Salida a Ruta', routes: [{ name: 'R1' }, { name: 'R2' }],
+        drivers: [{ name: 'Juan' }], vehicle: { name: 'ECON-01' },
+      },
+      [
+        { trackingNumber: 'T1', recipientName: 'Ana', recipientAddress: 'Calle 1', recipientZip: '85000', recipientPhone: '6620000000', isCharge: true, payment: { amount: 500 } },
+        { trackingNumber: 'T2', recipientName: 'Beto', recipientZip: '83000', isCharge: false },
+      ],
+      'America/Hermosillo',
+    );
+    const buf = await new ExcelWorkbookBuilder(new TemplateEngine()).build(seed.doc, { data } as any);
+    const wb = new Workbook(); await wb.xlsx.load(buf as any);
+    const ws = wb.getWorksheet('Despacho')!;
+    expect(ws.getCell('A1').value).toBe('🚚 Salida a Ruta');
+    expect((ws.getCell('A1').fill as any).fgColor.argb).toBe('ef883a');
+
+    const values: { row: number; v: any }[] = [];
+    ws.eachRow({ includeEmpty: true }, (r, n) => values.push({ row: n, v: r.getCell(1).value }));
+    expect(values.some((x) => String(x.v) === 'Ruta: R1 -> R2')).toBe(true);
+    expect(values.some((x) => String(x.v) === 'Conductores: Juan')).toBe(true);
+    expect(values.some((x) => String(x.v) === 'Unidad: ECON-01')).toBe(true);
+    expect(values.some((x) => String(x.v).startsWith('Fecha: '))).toBe(true);
+    expect(values.some((x) => String(x.v) === 'Paquetes: 2')).toBe(true);
+
+    let headerRowNum = 0;
+    ws.eachRow({ includeEmpty: true }, (r, n) => { if (r.getCell(1).value === 'No.') headerRowNum = n; });
+    expect(headerRowNum).toBeGreaterThan(0);
+    const headerRow = ws.getRow(headerRowNum);
+    expect((headerRow.getCell(1).fill as any).fgColor.argb).toBe('ef883a');
+    expect(headerRow.getCell(1).font?.bold).toBe(true);
+    expect(headerRow.getCell(1).alignment?.horizontal).toBe('center');
+    const labels = ['No.', 'Guía', 'Recibe', 'Dirección', 'CP', 'Cobro', 'Fecha', 'Teléfono', 'Firma'];
+    labels.forEach((l, i) => expect(headerRow.getCell(i + 1).value).toBe(l));
+    for (let c = 1; c <= 9; c++) expect(ws.getColumn(c).width).toBe(18);
+
+    const dataRow = ws.getRow(headerRowNum + 1);
+    expect(dataRow.getCell(1).value).toBe(1);
+    expect(dataRow.getCell(2).value).toBe('T1');
+    expect(dataRow.getCell(3).value).toBe('Ana');
+    expect(dataRow.getCell(6).value).toBe(500);
+    expect(ws.getRow(headerRowNum + 2).getCell(6).value).toBe('N/A');
   });
 
   it('returning_excel: sin devoluciones ni recolecciones, tablas espejo quedan solo con título+encabezado (0/0/0)', async () => {
