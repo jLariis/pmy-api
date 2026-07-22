@@ -9,6 +9,7 @@ import { buildReturningData } from '../data/returning.mapper';
 import { buildWarehouseExcelData } from '../../warehouse/warehouse.service';
 import { buildDriverReportData } from '../data/driver-report.mapper';
 import { buildIncomeStatementData } from '../data/income-statement.mapper';
+import { buildInventoryNo67Data } from '../data/inventory-no67.mapper';
 import { Workbook } from 'exceljs';
 
 function repos() {
@@ -521,5 +522,61 @@ describe('seedExcelTemplates', () => {
     expect(ws1.getCell('E1').master.address).toBe('A1');
     const headerRow = ws1.getRow(3);
     expect(headerRow.getCell(5).value).toBe('TOTAL ACUMULADO');
+  });
+
+  it('inventory_no67_excel: fiel a B5 (título 2E75B6, 9 cols hoja2 con header 5B9BD5 + freeze/autoFilter, distribuciones hoja3)', async () => {
+    const seed = EXCEL_TEMPLATE_SEEDS.find((s) => s.code === 'inventory_no67_excel')!;
+    expect(seed).toBeTruthy();
+    const data = buildInventoryNo67Data({
+      summary: {
+        totalShipments: 4, withoutCode67: 2, withCode67: 2, percentageWithout67: 50,
+        inventoryDate: '2026-07-20T12:00:00Z', inventoryId: 'INV-1',
+      },
+      details: [
+        { trackingNumber: 'T1', currentStatus: 'en_bodega', statusHistoryCount: 2, exceptionCodes: ['03'], firstStatusDate: '2026-07-01T12:00:00Z', lastStatusDate: '2026-07-05T12:00:00Z', daysInSystem: 21, comment: 'No tiene exceptionCode 67' },
+        { trackingNumber: 'T2', currentStatus: 'en_ruta', statusHistoryCount: 0, exceptionCodes: [], firstStatusDate: null, lastStatusDate: null, daysInSystem: null, comment: 'Sin historial de estados' },
+      ],
+      now: new Date('2026-07-22T15:00:00Z'),
+    } as any);
+    const buf = await new ExcelWorkbookBuilder(new TemplateEngine()).build(seed.doc, { data } as any);
+    const wb = new Workbook(); await wb.xlsx.load(buf as any);
+
+    // Hoja 1 "Resumen": título 2E75B6 + pares etiqueta/valor
+    const ws1 = wb.getWorksheet('Resumen')!;
+    expect(ws1.getCell('A1').value).toBe('REPORTE - SHIPMENTS SIN CÓDIGO 67');
+    expect((ws1.getCell('A1').fill as any).fgColor.argb).toBe('2E75B6');
+    expect(ws1.getCell('A1').font?.size).toBe(16);
+    const values1: { row: number; a: any; b: any }[] = [];
+    ws1.eachRow({ includeEmpty: true }, (r, n) => values1.push({ row: n, a: r.getCell(1).value, b: r.getCell(2).value }));
+    expect(values1.some((x) => x.a === 'Total Shipments:' && x.b === 4)).toBe(true);
+    expect(values1.some((x) => x.a === 'Sin código 67:' && x.b === 2)).toBe(true);
+    expect(values1.some((x) => x.a === 'Con código 67:' && x.b === 2)).toBe(true);
+    expect(values1.some((x) => x.a === 'Porcentaje sin 67:' && x.b === '50%')).toBe(true);
+    expect(values1.some((x) => x.a === 'ID Inventario:' && x.b === 'INV-1')).toBe(true);
+    expect(ws1.getColumn(1).width).toBe(25);
+    expect(ws1.getColumn(2).width).toBe(25);
+
+    // Hoja 2 "Detalles": 9 columnas, header 5B9BD5, freeze + autoFilter, zebra
+    const ws2 = wb.getWorksheet('Detalles')!;
+    const header2 = ws2.getRow(1);
+    expect((header2.getCell(1).fill as any).fgColor.argb).toBe('5B9BD5');
+    const labels = ['No.', 'Tracking Number', 'Estado', 'Historial', 'Códigos', 'Primera Fecha', 'Última Fecha', 'Días', 'Comentario'];
+    labels.forEach((l, i) => expect(header2.getCell(i + 1).value).toBe(l));
+    expect((ws2.views?.[0] as any)?.state).toBe('frozen');
+    expect((ws2.views?.[0] as any)?.ySplit).toBe(1);
+    expect(ws2.autoFilter).toBe('A1:I1');
+    const row3 = ws2.getRow(3); // segunda fila de datos -> zebra
+    expect((row3.getCell(1).fill as any).fgColor.argb).toBe('F2F2F2');
+    expect(ws2.getRow(2).getCell(6).value).toBe('01/07/2026 05:00');
+
+    // Hoja 3 "Estadísticas": título + distribuciones
+    const ws3 = wb.getWorksheet('Estadísticas')!;
+    expect(ws3.getCell('A1').value).toBe('ESTADÍSTICAS');
+    const values3: { row: number; v: any }[] = [];
+    ws3.eachRow({ includeEmpty: true }, (r, n) => values3.push({ row: n, v: r.getCell(1).value }));
+    expect(values3.some((x) => x.v === 'Distribución por Estado')).toBe(true);
+    expect(values3.some((x) => x.v === 'Distribución por Días')).toBe(true);
+    expect(values3.some((x) => x.v === 'en_bodega')).toBe(true);
+    expect(values3.some((x) => x.v === 'Sin fecha')).toBe(true);
   });
 });

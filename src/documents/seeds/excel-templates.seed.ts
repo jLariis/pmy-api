@@ -369,6 +369,71 @@ const incomeStatement: ExcelDoc = {
   ],
 };
 
+/** inventory_no67_excel — "Shipments sin código 67" (fiel a B5, `InventoriesService
+ * .generateExcelReport`). 3 hojas: "Resumen" (título + pares etiqueta/valor, sin encabezado —
+ * fiel al armado legacy que escribe directo en A/B desde la fila 3), "Detalles" (9 cols,
+ * freeze+autoFilter, zebra) y "Estadísticas" (distribución por estado + por días). */
+const inventoryNo67: ExcelDoc = {
+  sheets: [
+    {
+      name: 'Resumen',
+      columnWidths: [25, 25],
+      sections: [
+        { kind: 'title', text: 'REPORTE - SHIPMENTS SIN CÓDIGO 67', fill: '2E75B6', font: { size: 16, bold: true, color: 'FFFFFF' }, mergeTo: 7 },
+        { kind: 'spacer' },
+        { kind: 'row', cells: [{ col: 1, text: 'Fecha de generación:', bold: true }, { col: 2, key: 'generatedAt' }] },
+        { kind: 'row', cells: [{ col: 1, text: 'Fecha de inventario:', bold: true }, { col: 2, key: 'inventoryDateLabel' }] },
+        { kind: 'row', cells: [{ col: 1, text: 'ID Inventario:', bold: true }, { col: 2, key: 'inventoryId' }] },
+        { kind: 'row', cells: [{ col: 1, text: 'Total Shipments:', bold: true }, { col: 2, key: 'totalShipments' }] },
+        { kind: 'row', cells: [{ col: 1, text: 'Sin código 67:', bold: true }, { col: 2, key: 'withoutCode67' }] },
+        { kind: 'row', cells: [{ col: 1, text: 'Con código 67:', bold: true }, { col: 2, key: 'withCode67' }] },
+        { kind: 'row', cells: [{ col: 1, text: 'Porcentaje sin 67:', bold: true }, { col: 2, key: 'percentageWithout67Label' }] },
+      ],
+    },
+    {
+      name: 'Detalles',
+      sections: [
+        { kind: 'table', rowsVar: 'detailRows',
+          headerFill: '5B9BD5', headerFont: { bold: true, color: 'FFFFFF' }, headerAlign: 'center',
+          bordered: true, rowFillKey: 'rowFill', freezeHeader: true, autoFilter: true,
+          columns: [
+            { key: 'index', label: 'No.', width: 8 },
+            { key: 'trackingNumber', label: 'Tracking Number', width: 25 },
+            { key: 'currentStatus', label: 'Estado', width: 20 },
+            { key: 'statusHistoryCount', label: 'Historial', width: 12 },
+            { key: 'exceptionCodes', label: 'Códigos', width: 25 },
+            { key: 'firstStatusDate', label: 'Primera Fecha', width: 22 },
+            { key: 'lastStatusDate', label: 'Última Fecha', width: 22 },
+            { key: 'daysInSystem', label: 'Días', width: 10, numFmt: '0' },
+            { key: 'comment', label: 'Comentario', width: 30 },
+          ] },
+      ],
+    },
+    {
+      name: 'Estadísticas',
+      columnWidths: [25, 15, 15],
+      sections: [
+        { kind: 'title', text: 'ESTADÍSTICAS', font: { size: 14, bold: true }, mergeTo: 3 },
+        { kind: 'spacer' },
+        { kind: 'row', cells: [{ col: 1, text: 'Distribución por Estado', bold: true }] },
+        { kind: 'table', rowsVar: 'statusStatsRows',
+          columns: [
+            { key: 'status', label: 'Estado', width: 25 },
+            { key: 'count', label: 'Cantidad', width: 15 },
+            { key: 'percentage', label: 'Porcentaje', width: 15 },
+          ] },
+        { kind: 'spacer' },
+        { kind: 'row', cells: [{ col: 1, text: 'Distribución por Días', bold: true }] },
+        { kind: 'table', rowsVar: 'dayStatsRows',
+          columns: [
+            { key: 'range', label: 'Rango', width: 25 },
+            { key: 'count', label: 'Cantidad', width: 15 },
+          ] },
+      ],
+    },
+  ],
+};
+
 export const EXCEL_TEMPLATE_SEEDS: ExcelSeed[] = [
   { code: 'route_dispatch_excel', name: 'Salida a Ruta (Excel)', doc: routeDispatch,
     variables: [
@@ -430,6 +495,19 @@ export const EXCEL_TEMPLATE_SEEDS: ExcelSeed[] = [
       { name: 'sheet1Rows', label: 'Filas hoja 1: secciones INGRESOS/EGRESOS OPERATIVOS, totales, UTILIDAD NETA' },
       { name: 'detailRows', label: 'Desglose detallado (hoja 2)' },
       { name: 'dashboardRows', label: 'Resumen por categoría (hoja 3, semáforo colorScale)' },
+    ] },
+  { code: 'inventory_no67_excel', name: 'Inventario sin código 67 (Excel)', doc: inventoryNo67,
+    variables: [
+      { name: 'generatedAt', label: 'Fecha de generación (dd/MM/yyyy HH:mm)' },
+      { name: 'inventoryDateLabel', label: 'Fecha de inventario (o N/A)' },
+      { name: 'inventoryId', label: 'ID de inventario (o N/A)' },
+      { name: 'totalShipments', label: 'Total de shipments', dataType: 'number' },
+      { name: 'withoutCode67', label: 'Sin código 67', dataType: 'number' },
+      { name: 'withCode67', label: 'Con código 67', dataType: 'number' },
+      { name: 'percentageWithout67Label', label: 'Porcentaje sin 67 (ya formateado, p.ej. "42.5%")' },
+      { name: 'detailRows', label: 'Filas de detalle (hoja 2, 9 columnas + rowFill zebra)' },
+      { name: 'statusStatsRows', label: 'Distribución por estado (hoja 3)' },
+      { name: 'dayStatsRows', label: 'Distribución por días en sistema (hoja 3, incluye "Sin fecha")' },
     ] },
 ];
 
