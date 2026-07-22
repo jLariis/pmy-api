@@ -5,6 +5,7 @@ import { buildRouteDispatchData } from '../data/route-dispatch.mapper';
 import { buildUnloadingData } from '../data/unloading.mapper';
 import { buildInventoryData } from '../data/inventory.mapper';
 import { buildRouteClosureData } from '../data/route-closure.mapper';
+import { buildReturningData } from '../data/returning.mapper';
 import { Workbook } from 'exceljs';
 
 function repos() {
@@ -247,5 +248,81 @@ describe('seedExcelTemplates', () => {
     expect(plain).toContain('INFORMACIÓN GENERAL');
     expect(plain).toContain('ESTADÍSTICAS');
     expect(plain).toContain('CONTEO POR CÓDIGO DEX');
+  });
+
+  it('returning_excel: fiel a C10 (título, localidad, fecha, resumen fila5, tablas espejo A:C/F:H, leyenda)', async () => {
+    const seed = EXCEL_TEMPLATE_SEEDS.find((s) => s.code === 'returning_excel')!;
+    expect(seed).toBeTruthy();
+    const data = buildReturningData({
+      subsidiaryName: 'Cd. Obregon',
+      now: new Date('2026-07-22T18:00:00Z'),
+      devolutions: [{ trackingNumber: 'D1', reason: '03' }, { trackingNumber: 'D2', reason: 'otro' }],
+      collections: [{ trackingNumber: 'C1' }],
+    } as any);
+    const buf = await new ExcelWorkbookBuilder(new TemplateEngine()).build(seed.doc, { data } as any);
+    const wb = new Workbook(); await wb.xlsx.load(buf as any);
+    const ws = wb.getWorksheet('Reporte')!;
+
+    // Título + localidad + fecha
+    expect(ws.getCell('A1').value).toBe('FedEx - Devoluciones y Recolecciones');
+    expect((ws.getCell('A1').fill as any).fgColor.argb).toBe('662D91');
+    expect(ws.getCell('A2').value).toBe('LOCALIDAD: CD. OBREGON');
+    expect(ws.getCell('A3').value).toBe('22/07/2026');
+
+    // Resumen fila 5 (columnas específicas, no contiguas)
+    const row5 = ws.getRow(5);
+    expect(row5.getCell(1).value).toBe('TOTAL RECOLECCIONES:');
+    expect(row5.getCell(2).value).toBe(1);
+    expect(row5.getCell(3).value).toBe('TOTAL DEVOLUCIONES:');
+    expect(row5.getCell(4).value).toBe(2);
+    expect(row5.getCell(6).value).toBe('TOTAL GENERAL:');
+    expect(row5.getCell(7).value).toBe(3);
+
+    // Tablas espejo fila 7 (títulos) / fila 8 (encabezados) / fila 9+ (datos)
+    expect(ws.getCell(7, 1).value).toBe('DEVOLUCIONES');
+    expect((ws.getCell(7, 1).fill as any).fgColor.argb).toBe('662D91');
+    expect(ws.getCell(7, 6).value).toBe('RECOLECCIONES');
+    expect((ws.getCell(7, 6).fill as any).fgColor.argb).toBe('FF6600');
+    expect(ws.getCell(8, 1).value).toBe('No.');
+    expect(ws.getCell(8, 2).value).toBe('GUIA');
+    expect(ws.getCell(8, 3).value).toBe('MOTIVO');
+    expect(ws.getCell(8, 6).value).toBe('GUIA');
+    expect(ws.getCell(8, 7).value).toBe('SUCURSAL');
+    expect(ws.getCell(8, 8).value).toBe('No.');
+
+    expect(ws.getCell(9, 2).value).toBe('D1');
+    expect(ws.getCell(9, 3).value).toBe('DEX03');
+    expect(ws.getCell(9, 3).font?.color?.argb).toBe('FF0000'); // MOTIVO con DEX -> rojo
+    expect(ws.getCell(10, 2).value).toBe('D2');
+    expect(ws.getCell(10, 3).value).toBe('OTRO'); // fallback: no matchea código -> tal cual
+    expect(ws.getCell(10, 3).font?.color?.argb).toBeUndefined();
+    expect(ws.getCell(9, 6).value).toBe('C1');
+    expect(ws.getCell(9, 7).value).toBe('CD.');
+    // Guías con formato texto ('@'), fiel al frontend
+    expect(ws.getColumn(2).numFmt).toBe('@');
+    expect(ws.getColumn(6).numFmt).toBe('@');
+
+    // Leyenda DEX (centrada, en cursiva, después de las tablas)
+    const values: { v: any; italic?: boolean; align?: string }[] = [];
+    ws.eachRow({ includeEmpty: true }, (r) => values.push({ v: r.getCell(1).value, italic: r.getCell(1).font?.italic, align: r.getCell(1).alignment?.horizontal }));
+    const legend = values.find((x) => String(x.v).startsWith('DEX 03'));
+    expect(legend).toBeTruthy();
+    expect(legend?.italic).toBe(true);
+    expect(legend?.align).toBe('center');
+    expect(values.some((x) => String(x.v).startsWith('DEX 17'))).toBe(true);
+  });
+
+  it('returning_excel: sin devoluciones ni recolecciones, tablas espejo quedan solo con título+encabezado (0/0/0)', async () => {
+    const seed = EXCEL_TEMPLATE_SEEDS.find((s) => s.code === 'returning_excel')!;
+    const data = buildReturningData({ subsidiaryName: 'S', devolutions: [], collections: [] } as any);
+    const buf = await new ExcelWorkbookBuilder(new TemplateEngine()).build(seed.doc, { data } as any);
+    const wb = new Workbook(); await wb.xlsx.load(buf as any);
+    const ws = wb.getWorksheet('Reporte')!;
+    const row5 = ws.getRow(5);
+    expect(row5.getCell(2).value).toBe(0);
+    expect(row5.getCell(4).value).toBe(0);
+    expect(row5.getCell(7).value).toBe(0);
+    expect(ws.getCell(8, 1).value).toBe('No.'); // encabezado sigue presente
+    expect(ws.getCell(9, 2).value ?? '').toBe(''); // sin datos
   });
 });

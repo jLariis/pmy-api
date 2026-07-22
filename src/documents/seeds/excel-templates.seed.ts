@@ -181,6 +181,51 @@ const routeClosure: ExcelDoc = {
   }],
 };
 
+/** returning_excel — "Devoluciones y Recolecciones" (fiel a C10, frontend). Hoja "Reporte", 8 cols
+ * (A-H), tablas espejo DEVOLUCIONES (A:C) / RECOLECCIONES (F:H) en las MISMAS filas. */
+const returning: ExcelDoc = {
+  sheets: [{
+    name: 'Reporte',
+    columnWidths: [8, 25, 25, 5, 5, 25, 18, 8],
+    sections: [
+      { kind: 'title', text: 'FedEx - Devoluciones y Recolecciones', fill: '662D91', font: { size: 16, bold: true, color: 'FFFFFF' }, mergeTo: 8 },
+      { kind: 'title', text: 'LOCALIDAD: {{subsidiaryNameUpper}}', font: { bold: true, size: 12 }, mergeTo: 8 },
+      { kind: 'title', text: '{{generatedDate}}', mergeTo: 8 },
+      { kind: 'spacer' },
+      { kind: 'row', cells: [
+        { col: 1, text: 'TOTAL RECOLECCIONES:', bold: true }, { col: 2, key: 'totalRecolecciones', bold: true },
+        { col: 3, text: 'TOTAL DEVOLUCIONES:', bold: true }, { col: 4, key: 'totalDevoluciones', bold: true },
+        { col: 6, text: 'TOTAL GENERAL:', bold: true }, { col: 7, key: 'totalGeneral', bold: true },
+      ] },
+      { kind: 'spacer' },
+      { kind: 'tableGroup', tables: [
+        {
+          startCol: 1,
+          title: { text: 'DEVOLUCIONES', fill: '662D91', font: { bold: true, color: 'FFFFFF' } },
+          columns: [
+            { key: 'index', label: 'No.' }, { key: 'trackingNumber', label: 'GUIA', numFmt: '@' }, { key: 'motivo', label: 'MOTIVO' },
+          ],
+          headerFont: { bold: true, size: 9 }, bordered: true, cellAlign: 'center', zebraFill: 'F9F9F9',
+          redFontKey: 'isDex', redFontColor: 'FF0000',
+          rowsVar: 'devolucionRows',
+        },
+        {
+          startCol: 6,
+          title: { text: 'RECOLECCIONES', fill: 'FF6600', font: { bold: true, color: 'FFFFFF' } },
+          columns: [
+            { key: 'trackingNumber', label: 'GUIA', numFmt: '@' }, { key: 'sucursal', label: 'SUCURSAL' }, { key: 'index', label: 'No.' },
+          ],
+          headerFont: { bold: true, size: 9 }, bordered: true, cellAlign: 'center', zebraFill: 'F9F9F9',
+          rowsVar: 'recoleccionRows',
+        },
+      ] },
+      { kind: 'spacer' },
+      { kind: 'spacer' },
+      { kind: 'band', rowsVar: 'dexLegend', mergeTo: 8, align: 'center', font: { italic: true } },
+    ],
+  }],
+};
+
 export const EXCEL_TEMPLATE_SEEDS: ExcelSeed[] = [
   { code: 'route_dispatch_excel', name: 'Salida a Ruta (Excel)', doc: routeDispatch,
     variables: [
@@ -210,6 +255,16 @@ export const EXCEL_TEMPLATE_SEEDS: ExcelSeed[] = [
       { name: 'dexCounts', label: 'Conteo por código DEX' },
       { name: 'collectionRows', label: 'Recolecciones (+ total)' },
       { name: 'allCharges', label: 'Cobros de todo el despacho (+ total)' },
+    ] },
+  { code: 'returning_excel', name: 'Devoluciones y Recolecciones (Excel)', doc: returning,
+    variables: [
+      { name: 'subsidiaryNameUpper', label: 'Sucursal (mayúsculas)' }, { name: 'generatedDate', label: 'Fecha de generación' },
+      { name: 'totalDevoluciones', label: 'Total devoluciones', dataType: 'number' },
+      { name: 'totalRecolecciones', label: 'Total recolecciones', dataType: 'number' },
+      { name: 'totalGeneral', label: 'Total general', dataType: 'number' },
+      { name: 'devolucionRows', label: 'Filas de devoluciones (No./GUIA/MOTIVO)' },
+      { name: 'recoleccionRows', label: 'Filas de recolecciones (GUIA/SUCURSAL/No.)' },
+      { name: 'dexLegend', label: 'Leyenda DEX 03/07/08/17' },
     ] },
 ];
 
