@@ -254,7 +254,7 @@ const warehouseDispatch: ExcelDoc = {
 
 /** driver_report_excel — "Reporte de Choferes" con semáforo (fiel a B3, `generateDriverReportExcelLegacy`).
  * Hoja 1 "Eficiencia Operativa" (por secciones, sin cuadrícula): título + subtítulo + tabla de
- * 13 columnas con semáforo por celda (cols 12-13, `fillFromKey`) y fila de totales. Hoja 2
+ * 13 columnas con semáforo por celda (cols 12-13, color de fuente `fontColorFromKey`, fiel al legacy) y fila de totales. Hoja 2
  * "Detalle de Paquetes": tabla simple de 9 columnas con DEX rojo (`fontColorFromKey`). */
 const driverReport: ExcelDoc = {
   sheets: [
@@ -282,8 +282,8 @@ const driverReport: ExcelDoc = {
             { key: 'fechaReq', label: 'Cambio Fecha', width: 15, numFmt: '#,##0' },
             { key: 'retFdx', label: 'Dev. FedEx', width: 15, numFmt: '#,##0' },
             { key: 'unmapped', label: 'Otros (Fugas)', width: 15, numFmt: '#,##0' },
-            { key: 'pctEff', label: '% Efectividad', width: 14, numFmt: '0.0%', fillFromKey: 'pctEffFill' },
-            { key: 'pctRet', label: '% Retorno', width: 12, numFmt: '0.0%', fillFromKey: 'pctRetFill' },
+            { key: 'pctEff', label: '% Efectividad', width: 14, numFmt: '0.0%', fontColorFromKey: 'pctEffFill' },
+            { key: 'pctRet', label: '% Retorno', width: 12, numFmt: '0.0%', fontColorFromKey: 'pctRetFill' },
           ] },
       ],
     },

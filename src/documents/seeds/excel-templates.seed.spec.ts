@@ -402,12 +402,12 @@ describe('seedExcelTemplates', () => {
 
     const juanRow = ws1.getRow(headerRowNum + 1);
     expect(juanRow.getCell(1).value).toBe('Juan Pérez');
-    expect((juanRow.getCell(12).fill as any).fgColor.argb).toBe('059669'); // 90% -> verde
-    expect((juanRow.getCell(13).fill as any).fgColor.argb).toBe('D97706'); // 10% retorno -> ámbar
+    expect((juanRow.getCell(12).font as any).color.argb).toBe('059669'); // 90% -> verde (color de fuente, fiel al legacy)
+    expect((juanRow.getCell(13).font as any).color.argb).toBe('D97706'); // 10% retorno -> ámbar (color de fuente)
 
     const anaRow = ws1.getRow(headerRowNum + 2);
-    expect((anaRow.getCell(12).fill as any).fgColor.argb).toBe('E11D48'); // 50% -> rojo
-    expect((anaRow.getCell(13).fill as any).fgColor.argb).toBe('E11D48'); // 40% retorno -> rojo
+    expect((anaRow.getCell(12).font as any).color.argb).toBe('E11D48'); // 50% -> rojo (color de fuente)
+    expect((anaRow.getCell(13).font as any).color.argb).toBe('E11D48'); // 40% retorno -> rojo (color de fuente)
 
     const totalsRow = ws1.getRow(headerRowNum + 3);
     expect(totalsRow.getCell(1).value).toBe('TOTALES GLOBALES');
