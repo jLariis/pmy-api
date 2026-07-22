@@ -57,6 +57,7 @@ import { BusinessException } from 'src/common/business.exception';
 import { LD_QUALIFYING_SQL_IN } from 'src/common/ld-codes';
 import { TemplateService } from 'src/documents/template.service';
 import { buildShipmentsNo67Data } from 'src/documents/data/shipments-no67.mapper';
+import { buildReceived67Data } from 'src/documents/data/received-67.mapper';
 
 dayjs.extend(isoWeek);
 
@@ -4696,8 +4697,33 @@ export class ShipmentsService {
       }
     }
 
-    /** Excel del reporte "Recibidas de FedEx (con 67)". */
+    /**
+     * Genera el Excel del reporte "Recibidas de FedEx (con 67)" (B7). Unificación: detrás de flag,
+     * el backend genera el Excel por el Motor de Plantillas (`received_67_excel`). Si el motor no
+     * entrega buffer (o falla), se conserva el armado inline exceljs original
+     * (`exportReceived67ExcelLegacy`). Flag OFF => comportamiento actual intacto.
+     */
     async exportReceived67Excel(rows: any[]): Promise<Buffer> {
+      if (process.env.DOC_ENGINE_RECEIVED_67 === 'true') {
+        try {
+          const buf = await this.renderReceived67Excel(rows);
+          if (buf) return buf;
+        } catch (e: any) {
+          this.logger.warn(`Motor received_67_excel falló; uso armado legacy: ${e?.message}`);
+        }
+      }
+      return this.exportReceived67ExcelLegacy(rows);
+    }
+
+    /** Arma los datos vía data-provider y renderiza por el Motor. `undefined` si el motor no entrega buffer. */
+    async renderReceived67Excel(rows: any[]): Promise<Buffer | undefined> {
+      const data = buildReceived67Data({ rows });
+      const result = await this.templateService.render('received_67_excel', data);
+      return result.buffer;
+    }
+
+    /** Excel del reporte "Recibidas de FedEx (con 67)" (armado inline exceljs, legacy — retrocompat con Flag OFF). */
+    async exportReceived67ExcelLegacy(rows: any[]): Promise<Buffer> {
       const wb = new ExcelJS.Workbook();
       const ws = wb.addWorksheet('Recibidas con 67');
       ws.columns = [
