@@ -1197,7 +1197,19 @@ export class WarehouseService {
       .replace(/[^\x20-\x7E\xA0-\xFF]/g, '');
   }
 
-  private async generateExcelBuffer(
+  private async generateExcelBuffer(header: NotificationHeader, packages: any[]): Promise<Buffer> {
+    try {
+      const data = buildWarehouseExcelData(header, packages, this.timeZone);
+      const r = await this.templateService.render('warehouse_dispatch_excel', data);
+      if (r.buffer) return r.buffer;
+      this.logger?.warn?.('Excel por motor sin buffer; usando generador legacy');
+    } catch (e: any) {
+      this.logger?.warn?.(`Excel por motor falló (${e?.message}); usando generador legacy`);
+    }
+    return this.generateExcelBufferLegacy(header, packages);
+  }
+
+  private async generateExcelBufferLegacy(
     header: NotificationHeader,
     packages: any[],
   ): Promise<Buffer> {
