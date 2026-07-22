@@ -521,6 +521,36 @@ const received67: ExcelDoc = {
   }],
 };
 
+/** pending_shipments_excel — hoja "Pendientes", 15 columnas, header slate-800 blanco+bold, freeze
+ * (B8, fiel a `ShipmentsService.generatePendingShipmentsExcel`). Ruta de tabla única (como
+ * `received_67_excel`). */
+const pendingShipments: ExcelDoc = {
+  sheets: [{
+    name: 'Pendientes',
+    headerFill: '1E293B',
+    headerFont: { bold: true, color: 'FFFFFF' },
+    freezeHeader: true,
+    columns: [
+      { key: 'trackingNumber', label: 'Tracking', width: 18 },
+      { key: 'tipo', label: 'Tipo', width: 10 },
+      { key: 'carga', label: 'Carga', width: 10 },
+      { key: 'status', label: 'Estado', width: 14 },
+      { key: 'priority', label: 'Prioridad', width: 12 },
+      { key: 'commitDateTime', label: 'Fecha compromiso', width: 22 },
+      { key: 'recipientName', label: 'Destinatario', width: 26 },
+      { key: 'recipientAddress', label: 'Dirección', width: 30 },
+      { key: 'recipientCity', label: 'Ciudad', width: 18 },
+      { key: 'recipientZip', label: 'CP', width: 10 },
+      { key: 'recipientPhone', label: 'Teléfono', width: 16 },
+      { key: 'receivedByName', label: 'Recibido por', width: 22 },
+      { key: 'consolidatedId', label: 'Consolidado', width: 36 },
+      { key: 'isHighValue', label: 'Alto valor', width: 12 },
+      { key: 'createdAt', label: 'Creado', width: 22 },
+    ],
+    rowsVar: 'rows',
+  }],
+};
+
 export const EXCEL_TEMPLATE_SEEDS: ExcelSeed[] = [
   { code: 'route_dispatch_excel', name: 'Salida a Ruta (Excel)', doc: routeDispatch,
     variables: [
@@ -615,6 +645,8 @@ export const EXCEL_TEMPLATE_SEEDS: ExcelSeed[] = [
     ] },
   { code: 'received_67_excel', name: 'Recibidas con 67 (Excel)', doc: received67,
     variables: [{ name: 'rows', label: 'Filas de recibidas con 67 (fecha67 ya formateada es-MX/Hermosillo, tipo Carga/Envío)' }] },
+  { code: 'pending_shipments_excel', name: 'Pendientes (Excel)', doc: pendingShipments,
+    variables: [{ name: 'rows', label: 'Filas de envíos/cargas pendientes (tipo FedEx/DHL/Otro, carga Carga/Normal, alto valor Sí/No, fechas es-MX/Hermosillo)' }] },
 ];
 
 interface SeedRepos { tplRepo: Repository<DocumentTemplate>; verRepo: Repository<DocumentTemplateVersion>; varRepo: Repository<TemplateVariableDef>; }

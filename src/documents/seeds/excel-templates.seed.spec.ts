@@ -12,6 +12,7 @@ import { buildIncomeStatementData } from '../data/income-statement.mapper';
 import { buildInventoryNo67Data } from '../data/inventory-no67.mapper';
 import { buildShipmentsNo67Data } from '../data/shipments-no67.mapper';
 import { buildReceived67Data } from '../data/received-67.mapper';
+import { buildPendingShipmentsData } from '../data/pending-shipments.mapper';
 import { Workbook } from 'exceljs';
 
 function repos() {
@@ -672,5 +673,44 @@ describe('seedExcelTemplates', () => {
     expect(ws.getCell('I1').value).toBe('Tipo');
     expect(ws.getRow(2).getCell(1).value).toBe('T1');
     expect(ws.getRow(2).getCell(9).value).toBe('Envío');
+  });
+
+  it('pending_shipments_excel: fiel a B8 (1 hoja "Pendientes", 15 columnas, header 1E293B blanco, freeze, ruta de tabla única)', async () => {
+    const seed = EXCEL_TEMPLATE_SEEDS.find((s) => s.code === 'pending_shipments_excel')!;
+    expect(seed).toBeTruthy();
+    expect(seed.doc.sheets.length).toBe(1);
+    expect(seed.doc.sheets[0].name).toBe('Pendientes');
+    expect(seed.doc.sheets[0].columns?.length).toBe(15);
+    expect(seed.doc.sheets[0].headerFill).toBe('1E293B');
+    expect(seed.doc.sheets[0].headerFont).toEqual({ bold: true, color: 'FFFFFF' });
+    expect(seed.doc.sheets[0].freezeHeader).toBe(true);
+    expect(seed.doc.sheets[0].sections).toBeUndefined();
+
+    const data = buildPendingShipmentsData({
+      shipments: [{
+        trackingNumber: 'T1', shipmentType: 'fedex', isCharge: false, status: 'PENDIENTE', priority: 'ALTA',
+        commitDateTime: '2026-07-20T18:00:00Z', recipientName: 'Ana', recipientAddress: 'Calle 1',
+        recipientCity: 'Hermosillo', recipientZip: '83000', recipientPhone: '6620000000',
+        receivedByName: 'Juan', consolidatedId: 'C-1', isHighValue: true, createdAt: '2026-07-18T15:00:00Z',
+      }],
+    });
+    const buf = await new ExcelWorkbookBuilder(new TemplateEngine()).build(seed.doc, { data } as any);
+    const wb = new Workbook(); await wb.xlsx.load(buf as any);
+    const ws = wb.getWorksheet('Pendientes')!;
+
+    expect(ws.getCell('A1').value).toBe('Tracking');
+    expect(ws.getCell('A1').font?.bold).toBe(true);
+    expect(ws.getCell('A1').font?.color?.argb).toBe('FFFFFF');
+    expect((ws.getCell('A1').fill as any).fgColor.argb).toBe('1E293B');
+    expect(ws.getCell('N1').value).toBe('Alto valor');
+    expect(ws.getCell('O1').value).toBe('Creado');
+    expect((ws.views?.[0] as any)?.state).toBe('frozen');
+    expect((ws.views?.[0] as any)?.ySplit).toBe(1);
+
+    const row2 = ws.getRow(2);
+    expect(row2.getCell(1).value).toBe('T1');
+    expect(row2.getCell(2).value).toBe('FedEx');
+    expect(row2.getCell(3).value).toBe('Normal');
+    expect(row2.getCell(14).value).toBe('Sí');
   });
 });
