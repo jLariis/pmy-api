@@ -31,7 +31,7 @@ export class ExcelWorkbookBuilder {
   }
 
   private buildSheet(wb: ExcelJS.Workbook, sheet: ExcelSheet, ctx: RenderContext) {
-    const ws = wb.addWorksheet(sheet.name);
+    const ws = wb.addWorksheet(sheet.name, sheet.showGridLines === false ? { views: [{ showGridLines: false }] } : undefined);
     if (sheet.sections?.length) {
       if (sheet.columnWidths) sheet.columnWidths.forEach((w, i) => { if (w != null) ws.getColumn(i + 1).width = w; });
       this.buildSections(ws, sheet.sections, ctx);

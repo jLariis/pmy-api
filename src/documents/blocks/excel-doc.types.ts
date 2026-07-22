@@ -77,6 +77,8 @@ export type ExcelSection =
 
 export interface ExcelSheet {
   name: string;
+  /** Si es `false`, oculta las líneas de cuadrícula de la hoja (p.ej. B3 Reporte de Choferes). */
+  showGridLines?: boolean;
   /** Si existe, la hoja se arma por secciones y se ignora la ruta de tabla única. */
   sections?: ExcelSection[];
   /** Anchos de columna (1-based, aplicados antes de las secciones). Útil para fijar columnas

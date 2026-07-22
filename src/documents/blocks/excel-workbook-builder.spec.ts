@@ -200,6 +200,13 @@ describe('ExcelWorkbookBuilder.build', () => {
     expect(ws.getCell(4, 2).font?.color?.argb).toBeUndefined(); // MOTIVO de L2 (no DEX)
   });
 
+  it('`showGridLines: false` oculta la cuadrícula de la hoja (B3)', async () => {
+    const doc2: any = { sheets: [{ name: 'NoGrid', showGridLines: false, sections: [{ kind: 'spacer' }] }] };
+    const buf = await builder.build(doc2, ctx({}));
+    const ws = (await load(buf)).getWorksheet('NoGrid')!;
+    expect(ws.views?.[0]?.showGridLines).toBe(false);
+  });
+
   it('sección `table`: `fillFromKey`/`fontColorFromKey` pintan una celda puntual (semáforo por celda, B3)', async () => {
     const doc2: any = { sheets: [{ name: 'Sem', sections: [
       { kind: 'table', rowsVar: 'rows', rowFillKey: 'rowFill', cellAlign: 'center',
