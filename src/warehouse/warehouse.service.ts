@@ -108,6 +108,40 @@ export function buildWarehousePdfData(header: any, packages: any[], timeZone: st
   };
 }
 
+/**
+ * Helper puro (fuera de la clase para poder testearlo sin DI) que arma los datos que consume la
+ * plantilla `warehouse_dispatch_excel` del motor de plantillas. Fiel al `generateExcelBufferLegacy`
+ * (exceljs) actual: fecha de fila = HOY (no `commitDateTime`), cobro solo si `isCharge`.
+ */
+export function buildWarehouseExcelData(header: any, packages: any[], timeZone: string) {
+  const { format } = require('date-fns');
+  const { toZonedTime } = require('date-fns-tz');
+  const now = toZonedTime(new Date(), timeZone);
+  const rows = packages.map((pkg, i) => {
+    const amount = pkg.payment?.amount ?? pkg.paymentAmount ?? 0;
+    return {
+      index: i + 1,
+      trackingNumber: pkg.trackingNumber || pkg.dhlUniqueId,
+      recipientName: pkg.recipientName,
+      recipientAddress: pkg.recipientAddress,
+      recipientZip: pkg.recipientZip,
+      payment: pkg.isCharge ? amount : 'N/A',
+      date: format(now, 'dd/MM/yyyy'),
+      recipientPhone: pkg.recipientPhone || '',
+      signature: '',
+    };
+  });
+  return {
+    title: header?.title ?? 'Salida a Ruta',
+    rutas: header?.routes?.map((r: any) => r.name).join(' -> ') || 'N/A',
+    conductores: header?.drivers?.map((d: any) => d.name).join(' - ') || 'N/A',
+    unidad: header?.vehicle?.name || 'N/A',
+    fechaDateTime: format(now, 'yyyy-MM-dd HH:mm'),
+    totalPackages: packages.length,
+    rows,
+  };
+}
+
 @Injectable()
 export class WarehouseService {
   private readonly logger = new Logger(WarehouseService.name);
