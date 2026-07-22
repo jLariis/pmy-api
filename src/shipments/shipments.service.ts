@@ -55,6 +55,8 @@ import { ReturnValidationDto } from './dto/returning-validation.dto';
 import { DhlService } from './dhl.service';
 import { BusinessException } from 'src/common/business.exception';
 import { LD_QUALIFYING_SQL_IN } from 'src/common/ld-codes';
+import { TemplateService } from 'src/documents/template.service';
+import { buildShipmentsNo67Data } from 'src/documents/data/shipments-no67.mapper';
 
 dayjs.extend(isoWeek);
 
@@ -99,6 +101,7 @@ export class ShipmentsService {
     private readonly consolidatedService: ConsolidatedService,
     private readonly mailService: MailService,
     private dataSource: DataSource,
+    private readonly templateService: TemplateService,
   ) { }
 
   async appendLogToFile(message: string) {
@@ -4861,7 +4864,41 @@ export class ShipmentsService {
       };
     }
 
+    /**
+     * Genera el Excel de "Shipments sin código 67" (B6). Unificación: detrás de flag, el backend
+     * genera el Excel por el Motor de Plantillas (`shipments_no67_excel`). Si el motor no entrega
+     * buffer (o falla), se conserva el armado inline exceljs original
+     * (`exportNo67ShipmentsLegacy`). Flag OFF => comportamiento actual intacto.
+     */
     async exportNo67Shipments(shipments: any[], res: any) {
+      if (process.env.DOC_ENGINE_SHIPMENTS_NO67 === 'true') {
+        try {
+          const buf = await this.renderShipmentsNo67Excel(shipments);
+          if (buf) {
+            res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+            res.setHeader('Content-Disposition', `attachment; filename="shipments_sin_codigo_67_${this.formatDateForFilename(new Date())}.xlsx"`);
+            res.end(buf);
+            return res;
+          }
+        } catch (e: any) {
+          this.logger.warn(`Motor shipments_no67_excel falló; uso armado legacy: ${e?.message}`);
+        }
+      }
+      return this.exportNo67ShipmentsLegacy(shipments, res);
+    }
+
+    /** Arma los datos vía data-provider y renderiza por el Motor. `undefined` si el motor no entrega buffer. */
+    async renderShipmentsNo67Excel(shipments: any[]): Promise<Buffer | undefined> {
+      const data = buildShipmentsNo67Data({ shipments });
+      const result = await this.templateService.render('shipments_no67_excel', data);
+      return result.buffer;
+    }
+
+    /**
+     * Genera reporte Excel de "Shipments sin código 67" (armado inline exceljs, legacy —
+     * retrocompat con Flag OFF).
+     */
+    async exportNo67ShipmentsLegacy(shipments: any[], res: any) {
       const workbook = new ExcelJS.Workbook();
       const sheet = workbook.addWorksheet("Shipments Sin Código 67");
       const currentDate = new Date();
