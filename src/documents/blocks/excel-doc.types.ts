@@ -41,7 +41,7 @@ export interface ExcelMirrorTable {
 /** Sección de una hoja heterogénea (título, espaciador, info, banda de filas fusionadas, fila de
  * celdas sueltas, tabla, o grupo de tablas espejo). */
 export type ExcelSection =
-  | { kind: 'title'; text: string; fill?: string; font?: { size?: number; bold?: boolean; color?: string }; mergeTo: number; height?: number; when?: string }
+  | { kind: 'title'; text: string; fill?: string; font?: { size?: number; bold?: boolean; color?: string; italic?: boolean }; mergeTo: number; height?: number; when?: string }
   | { kind: 'spacer' }
   | { kind: 'info'; rows: { text: string }[]; mergeTo: number; when?: string }
   | { kind: 'band'; rowsVar: string; fill?: string; font?: { bold?: boolean; color?: string; italic?: boolean }; align?: 'left' | 'center' | 'right'; mergeTo: number; when?: string }

@@ -252,6 +252,64 @@ const warehouseDispatch: ExcelDoc = {
   }],
 };
 
+/** driver_report_excel — "Reporte de Choferes" con semáforo (fiel a B3, `generateDriverReportExcelLegacy`).
+ * Hoja 1 "Eficiencia Operativa" (por secciones, sin cuadrícula): título + subtítulo + tabla de
+ * 13 columnas con semáforo por celda (cols 12-13, `fillFromKey`) y fila de totales. Hoja 2
+ * "Detalle de Paquetes": tabla simple de 9 columnas con DEX rojo (`fontColorFromKey`). */
+const driverReport: ExcelDoc = {
+  sheets: [
+    {
+      name: 'Eficiencia Operativa',
+      showGridLines: false,
+      sections: [
+        { kind: 'title', text: '📊 REPORTE EJECUTIVO DE EFICIENCIA OPERATIVA', fill: '0F172A', font: { size: 16, bold: true, color: 'FFFFFF' }, mergeTo: 13, height: 35 },
+        { kind: 'title', text: '{{periodLabel}}', font: { italic: true, color: '475569' }, mergeTo: 13 },
+        { kind: 'spacer' },
+        { kind: 'table', rowsVar: 'driverRows',
+          headerFill: '2563EB', headerFont: { bold: true, color: 'FFFFFF' }, headerHeight: 25, headerAlign: 'center',
+          headerBorder: { style: 'medium', color: '1E3A8A' },
+          lastRowBorder: { style: 'double', color: '94A3B8' },
+          rowFillKey: 'rowFill', cellAlign: 'center', autoFilter: true,
+          columns: [
+            { key: 'driverName', label: 'Chofer / Repartidor', width: 32, align: 'left' },
+            { key: 'total', label: 'Total Asignados', width: 15, numFmt: '#,##0' },
+            { key: 'delivered', label: 'Entregados', width: 14, numFmt: '#,##0' },
+            { key: 'returned', label: 'DEX Total', width: 12, numFmt: '#,##0' },
+            { key: 'dex03', label: 'DEX 03 (Dir. Mal)', width: 15, numFmt: '#,##0' },
+            { key: 'dex07', label: 'DEX 07 (Rechazo)', width: 16, numFmt: '#,##0' },
+            { key: 'dex08', label: 'DEX 08 (No Disp.)', width: 16, numFmt: '#,##0' },
+            { key: 'pending', label: 'Sin Movimiento', width: 15, numFmt: '#,##0' },
+            { key: 'fechaReq', label: 'Cambio Fecha', width: 15, numFmt: '#,##0' },
+            { key: 'retFdx', label: 'Dev. FedEx', width: 15, numFmt: '#,##0' },
+            { key: 'unmapped', label: 'Otros (Fugas)', width: 15, numFmt: '#,##0' },
+            { key: 'pctEff', label: '% Efectividad', width: 14, numFmt: '0.0%', fillFromKey: 'pctEffFill' },
+            { key: 'pctRet', label: '% Retorno', width: 12, numFmt: '0.0%', fillFromKey: 'pctRetFill' },
+          ] },
+      ],
+    },
+    {
+      name: 'Detalle de Paquetes',
+      showGridLines: false,
+      sections: [
+        { kind: 'table', rowsVar: 'detailRows',
+          headerFill: '475569', headerFont: { bold: true, color: 'FFFFFF' }, headerHeight: 25, headerAlign: 'center',
+          rowFillKey: 'rowFill', autoFilter: true,
+          columns: [
+            { key: 'driver', label: 'Chofer', width: 25 },
+            { key: 'route', label: 'Ruta', width: 20 },
+            { key: 'subsidiary', label: 'Sucursal', width: 20 },
+            { key: 'tracking', label: 'Tracking', width: 22, align: 'center' },
+            { key: 'status', label: 'Estatus', width: 35, align: 'center' },
+            { key: 'dex', label: 'Cód. DEX', width: 14, align: 'center', fontColorFromKey: 'dexColor' },
+            { key: 'commit', label: 'Fecha Commit', width: 18, align: 'center' },
+            { key: 'cp', label: 'C.P.', width: 10, align: 'center' },
+            { key: 'recipient', label: 'Destinatario', width: 35 },
+          ] },
+      ],
+    },
+  ],
+};
+
 export const EXCEL_TEMPLATE_SEEDS: ExcelSeed[] = [
   { code: 'route_dispatch_excel', name: 'Salida a Ruta (Excel)', doc: routeDispatch,
     variables: [
@@ -298,6 +356,12 @@ export const EXCEL_TEMPLATE_SEEDS: ExcelSeed[] = [
       { name: 'devolucionRows', label: 'Filas de devoluciones (No./GUIA/MOTIVO)' },
       { name: 'recoleccionRows', label: 'Filas de recolecciones (GUIA/SUCURSAL/No.)' },
       { name: 'dexLegend', label: 'Leyenda DEX 03/07/08/17' },
+    ] },
+  { code: 'driver_report_excel', name: 'Reporte de Choferes (Excel)', doc: driverReport,
+    variables: [
+      { name: 'periodLabel', label: 'Periodo analizado (ya formateado)' },
+      { name: 'driverRows', label: 'Filas por chofer + fila TOTALES GLOBALES (semáforo pctEffFill/pctRetFill)' },
+      { name: 'detailRows', label: 'Detalle de paquetes (hoja 2, dexColor si hay código DEX)' },
     ] },
 ];
 

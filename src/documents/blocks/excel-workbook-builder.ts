@@ -92,7 +92,7 @@ export class ExcelWorkbookBuilder {
         case 'title': {
           const row = ws.addRow([this.engine.renderRaw(s.text, ctx)]);
           ws.mergeCells(row.number, 1, row.number, s.mergeTo);
-          row.font = { size: s.font?.size, bold: s.font?.bold, ...(s.font?.color ? { color: { argb: s.font.color } } : {}) };
+          row.font = { size: s.font?.size, bold: s.font?.bold, italic: s.font?.italic, ...(s.font?.color ? { color: { argb: s.font.color } } : {}) };
           row.alignment = { vertical: 'middle', horizontal: 'center' };
           if (s.height) row.height = s.height;
           if (s.fill) for (let c = 1; c <= s.mergeTo; c++) ws.getCell(row.number, c).fill = solid(s.fill);

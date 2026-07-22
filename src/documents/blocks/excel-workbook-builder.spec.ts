@@ -200,6 +200,16 @@ describe('ExcelWorkbookBuilder.build', () => {
     expect(ws.getCell(4, 2).font?.color?.argb).toBeUndefined(); // MOTIVO de L2 (no DEX)
   });
 
+  it('sección `title` admite `font.italic` (subtítulo de periodo, B3)', async () => {
+    const doc2: any = { sheets: [{ name: 'Sub', sections: [
+      { kind: 'title', text: 'Periodo Analizado: X al Y', font: { italic: true, color: '475569' }, mergeTo: 3 },
+    ] }] };
+    const buf = await builder.build(doc2, ctx({}));
+    const ws = (await load(buf)).getWorksheet('Sub')!;
+    expect(ws.getRow(1).getCell(1).font?.italic).toBe(true);
+    expect(ws.getRow(1).getCell(1).font?.color?.argb).toBe('475569');
+  });
+
   it('`showGridLines: false` oculta la cuadrícula de la hoja (B3)', async () => {
     const doc2: any = { sheets: [{ name: 'NoGrid', showGridLines: false, sections: [{ kind: 'spacer' }] }] };
     const buf = await builder.build(doc2, ctx({}));

@@ -7,6 +7,7 @@ import { buildInventoryData } from '../data/inventory.mapper';
 import { buildRouteClosureData } from '../data/route-closure.mapper';
 import { buildReturningData } from '../data/returning.mapper';
 import { buildWarehouseExcelData } from '../../warehouse/warehouse.service';
+import { buildDriverReportData } from '../data/driver-report.mapper';
 import { Workbook } from 'exceljs';
 
 function repos() {
@@ -358,6 +359,69 @@ describe('seedExcelTemplates', () => {
     expect(dataRow.getCell(3).value).toBe('Ana');
     expect(dataRow.getCell(6).value).toBe(500);
     expect(ws.getRow(headerRowNum + 2).getCell(6).value).toBe('N/A');
+  });
+
+  it('driver_report_excel: fiel a B3 (título/subtítulo, cabeceras, semáforo por celda, totales, hoja 2 con DEX rojo)', async () => {
+    const seed = EXCEL_TEMPLATE_SEEDS.find((s) => s.code === 'driver_report_excel')!;
+    expect(seed).toBeTruthy();
+    const data = buildDriverReportData({
+      startDate: '2026-07-01T06:00:00.000Z', endDate: '2026-07-20T06:00:00.000Z',
+      summaryData: [
+        { driverName: 'Juan Pérez', total: '10', delivered: '9', returned: '1', dex03: '0', dex07: '1', dex08: '0', pending: '0', fechaRequested: '0', returnedFedex: '0', unmapped: '0' },
+        { driverName: 'Ana López', total: '10', delivered: '5', returned: '4', dex03: '2', dex07: '1', dex08: '1', pending: '1', fechaRequested: '0', returnedFedex: '0', unmapped: '0' },
+      ],
+      detailsData: [
+        { driverName: 'Juan Pérez', routeName: 'R1', subsidiaryName: 'Obregón', tracking: 'T1', status: 'entregado', realstatus: 'entregado', exceptionCode: '-', commitDate: '2026-07-20T10:00:00Z', cp: '85000', recipient: 'Cliente 1' },
+        { driverName: 'Ana López', routeName: 'R2', subsidiaryName: 'Obregón', tracking: 'T2', status: 'devuelto_a_fedex', realstatus: 'direccion_incorrecta', exceptionCode: '03', commitDate: null, cp: '', recipient: '' },
+      ],
+    });
+    const buf = await new ExcelWorkbookBuilder(new TemplateEngine()).build(seed.doc, { data } as any);
+    const wb = new Workbook(); await wb.xlsx.load(buf as any);
+
+    // Hoja 1
+    const ws1 = wb.getWorksheet('Eficiencia Operativa')!;
+    expect(ws1).toBeTruthy();
+    expect(ws1.views?.[0]?.showGridLines).toBe(false);
+    expect(ws1.getCell('A1').value).toBe('📊 REPORTE EJECUTIVO DE EFICIENCIA OPERATIVA');
+    expect((ws1.getCell('A1').fill as any).fgColor.argb).toBe('0F172A');
+    expect(String(ws1.getCell('A2').value)).toBe('Periodo Analizado: 2026-07-01 al 2026-07-20');
+
+    let headerRowNum = 0;
+    ws1.eachRow({ includeEmpty: true }, (r, n) => { if (r.getCell(1).value === 'Chofer / Repartidor') headerRowNum = n; });
+    expect(headerRowNum).toBeGreaterThan(0);
+    const headerRow1 = ws1.getRow(headerRowNum);
+    expect((headerRow1.getCell(1).fill as any).fgColor.argb).toBe('2563EB');
+    expect(headerRow1.getCell(1).border?.top?.style).toBe('medium');
+    expect(headerRow1.getCell(12).value).toBe('% Efectividad');
+    expect(headerRow1.getCell(13).value).toBe('% Retorno');
+
+    const juanRow = ws1.getRow(headerRowNum + 1);
+    expect(juanRow.getCell(1).value).toBe('Juan Pérez');
+    expect((juanRow.getCell(12).fill as any).fgColor.argb).toBe('059669'); // 90% -> verde
+    expect((juanRow.getCell(13).fill as any).fgColor.argb).toBe('D97706'); // 10% retorno -> ámbar
+
+    const anaRow = ws1.getRow(headerRowNum + 2);
+    expect((anaRow.getCell(12).fill as any).fgColor.argb).toBe('E11D48'); // 50% -> rojo
+    expect((anaRow.getCell(13).fill as any).fgColor.argb).toBe('E11D48'); // 40% retorno -> rojo
+
+    const totalsRow = ws1.getRow(headerRowNum + 3);
+    expect(totalsRow.getCell(1).value).toBe('TOTALES GLOBALES');
+    expect((totalsRow.getCell(1).fill as any).fgColor.argb).toBe('E2E8F0');
+    expect(totalsRow.getCell(1).border?.top?.style).toBe('double');
+
+    // Hoja 2
+    const ws2 = wb.getWorksheet('Detalle de Paquetes')!;
+    expect(ws2).toBeTruthy();
+    const header2 = ws2.getRow(1);
+    expect((header2.getCell(1).fill as any).fgColor.argb).toBe('475569');
+    expect(header2.getCell(5).value).toBe('Estatus');
+    const dataRow2 = ws2.getRow(3); // fila 2 = Juan (DEX '-'), fila 3 = Ana (DEX '03', rojo)
+    expect(dataRow2.getCell(6).value).toBe('03');
+    expect(dataRow2.getCell(6).font?.color?.argb).toBe('E11D48');
+    expect(dataRow2.getCell(6).font?.bold).toBe(true);
+    const dataRow1 = ws2.getRow(2);
+    expect(dataRow1.getCell(6).value).toBe('-');
+    expect(dataRow1.getCell(6).font?.color?.argb).toBeUndefined();
   });
 
   it('returning_excel: sin devoluciones ni recolecciones, tablas espejo quedan solo con título+encabezado (0/0/0)', async () => {
