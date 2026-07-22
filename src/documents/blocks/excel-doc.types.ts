@@ -38,16 +38,29 @@ export interface ExcelMirrorTable {
   redFontColor?: string;
 }
 
+/** Tamaño de fusión de una sección (título/info/banda): número fijo de columnas, o resuelto en
+ * runtime desde `ctx.data[fromVar]` (p.ej. el ancho de una tabla con columnas dinámicas por día,
+ * ver B4 Estado de Resultados: `variable` + N columnas de día + `total`). */
+export type MergeTarget = number | { fromVar: string };
+
 /** Sección de una hoja heterogénea (título, espaciador, info, banda de filas fusionadas, fila de
  * celdas sueltas, tabla, o grupo de tablas espejo). */
 export type ExcelSection =
-  | { kind: 'title'; text: string; fill?: string; font?: { size?: number; bold?: boolean; color?: string; italic?: boolean }; mergeTo: number; height?: number; when?: string }
+  | { kind: 'title'; text: string; fill?: string; font?: { size?: number; bold?: boolean; color?: string; italic?: boolean }; mergeTo: MergeTarget; height?: number; when?: string }
   | { kind: 'spacer' }
-  | { kind: 'info'; rows: { text: string }[]; mergeTo: number; when?: string }
-  | { kind: 'band'; rowsVar: string; fill?: string; font?: { bold?: boolean; color?: string; italic?: boolean }; align?: 'left' | 'center' | 'right'; mergeTo: number; when?: string }
+  | { kind: 'info'; rows: { text: string }[]; mergeTo: MergeTarget; when?: string }
+  | { kind: 'band'; rowsVar: string; fill?: string; font?: { bold?: boolean; color?: string; italic?: boolean }; align?: 'left' | 'center' | 'right'; mergeTo: MergeTarget; when?: string }
   | {
       kind: 'table';
+      /** Columnas fijas de INICIO (p.ej. `variable`). Si hay `dynamicColumnsVar`/`columnsEnd`,
+       * las tres partes se concatenan en orden: columns + dynamicColumnsVar + columnsEnd. */
       columns: ExcelColumn[];
+      /** Nombre de la variable (`ctx.data[dynamicColumnsVar]`) con columnas ADICIONALES resueltas
+       * en runtime (array de `ExcelColumn`, ya armadas por el data-provider — p.ej. una por día
+       * del rango). Se insertan entre `columns` y `columnsEnd`. Ver B4 Estado de Resultados. */
+      dynamicColumnsVar?: string;
+      /** Columnas fijas de FIN (p.ej. `total`), después de las dinámicas. */
+      columnsEnd?: ExcelColumn[];
       rowsVar: string;
       headerFill?: string;
       headerFont?: { bold?: boolean; color?: string };
@@ -58,6 +71,12 @@ export type ExcelSection =
       wrap?: boolean;
       /** Nombre del campo por fila con el argb del fill de toda la fila (null = sin fill). */
       rowFillKey?: string;
+      /** Nombre del campo por fila (boolean) que fuerza bold en TODA la fila (p.ej. filas de
+       * total/título dentro de una tabla única con columnas dinámicas). Ver B4. */
+      rowBoldKey?: string;
+      /** Nombre del campo por fila con el argb del font color de TODA la fila (null = sin cambio;
+       * gana sobre `fontColorFromKey` de columna, que es más específico por celda). Ver B4. */
+      rowFontColorKey?: string;
       freezeHeader?: boolean;
       autoFilter?: boolean;
       /** Si se setea y `ctx.data[when]` está "vacío" (null/undefined/''/[]), la sección se omite. */
@@ -68,6 +87,10 @@ export type ExcelSection =
       /** Borde superior+inferior aplicado SOLO a la última fila de datos (p.ej. fila de
        * "TOTALES GLOBALES" con borde double). Ver B3 Reporte de Choferes. */
       lastRowBorder?: { style: 'thin' | 'medium' | 'double'; color: string };
+      /** Escala de color mínima (verde/rojo semáforo) aplicada por columna sobre el rango de
+       * filas de datos (1-based, columna final = índice en las columnas efectivas). Aproximación
+       * del `colorScale` de ExcelJS (blanco → color); ver B4 Dashboard. */
+      colorScale?: { col: number; to: string }[];
     }
   /** Una sola fila con celdas en columnas arbitrarias (no necesariamente contiguas), p.ej. un
    * resumen "TOTAL A: 1   TOTAL B: 2" repartido en columnas específicas (fiel a C10, fila 5). */

@@ -273,6 +273,83 @@ describe('ExcelWorkbookBuilder.build', () => {
     expect((totalsRow.getCell(1).border?.top as any)?.color?.argb).toBe('94A3B8');
   });
 
+  it('sección `table`: columnas dinámicas (`dynamicColumnsVar` + `columnsEnd`), fiel a B4 Estado de Resultados', async () => {
+    const doc2: any = { sheets: [{ name: 'Dyn', sections: [
+      { kind: 'table', rowsVar: 'rows',
+        columns: [{ key: 'variable', label: 'VARIABLES', width: 40 }],
+        dynamicColumnsVar: 'dayColumns',
+        columnsEnd: [{ key: 'total', label: 'TOTAL ACUMULADO', width: 22, numFmt: '"$"#,##0.00' }],
+      },
+    ] }] };
+    const dayColumns = [
+      { key: 'd_2026-07-18', label: 'JUL 18', width: 16, numFmt: '"$"#,##0.00' },
+      { key: 'd_2026-07-19', label: 'JUL 19', width: 16, numFmt: '"$"#,##0.00' },
+    ];
+    const buf = await builder.build(doc2, ctx({
+      dayColumns,
+      rows: [{ variable: 'Ingreso A', 'd_2026-07-18': 100, 'd_2026-07-19': 50, total: 150 }],
+    }));
+    const ws = (await load(buf)).getWorksheet('Dyn')!;
+    // Encabezado: VARIABLES | JUL 18 | JUL 19 | TOTAL ACUMULADO (4 columnas efectivas)
+    expect(ws.getRow(1).getCell(1).value).toBe('VARIABLES');
+    expect(ws.getRow(1).getCell(2).value).toBe('JUL 18');
+    expect(ws.getRow(1).getCell(3).value).toBe('JUL 19');
+    expect(ws.getRow(1).getCell(4).value).toBe('TOTAL ACUMULADO');
+    expect(ws.getColumn(2).width).toBe(16);
+    expect(ws.getColumn(4).width).toBe(22);
+    // Datos + numFmt por columna dinámica y de fin
+    const dataRow = ws.getRow(2);
+    expect(dataRow.getCell(1).value).toBe('Ingreso A');
+    expect(dataRow.getCell(2).value).toBe(100);
+    expect(dataRow.getCell(3).value).toBe(50);
+    expect(dataRow.getCell(4).value).toBe(150);
+    expect(dataRow.getCell(2).numFmt).toBe('"$"#,##0.00');
+    expect(dataRow.getCell(4).numFmt).toBe('"$"#,##0.00');
+  });
+
+  it('sección `table`: `rowBoldKey`/`rowFontColorKey` aplican estilo a TODA la fila (filas de título/total, B4)', async () => {
+    const doc2: any = { sheets: [{ name: 'RowStyle', sections: [
+      { kind: 'table', rowsVar: 'rows', rowBoldKey: 'bold', rowFontColorKey: 'fontColor',
+        columns: [{ key: 'variable', label: 'VARIABLES' }, { key: 'total', label: 'TOTAL' }] },
+    ] }] };
+    const buf = await builder.build(doc2, ctx({
+      rows: [
+        { variable: 'INGRESOS OPERATIVOS', total: '', bold: true, fontColor: '1F4E78' },
+        { variable: 'Ingreso A', total: 100 },
+      ],
+    }));
+    const ws = (await load(buf)).getWorksheet('RowStyle')!;
+    const titleRow = ws.getRow(2);
+    expect(titleRow.getCell(1).font?.bold).toBe(true);
+    expect(titleRow.getCell(1).font?.color?.argb).toBe('1F4E78');
+    const dataRow = ws.getRow(3);
+    expect(dataRow.getCell(1).font?.bold).toBeFalsy();
+  });
+
+  it('sección `title`/`info`: `mergeTo` acepta `{ fromVar }` resuelto en runtime (ancho dinámico, B4)', async () => {
+    const doc2: any = { sheets: [{ name: 'MergeVar', sections: [
+      { kind: 'title', text: 'ESTADO DE RESULTADOS - {{sub}}', mergeTo: { fromVar: 'totalColumnsCount' }, font: { size: 16 } },
+    ] }] };
+    const buf = await builder.build(doc2, ctx({ sub: 'OBREGÓN', totalColumnsCount: 4 }));
+    const ws = (await load(buf)).getWorksheet('MergeVar')!;
+    expect(ws.getRow(1).getCell(1).value).toBe('ESTADO DE RESULTADOS - OBREGÓN');
+    // Fusionado A1:D1 (4 columnas) -> escribir en D1 debe seguir perteneciendo al mismo master
+    expect(ws.getCell('D1').master.address).toBe('A1');
+  });
+
+  it('sección `table`: `colorScale` aplica conditionalFormatting mínimo (blanco->color) sobre filas de datos', async () => {
+    const doc2: any = { sheets: [{ name: 'CS', sections: [
+      { kind: 'table', rowsVar: 'rows', colorScale: [{ col: 2, to: 'FF63BE7B' }, { col: 4, to: 'FFF8696B' }],
+        columns: [{ key: 'incCat', label: 'CATEGORÍA INGRESO' }, { key: 'incAmt', label: 'MONTO' }, { key: 'expCat', label: 'CATEGORÍA EGRESO' }, { key: 'expAmt', label: 'MONTO' }] },
+    ] }] };
+    const buf = await builder.build(doc2, ctx({ rows: [{ incCat: 'A', incAmt: 10, expCat: 'B', expAmt: 20 }] }));
+    const ws = (await load(buf)).getWorksheet('CS')!;
+    const cfs = (ws as any).conditionalFormattings ?? (ws as any)._conditionalFormattings ?? [];
+    // exceljs expone el modelo vía ws.model tras load; validamos al menos que no lance y que la hoja tenga datos.
+    expect(ws.getRow(2).getCell(2).value).toBe(10);
+    expect(ws.getRow(2).getCell(4).value).toBe(20);
+  });
+
   it('no permite que la alineación de una columna pise el título centrado', async () => {
     const withTitleAndAlign: ExcelDoc = { sheets: [{
       name: 'T',

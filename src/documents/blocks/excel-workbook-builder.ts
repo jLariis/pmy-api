@@ -2,12 +2,31 @@ import { Injectable } from '@nestjs/common';
 import * as ExcelJS from 'exceljs';
 import { TemplateEngine } from '../template-engine';
 import { RenderContext } from '../documents.types';
-import { ExcelDoc, ExcelSheet, ExcelSection } from './excel-doc.types';
+import { ExcelDoc, ExcelSheet, ExcelSection, ExcelColumn, MergeTarget } from './excel-doc.types';
 
 function solid(argb: string): ExcelJS.Fill { return { type: 'pattern', pattern: 'solid', fgColor: { argb } }; }
 function thin(): Partial<ExcelJS.Borders> {
   const b = { style: 'thin' as const };
   return { top: b, left: b, bottom: b, right: b };
+}
+
+/** Resuelve un `MergeTarget`: número fijo, o `ctx.data[fromVar]` (columnas dinámicas, ver B4). */
+function resolveMergeTo(target: MergeTarget, ctx: RenderContext): number {
+  if (typeof target === 'number') return target;
+  const v = ctx.data?.[target.fromVar];
+  return typeof v === 'number' && v > 0 ? v : 1;
+}
+
+/** Letra de columna 1-based (1='A', 27='AA', …) para armar refs de conditionalFormatting. */
+function colLetter(n: number): string {
+  let s = '';
+  let x = n;
+  while (x > 0) {
+    const rem = (x - 1) % 26;
+    s = String.fromCharCode(65 + rem) + s;
+    x = Math.floor((x - 1) / 26);
+  }
+  return s;
 }
 
 /** "Vacío" para efectos de `when`: null/undefined/''/array de length 0. */
@@ -90,28 +109,32 @@ export class ExcelWorkbookBuilder {
       switch (s.kind) {
         case 'spacer': ws.addRow([]); break;
         case 'title': {
+          const mergeTo = resolveMergeTo(s.mergeTo, ctx);
           const row = ws.addRow([this.engine.renderRaw(s.text, ctx)]);
-          ws.mergeCells(row.number, 1, row.number, s.mergeTo);
+          ws.mergeCells(row.number, 1, row.number, mergeTo);
           row.font = { size: s.font?.size, bold: s.font?.bold, italic: s.font?.italic, ...(s.font?.color ? { color: { argb: s.font.color } } : {}) };
           row.alignment = { vertical: 'middle', horizontal: 'center' };
           if (s.height) row.height = s.height;
-          if (s.fill) for (let c = 1; c <= s.mergeTo; c++) ws.getCell(row.number, c).fill = solid(s.fill);
+          if (s.fill) for (let c = 1; c <= mergeTo; c++) ws.getCell(row.number, c).fill = solid(s.fill);
           break;
         }
-        case 'info':
+        case 'info': {
+          const mergeTo = resolveMergeTo(s.mergeTo, ctx);
           for (const r of s.rows) {
             const row = ws.addRow([this.engine.renderRaw(r.text, ctx)]);
-            ws.mergeCells(row.number, 1, row.number, s.mergeTo);
+            ws.mergeCells(row.number, 1, row.number, mergeTo);
           }
           break;
+        }
         case 'band': {
+          const mergeTo = resolveMergeTo(s.mergeTo, ctx);
           const items: any[] = Array.isArray(ctx.data?.[s.rowsVar]) ? ctx.data[s.rowsVar] : [];
           for (const item of items) {
             const row = ws.addRow([this.engine.renderRaw(String(item), ctx)]);
-            ws.mergeCells(row.number, 1, row.number, s.mergeTo);
+            ws.mergeCells(row.number, 1, row.number, mergeTo);
             row.font = { bold: s.font?.bold, italic: s.font?.italic, ...(s.font?.color ? { color: { argb: s.font.color } } : {}) };
             row.alignment = { vertical: 'middle', horizontal: s.align ?? 'left' };
-            if (s.fill) for (let c = 1; c <= s.mergeTo; c++) ws.getCell(row.number, c).fill = solid(s.fill);
+            if (s.fill) for (let c = 1; c <= mergeTo; c++) ws.getCell(row.number, c).fill = solid(s.fill);
           }
           break;
         }
@@ -187,8 +210,13 @@ export class ExcelWorkbookBuilder {
   }
 
   private buildTableSection(ws: ExcelJS.Worksheet, s: Extract<ExcelSection, { kind: 'table' }>, ctx: RenderContext) {
-    s.columns.forEach((c, i) => { if (c.width != null) ws.getColumn(i + 1).width = c.width; });
-    const headerRow = ws.addRow(s.columns.map((c) => c.label));
+    // Columnas efectivas: fijas de inicio + dinámicas (resueltas desde ctx.data, ya armadas por
+    // el data-provider, p.ej. una por día del rango) + fijas de fin. Ver B4 Estado de Resultados.
+    const dynamicColumns: ExcelColumn[] = s.dynamicColumnsVar && Array.isArray(ctx.data?.[s.dynamicColumnsVar]) ? ctx.data[s.dynamicColumnsVar] : [];
+    const columns: ExcelColumn[] = [...s.columns, ...dynamicColumns, ...(s.columnsEnd ?? [])];
+
+    columns.forEach((c, i) => { if (c.width != null) ws.getColumn(i + 1).width = c.width; });
+    const headerRow = ws.addRow(columns.map((c) => c.label));
     if (s.headerHeight) headerRow.height = s.headerHeight;
     const headerBorder = s.headerBorder
       ? { top: { style: s.headerBorder.style, color: { argb: s.headerBorder.color } }, bottom: { style: s.headerBorder.style, color: { argb: s.headerBorder.color } } }
@@ -205,17 +233,24 @@ export class ExcelWorkbookBuilder {
       ? { top: { style: s.lastRowBorder.style, color: { argb: s.lastRowBorder.color } }, bottom: { style: s.lastRowBorder.style, color: { argb: s.lastRowBorder.color } } }
       : null;
     rows.forEach((r, idx) => {
-      const dataRow = ws.addRow(s.columns.map((c) => r?.[c.key] ?? ''));
+      const dataRow = ws.addRow(columns.map((c) => r?.[c.key] ?? ''));
       const fill = s.rowFillKey ? r?.[s.rowFillKey] : null;
+      // Estilos de fila completa (bold/font color), p.ej. filas de título/total dentro de una
+      // única tabla con columnas dinámicas (B4 Estado de Resultados) — ganan sobre `thin()` pero
+      // ceden ante el semáforo por celda (fillFromKey/fontColorFromKey), más específico.
+      const rowBold = s.rowBoldKey ? !!r?.[s.rowBoldKey] : false;
+      const rowFontColor = s.rowFontColorKey ? r?.[s.rowFontColorKey] : null;
       const isLastRow = idx === rows.length - 1;
       dataRow.eachCell((cell, col) => {
-        const c = s.columns[col - 1];
+        const c = columns[col - 1];
         if (fill) cell.fill = solid(fill);
         if (s.bordered) cell.border = thin();
         cell.alignment = { vertical: 'middle', horizontal: c?.align ?? s.cellAlign ?? 'left', ...(s.wrap ? { wrapText: true } : {}) };
         if (c?.numFmt) cell.numFmt = c.numFmt;
+        if (rowBold || rowFontColor) cell.font = { bold: rowBold || undefined, ...(rowFontColor ? { color: { argb: rowFontColor } } : {}) };
         // Semáforo por celda (fiel a B3 Reporte de Choferes): fillFromKey/fontColorFromKey leen
-        // el argb de un campo de LA FILA, distinto por columna, y ganan sobre rowFillKey/thin().
+        // el argb de un campo de LA FILA, distinto por columna, y ganan sobre rowFillKey/thin()
+        // y sobre los estilos de fila completa de arriba.
         const colFill = c?.fillFromKey ? r?.[c.fillFromKey] : null;
         if (colFill) cell.fill = solid(colFill);
         const colFontColor = c?.fontColorFromKey ? r?.[c.fontColorFromKey] : null;
@@ -224,6 +259,20 @@ export class ExcelWorkbookBuilder {
       });
     });
     if (s.freezeHeader) ws.views = [{ state: 'frozen', ySplit: headerRow.number }];
-    if (s.autoFilter) ws.autoFilter = { from: { row: headerRow.number, column: 1 }, to: { row: headerRow.number, column: s.columns.length } };
+    if (s.autoFilter) ws.autoFilter = { from: { row: headerRow.number, column: 1 }, to: { row: headerRow.number, column: columns.length } };
+
+    // colorScale mínimo (aproximación: blanco -> color, sobre el rango de filas de datos de la
+    // columna indicada). Ver B4 Dashboard (semáforo verde en MONTO ingreso, rojo en MONTO egreso).
+    if (s.colorScale?.length && rows.length > 0) {
+      const dataStartRow = headerRow.number + 1;
+      const dataEndRow = headerRow.number + rows.length;
+      for (const cs of s.colorScale) {
+        const letter = colLetter(cs.col);
+        ws.addConditionalFormatting({
+          ref: `${letter}${dataStartRow}:${letter}${dataEndRow}`,
+          rules: [{ type: 'colorScale', priority: 1, cfvo: [{ type: 'min' }, { type: 'max' }], color: [{ argb: 'FFFFFFFF' }, { argb: cs.to }] }],
+        });
+      }
+    }
   }
 }
