@@ -18,7 +18,7 @@ const warehouseDispatch: PdfDoc = {
   header: { title: '{{title}}', showDateTime: true },
   blocks: [
     { type: 'infoGrid', cells: [
-      { label: 'SUCURSAL', value: '{{subsidiaryName}}' },
+      { label: '{{subsidiaryLabel}}', value: '{{subsidiaryName}}' },
       { label: 'VEHÍCULO', value: '{{vehicleName}}' },
       { label: 'TOTAL PAQUETES', value: '{{totalPackages}}' },
       { label: 'SEGUIMIENTO', value: '{{trackingNumber}}' },
@@ -82,7 +82,8 @@ export const PDF_TEMPLATE_SEEDS: PdfSeed[] = [
   { code: 'warehouse_dispatch_pdf', name: 'Salida a Ruta / Bodega (PDF)', doc: warehouseDispatch,
     variables: [
       { name: 'title', label: 'Título' },
-      { name: 'subsidiaryName', label: 'Sucursal' },
+      { name: 'subsidiaryName', label: 'Sucursal (o destino en traspaso)' },
+      { name: 'subsidiaryLabel', label: 'Etiqueta de la celda de sucursal' },
       { name: 'vehicleName', label: 'Vehículo' },
       { name: 'totalPackages', label: 'Total de paquetes', dataType: 'number' },
       { name: 'trackingNumber', label: 'Número de seguimiento' },

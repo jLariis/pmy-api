@@ -51,4 +51,13 @@ export class WarehouseReceiving {
     @Column({ type: 'datetime', default: () => 'CURRENT_TIMESTAMP' })
     updatedAt: Date;
 
+    /** Rollback (superadmin): la operación fue revertida. Se conserva por auditoría. */
+    @Column({ type: 'tinyint', width: 1, default: 0 })
+    rolledBack: boolean;
+
+    @Column({ nullable: true })
+    rolledBackById: string | null;
+
+    @Column({ type: 'datetime', nullable: true })
+    rolledBackAt: Date | null;
 }

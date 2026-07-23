@@ -10,6 +10,7 @@ describe('buildWarehousePdfData', () => {
     const d = buildWarehousePdfData(header, pkgs, 'America/Hermosillo');
     expect(d.title).toBe('SALIDA A RUTA');
     expect(d.subsidiaryName).toBe('Cd. Obregón');
+    expect(d.subsidiaryLabel).toBe('SUCURSAL');
     expect(d.isHermosillo).toBe(false);
     expect(d.totalPackages).toBe(1);
     expect(d.rows[0].trackingNumber).toBe('G1');
@@ -21,6 +22,22 @@ describe('buildWarehousePdfData', () => {
   it('isHermosillo true cuando la sucursal contiene hermosillo', () => {
     const d = buildWarehousePdfData({ title: 'X', subsidiary: { name: 'Hermosillo Centro' }, vehicle: {}, trackingNumber: '' } as any, [], 'America/Hermosillo');
     expect(d.isHermosillo).toBe(true);
+    expect(d.subsidiaryLabel).toBe('SUCURSAL');
+  });
+
+  it('traspaso: muestra el DESTINO con etiqueta "SUCURSAL DESTINO"; isHermosillo por el origen', () => {
+    const header: any = {
+      title: 'Traspaso desde Hermosillo Centro',
+      subsidiary: { name: 'Hermosillo Centro' }, // origen
+      destinationName: 'Cabo San Lucas',         // destino
+      vehicle: { name: 'V1' },
+      trackingNumber: 'T1',
+    };
+    const d = buildWarehousePdfData(header, [], 'America/Hermosillo');
+    expect(d.title).toBe('Traspaso desde Hermosillo Centro');
+    expect(d.subsidiaryName).toBe('Cabo San Lucas');   // el valor es el destino
+    expect(d.subsidiaryLabel).toBe('SUCURSAL DESTINO'); // etiqueta del campo
+    expect(d.isHermosillo).toBe(true);                  // depende del origen, no del destino
   });
 
   it('paquete NO cobro (isCharge:false) con payment.amount -> muestra $amount y rowClass "pago"', () => {

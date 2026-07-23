@@ -17,6 +17,14 @@ export class WarehouseOutbound {
     @Column({ type: 'json' })
     shipments: ShipmentSnapshot[];
 
+    /**
+     * Folio de la salida. Para traspasos se genera un folio único de 10 dígitos
+     * (los despachos usan el folio de PackageDispatch). Nullable para no romper
+     * filas históricas.
+     */
+    @Column({ type: 'varchar', length: 20, nullable: true, unique: true })
+    trackingNumber: string | null;
+
     @ManyToMany(() => Driver, { nullable: true })
     @JoinTable({
     name: 'warehouse_outbound_drivers',
@@ -56,4 +64,13 @@ export class WarehouseOutbound {
     @Column({ type: 'datetime', default: () => 'CURRENT_TIMESTAMP' })
     updatedAt: Date;
 
+    /** Rollback (superadmin): la operación fue revertida. Se conserva por auditoría. */
+    @Column({ type: 'tinyint', width: 1, default: 0 })
+    rolledBack: boolean;
+
+    @Column({ nullable: true })
+    rolledBackById: string | null;
+
+    @Column({ type: 'datetime', nullable: true })
+    rolledBackAt: Date | null;
 }
