@@ -13,6 +13,8 @@ describe('buildWarehouseExcelData', () => {
       {
         trackingNumber: 'G1', recipientName: 'Ana', recipientAddress: 'Calle 1',
         recipientZip: '85000', recipientPhone: '644', isCharge: true, payment: { amount: 100 },
+        // 2026-07-10T12:00:00Z en Hermosillo (UTC-7) => 2026-07-10 05:00 => 10/07/2026
+        commitDateTime: '2026-07-10T12:00:00Z',
       },
     ];
     const d = buildWarehouseExcelData(header, pkgs, 'America/Hermosillo');
@@ -30,9 +32,26 @@ describe('buildWarehouseExcelData', () => {
     expect(d.rows[0].recipientAddress).toBe('Calle 1');
     expect(d.rows[0].recipientZip).toBe('85000');
     expect(d.rows[0].payment).toBe(100);
-    expect(d.rows[0].date).toMatch(/^\d{2}\/\d{2}\/\d{4}$/);
+    // La FECHA de fila proviene de commitDateTime (compromiso), NO de hoy.
+    expect(d.rows[0].date).toBe('10/07/2026');
     expect(d.rows[0].recipientPhone).toBe('644');
     expect(d.rows[0].signature).toBe('');
+  });
+
+  it('FECHA de fila = commitDateTime (no hoy); vacía cuando no hay commitDateTime', () => {
+    const conCommit = buildWarehouseExcelData(
+      {} as any,
+      [{ trackingNumber: 'G1', commitDateTime: '2026-07-10T12:00:00Z' }],
+      'America/Hermosillo',
+    );
+    expect(conCommit.rows[0].date).toBe('10/07/2026');
+
+    const sinCommit = buildWarehouseExcelData(
+      {} as any,
+      [{ trackingNumber: 'G2' }],
+      'America/Hermosillo',
+    );
+    expect(sinCommit.rows[0].date).toBe('');
   });
 
   it('title/rutas/conductores/unidad con defaults cuando faltan', () => {

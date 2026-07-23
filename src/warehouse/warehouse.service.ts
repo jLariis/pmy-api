@@ -3,6 +3,7 @@ import {
   Injectable,
   InternalServerErrorException,
   Logger,
+  NotFoundException,
 } from '@nestjs/common';
 import { CreateWarehouseDto } from './dto/create-warehouse.dto';
 import {
@@ -119,6 +120,9 @@ export function buildWarehouseExcelData(header: any, packages: any[], timeZone: 
   const now = toZonedTime(new Date(), timeZone);
   const rows = packages.map((pkg, i) => {
     const amount = pkg.payment?.amount ?? pkg.paymentAmount ?? 0;
+    // FECHA de fila = fecha de compromiso (commitDateTime) de la guía, NO hoy.
+    // Antes se fijaba a `now` para toda fila, ocultando la fecha real de la BD.
+    const commit = pkg.commitDateTime ? toZonedTime(new Date(pkg.commitDateTime), timeZone) : null;
     return {
       index: i + 1,
       trackingNumber: pkg.trackingNumber || pkg.dhlUniqueId,
@@ -126,7 +130,7 @@ export function buildWarehouseExcelData(header: any, packages: any[], timeZone: 
       recipientAddress: pkg.recipientAddress,
       recipientZip: pkg.recipientZip,
       payment: pkg.isCharge ? amount : 'N/A',
-      date: format(now, 'dd/MM/yyyy'),
+      date: commit ? format(commit, 'dd/MM/yyyy') : '',
       recipientPhone: pkg.recipientPhone || '',
       signature: '',
     };
@@ -140,6 +144,68 @@ export function buildWarehouseExcelData(header: any, packages: any[], timeZone: 
     totalPackages: packages.length,
     rows,
   };
+}
+
+/**
+ * Helper puro (fuera de la clase para testearlo sin DI) que arma la cabecera de
+ * notificación de un TRASPASO a partir del `WarehouseOutbound` ya consultado
+ * (con relaciones) y el nombre de la sucursal destino. Antes el traspaso solo
+ * llevaba `{subsidiary, title}`, por lo que el PDF/Excel salía sin vehículo,
+ * choferes, rutas ni folio, y sin indicar el destino.
+ */
+export function buildTransferNotificationHeader(
+  outbound: {
+    warehouse?: any;
+    vehicle?: { name: string } | null;
+    drivers?: { name: string }[] | null;
+    routes?: { name: string }[] | null;
+    trackingNumber?: string | null;
+  } | null,
+  destinationName: string | null,
+): NotificationHeader {
+  const dest = (destinationName ?? '').trim() || 'N/D';
+  return {
+    subsidiary: outbound?.warehouse ?? null,
+    vehicle: outbound?.vehicle ?? null,
+    drivers: outbound?.drivers ?? null,
+    routes: outbound?.routes ?? null,
+    trackingNumber: outbound?.trackingNumber ?? '',
+    title: `TRASPASO → ${dest}`,
+  };
+}
+
+/**
+ * Decisión pura del rollback por paquete: dado el estatus objetivo que puso la
+ * operación, el estatus/sucursal actuales y el historial (ordenado por timestamp
+ * DESC, index 0 = más reciente), decide si se revierte y a qué estatus previo.
+ *
+ * Regla de seguridad: solo se revierte si el paquete NO avanzó (su estatus
+ * actual sigue siendo el que puso la operación) y —en traspaso— sigue en la
+ * sucursal destino. Así nunca se pisan cambios posteriores.
+ */
+export function decideShipmentRollback(params: {
+  targetStatus: string;
+  currentStatus: string;
+  currentSubsidiaryId?: string | null;
+  expectedDestinationId?: string | null;
+  history: { status: string }[];
+}): { revert: true; priorStatus: string } | { revert: false; reason: string } {
+  if (params.currentStatus !== params.targetStatus) {
+    return {
+      revert: false,
+      reason: `El paquete ya avanzó (estatus actual: ${params.currentStatus}).`,
+    };
+  }
+  if (
+    params.expectedDestinationId != null &&
+    params.currentSubsidiaryId !== params.expectedDestinationId
+  ) {
+    return { revert: false, reason: 'El paquete ya no está en la sucursal destino.' };
+  }
+  if (!params.history || params.history.length < 2) {
+    return { revert: false, reason: 'Sin estatus previo en el historial para restaurar.' };
+  }
+  return { revert: true, priorStatus: params.history[1].status };
 }
 
 @Injectable()
@@ -500,6 +566,8 @@ export class WarehouseService {
       totalPackages: (r.shipments || []).length,
       totalPieces: (r.shipments || []).reduce((acc, s) => acc + 1 + (s.remittances?.length || 0), 0),
       shipments: r.shipments,
+      rolledBack: r.rolledBack,
+      rolledBackAt: r.rolledBackAt ?? null,
     }));
 
     return { data, total, page, limit, totalPages: Math.max(1, Math.ceil(total / limit)) };
@@ -546,6 +614,8 @@ export class WarehouseService {
       totalPackages: (r.shipments || []).length,
       totalPieces: (r.shipments || []).reduce((acc, s) => acc + 1 + (s.remittances?.length || 0), 0),
       shipments: r.shipments,
+      rolledBack: r.rolledBack,
+      rolledBackAt: r.rolledBackAt ?? null,
     }));
 
     return { data, total, page, limit, totalPages: Math.max(1, Math.ceil(total / limit)) };
@@ -568,9 +638,17 @@ export class WarehouseService {
 
     try {
       // 1. Guardar el registro general
+      // Folio de traspaso: los traspasos no tienen despacho (ni su folio), así
+      // que generamos aquí un folio único para mostrarlo como "SEGUIMIENTO".
+      const outboundTracking =
+        dto.type === 'transfer'
+          ? await this.generateUniqueOutboundTracking(queryRunner)
+          : null;
+
       const newOutbound = queryRunner.manager.create(WarehouseOutbound, {
         warehouseId: dto.warehouse,
         type: dto.type,
+        trackingNumber: outboundTracking,
         shipments: dto.shipments,
         destinationId: dto.destinationId,
         kms: dto.kms,
@@ -591,6 +669,14 @@ export class WarehouseService {
       // 2. Ejecutar lógica según tipo
       if (dto.type === 'dispatch') {
         dispatchResult = await this.createDispatch(dto, queryRunner, userId);
+        // Reflejar el folio del despacho en el outbound para que el endpoint de
+        // descarga (que sólo tiene el id del outbound) muestre el mismo
+        // "SEGUIMIENTO" que el correo, sin depender de re-buscar el despacho.
+        await queryRunner.manager.update(
+          WarehouseOutbound,
+          { id: savedOutboundId },
+          { trackingNumber: dispatchResult.trackingNumber },
+        );
       } else if (dto.type === 'transfer') {
         await this.createTransfer(dto, queryRunner);
       } else {
@@ -722,6 +808,7 @@ export class WarehouseService {
   private async buildNotificationHeader(params: {
     kind: 'inbound' | 'dispatch' | 'transfer';
     warehouseId: string;
+    entityId?: string;
     dispatch?: PackageDispatch;
   }): Promise<NotificationHeader> {
     const titleByKind: Record<'inbound' | 'dispatch' | 'transfer', string> = {
@@ -729,6 +816,29 @@ export class WarehouseService {
       dispatch: 'SALIDA A RUTA',
       transfer: 'TRASPASO',
     };
+
+    // Traspaso: re-consultamos el WarehouseOutbound con relaciones para incluir
+    // vehículo/choferes/rutas/folio y el nombre de la sucursal DESTINO en el
+    // título. Sin esto el PDF/Excel salía con VEHÍCULO=N/A y SEGUIMIENTO vacío.
+    if (params.kind === 'transfer' && params.entityId) {
+      const outbound = await this.warehouseOutboundRepository.findOne({
+        where: { id: params.entityId },
+        relations: ['warehouse', 'vehicle', 'drivers', 'routes'],
+      });
+
+      let destinationName: string | null = null;
+      if (outbound?.destinationId) {
+        const dest = await this.dataSource
+          .getRepository(Subsidiary)
+          .findOne({
+            where: { id: outbound.destinationId },
+            select: { id: true, name: true },
+          });
+        destinationName = dest?.name ?? null;
+      }
+
+      return buildTransferNotificationHeader(outbound, destinationName);
+    }
 
     if (params.kind === 'dispatch' && params.dispatch) {
       const fullDispatch = await this.dataSource
@@ -833,6 +943,407 @@ export class WarehouseService {
         `Error en notificación unificada (${params.kind}): ${error?.message}`,
         error?.stack,
       );
+    }
+  }
+
+  /**
+   * Resuelve header + paquetes hidratados de una SALIDA (outbound) ya guardada,
+   * a partir de su id. Base compartida por los endpoints de descarga de PDF/Excel
+   * para que el archivo descargado sea IDÉNTICO al que se envía por correo
+   * (mismos mappers `buildWarehousePdfData`/`buildWarehouseExcelData`).
+   */
+  private async resolveOutboundForFiles(outboundId: string): Promise<{
+    header: NotificationHeader;
+    packages: HydratedPackage[];
+    label: string;
+    subsidiaryName: string;
+  }> {
+    const outbound = await this.warehouseOutboundRepository.findOne({
+      where: { id: outboundId },
+      relations: ['warehouse', 'vehicle', 'drivers', 'routes'],
+    });
+    if (!outbound) {
+      throw new NotFoundException(
+        `No se encontró la salida de bodega ${outboundId}.`,
+      );
+    }
+
+    let header: NotificationHeader;
+    if (outbound.type === 'transfer') {
+      let destinationName: string | null = null;
+      if (outbound.destinationId) {
+        const dest = await this.dataSource
+          .getRepository(Subsidiary)
+          .findOne({
+            where: { id: outbound.destinationId },
+            select: { id: true, name: true },
+          });
+        destinationName = dest?.name ?? null;
+      }
+      header = buildTransferNotificationHeader(outbound, destinationName);
+    } else {
+      header = {
+        subsidiary: outbound.warehouse ?? null,
+        vehicle: outbound.vehicle ?? null,
+        drivers: outbound.drivers ?? null,
+        routes: outbound.routes ?? null,
+        trackingNumber: outbound.trackingNumber ?? '',
+        title: 'SALIDA A RUTA',
+      };
+    }
+
+    const packages = await this.hydrateShipments(
+      hydratePackageIds((outbound.shipments as any) ?? []),
+    );
+    const label = outbound.type === 'transfer' ? 'Traspaso' : 'Salida a Ruta';
+    return {
+      header,
+      packages,
+      label,
+      subsidiaryName: header.subsidiary?.name ?? 'Sucursal',
+    };
+  }
+
+  /** Nombre de archivo consistente con el del correo (`Label--Sucursal--dd-mm-aaaa`). */
+  private buildOutboundFileName(
+    label: string,
+    subsidiaryName: string,
+    ext: string,
+  ): string {
+    const safeDate = new Date().toLocaleDateString('es-ES').replace(/\//g, '-');
+    return `${label}--${subsidiaryName}--${safeDate}.${ext}`;
+  }
+
+  /** PDF de una salida (para descarga desde el frontend). Idéntico al del correo. */
+  async getOutboundPdf(
+    outboundId: string,
+  ): Promise<{ buffer: Buffer; fileName: string }> {
+    const { header, packages, label, subsidiaryName } =
+      await this.resolveOutboundForFiles(outboundId);
+    const buffer = await this.generatePdfBuffer(header, packages);
+    return { buffer, fileName: this.buildOutboundFileName(label, subsidiaryName, 'pdf') };
+  }
+
+  /** Excel de una salida (para descarga desde el frontend). Idéntico al del correo. */
+  async getOutboundExcel(
+    outboundId: string,
+  ): Promise<{ buffer: Buffer; fileName: string }> {
+    const { header, packages, label, subsidiaryName } =
+      await this.resolveOutboundForFiles(outboundId);
+    const buffer = await this.generateExcelBuffer(header, packages);
+    return {
+      buffer,
+      fileName: this.buildOutboundFileName(label, subsidiaryName, 'xlsx'),
+    };
+  }
+
+  /**
+   * Resuelve header + paquetes de una ENTRADA (receiving) para regenerar sus
+   * archivos, fiel al correo de entrada (cabecera = sucursal + título).
+   */
+  private async resolveInboundForFiles(receivingId: string): Promise<{
+    header: NotificationHeader;
+    packages: HydratedPackage[];
+    label: string;
+    subsidiaryName: string;
+  }> {
+    const receiving = await this.warehouseReceivingRepository.findOne({
+      where: { id: receivingId },
+      relations: ['warehouse'],
+    });
+    if (!receiving) {
+      throw new NotFoundException(
+        `No se encontró la entrada a bodega ${receivingId}.`,
+      );
+    }
+    const header: NotificationHeader = {
+      subsidiary: receiving.warehouse ?? null,
+      title: 'ENTRADA A BODEGA',
+    };
+    const packages = await this.hydrateShipments(
+      hydratePackageIds((receiving.shipments as any) ?? []),
+    );
+    return {
+      header,
+      packages,
+      label: 'Entrada a Bodega',
+      subsidiaryName: header.subsidiary?.name ?? 'Sucursal',
+    };
+  }
+
+  /** PDF de una entrada (para regenerar desde el historial). Idéntico al del correo. */
+  async getInboundPdf(
+    receivingId: string,
+  ): Promise<{ buffer: Buffer; fileName: string }> {
+    const { header, packages, label, subsidiaryName } =
+      await this.resolveInboundForFiles(receivingId);
+    const buffer = await this.generatePdfBuffer(header, packages);
+    return { buffer, fileName: this.buildOutboundFileName(label, subsidiaryName, 'pdf') };
+  }
+
+  /** Excel de una entrada (para regenerar desde el historial). Idéntico al del correo. */
+  async getInboundExcel(
+    receivingId: string,
+  ): Promise<{ buffer: Buffer; fileName: string }> {
+    const { header, packages, label, subsidiaryName } =
+      await this.resolveInboundForFiles(receivingId);
+    const buffer = await this.generateExcelBuffer(header, packages);
+    return {
+      buffer,
+      fileName: this.buildOutboundFileName(label, subsidiaryName, 'xlsx'),
+    };
+  }
+
+  /** Detalle hidratado de una operación (para el modal "Ver detalles" del historial). */
+  private buildDetailsPackages(packages: HydratedPackage[]) {
+    return packages.map((p) => ({
+      trackingNumber: p.trackingNumber || p.dhlUniqueId || '',
+      recipientName: p.recipientName ?? '',
+      recipientAddress: p.recipientAddress ?? '',
+      recipientZip: p.recipientZip ?? '',
+      recipientPhone: p.recipientPhone ?? '',
+      commitDateTime: p.commitDateTime ?? null,
+      isCharge: p.isCharge,
+      isHighValue: p.isHighValue,
+      paymentAmount: p.paymentAmount ?? null,
+    }));
+  }
+
+  async getOutboundDetails(outboundId: string) {
+    const outbound = await this.warehouseOutboundRepository.findOne({
+      where: { id: outboundId },
+      relations: ['warehouse', 'vehicle', 'drivers', 'routes'],
+    });
+    if (!outbound) {
+      throw new NotFoundException(
+        `No se encontró la salida de bodega ${outboundId}.`,
+      );
+    }
+    let destinationName: string | null = null;
+    if (outbound.destinationId) {
+      const dest = await this.dataSource
+        .getRepository(Subsidiary)
+        .findOne({ where: { id: outbound.destinationId }, select: { id: true, name: true } });
+      destinationName = dest?.name ?? null;
+    }
+    const packages = await this.hydrateShipments(
+      hydratePackageIds((outbound.shipments as any) ?? []),
+    );
+    return {
+      id: outbound.id,
+      kind: 'outbound' as const,
+      type: outbound.type,
+      createdAt: outbound.createdAt,
+      subsidiaryName: outbound.warehouse?.name ?? null,
+      destinationName,
+      vehicleName: outbound.vehicle?.name ?? null,
+      driverNames: (outbound.drivers || []).map((d) => d.name).join(', '),
+      routeNames: (outbound.routes || []).map((r) => r.name).join(', '),
+      trackingNumber: outbound.trackingNumber ?? null,
+      kms: outbound.kms ?? null,
+      totalPackages: packages.length,
+      rolledBack: outbound.rolledBack,
+      rolledBackAt: outbound.rolledBackAt ?? null,
+      packages: this.buildDetailsPackages(packages),
+    };
+  }
+
+  async getInboundDetails(receivingId: string) {
+    const receiving = await this.warehouseReceivingRepository.findOne({
+      where: { id: receivingId },
+      relations: ['warehouse', 'vehicle', 'drivers'],
+    });
+    if (!receiving) {
+      throw new NotFoundException(
+        `No se encontró la entrada a bodega ${receivingId}.`,
+      );
+    }
+    const packages = await this.hydrateShipments(
+      hydratePackageIds((receiving.shipments as any) ?? []),
+    );
+    return {
+      id: receiving.id,
+      kind: 'inbound' as const,
+      type: null,
+      createdAt: receiving.createdAt,
+      subsidiaryName: receiving.warehouse?.name ?? null,
+      destinationName: null,
+      vehicleName: receiving.vehicle?.name ?? null,
+      driverNames: (receiving.drivers || []).map((d) => d.name).join(', '),
+      routeNames: '',
+      trackingNumber: null,
+      kms: null,
+      totalPackages: packages.length,
+      rolledBack: receiving.rolledBack,
+      rolledBackAt: receiving.rolledBackAt ?? null,
+      packages: this.buildDetailsPackages(packages),
+    };
+  }
+
+  /**
+   * Revierte un lote de paquetes (Shipment/ChargeShipment) de una operación:
+   * por cada uno decide con `decideShipmentRollback` (regla de seguridad), y si
+   * procede restaura estatus previo (+ sucursal origen en traspaso) y borra el
+   * registro de historial que creó la operación. Acumula revertidos/omitidos.
+   */
+  private async revertPackages(params: {
+    qr: QueryRunner;
+    items: { id: string; trackingNumber?: string }[];
+    entity: any;
+    relationKey: 'shipment' | 'chargeShipment';
+    targetStatus: string;
+    expectedDestinationId: string | null;
+    originId: string | null;
+    result: { reverted: number; skipped: { trackingNumber: string; reason: string }[] };
+  }) {
+    const { qr, items, entity, relationKey, targetStatus, expectedDestinationId, originId, result } = params;
+    for (const item of items) {
+      const label = item.trackingNumber || item.id;
+      const current = await qr.manager.findOne(entity, {
+        where: { id: item.id },
+        relations: ['subsidiary'],
+      });
+      if (!current) {
+        result.skipped.push({ trackingNumber: label, reason: 'Paquete no encontrado.' });
+        continue;
+      }
+      const history = await qr.manager.find(ShipmentStatus, {
+        where: { [relationKey]: { id: item.id } },
+        order: { timestamp: 'DESC' },
+      });
+      const decision = decideShipmentRollback({
+        targetStatus,
+        currentStatus: String((current as any).status),
+        currentSubsidiaryId: (current as any).subsidiary?.id ?? null,
+        expectedDestinationId,
+        history: history.map((h) => ({ status: String(h.status) })),
+      });
+      if (decision.revert === false) {
+        result.skipped.push({ trackingNumber: label, reason: decision.reason });
+        continue;
+      }
+      const patch: any = { status: decision.priorStatus };
+      if (originId) patch.subsidiary = { id: originId };
+      await qr.manager.update(entity, { id: item.id }, patch);
+      // Borra el registro de historial que creó la operación (el más reciente,
+      // que la regla de seguridad garantiza que es el del estatus objetivo).
+      if (history[0]) {
+        await qr.manager.delete(ShipmentStatus, { id: history[0].id });
+      }
+      result.reverted++;
+    }
+  }
+
+  /** Rollback (superadmin) de una SALIDA (traspaso o despacho). Transaccional. */
+  async rollbackOutbound(outboundId: string, userId?: string) {
+    const outbound = await this.warehouseOutboundRepository.findOne({ where: { id: outboundId } });
+    if (!outbound) throw new NotFoundException(`No se encontró la salida ${outboundId}.`);
+    if (outbound.rolledBack) throw new BadRequestException('La salida ya fue revertida.');
+
+    const isTransfer = outbound.type === 'transfer';
+    const snapshot = (outbound.shipments as any[]) ?? [];
+    const normalItems = snapshot.filter((s) => !s.isCharge).map((s) => ({ id: s.id, trackingNumber: s.trackingNumber }));
+    const chargeItems = snapshot.filter((s) => s.isCharge).map((s) => ({ id: s.id, trackingNumber: s.trackingNumber }));
+
+    const qr = this.dataSource.createQueryRunner();
+    await qr.connect();
+    await qr.startTransaction();
+    try {
+      const result = { reverted: 0, skipped: [] as { trackingNumber: string; reason: string }[] };
+      const common = {
+        qr,
+        targetStatus: String(ShipmentStatusType.EN_RUTA),
+        expectedDestinationId: isTransfer ? outbound.destinationId : null,
+        originId: isTransfer ? outbound.warehouseId : null,
+        result,
+      };
+      await this.revertPackages({ ...common, items: normalItems, entity: Shipment, relationKey: 'shipment' });
+      await this.revertPackages({ ...common, items: chargeItems, entity: ChargeShipment, relationKey: 'chargeShipment' });
+
+      // Despacho: deshacer el PackageDispatch (pivotes + historial + registro).
+      if (outbound.type === 'dispatch' && outbound.trackingNumber) {
+        const dispatch = await qr.manager.findOne(PackageDispatch, {
+          where: { trackingNumber: outbound.trackingNumber },
+          relations: ['shipments', 'chargeShipments', 'routes', 'drivers'],
+        });
+        if (dispatch) {
+          const detach = (name: string, rows: any[]) =>
+            rows?.length
+              ? qr.manager.createQueryBuilder().relation(PackageDispatch, name).of(dispatch.id).remove(rows)
+              : Promise.resolve();
+          await detach('shipments', dispatch.shipments);
+          await detach('chargeShipments', dispatch.chargeShipments);
+          await detach('routes', dispatch.routes);
+          await detach('drivers', dispatch.drivers);
+          await qr.manager
+            .createQueryBuilder()
+            .delete()
+            .from(PackageDispatchHistory)
+            .where('dispatchId = :id', { id: dispatch.id })
+            .execute();
+          await qr.manager.delete(PackageDispatch, { id: dispatch.id });
+        }
+      }
+
+      await qr.manager.update(WarehouseOutbound, { id: outboundId }, {
+        rolledBack: true,
+        rolledBackById: userId ?? null,
+        rolledBackAt: new Date(),
+      });
+
+      await qr.commitTransaction();
+      return result;
+    } catch (error) {
+      await qr.rollbackTransaction();
+      this.logger.error(`Error en rollback de salida ${outboundId}: ${error?.message}`, error?.stack);
+      throw error;
+    } finally {
+      await qr.release();
+    }
+  }
+
+  /** Rollback (superadmin) de una ENTRADA a bodega. Transaccional. */
+  async rollbackInbound(receivingId: string, userId?: string) {
+    const receiving = await this.warehouseReceivingRepository.findOne({ where: { id: receivingId } });
+    if (!receiving) throw new NotFoundException(`No se encontró la entrada ${receivingId}.`);
+    if (receiving.rolledBack) throw new BadRequestException('La entrada ya fue revertida.');
+
+    const snapshot = (receiving.shipments as any[]) ?? [];
+    const normalItems = snapshot.filter((s) => !s.isCharge).map((s) => ({ id: s.id, trackingNumber: s.trackingNumber }));
+    const chargeItems = snapshot.filter((s) => s.isCharge).map((s) => ({ id: s.id, trackingNumber: s.trackingNumber }));
+
+    const qr = this.dataSource.createQueryRunner();
+    await qr.connect();
+    await qr.startTransaction();
+    try {
+      const result = { reverted: 0, skipped: [] as { trackingNumber: string; reason: string }[] };
+      const common = {
+        qr,
+        targetStatus: String(ShipmentStatusType.EN_BODEGA),
+        expectedDestinationId: null,
+        originId: null,
+        result,
+      };
+      await this.revertPackages({ ...common, items: normalItems, entity: Shipment, relationKey: 'shipment' });
+      await this.revertPackages({ ...common, items: chargeItems, entity: ChargeShipment, relationKey: 'chargeShipment' });
+
+      // Limpiar remesas creadas por esta recepción.
+      await qr.manager.delete(ShipmentRemittance, { warehouseReceivingId: receivingId });
+
+      await qr.manager.update(WarehouseReceiving, { id: receivingId }, {
+        rolledBack: true,
+        rolledBackById: userId ?? null,
+        rolledBackAt: new Date(),
+      });
+
+      await qr.commitTransaction();
+      return result;
+    } catch (error) {
+      await qr.rollbackTransaction();
+      this.logger.error(`Error en rollback de entrada ${receivingId}: ${error?.message}`, error?.stack);
+      throw error;
+    } finally {
+      await qr.release();
     }
   }
 
@@ -1041,6 +1552,34 @@ export class WarehouseService {
     );
   }
 
+  /**
+   * Genera un folio de 10 dígitos para una SALIDA de bodega (traspaso),
+   * verificando que no exista ya en `warehouse_outbound`. Mismo criterio que el
+   * folio de despacho (Math.random no garantiza unicidad por sí solo).
+   */
+  private async generateUniqueOutboundTracking(
+    queryRunner: QueryRunner,
+    maxAttempts = 5,
+  ): Promise<string> {
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      let tracking = '';
+      for (let i = 0; i < 10; i++) {
+        tracking += Math.floor(Math.random() * 10).toString();
+      }
+
+      const exists = await queryRunner.manager.findOne(WarehouseOutbound, {
+        where: { trackingNumber: tracking },
+        select: { id: true },
+      });
+
+      if (!exists) return tracking;
+    }
+
+    throw new InternalServerErrorException(
+      'No se pudo generar un folio de traspaso único, intente de nuevo.',
+    );
+  }
+
   private async processRemittances(shipments: any[], queryRunner: QueryRunner) {
     // Extraemos los tracking numbers de las piezas/remesas del DTO
     const pieceTrackingNumbers = shipments.flatMap((shipment) =>
@@ -1193,6 +1732,8 @@ export class WarehouseService {
       .replace(/[\u2018\u2019]/g, "'")
       .replace(/[\u201C\u201D]/g, '"')
       .replace(/[\u2013\u2014]/g, '-')
+      // Flecha del t\u00EDtulo de traspaso (TRASPASO \u2192 destino) fuera de Latin-1.
+      .replace(/\u2192/g, '->')
       // Eliminamos todo lo que no sea ASCII imprimible o Latin-1 imprimible.
       .replace(/[^\x20-\x7E\xA0-\xFF]/g, '');
   }
@@ -1275,6 +1816,10 @@ export class WarehouseService {
     // Filas
     packages.forEach((pkg, index) => {
       const amount = pkg.payment?.amount ?? pkg.paymentAmount ?? 0;
+      // FECHA de fila = commitDateTime (compromiso) de la guía, NO hoy.
+      const commit = pkg.commitDateTime
+        ? toZonedTime(new Date(pkg.commitDateTime), this.timeZone)
+        : null;
       sheet.addRow([
         index + 1,
         pkg.trackingNumber || pkg.dhlUniqueId,
@@ -1282,7 +1827,7 @@ export class WarehouseService {
         pkg.recipientAddress,
         pkg.recipientZip,
         pkg.isCharge ? amount : 'N/A',
-        format(toZonedTime(new Date(), this.timeZone), 'dd/MM/yyyy'),
+        commit ? format(commit, 'dd/MM/yyyy') : '',
         pkg.recipientPhone || '',
         '',
       ]);
@@ -1418,7 +1963,7 @@ export class WarehouseService {
         content: [
           {
             columns: [
-              { text: header.title ?? 'SALIDA A RUTA', style: 'headerText', width: '*' },
+              { text: this.toPdfSafe(header.title) || 'SALIDA A RUTA', style: 'headerText', width: '*' },
               {
                 text: `Fecha: ${formattedDate}\nHora: ${formattedTime}`,
                 alignment: 'right',
