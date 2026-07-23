@@ -14,6 +14,7 @@ import { EmailService } from './email.service';
 import { User } from 'src/entities/user.entity';
 import { RbacModule } from '../rbac/rbac.module';
 import { DocumentsModule } from '../documents/documents.module';
+import { SessionContextService } from './session-context.service';
 
 @Module({
     controllers: [AuthController],
@@ -35,8 +36,9 @@ import { DocumentsModule } from '../documents/documents.module';
         JwtTokenService,
         Logger,
         BlacklistService,
-        EmailService
+        EmailService,
+        SessionContextService,
     ],
-    exports: [AuthService, JwtTokenService],
+    exports: [AuthService, JwtTokenService, SessionContextService],
 })
 export class AuthModule { }

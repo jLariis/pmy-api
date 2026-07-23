@@ -1,8 +1,8 @@
-import { Body, Controller, Inject, Logger, Post, Request, UseGuards, LoggerService  } from '@nestjs/common';
+import { Body, Controller, Get, Inject, Logger, Post, Request, UseGuards, LoggerService  } from '@nestjs/common';
 import { AuthService } from './auth.service';
 import { ApiBasicAuth, ApiBearerAuth, ApiBody, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { LocalAuthGuard } from './guards/local-auth.guard';
-import { Public } from './decorators/decorators/public-decorator';
+import { Public, Protected } from './decorators/decorators/public-decorator';
 import { AppController } from "../app.controller";
 import { AuthDto } from './dto/AuthDto';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
@@ -29,6 +29,22 @@ export class AuthController {
         console.log("BODY:", req.body);
         this.logger.log('Calling login()', AppController.name);
         return this.authService.login(req.user);
+    }
+
+    /**
+     * Perfil del usuario autenticado (estado "pesado": permisos, sucursales
+     * adicionales, etc.). Reemplaza el payload gigante del JWT: el token solo
+     * valida la sesión y el frontend obtiene aquí lo demás. Protegido por
+     * JwtAuthGuard (el controlador es @Public a nivel de clase).
+     */
+    @ApiBearerAuth()
+    @Protected()
+    @UseGuards(JwtAuthGuard)
+    @ApiResponse({ status: 200, description: 'Perfil del usuario autenticado.' })
+    @ApiResponse({ status: 401, description: 'No autenticado.' })
+    @Get('profile')
+    async profile(@Request() req) {
+        return this.authService.getProfile(req.user.userId);
     }
 
     @ApiBearerAuth()

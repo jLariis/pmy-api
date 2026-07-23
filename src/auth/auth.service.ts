@@ -12,6 +12,7 @@ import { User } from 'src/entities/user.entity';
 import { AuditService } from '../audit/audit.service';
 import { AuditAction, AuditModule, AuditResult, AuditSeverity } from '../common/enums/audit.enum';
 import { RbacService } from '../rbac/rbac.service';
+import { SessionContextService } from './session-context.service';
 
 @Injectable()
 export class AuthService {
@@ -25,6 +26,7 @@ export class AuthService {
         private mailService: EmailService,
         private readonly auditService: AuditService,
         private readonly rbacService: RbacService,
+        private readonly sessionContext: SessionContextService,
     ) { }
 
     async validateUser(email: string, password: string): Promise<any> {
@@ -74,56 +76,73 @@ export class AuthService {
         return null;
     }
 
-    async login(user: any): Promise<{access_token: string, user: any}> {
-        // Permisos efectivos (rol ∪ allow − deny). Si RBAC aún no está sembrado
-        // o falla, el login NO se rompe: se entrega [] y el gateo cae al mapa de
-        // roles legacy (transición de la Fase C).
-        let permissions: string[] = [];
-        try {
-            permissions = await this.rbacService.getEffectivePermissions(user.id);
-        } catch (err) {
-            this.logger.warn(
-                `No se pudieron calcular permisos efectivos para ${user.email}: ${err?.message}`,
-                AuthService.name,
-            );
-        }
-
-        // Sucursales permitidas: la "main" (subsidiary) + las adicionales asignadas
-        // por un superadmin. Los guards de scoping (SubsidiaryScopeGuard,
-        // IncomeAccessGuard) validan contra este array plano.
-        const additionalSubsidiaries = user.additionalSubsidiaries || [];
-        const subsidiaryIds = [user.subsidiary?.id, ...additionalSubsidiaries.map((s: any) => s.id)].filter(Boolean);
-
+    async login(user: any): Promise<{ access_token: string; user: any }> {
+        // ⚠️ EL JWT YA NO ALMACENA ESTADO. El payload es únicamente un validador de
+        // sesión: { sub, email, role }. Todo lo "pesado" (permisos, sucursales
+        // adicionales, coordenadas, flags de paqueterías) NO viaja en el token
+        // —causaba el HTTP 431 "Request Header Fields Too Large"—. El backend lo
+        // resuelve por request en JwtStrategy (vía SessionContextService) y el
+        // frontend lo obtiene con GET /auth/profile.
         const payload = {
-            email: user.email,
             sub: user.id,
+            email: user.email,
             role: user.role,
-            name: user.name,
-            lastName: user.lastName,
-            subsidiary: user.subsidiary,
-            additionalSubsidiaries,
-            subsidiaryIds,
-            permissions,
         };
-
-        this.logger.log(`Login Payload: ${JSON.stringify(payload)}`, AuthService.name);
 
         // Marca el último inicio de sesión (auditoría/sesiones). No rompe el login si falla.
         this.userRepository.update(user.id, { lastLoginAt: new Date() }).catch(() => undefined);
 
+        // Purga cualquier contexto cacheado previo para que el primer request
+        // tras el login refleje permisos/sucursales al día.
+        this.sessionContext.invalidate(user.id);
+
+        // Devolvemos el perfil completo en el BODY de la respuesta (no en un
+        // header), así que no contribuye al 431 y el frontend ya tiene el estado
+        // pesado sin un segundo round-trip obligatorio.
         return {
             access_token: this.jwtService.sign(payload),
-            user: {
-                id: payload.sub,
-                email: payload.email,
-                role: payload.role,
-                name: payload.name,
-                lastName: payload.lastName,
-                subsidiary: user.subsidiary,
-                additionalSubsidiaries,
-                permissions,
-            }
+            user: await this.getProfile(user.id),
+        };
+    }
 
+    /**
+     * Perfil completo del usuario para el frontend (estado "pesado"). Lo consume
+     * GET /auth/profile y también la respuesta de login. Fuente única de verdad:
+     * SessionContextService (mismos permisos/sucursales que ven los guards).
+     */
+    async getProfile(userId: string): Promise<any> {
+        const user = await this.userRepository.findOne({
+            where: { id: userId },
+            relations: ['subsidiary', 'additionalSubsidiaries'],
+        });
+        if (!user) {
+            throw new BusinessException(
+                'exercise-api',
+                `User ${userId} not found`,
+                'Usuario no encontrado',
+                HttpStatus.NOT_FOUND,
+            );
+        }
+
+        const session = await this.sessionContext.getEnrichedSession(userId);
+
+        // `password`, `otpCode`, `otpExpiresAt` están anotados con @Exclude en la
+        // entidad; los quitamos explícitamente por si la respuesta no pasa por el
+        // ClassSerializerInterceptor.
+        const { password, otpCode, otpExpiresAt, ...safeUser } = user as any;
+
+        return {
+            id: user.id,
+            email: user.email,
+            role: user.role,
+            name: user.name,
+            lastName: user.lastName,
+            avatar: user.avatar,
+            active: user.active,
+            subsidiary: user.subsidiary,
+            additionalSubsidiaries: user.additionalSubsidiaries || [],
+            subsidiaryIds: session?.subsidiaryIds ?? [],
+            permissions: session?.permissions ?? [],
         };
     }
 
