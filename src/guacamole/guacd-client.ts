@@ -87,6 +87,7 @@ export class GuacdClient extends EventEmitter {
   private readonly parser = new HandshakeParser();
   private handshakeDone = false;
   private argsReceived = false;
+  private streamBuf = ''; // parcial guacd→cliente pendiente de completar (reencuadre WS)
 
   constructor(private readonly opts: GuacdClientOptions) {
     super();
@@ -112,7 +113,7 @@ export class GuacdClient extends EventEmitter {
   private onData(chunk: Buffer): void {
     const text = this.decoder.write(chunk);
     if (this.handshakeDone) {
-      if (text) this.emit('data', text);
+      this.forwardStream(text);
       return;
     }
     for (const el of this.parser.push(text)) {
@@ -123,8 +124,54 @@ export class GuacdClient extends EventEmitter {
     }
     if (this.handshakeDone) {
       const leftover = this.parser.drain(); // por si guacd ya mandó parte del stream
-      if (leftover) this.emit('data', leftover);
+      this.forwardStream(leftover);
     }
+  }
+
+  /**
+   * Reenvía al WebSocket SOLO instrucciones Guacamole COMPLETAS.
+   * guacamole-common-js (WebSocketTunnel) NO buffea entre mensajes WS: asume que
+   * cada mensaje empieza en frontera de instrucción. Los chunks TCP de guacd
+   * parten instrucciones a la mitad (p.ej. blobs grandes de imagen VNC), así que
+   * hay que reencuadrar aquí o el parser del cliente se desincroniza con
+   * "Invalid array length". El resto parcial se buffea hasta completarse.
+   */
+  private forwardStream(text: string): void {
+    if (!text) return;
+    this.streamBuf += text;
+    const end = this.completeInstructionsEnd(this.streamBuf);
+    if (end > 0) {
+      this.emit('data', this.streamBuf.slice(0, end));
+      this.streamBuf = this.streamBuf.slice(end);
+    }
+  }
+
+  /**
+   * Índice tras el último `;` de instrucción COMPLETA. Parseo por longitudes
+   * en unidades UTF-16 (igual que el `.substring` del cliente), para que las
+   * fronteras que detectamos coincidan exactamente con las que él espera.
+   */
+  private completeInstructionsEnd(buf: string): number {
+    let lastComplete = 0;
+    let i = 0;
+    while (i < buf.length) {
+      let j = i;
+      for (;;) {
+        const dot = buf.indexOf('.', j);
+        if (dot === -1) return lastComplete; // falta el punto de longitud
+        const len = Number.parseInt(buf.slice(j, dot), 10);
+        if (Number.isNaN(len) || len < 0) return lastComplete; // malformado
+        const valEnd = dot + 1 + len;
+        if (buf.length < valEnd + 1) return lastComplete; // falta valor + terminador
+        const term = buf[valEnd];
+        j = valEnd + 1;
+        if (term === ';') break; // instrucción completa
+        if (term !== ',') return lastComplete; // malformado
+      }
+      lastComplete = j;
+      i = j;
+    }
+    return lastComplete;
   }
 
   private completeHandshake(argNames: string[]): void {
