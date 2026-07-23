@@ -30,7 +30,6 @@ export class GuacamoleGateway implements OnModuleInit {
     const server: Server = this.adapterHost.httpAdapter.getHttpServer();
     this.wss = new WebSocketServer({ noServer: true });
 
-    // Coexiste con cualquier otro WS: solo tomamos nuestra ruta.
     server.on('upgrade', (req: IncomingMessage, socket: Duplex, head: Buffer) => {
       let pathname = '';
       try {
@@ -38,8 +37,21 @@ export class GuacamoleGateway implements OnModuleInit {
       } catch {
         return;
       }
-      if (pathname !== WS_PATH) return;
-      this.wss.handleUpgrade(req, socket, head, (ws) => this.wss.emit('connection', ws, req));
+
+      // Normalizamos la ruta quitando la barra final si existe
+      const normalizedPath = pathname.endsWith('/') ? pathname.slice(0, -1) : pathname;
+
+      if (normalizedPath !== WS_PATH) {
+        // No es nuestra ruta, ignoramos en silencio
+        return;
+      }
+
+      // ¡Aquí atrapamos si la petición sí está llegando al gateway!
+      this.logger.log(`[Upgrade] Petición WS entrante interceptada: ${req.url}`);
+      
+      this.wss.handleUpgrade(req, socket, head, (ws) => {
+        this.wss.emit('connection', ws, req);
+      });
     });
 
     this.wss.on('connection', (ws, req) => void this.handleConnection(ws, req));
