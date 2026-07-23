@@ -65,6 +65,8 @@ describe('MailService.sendHighPriorityShipmentsEmail', () => {
     const arg = mailer.sendMail.mock.calls[0][0];
     expect(arg.subject).toBe('Salida a ruta - Juan');
     expect(arg.html).toBe('<p>ok</p>');
-    expect(arg.headers).toEqual(expect.objectContaining({ 'X-Priority': '1', 'X-MSMail-Priority': 'High', Importance: 'High' }));
+    // Anti-spam: sin cabeceras de prioridad y con alternativa de texto plano.
+    expect(arg.headers).toBeUndefined();
+    expect(arg.text).toBe('ok');
   });
 });

@@ -44,6 +44,50 @@ export class MailService {
     return { to, cc };
   }
 
+  /**
+   * Envío centralizado de correo. Reduce señales de spam (todos los correos de
+   * la app pasan por aquí):
+   *  - Adjunta SIEMPRE una alternativa de texto plano derivada del HTML, para
+   *    generar un multipart/alternative (evita la penalización por HTML-only).
+   *  - NO agrega cabeceras X-Priority / X-MSMail-Priority / Importance:High:
+   *    los filtros antispam (SpamAssassin, Outlook) las puntúan como bulk.
+   */
+  private async dispatch(opts: {
+    to: string | string[];
+    cc?: string | string[];
+    subject: string;
+    html: string;
+    attachments?: { filename: string; content: Buffer }[];
+  }) {
+    return this.mailerService.sendMail({
+      to: opts.to,
+      cc: opts.cc,
+      subject: opts.subject,
+      html: opts.html,
+      text: this.htmlToText(opts.html),
+      attachments: opts.attachments,
+    });
+  }
+
+  /** Deriva texto plano legible desde el HTML (alternativa multipart). */
+  private htmlToText(html: string): string {
+    return (html || '')
+      .replace(/<style[\s\S]*?<\/style>/gi, '')
+      .replace(/<script[\s\S]*?<\/script>/gi, '')
+      .replace(/<\/(p|div|tr|h[1-6]|li|table)>/gi, '\n')
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<[^>]+>/g, '')
+      .replace(/&nbsp;/gi, ' ')
+      .replace(/&amp;/gi, '&')
+      .replace(/&lt;/gi, '<')
+      .replace(/&gt;/gi, '>')
+      .replace(/&#39;|&apos;/gi, "'")
+      .replace(/&quot;/gi, '"')
+      .replace(/[ \t]+\n/g, '\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+  }
+
   /** Base del frontend sin barra final, para componer links de correo. */
   private detailBase(): string {
     return (process.env.FRONTEND_URL ?? 'https://app-pmy.vercel.app').replace(/\/+$/, '');
@@ -81,17 +125,7 @@ export class MailService {
     const r = await this.templates.render('high_priority_shipments', { tableHtml: options.htmlContent });
 
     try {
-      await this.mailerService.sendMail({
-        to,
-        cc,
-        subject: r.subject,
-        html: r.html,
-        headers: {
-          'X-Priority': '1',
-          'X-MSMail-Priority': 'High',
-          Importance: 'High',
-        },
-      });
+      await this.dispatch({ to, cc, subject: r.subject, html: r.html });
     } catch (error) {
       console.error('Error al enviar correo:', error);
       throw error;
@@ -121,7 +155,7 @@ export class MailService {
       `${packageDispatch.subsidiary.officeEmailToCopy}, sistemas@paqueteriaymensajeriadelyaqui.com`,
     );
     try {
-      await this.mailerService.sendMail({ to, cc, subject: rendered.subject, html: rendered.html, attachments });
+      await this.dispatch({ to, cc, subject: rendered.subject, html: rendered.html, attachments });
     } catch (error) {
       console.log(error);
       throw error;
@@ -154,13 +188,7 @@ export class MailService {
     );
 
     try {
-      await this.mailerService.sendMail({
-        to,
-        cc,
-        subject: rendered.subject,
-        html: rendered.html,
-        attachments,
-      })
+      await this.dispatch({ to, cc, subject: rendered.subject, html: rendered.html, attachments })
 
     } catch (error) {
       console.log(error);
@@ -174,14 +202,7 @@ export class MailService {
     const r = await this.templates.render('unloading_priority_packages', { tableHtml: options.htmlContent });
 
     try {
-      await this.mailerService.sendMail({
-        to,
-        cc,
-        subject: r.subject,
-        html: r.html,
-        headers: {
-        },
-      });
+      await this.dispatch({ to, cc, subject: r.subject, html: r.html });
     } catch (error) {
       console.error('Error al enviar correo:', error);
       throw error;
@@ -211,13 +232,7 @@ export class MailService {
     );
 
     try {
-      await this.mailerService.sendMail({
-        to,
-        cc,
-        subject: rendered.subject,
-        html: rendered.html,
-        attachments,
-      })
+      await this.dispatch({ to, cc, subject: rendered.subject, html: rendered.html, attachments })
 
     } catch (error) {
       console.log(error);
@@ -253,17 +268,7 @@ export class MailService {
     );
 
     try {
-      return await this.mailerService.sendMail({
-        to,
-        cc,
-        subject: rendered.subject,
-        html: rendered.html,
-        headers: {
-          'X-Priority': '1',
-          'X-MSMail-Priority': 'High',
-          Importance: 'High',
-        },
-      })
+      return await this.dispatch({ to, cc, subject: rendered.subject, html: rendered.html })
 
     } catch (error) {
       console.log(error);
@@ -296,13 +301,7 @@ export class MailService {
     );
 
     try {
-      const emailSent = await this.mailerService.sendMail({
-        to,
-        cc,
-        subject: rendered.subject,
-        html: rendered.html,
-        attachments,
-      })
+      const emailSent = await this.dispatch({ to, cc, subject: rendered.subject, html: rendered.html, attachments })
 
       console.log("🚀 ~ MailService ~ sendHighPriorityRouteClosureEmail ~ emailSent:", emailSent)
 
@@ -339,13 +338,7 @@ export class MailService {
     );
 
     try {
-      await this.mailerService.sendMail({
-        to,
-        cc,
-        subject: rendered.subject,
-        html: rendered.html,
-        attachments,
-      })
+      await this.dispatch({ to, cc, subject: rendered.subject, html: rendered.html, attachments })
 
     } catch (error) {
       console.log(error);
@@ -359,14 +352,7 @@ export class MailService {
     const r = await this.templates.render('inventory_priority_packages', { tableHtml: options.htmlContent });
 
     try {
-      await this.mailerService.sendMail({
-        to,
-        cc,
-        subject: r.subject,
-        html: r.html,
-        headers: {
-        },
-      });
+      await this.dispatch({ to, cc, subject: r.subject, html: r.html });
     } catch (error) {
       console.error('Error al enviar correo:', error);
       throw error;
@@ -377,9 +363,9 @@ export class MailService {
     try {
       const { to, cc } = this.applyDevFilters(options.to, options.cc);
 
-      await this.mailerService.sendMail({
-        to: to,
-        cc: cc,
+      await this.dispatch({
+        to,
+        cc,
         subject: options.subject,
         html: options.htmlContent,
         attachments: options.attachments,
