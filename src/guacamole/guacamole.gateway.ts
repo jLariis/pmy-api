@@ -8,6 +8,17 @@ import { GuacdClient } from './guacd-client';
 import { decryptConnectionToken } from './connection-token.util';
 
 const WS_PATH = '/ws/guacamole';
+
+/**
+ * El evento `upgrade` del servidor HTTP raw NO pasa por `setGlobalPrefix('api')`,
+ * así que `req.url` llega tal cual lo manda el cliente. El frontend usa la misma
+ * baseURL del API (con `/api`), por lo que aquí aceptamos AMBAS variantes:
+ * `/ws/guacamole` y `/api/ws/guacamole`. Robusto ante que nginx reenvíe con o sin prefijo.
+ */
+function isGuacamolePath(pathname: string): boolean {
+  const normalized = pathname.endsWith('/') ? pathname.slice(0, -1) : pathname;
+  return normalized === WS_PATH || normalized.endsWith(WS_PATH);
+}
 const SUPERADMIN_ROLES = ['superadmin', 'superamin']; // variante histórica
 
 /**
@@ -38,17 +49,16 @@ export class GuacamoleGateway implements OnModuleInit {
         return;
       }
 
-      // Normalizamos la ruta quitando la barra final si existe
-      const normalizedPath = pathname.endsWith('/') ? pathname.slice(0, -1) : pathname;
-
-      if (normalizedPath !== WS_PATH) {
+      if (!isGuacamolePath(pathname)) {
         // No es nuestra ruta, ignoramos en silencio
         return;
       }
 
       // ¡Aquí atrapamos si la petición sí está llegando al gateway!
+      // Si este log NO aparece al reintentar, el upgrade WS muere ANTES de llegar
+      // a NestJS (Cloudflare Tunnel / WebSockets deshabilitado en Cloudflare).
       this.logger.log(`[Upgrade] Petición WS entrante interceptada: ${req.url}`);
-      
+
       this.wss.handleUpgrade(req, socket, head, (ws) => {
         this.wss.emit('connection', ws, req);
       });
