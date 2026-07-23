@@ -1,29 +1,32 @@
-# /etc/systemd/system/x11vnc.service
-# Sirve el escritorio Xorg FÍSICO (:0) solo a localhost:5901; guacd se conecta ahí.
-# Reemplaza <USUARIO> por el dueño de la sesión gráfica (el que ve el monitor).
+# Espejo del escritorio FÍSICO (:2) para el acceso remoto Guacamole.
+# guacd (127.0.0.1:4822) se conecta a este x11vnc en 127.0.0.1:5900.
 #
+# Instalar:
 #   sudo cp deploy/x11vnc.service /etc/systemd/system/x11vnc.service
-#   sudo -u <USUARIO> x11vnc -storepasswd            # crea /home/<USUARIO>/.vnc/passwd
 #   sudo systemctl daemon-reload
 #   sudo systemctl enable --now x11vnc
 #   systemctl status x11vnc
+#
+# OJO 1 (display): el escritorio físico quedó en :2 porque TigerVNC ocupó :1.
+#   Verifica el número real con `ls /tmp/.X11-unix/` (X2 = display :2) y ajusta
+#   `:2` / `X2` / `5900` abajo si cambia tras un reinicio.
+# OJO 2 (password): el archivo ~/.vnc/passwd debe tener la MISMA contraseña que
+#   REMOTE_VNC_PASSWORD del .env del backend. Generarlo:
+#   x11vnc -storepasswd '<misma-del-env>' /home/pmy-admin/.vnc/passwd
 
 [Unit]
-Description=x11vnc (Xorg :0, solo localhost) para Apache Guacamole
-After=display-manager.service network-online.target
-Wants=network-online.target
+Description=x11vnc (espejo del escritorio fisico :2 para acceso remoto Guacamole)
+After=graphical.target
+Wants=graphical.target
 
 [Service]
 Type=simple
-User=<USUARIO>
-Environment=DISPLAY=:0
-# -auth guess detecta el XAUTHORITY de la sesión (gdm/lightdm). Si falla, fija:
-#   Environment=XAUTHORITY=/run/user/<UID>/gdm/Xauthority
-ExecStart=/usr/bin/x11vnc -display :0 -auth guess \
-  -rfbauth /home/<USUARIO>/.vnc/passwd \
-  -localhost -rfbport 5901 -forever -shared -noxdamage -o /var/log/x11vnc.log
-Restart=on-failure
-RestartSec=3
+User=pmy-admin
+# Espera a que exista el display fisico antes de arrancar (evita fallo en boot)
+ExecStartPre=/bin/sh -c 'until [ -e /tmp/.X11-unix/X2 ]; do sleep 2; done'
+ExecStart=/usr/bin/x11vnc -display :2 -auth guess -rfbport 5900 -localhost -forever -shared -noxdamage -rfbauth /home/pmy-admin/.vnc/passwd -defer 1 -wait 1
+Restart=always
+RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
