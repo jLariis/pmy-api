@@ -68,6 +68,12 @@ interface NotificationHeader {
   routes?: { name: string }[] | null;
   trackingNumber?: string;
   title?: string;
+  /**
+   * Solo traspasos: nombre de la sucursal DESTINO. Cuando está presente, el PDF
+   * muestra el destino en la celda de sucursal (etiqueta "SUCURSAL DESTINO") y el
+   * origen queda en el título ("Traspaso desde …").
+   */
+  destinationName?: string | null;
 }
 
 /**
@@ -78,8 +84,16 @@ interface NotificationHeader {
 export function buildWarehousePdfData(header: any, packages: any[], timeZone: string) {
   const { format } = require('date-fns');
   const { toZonedTime } = require('date-fns-tz');
-  const subsidiaryName = String(header?.subsidiary?.name ?? '');
-  const isHermosillo = subsidiaryName.toLowerCase().includes('hermosillo');
+  const originName = String(header?.subsidiary?.name ?? '');
+  // Traspaso: la celda de sucursal muestra el DESTINO ("SUCURSAL DESTINO"); el
+  // origen va en el título. Para el resto (salida a ruta / entrada) es la propia
+  // sucursal con etiqueta "SUCURSAL".
+  const destinationName = header?.destinationName != null ? String(header.destinationName).trim() : '';
+  const isTransfer = destinationName !== '';
+  const subsidiaryName = isTransfer ? destinationName : originName;
+  const subsidiaryLabel = isTransfer ? 'SUCURSAL DESTINO' : 'SUCURSAL';
+  // El layout "Hermosillo" (oculta HORA) depende de la bodega que imprime = origen.
+  const isHermosillo = originName.toLowerCase().includes('hermosillo');
   const todayStr = format(toZonedTime(new Date(), timeZone), 'yyyy-MM-dd');
   const rows = packages.map((pkg, i) => {
     const amount = pkg.payment?.amount ?? pkg.paymentAmount ?? null;
@@ -103,7 +117,7 @@ export function buildWarehousePdfData(header: any, packages: any[], timeZone: st
   });
   return {
     title: header?.title ?? 'SALIDA A RUTA',
-    subsidiaryName, vehicleName: header?.vehicle?.name ?? 'N/A',
+    subsidiaryName, subsidiaryLabel, vehicleName: header?.vehicle?.name ?? 'N/A',
     totalPackages: packages.length, trackingNumber: header?.trackingNumber ?? '',
     isHermosillo, rows,
   };
@@ -164,13 +178,15 @@ export function buildTransferNotificationHeader(
   destinationName: string | null,
 ): NotificationHeader {
   const dest = (destinationName ?? '').trim() || 'N/D';
+  const origin = (outbound?.warehouse?.name ?? '').trim() || 'N/D';
   return {
-    subsidiary: outbound?.warehouse ?? null,
+    subsidiary: outbound?.warehouse ?? null, // origen (define nombre de archivo e isHermosillo)
     vehicle: outbound?.vehicle ?? null,
     drivers: outbound?.drivers ?? null,
     routes: outbound?.routes ?? null,
     trackingNumber: outbound?.trackingNumber ?? '',
-    title: `TRASPASO → ${dest}`,
+    destinationName: dest, // el PDF lo muestra como "SUCURSAL DESTINO"
+    title: `Traspaso desde ${origin}`,
   };
 }
 
@@ -1863,8 +1879,13 @@ export class WarehouseService {
       const formattedDate = format(currentDate, 'yyyy-MM-dd');
       const formattedTime = format(currentDate, 'HH:mm:ss');
 
-      const subsidiaryName = this.toPdfSafe(header.subsidiary?.name);
-      const isHermosillo = subsidiaryName.toLowerCase().includes('hermosillo');
+      const originName = this.toPdfSafe(header.subsidiary?.name);
+      // Traspaso: celda de sucursal = DESTINO (etiqueta "SUCURSAL DESTINO"); el
+      // origen va en el título. isHermosillo (oculta HORA) depende del origen.
+      const isTransfer = header.destinationName != null && String(header.destinationName).trim() !== '';
+      const subsidiaryName = isTransfer ? this.toPdfSafe(header.destinationName) : originName;
+      const subsidiaryLabel = isTransfer ? 'SUCURSAL DESTINO' : 'SUCURSAL';
+      const isHermosillo = originName.toLowerCase().includes('hermosillo');
 
       // Lógica de anchos de columna
       let tableWidths = [20, 65, 100, 140, 30, 50, 50, 40, 60, 80];
@@ -1978,7 +1999,7 @@ export class WarehouseService {
               widths: ['*', '*', '*', '*'],
               body: [
                 [
-                  { stack: [{ text: 'SUCURSAL', style: 'gridLabel' }, { text: subsidiaryName, style: 'gridValue' }], fillColor: '#f8f9fa', border: [true, true, true, true] },
+                  { stack: [{ text: subsidiaryLabel, style: 'gridLabel' }, { text: subsidiaryName, style: 'gridValue' }], fillColor: '#f8f9fa', border: [true, true, true, true] },
                   { stack: [{ text: 'VEHÍCULO', style: 'gridLabel' }, { text: this.toPdfSafe(header.vehicle?.name) || 'N/A', style: 'gridValue' }], fillColor: '#f8f9fa', border: [true, true, true, true] },
                   { stack: [{ text: 'TOTAL PAQUETES', style: 'gridLabel' }, { text: `${packages.length}`, style: 'gridValue' }], fillColor: '#f8f9fa', border: [true, true, true, true] },
                   { stack: [{ text: 'SEGUIMIENTO', style: 'gridLabel' }, { text: this.toPdfSafe(header.trackingNumber), style: 'gridValue' }], fillColor: '#f8f9fa', border: [true, true, true, true] },
