@@ -33,6 +33,28 @@ export class ShipmentsController {
   ) {}
 
   /**
+   * 🔧 PRUEBAS: dispara el envío del correo DEX03 (mismo flujo del cron
+   * `handleSendShipmentWithStatus03`) para UNA sucursal, on-demand. Fiel al cron:
+   * si no hay guías DEX03 del día, NO envía (count 0). Solo superadmin.
+   * POST /shipments/dex03/test-send/:subsidiaryId
+   */
+  @Post('dex03/test-send/:subsidiaryId')
+  @UseGuards(SuperAdminGuard)
+  @ApiOperation({ summary: 'PRUEBAS: enviar correo DEX03 de una sucursal (flujo del cron)' })
+  async sendDex03TestBySubsidiary(@Param('subsidiaryId') subsidiaryId: string) {
+    const shipments = await this.shipmentsService.getShipmentsWithStatus03(subsidiaryId);
+    const count = Array.isArray(shipments) ? shipments.length : 0;
+    return {
+      subsidiaryId,
+      count,
+      sent: count > 0,
+      message: count > 0
+        ? `Correo DEX03 enviado con ${count} guía(s).`
+        : 'No hay guías DEX03 del día para esta sucursal; no se envió correo (igual que el cron).',
+    };
+  }
+
+  /**
    * 🔧 DEV: dispara el tracking de FedEx on-demand (sin esperar al cron horario),
    * para medir el batching. `limit` acota a N guías (prueba rápida); si se omite,
    * corre el set completo. `phase` = master | charge | both. Solo superadmin.
