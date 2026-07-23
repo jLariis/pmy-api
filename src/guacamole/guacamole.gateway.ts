@@ -55,8 +55,13 @@ export class GuacamoleGateway implements OnModuleInit {
       }
 
       // ¡Aquí atrapamos si la petición sí está llegando al gateway!
+<<<<<<< HEAD
       // Si este log NO aparece al reintentar, el upgrade WS muere ANTES de llegar
       // a NestJS (Cloudflare Tunnel / WebSockets deshabilitado en Cloudflare).
+=======
+      // Si este log NO aparece en producción, el upgrade muere en nginx
+      // (falta `proxy_set_header Upgrade`/`Connection` en el location de /api).
+>>>>>>> 7814405b5ac75b084959b9fd2972710886f6a87b
       this.logger.log(`[Upgrade] Petición WS entrante interceptada: ${req.url}`);
 
       this.wss.handleUpgrade(req, socket, head, (ws) => {
