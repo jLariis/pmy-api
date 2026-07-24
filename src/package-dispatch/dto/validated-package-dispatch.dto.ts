@@ -5,6 +5,8 @@ import { Consolidated, Subsidiary, Charge, Payment, ShipmentStatus } from "src/e
 export class ValidatedPackageDispatchDto {
     id?: string;
     trackingNumber: string
+    /** JD (pieza DHL, `dhlUniqueId`). Identificador PRINCIPAL para DHL; la guía (AWB) es secundaria. */
+    jd?: string
     commitDateTime?: Date
     consNumber?: string
     consolidated?: Consolidated

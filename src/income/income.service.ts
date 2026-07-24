@@ -2,7 +2,8 @@ import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Expense, Income, Shipment, Subsidiary } from 'src/entities';
 import { formatCurrency } from 'src/utils/format.util';
-import { DEFAULT_INCOME_RULES, IncomeCountRules, isCountableIncome } from 'src/common/income-rules.util';
+import { CountableOptions, isCountableIncome } from 'src/common/income-rules.util';
+import { ChargeRulesService } from 'src/charge-rules/charge-rules.service';
 import { toHermosilloDateString } from 'src/common/utils';
 import { Between, Repository } from 'typeorm';
 import { Collection } from 'src/entities/collection.entity';
@@ -23,22 +24,29 @@ export class IncomeService {
     @InjectRepository(Collection)
     private collectionRepository: Repository<Collection>,
     @InjectRepository(Income)
-    private incomeRepository: Repository<Income>
+    private incomeRepository: Repository<Income>,
+    private readonly chargeRules: ChargeRulesService,
   ){}
 
-    /** Reglas de ingreso de la sucursal (con fallback a los defaults históricos). */
-    private async getSubsidiaryIncomeRules(subsidiaryId: string): Promise<IncomeCountRules> {
-        const sub = await this.incomeRepository.manager.getRepository(Subsidiary).findOne({
+    /**
+     * Contexto de conteo de la sucursal: si los traslados cuentan (flag de sucursal)
+     * + el resolvedor de cobro por estatus (charge_rule: global + override de sucursal).
+     */
+    private async getCountContext(subsidiaryId: string): Promise<CountableOptions> {
+        const [sub, resolver] = await Promise.all([
+          this.incomeRepository.manager.getRepository(Subsidiary).findOne({
             where: { id: subsidiaryId },
-            select: ['chargeDex03', 'chargeDex07', 'chargeDex08', 'chargeDelivered', 'countTransfersAsIncome'],
-        });
-        return sub ?? DEFAULT_INCOME_RULES;
+            select: ['countTransfersAsIncome'],
+          }),
+          this.chargeRules.buildResolver(subsidiaryId),
+        ]);
+        return { countTransfers: sub?.countTransfersAsIncome ?? true, resolver };
     }
 
     private async getTotalShipmentsIncome(subsidiaryId: string, fromDate: Date, toDate: Date){
         // Traemos TODOS los ingresos del rango (incluye traslados) y aplicamos la
         // REGLA ÚNICA por sucursal — así el dashboard cuadra con la tabla y los KPIs.
-        const [incomes, rules] = await Promise.all([
+        const [incomes, ctx] = await Promise.all([
           this.incomeRepository.find({
             where: {
               subsidiary: { id: subsidiaryId },
@@ -46,10 +54,10 @@ export class IncomeService {
             },
             relations: ['subsidiary'],
           }),
-          this.getSubsidiaryIncomeRules(subsidiaryId),
+          this.getCountContext(subsidiaryId),
         ]);
 
-        const billable = incomes.filter((i) => isCountableIncome(i, rules));
+        const billable = incomes.filter((i) => isCountableIncome(i, ctx));
 
         const totalShipmentIncome = billable.reduce(
           (acc, income) => acc + parseFloat(income.cost.toString()),
@@ -138,8 +146,8 @@ export class IncomeService {
 
       const income = await this.getTotalShipmentsIncome(subsidiaryId, startDay, adjustedToDate)
 
-      const rules = await this.getSubsidiaryIncomeRules(subsidiaryId);
-      const formattedIncome = await this.formatIncomesNew(incomes, startDay, adjustedToDate, rules);
+      const ctx = await this.getCountContext(subsidiaryId);
+      const formattedIncome = await this.formatIncomesNew(incomes, startDay, adjustedToDate, ctx);
       const { totalExpenses, daily } = await this.getTotalExpenses(subsidiaryId, startDay, endDay)
       const balance = income.totalIncome - totalExpenses;
 
@@ -191,12 +199,12 @@ export class IncomeService {
         );
 
         // 4. Formatear con las reglas de ingreso de la sucursal (regla única).
-        const rules = await this.getSubsidiaryIncomeRules(subsidiaryId);
-        const currentFormatted = await this.formatIncomesNew(currentIncomes, fromDate, toDate, rules);
+        const ctx = await this.getCountContext(subsidiaryId);
+        const currentFormatted = await this.formatIncomesNew(currentIncomes, fromDate, toDate, ctx);
 
         const lastWeekFrom = dayjs(fromDate).subtract(7, 'day').toDate();
         const lastWeekTo = dayjs(toDate).subtract(7, 'day').toDate();
-        const lastWeekFormatted = await this.formatIncomesNew(lastWeekIncomes, lastWeekFrom, lastWeekTo, rules);
+        const lastWeekFormatted = await this.formatIncomesNew(lastWeekIncomes, lastWeekFrom, lastWeekTo, ctx);
 
         // 5. Preparar respuesta consolidada
         const lastWeekTotal = lastWeekFormatted.reduce(
@@ -224,7 +232,7 @@ export class IncomeService {
           incomes: Income[],
           hermFromDate: Date,
           hermToDate: Date,
-          rules: IncomeCountRules = DEFAULT_INCOME_RULES,
+          ctx: CountableOptions = {},
       ): Promise<FormatIncomesDto[]> {
           const report: FormatIncomesDto[] = [];
 
@@ -273,7 +281,7 @@ export class IncomeService {
 
               // Suma SOLO lo que cuenta según las reglas de la sucursal.
               const sumCountable = (arr: Income[]) =>
-                  arr.filter(i => isCountableIncome(i, rules)).reduce((sum, i) => sum + (Number(i.cost) || 0), 0);
+                  arr.filter(i => isCountableIncome(i, ctx)).reduce((sum, i) => sum + (Number(i.cost) || 0), 0);
 
               // Traslados del día (tyco/aeropuerto/especial).
               const dayTransfers = dayIncomes.filter(i =>

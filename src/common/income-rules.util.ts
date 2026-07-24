@@ -1,24 +1,14 @@
 /**
- * Regla ÚNICA de "qué ingreso cuenta" — la usan los 3 lectores (tabla de
- * ingresos, dashboard financiero y KPIs) para que todas las pantallas cuadren.
- * Las reglas viven por sucursal (entidad Subsidiary). Defaults = comportamiento
- * histórico (DEX03 no cuenta pero el registro se conserva; el resto sí).
+ * Regla ÚNICA de "qué ingreso cuenta" — la usan los lectores (tabla de ingresos,
+ * dashboard financiero y KPIs) para que todas las pantallas cuadren.
+ *
+ * El cobro por ESTATUS ahora vive en la tabla `charge_rule` (por carrier + código,
+ * global + override por sucursal). Ver `ChargeableResolver`. Los traslados y
+ * recolecciones conservan su lógica propia (flag de sucursal / siempre cuentan).
  */
-export interface IncomeCountRules {
-  chargeDex03?: boolean;
-  chargeDex07?: boolean;
-  chargeDex08?: boolean;
-  chargeDelivered?: boolean;
-  countTransfersAsIncome?: boolean;
-}
 
-export const DEFAULT_INCOME_RULES: Required<IncomeCountRules> = {
-  chargeDex03: false,
-  chargeDex07: true,
-  chargeDex08: true,
-  chargeDelivered: true,
-  countTransfersAsIncome: true,
-};
+/** Pseudo-código para el estatus "entregado" en las reglas de cobro. */
+export const DELIVERED_CODE = 'DELIVERED';
 
 const TRANSFER_SOURCES = new Set(['tyco', 'aeropuerto', 'special_transfer']);
 
@@ -26,34 +16,51 @@ export interface CountableIncomeLike {
   sourceType?: string;
   incomeType?: string;
   nonDeliveryStatus?: string | null;
+  /** Carrier del ingreso (ShipmentType: 'fedex' | 'dhl' | 'other'). */
+  shipmentType?: string;
 }
 
 /**
- * ¿Este ingreso cuenta para el total, según las reglas de la sucursal?
- * - Traslados (tyco/aeropuerto/especial): cuentan si `countTransfersAsIncome`.
+ * Resuelve si un (carrier, código) COBRA, según reglas global + override de sucursal.
+ * Devuelve `undefined` cuando no hay regla definida → el lector aplica el fallback
+ * histórico (`true`, equivalente al `ELSE 1` del espejo SQL).
+ */
+export interface ChargeableResolver {
+  isChargeable(carrier: string, code: string): boolean | undefined;
+}
+
+export interface CountableOptions {
+  /** ¿Los traslados (tyco/aeropuerto/especial) cuentan? (flag de sucursal). */
+  countTransfers?: boolean;
+  /** Reglas de cobro por estatus (charge_rule). Si falta → todo shipment/charge cuenta. */
+  resolver?: ChargeableResolver;
+}
+
+/** Código de cobro efectivo de un ingreso: 'DELIVERED' si entregado; si no, el código de no-entrega. */
+export function effectiveChargeCode(income: CountableIncomeLike): string {
+  const it = String(income.incomeType || '').toLowerCase();
+  if (it === 'entregado') return DELIVERED_CODE;
+  return String(income.nonDeliveryStatus ?? '').trim();
+}
+
+/**
+ * ¿Este ingreso cuenta para el total?
+ * - Traslados: cuentan si `countTransfers` (default true).
  * - Recolecciones: siempre cuentan.
- * - Envíos/cargas: por estatus → entregado (chargeDelivered), no_entregado 03/07/08
- *   según su flag (independiente del transportista), otros estatus cuentan.
+ * - Envíos/cargas: según `charge_rule` para (carrier, código). Sin regla → cuenta.
  * - manual u otros sourceType: NO cuentan (preserva el comportamiento previo).
  */
-export function isCountableIncome(income: CountableIncomeLike, rules?: IncomeCountRules): boolean {
-  const r = { ...DEFAULT_INCOME_RULES, ...(rules || {}) };
+export function isCountableIncome(income: CountableIncomeLike, opts?: CountableOptions): boolean {
   const st = String(income.sourceType || '').toLowerCase();
 
-  if (TRANSFER_SOURCES.has(st)) return !!r.countTransfersAsIncome;
+  if (TRANSFER_SOURCES.has(st)) return opts?.countTransfers ?? true;
   if (st === 'collection') return true;
 
   if (st === 'shipment' || st === 'charge') {
-    const it = String(income.incomeType || '').toLowerCase();
-    const code = income.nonDeliveryStatus ?? '';
-    if (it === 'entregado') return !!r.chargeDelivered;
-    if (it === 'no_entregado') {
-      if (code === '03') return !!r.chargeDex03;
-      if (code === '07') return !!r.chargeDex07;
-      if (code === '08') return !!r.chargeDex08;
-      return true;
-    }
-    return true;
+    const carrier = String(income.shipmentType || '').toLowerCase();
+    const code = effectiveChargeCode(income);
+    const resolved = opts?.resolver?.isChargeable(carrier, code);
+    return resolved ?? true; // fallback histórico: cuenta
   }
 
   return false;

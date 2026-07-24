@@ -224,13 +224,14 @@ describe('seedExcelTemplates', () => {
     expect(find('TOTAL RECOLECCIONES')?.fill).toBe('E8E8E8');
     expect(find('TOTAL COBROS')?.fill).toBe('E8E8E8');
 
-    // Datos de negocio presentes (GUÍA está en la columna 2 de estas tablas)
+    // Datos de negocio presentes. En DEVUELTOS/COBROS la col 2 es JD y la GUÍA pasó a la
+    // col 3; en RECOLECCIONES la guía sigue en la col 2 (esa tabla no lleva JD).
     let foundA2 = false; let foundRec1 = false;
     ws.eachRow({ includeEmpty: true }, (r) => {
-      if (r.getCell(2).value === 'A2') foundA2 = true;
+      if (r.getCell(3).value === 'A2') foundA2 = true;
       if (r.getCell(2).value === 'REC-1') foundRec1 = true;
     });
-    expect(foundA2).toBe(true); // guía devuelta
+    expect(foundA2).toBe(true); // guía devuelta (col 3, tras la col JD)
     expect(foundRec1).toBe(true); // recolección
   });
 

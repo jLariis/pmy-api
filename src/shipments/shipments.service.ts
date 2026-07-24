@@ -8439,18 +8439,10 @@ export class ShipmentsService {
                 newEvents.sort((a: any, b: any) => new Date(a.date).getTime() - new Date(b.date).getTime());
                 
                 // =================================================================================
-                // --- 4. PROCESAMIENTO DE HISTORIA (E INGRESOS CONDICIONALES) ---
+                // --- 4. PROCESAMIENTO DE HISTORIA ---
                 // =================================================================================
-                let current08Count = 0;
-                const paidWeeks = new Set<string>();
-
-                // Solo consultamos el conteo de 08s si la sucursal genera ingresos
-                if (subConfig.generateIncomes) {
-                    const existing08Count = await queryRunner.manager.count(ShipmentStatus, {
-                        where: { chargeShipment: { id: mainCharge.id }, exceptionCode: '08' }
-                    });
-                    current08Count = existing08Count;
-                }
+                // REGLA DE NEGOCIO: las CARGAS (ChargeShipment) NO generan ingreso por paquete.
+                // Este flujo solo actualiza historial y estatus; el ingreso de cargas se eliminó.
 
                 const hasODInHistory = subConfig.trackExternalDelivery && (
                     scanEvents.some((e: any) => e.eventType === 'OD' && new Date(e.date).getTime() > lastOpTime) || 
@@ -8489,80 +8481,12 @@ export class ShipmentsService {
                         await queryRunner.manager.save(historyEntry);
                     }
 
-                    // --- GARANTÍA DE INGRESOS (CONDICIONAL) ---
-                    if (subConfig.generateIncomes) {
-                        let isChargeable = false;
-                        let chargeReason = '';
-
-                        if (eventStatus === ShipmentStatusType.ENTREGADO || eventStatus === ShipmentStatusType.ENTREGADO_POR_FEDEX) {
-                            isChargeable = true;
-                            chargeReason = 'ENTREGADO (DL)';
-                        } else if (eCode === '07' || eventStatus === ShipmentStatusType.RECHAZADO) {
-                            isChargeable = true;
-                            chargeReason = `RECHAZADO (${eCode})`;
-                        } else if (eCode === '08') {
-                            current08Count++;
-                            if (current08Count >= 3) {
-                                isChargeable = true;
-                                chargeReason = `3ra VISITA (Acumulado)`;
-                            }
-                        }
-
-                        const mDate = dayjs(eventDate);
-                        const weekKey = `${mDate.year()}-W${mDate.isoWeek()}`;
-                        if (paidWeeks.has(weekKey)) isChargeable = false;
-
-                        if (isChargeable) {
-                            const startOfWeek = mDate.day(1).startOf('day').toDate();
-                            const endOfWeek = mDate.day(7).endOf('day').toDate();
-                            
-                            const incomeExists = await queryRunner.manager.findOne(Income, {
-                                where: { trackingNumber: tn, date: Between(startOfWeek, endOfWeek) }
-                            });
-
-                            if (!incomeExists) {
-                                const tempShipment = { ...mainCharge };
-                                if (chargeReason.includes('3ra VISITA')) tempShipment.status = ShipmentStatusType.CLIENTE_NO_DISPONIBLE as any;
-                                else tempShipment.status = eventStatus as any;
-                                
-                                await this.generateIncomes(tempShipment as any, eventDate, eCode, queryRunner.manager);
-                                this.logger.log(`💰 Ingreso Generado (Carga) [${tn}]: ${chargeReason}`);
-                                paidWeeks.add(weekKey);
-                            } else {
-                                paidWeeks.add(weekKey);
-                            }
-                        }
-                    }
+                    // NOTA: aquí NO se generan ingresos — las cargas (ChargeShipment) no
+                    // cobran por paquete (regla de negocio). Solo se guarda historial arriba.
                 }
 
-                // 🚨 SAFETY NET: RESPALDO FINANCIERO CONDICIONADO A LA SUCURSAL
-                if (subConfig.generateIncomes) {
-                    const isDeliveredGlobal = (lsdHeader?.code === 'DL' || lsdHeader?.derivedCode === 'DL');
-                    if (isDeliveredGlobal && !hasODInHistory) {
-                        const actualDeliveryDateStr = trackResult.dateAndTimes?.find((d: any) => d.type === 'ACTUAL_DELIVERY')?.dateTime;
-                        if (actualDeliveryDateStr) {
-                            const deliveryDate = new Date(actualDeliveryDateStr);
-                            const mDate = dayjs(deliveryDate);
-                            const weekKey = `${mDate.year()}-W${mDate.isoWeek()}`;
-
-                            if (!paidWeeks.has(weekKey)) {
-                                const startOfWeek = mDate.day(1).startOf('day').toDate();
-                                const endOfWeek = mDate.day(7).endOf('day').toDate();
-
-                                const incomeExists = await queryRunner.manager.findOne(Income, {
-                                    where: { trackingNumber: tn, date: Between(startOfWeek, endOfWeek) }
-                                });
-
-                                if (!incomeExists) {
-                                    const tempShipment = { ...mainCharge, status: ShipmentStatusType.ENTREGADO as any };
-                                    await this.generateIncomes(tempShipment as any, deliveryDate, 'DL', queryRunner.manager);
-                                    this.logger.log(`💰 Ingreso Generado (Backup Header Carga) [${tn}]: ENTREGADO (DL)`);
-                                    paidWeeks.add(weekKey);
-                                }
-                            }
-                        }
-                    }
-                }
+                // NOTA: se eliminó el "SAFETY NET" de ingresos de cargas — las cargas
+                // (ChargeShipment) no generan ingreso por paquete (regla de negocio).
 
                 // =================================================================================
                 // 🛡️ SECCIÓN 5: LÓGICA BASADA EN TIEMPO (CHRONOLOGICAL CONSENSUS)

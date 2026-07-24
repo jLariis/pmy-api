@@ -142,16 +142,16 @@ const routeClosure: ExcelDoc = {
         ] },
       { kind: 'spacer' },
       // (3) PAQUETES DEVUELTOS
-      { kind: 'title', text: 'PAQUETES DEVUELTOS', fill: '8c5e4e', font: { bold: true, color: 'FFFFFF' }, mergeTo: 8, when: 'returnedRows' },
+      { kind: 'title', text: 'PAQUETES DEVUELTOS', fill: '8c5e4e', font: { bold: true, color: 'FFFFFF' }, mergeTo: 9, when: 'returnedRows' },
       { kind: 'table', rowsVar: 'returnedRows', when: 'returnedRows',
         headerFill: '6d4c41', headerFont: { bold: true, color: 'FFFFFF' }, headerAlign: 'center', rowFillKey: 'rowFill',
         columns: [
-          { key: 'index', label: 'No.', width: 6 }, { key: 'trackingNumber', label: 'GUÍA', width: 18 },
+          { key: 'index', label: 'No.', width: 6 }, { key: 'jd', label: 'JD', width: 18 }, { key: 'trackingNumber', label: 'GUÍA', width: 16 },
           { key: 'motivoExcel', label: 'MOTIVO', width: 14 }, { key: 'recipientName', label: 'DESTINATARIO', width: 26 },
           { key: 'recipientPhone', label: 'TELÉFONO', width: 16 }, { key: 'recipientAddress', label: 'DIRECCIÓN', width: 34 },
           { key: 'date', label: 'FECHA', width: 12 }, { key: 'time', label: 'HORA', width: 12 },
         ] },
-      { kind: 'band', rowsVar: 'returnedTotalRow', fill: 'E8E8E8', font: { bold: true }, mergeTo: 8, when: 'returnedRows' },
+      { kind: 'band', rowsVar: 'returnedTotalRow', fill: 'E8E8E8', font: { bold: true }, mergeTo: 9, when: 'returnedRows' },
       { kind: 'spacer' },
       // (4) CONTEO POR CÓDIGO DEX
       { kind: 'title', text: 'CONTEO POR CÓDIGO DEX', fill: '8c5e4e', font: { bold: true, color: 'FFFFFF' }, mergeTo: 8 },
@@ -174,7 +174,7 @@ const routeClosure: ExcelDoc = {
       { kind: 'table', rowsVar: 'allCharges', when: 'allCharges',
         headerFill: '6d4c41', headerFont: { bold: true, color: 'FFFFFF' }, headerAlign: 'center', rowFillKey: 'rowFill',
         columns: [
-          { key: 'index', label: 'No.', width: 6 }, { key: 'trackingNumber', label: 'GUÍA', width: 18 },
+          { key: 'index', label: 'No.', width: 6 }, { key: 'jd', label: 'JD', width: 18 }, { key: 'trackingNumber', label: 'GUÍA', width: 18 },
           { key: 'amount', label: 'MONTO', width: 14, numFmt: '"$"#,##0.00' }, { key: 'type', label: 'TIPO', width: 14 },
         ] },
     ],

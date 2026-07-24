@@ -184,43 +184,52 @@ export class RouteclosureService {
         if (pPackage && pPackage.shipmentType === ShipmentType.DHL) {
           processedDhlCount++;
 
-          // Traductor DHL → capa canónica interna + reglas de negocio (solo OK cobra/es terminal).
-          // Respaldo si no viene `code`: pod → OK; returned → no entregado (sin cobro).
+          // Traductor DHL → capa canónica interna. Respaldo si no viene `code`:
+          // pod → OK; returned → no entregado (sin código).
           const dhlCode = item.code ?? (item.isDelivered ? DhlStatusType.OK : null);
-          const { internalStatus, chargeable } = dhlCode
+          const { internalStatus } = dhlCode
             ? mapDhlCodeToInternal(dhlCode)
-            : { internalStatus: ShipmentStatusType.NO_ENTREGADO, chargeable: false };
+            : { internalStatus: ShipmentStatusType.NO_ENTREGADO };
+          const isDeliveredDhl = internalStatus === ShipmentStatusType.ENTREGADO;
 
-          const existingIncome = await queryRunner.manager.findOne(Income, {
-            where: {
-              trackingNumber: pPackage.trackingNumber,
-              sourceType: IncomeSourceType.SHIPMENT
-            }
-          });
-
-          if (existingIncome) {
-            this.logger.warn(`⚠️ [RouteClosure] El ingreso para el tracking DHL ${pPackage.trackingNumber} ya existe. Omitiendo cobro.`);
-          } else {
-            // SOLO `OK` (chargeable) genera costo. Los no-OK quedan como registro NO_ENTREGADO
-            // con costo 0. `nonDeliveryStatus` guarda el CÓDIGO DHL (RD/NH/BA/CM), que por ser
-            // alfabético nunca choca con los filtros DEX numéricos ('03'/'07'/'08') de FedEx.
-            const calculatedCost = chargeable ? (pPackage.subsidiary?.dhlCostPackage ?? 0) : 0;
-
-            const newIncome = queryRunner.manager.create(Income, {
-              trackingNumber: pPackage.trackingNumber,
-              subsidiary: pPackage.subsidiary,
-              shipmentType: pPackage.shipmentType,
-              cost: calculatedCost,
-              incomeType: chargeable ? IncomeStatus.ENTREGADO : IncomeStatus.NO_ENTREGADO,
-              nonDeliveryStatus: chargeable ? null : dhlCode,
-              isGrouped: false,
-              sourceType: IncomeSourceType.SHIPMENT,
-              shipment: pPackage,
-              date: currentDatetime,
-              createdById: userId ?? null,
+          // REGLA DE NEGOCIO: las CARGAS (ChargeShipment) NO generan ingreso por paquete.
+          // El ingreso solo se crea para envíos (Shipment). Las cargas solo actualizan
+          // su estatus/historial más abajo.
+          if (!item.isCharge) {
+            const existingIncome = await queryRunner.manager.findOne(Income, {
+              where: {
+                trackingNumber: pPackage.trackingNumber,
+                sourceType: IncomeSourceType.SHIPMENT
+              }
             });
 
-            await queryRunner.manager.save(Income, newIncome);
+            if (existingIncome) {
+              this.logger.warn(`⚠️ [RouteClosure] El ingreso para el tracking DHL ${pPackage.trackingNumber} ya existe. Omitiendo cobro.`);
+            } else {
+              // CONSISTENTE CON FEDEX: se guarda SIEMPRE el costo completo (con código);
+              // qué CUENTA como ingreso lo decide `charge_rule` en lectura (isCountableIncome
+              // / espejo SQL en kpi.service). Así se puede prender el cobro de un no-entregado
+              // DHL desde Configuración sin tocar código. `nonDeliveryStatus` guarda el CÓDIGO
+              // DHL (RD/NH/BA/CM), alfabético → nunca choca con los DEX numéricos de FedEx.
+              // Sin código (returned sin `code`) → costo 0 (no facturable, no hay regla que aplicar).
+              const calculatedCost = dhlCode ? (pPackage.subsidiary?.dhlCostPackage ?? 0) : 0;
+
+              const newIncome = queryRunner.manager.create(Income, {
+                trackingNumber: pPackage.trackingNumber,
+                subsidiary: pPackage.subsidiary,
+                shipmentType: pPackage.shipmentType,
+                cost: calculatedCost,
+                incomeType: isDeliveredDhl ? IncomeStatus.ENTREGADO : IncomeStatus.NO_ENTREGADO,
+                nonDeliveryStatus: isDeliveredDhl ? null : dhlCode,
+                isGrouped: false,
+                sourceType: IncomeSourceType.SHIPMENT,
+                shipment: pPackage as Shipment,
+                date: currentDatetime,
+                createdById: userId ?? null,
+              });
+
+              await queryRunner.manager.save(Income, newIncome);
+            }
           }
 
           // Historial: fila shipment_status con el código DHL en `exceptionCode` (trazabilidad).
@@ -330,6 +339,7 @@ export class RouteclosureService {
       validatedPackages.push({
         id: foundTracking?.id,
         trackingNumber: foundTracking?.trackingNumber ?? tracking,
+        jd: (foundTracking as any)?.dhlUniqueId || undefined,
         commitDateTime: foundTracking?.commitDateTime,
         consNumber: foundTracking?.consNumber,
         isHighValue: foundTracking?.isHighValue,
@@ -349,14 +359,21 @@ export class RouteclosureService {
       });
     }
 
-    // Ahora agregamos a podPackages los que NO fueron enviados pero ya están entregados
+    // Ahora agregamos a podPackages los que NO fueron enviados pero ya están entregados.
+    // Recorremos ENVÍOS **y CARGAS** (antes solo shipments) para que los ENTREGADOS se
+    // cuenten completos aún cuando sean DHL o cargas. Es agnóstico al carrier.
     const userTrackingsSet = new Set(validateTrackingForClosure.trackingNumbers);
+    const deliveredCandidates: any[] = [
+      ...(packageDispatch.shipments ?? []),
+      ...((packageDispatch as any).chargeShipments ?? []),
+    ];
 
-    for (const s of packageDispatch.shipments) {
+    for (const s of deliveredCandidates) {
       if (!userTrackingsSet.has(s.trackingNumber) && s.status === ShipmentStatusType.ENTREGADO) {
         podPackages.push({
           id: s.id,
           trackingNumber: s.trackingNumber,
+          jd: s.dhlUniqueId || undefined,
           commitDateTime: s.commitDateTime,
           consNumber: s.consNumber,
           isHighValue: s.isHighValue,
@@ -564,6 +581,7 @@ export class RouteclosureService {
     };
     const mapPkg = (s: any): RouteClosurePackage => ({
       trackingNumber: s.trackingNumber,
+      jd: s.dhlUniqueId || undefined, // JD (pieza DHL): principal para DHL
       recipientName: s.recipientName,
       recipientAddress: s.recipientAddress,
       recipientPhone: s.recipientPhone,
@@ -578,6 +596,20 @@ export class RouteclosureService {
     const allPackages: RouteClosurePackage[] = [
       ...((dispatch as any)?.shipments ?? []).map(mapPkg),
       ...((dispatch as any)?.chargeShipments ?? []).map(mapPkg),
+    ];
+
+    // POD/Entregados del segundo step. `closure.podPackages` (M2M) solo guarda ENVÍOS
+    // (las cargas se excluyen al crear por la limitación de FK). Para que los ENTREGADOS
+    // se cuenten completos —incluidas las CARGAS y DHL— sumamos las cargas del despacho
+    // con estatus ENTREGADO. Dedup por tracking para no contar doble.
+    const deliveredCharges: RouteClosurePackage[] = ((dispatch as any)?.chargeShipments ?? [])
+      .filter((c: any) => c.status === ShipmentStatusType.ENTREGADO)
+      .map(mapPkg);
+    const podFromClosure: RouteClosurePackage[] = (closure?.podPackages ?? []).map(mapPkg);
+    const podSeen = new Set(podFromClosure.map((p) => p.trackingNumber));
+    const podPackages: RouteClosurePackage[] = [
+      ...podFromClosure,
+      ...deliveredCharges.filter((p) => !podSeen.has(p.trackingNumber)),
     ];
 
     // "No VAN" (ShipmentNotInFiles): no es relation de RouteClosure, se consulta aparte por routeClosureId.
@@ -600,7 +632,7 @@ export class RouteclosureService {
       dispatchCreatedAt: dispatch?.createdAt,
       allPackages,
       returnedPackages: (closure?.returnedPackages ?? []).map(mapPkg),
-      podPackages: (closure?.podPackages ?? []).map(mapPkg),
+      podPackages,
       noVanPackages,
       collections: closure?.collections ?? [],
     };

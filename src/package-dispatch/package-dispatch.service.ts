@@ -754,7 +754,8 @@ export class PackageDispatchService {
       return {
         shipmentData: {
           id: shipment.id,
-          trackingNumber: shipment.trackingNumber,
+          trackingNumber: shipment.trackingNumber, // guía / AWB (secundaria para DHL)
+          jd: shipment.dhlUniqueId ?? null, // JD (pieza DHL): identificador PRINCIPAL para DHL
           shipmentStatus: shipment.status,
 
           commitDateTime: shipment.commitDateTime,
@@ -947,7 +948,8 @@ export class PackageDispatchService {
       return {
         shipmentData: {
           id: shipment.id,
-          trackingNumber: shipment.trackingNumber,
+          trackingNumber: shipment.trackingNumber, // guía / AWB (secundaria para DHL)
+          jd: shipment.dhlUniqueId ?? null, // JD (pieza DHL): identificador PRINCIPAL para DHL
           shipmentStatus: shipment.status,
 
           commitDateTime: shipment.commitDateTime,
@@ -1675,7 +1677,8 @@ export class PackageDispatchService {
       return {
         shipmentData: {
           id: shipment.id,
-          trackingNumber: shipment.trackingNumber,
+          trackingNumber: shipment.trackingNumber, // guía / AWB (secundaria para DHL)
+          jd: shipment.dhlUniqueId ?? null, // JD (pieza DHL): identificador PRINCIPAL para DHL
           shipmentStatus: shipment.status,
           commitDateTime: shipment.commitDateTime,
           ubication,
@@ -1843,7 +1846,8 @@ export class PackageDispatchService {
       return {
         shipmentData: {
           id: shipment.id,
-          trackingNumber: shipment.trackingNumber,
+          trackingNumber: shipment.trackingNumber, // guía / AWB (secundaria para DHL)
+          jd: shipment.dhlUniqueId ?? null, // JD (pieza DHL): identificador PRINCIPAL para DHL
           shipmentStatus: shipment.status,
           commitDateTime: shipment.commitDateTime,
           ubication,

@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { Brand } from 'src/entities/brand.entity';
+import { CompanySettings } from 'src/entities/company-settings.entity';
 import { DocumentTemplate } from 'src/entities/document-template.entity';
 import { DocumentTemplateVersion } from 'src/entities/document-template-version.entity';
 import { TemplateVariableDef } from 'src/entities/template-variable-def.entity';
@@ -29,7 +30,7 @@ import { TemplatesBootstrapSeeder } from './templates-bootstrap.seeder';
 @Module({
   imports: [
     TypeOrmModule.forFeature([
-      Brand, DocumentTemplate, DocumentTemplateVersion, TemplateVariableDef, TemplateRenderLog,
+      Brand, CompanySettings, DocumentTemplate, DocumentTemplateVersion, TemplateVariableDef, TemplateRenderLog,
     ]),
   ],
   controllers: [TemplatesController, BrandController],

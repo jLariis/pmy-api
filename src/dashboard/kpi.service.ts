@@ -5,27 +5,32 @@ import { ConsolidatedType } from 'src/common/enums/consolidated-type.enum';
 import { ShipmentStatusType } from 'src/common/enums/shipment-status-type.enum';
 import { ShipmentType } from 'src/common/enums/shipment-type.enum';
 import { Charge, ChargeShipment, Consolidated, Expense, Income, Shipment, ShipmentStatus, Subsidiary } from 'src/entities';
+import { ChargeRule } from 'src/entities/charge-rule.entity';
 import { startOfDay, endOfDay, differenceInDays } from 'date-fns';
 import { proratedAmountInRange } from 'src/common/expense-proration.util';
 
 /**
+ * Código de cobro efectivo del ingreso (espejo SQL de `effectiveChargeCode`):
+ * 'DELIVERED' si entregado; si no, el código de no-entrega guardado.
+ */
+const RULE_CODE_EXPR = `(CASE WHEN income.incomeType = 'entregado' THEN 'DELIVERED' ELSE income.nonDeliveryStatus END)`;
+
+/** JOINs a charge_rule: `crs` = override de sucursal, `crg` = default global. */
+const CHARGE_RULE_SUB_JOIN = `crs.subsidiaryId = income.subsidiaryId AND crs.carrier = income.shipmentType AND crs.code = ${RULE_CODE_EXPR}`;
+const CHARGE_RULE_GLOBAL_JOIN = `crg.subsidiaryId IS NULL AND crg.carrier = income.shipmentType AND crg.code = ${RULE_CODE_EXPR}`;
+
+/**
  * Ingreso "contable" según las reglas de la sucursal (regla ÚNICA, espejo SQL de
- * `isCountableIncome`): traslados solo si countTransfersAsIncome; envíos/cargas
- * por estatus (entregado / DEX 03·07·08 según su flag); recolecciones siempre;
- * manual u otros fuera. Requiere `leftJoin('income.subsidiary','sub')`.
+ * `isCountableIncome`): traslados solo si countTransfersAsIncome; recolecciones
+ * siempre; envíos/cargas según `charge_rule` (override de sucursal → global →
+ * fallback 1); manual u otros fuera. Requiere `leftJoin('income.subsidiary','sub')`
+ * + los JOINs `crs`/`crg` a charge_rule (ver CHARGE_RULE_*_JOIN).
  */
 const COUNTABLE_REVENUE_SQL = `SUM(CASE WHEN (
   CASE
     WHEN income.sourceType IN ('tyco','aeropuerto','special_transfer') THEN sub.countTransfersAsIncome
     WHEN income.sourceType = 'collection' THEN 1
-    WHEN income.sourceType IN ('shipment','charge') THEN
-      CASE
-        WHEN income.incomeType = 'entregado' THEN sub.chargeDelivered
-        WHEN income.incomeType = 'no_entregado' AND income.nonDeliveryStatus = '03' THEN sub.chargeDex03
-        WHEN income.incomeType = 'no_entregado' AND income.nonDeliveryStatus = '07' THEN sub.chargeDex07
-        WHEN income.incomeType = 'no_entregado' AND income.nonDeliveryStatus = '08' THEN sub.chargeDex08
-        ELSE 1
-      END
+    WHEN income.sourceType IN ('shipment','charge') THEN COALESCE(crs.chargeable, crg.chargeable, 1)
     ELSE 0
   END
 ) = 1 THEN income.cost ELSE 0 END)`;
@@ -249,6 +254,8 @@ export class KpiService {
       // -- D. INGRESOS TOTALES --
       this.incomeRepository.createQueryBuilder('income')
         .leftJoin('income.subsidiary', 'sub')
+        .leftJoin(ChargeRule, 'crs', CHARGE_RULE_SUB_JOIN)
+        .leftJoin(ChargeRule, 'crg', CHARGE_RULE_GLOBAL_JOIN)
         .select('income.subsidiaryId', 'subsidiaryId')
         .addSelect(COUNTABLE_REVENUE_SQL, 'totalRevenue')
         .where('income.date BETWEEN :startDate AND :endDate', { startDate: startDateObj, endDate: endDateObj })

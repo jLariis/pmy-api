@@ -58,11 +58,11 @@ export const ROUTE_CLOSURE_PDF_HTML = `
     <div class="rc-section-title">DEVUELTOS ({{returnedRows.length}})</div>
     {{#if hasReturned}}
     <table class="rc-table">
-      <thead><tr><th style="width:45%">GUÍA</th><th style="width:20%">TIPO</th><th style="width:35%">MOTIVO</th></tr></thead>
+      <thead><tr><th style="width:45%">JD / GUÍA</th><th style="width:20%">TIPO</th><th style="width:35%">MOTIVO</th></tr></thead>
       <tbody>
         {{#each returnedRows}}
         <tr class="{{rowClass}}">
-          <td>{{trackingNumber}}</td><td>{{shipmentTypeLabel}}</td><td>{{motivoPdf}}</td>
+          <td><strong>{{idPrimary}}</strong>{{#if idSecondary}}<br/><span style="font-size:9px;color:#666;">{{idSecondary}}</span>{{/if}}</td><td>{{shipmentTypeLabel}}</td><td>{{motivoPdf}}</td>
         </tr>
         {{/each}}
       </tbody>
@@ -118,10 +118,10 @@ export const ROUTE_CLOSURE_PDF_HTML = `
     <div class="rc-section-title">COBROS ({{podCharges.length}})</div>
     {{#if hasPodCharges}}
     <table class="rc-table">
-      <thead><tr><th style="width:50%">GUÍA</th><th style="width:25%">TIPO</th><th style="width:25%">MONTO</th></tr></thead>
+      <thead><tr><th style="width:50%">JD / GUÍA</th><th style="width:25%">TIPO</th><th style="width:25%">MONTO</th></tr></thead>
       <tbody>
         {{#each podCharges}}
-        <tr><td>{{trackingNumber}}</td><td>{{type}}</td><td>{{amountPdf}}</td></tr>
+        <tr><td><strong>{{idPrimary}}</strong>{{#if idSecondary}}<br/><span style="font-size:9px;color:#666;">{{idSecondary}}</span>{{/if}}</td><td>{{type}}</td><td>{{amountPdf}}</td></tr>
         {{/each}}
       </tbody>
     </table>

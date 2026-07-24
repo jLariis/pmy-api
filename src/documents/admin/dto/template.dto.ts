@@ -35,8 +35,7 @@ export class UpsertBrandDto {
   @IsOptional() @IsObject() typography?: Record<string, string>;
   @IsOptional() @IsString() borderRadius?: string;
   @IsOptional() @IsObject() spacing?: Record<string, string>;
-  @IsOptional() @IsObject() fiscal?: Record<string, string>;
-  @IsOptional() @IsObject() contact?: Record<string, string>;
+  // fiscal/contact ya NO se guardan en brand: son fuente única de company_settings.
   @IsOptional() @IsObject() social?: Record<string, string>;
   @IsOptional() @IsBoolean() active?: boolean;
 }

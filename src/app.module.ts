@@ -39,6 +39,7 @@ import { AuditModule } from './audit/audit.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { RbacModule } from './rbac/rbac.module';
 import { CompanySettingsModule } from './company-settings/company-settings.module';
+import { ChargeRulesModule } from './charge-rules/charge-rules.module';
 import { WhatsappSettingsModule } from './whatsapp-settings/whatsapp-settings.module';
 import { WhatsappGatewayModule } from './whatsapp-gateway/whatsapp-gateway.module';
 import { WhatsappTemplatesModule } from './whatsapp-templates/whatsapp-templates.module';
@@ -106,6 +107,7 @@ import { DocumentsModule } from './documents/documents.module';
     NotificationsModule,
     RbacModule,
     CompanySettingsModule,
+    ChargeRulesModule,
     WhatsappSettingsModule,
     WhatsappGatewayModule,
     WhatsappTemplatesModule,

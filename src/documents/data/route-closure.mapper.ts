@@ -20,6 +20,8 @@ export function mapStatusToDex(status?: string): string | null {
 
 export interface RouteClosurePackage {
   trackingNumber: string;
+  /** JD (pieza DHL, `dhlUniqueId`). Para DHL es el identificador PRINCIPAL; `trackingNumber` (AWB) es secundario. */
+  jd?: string;
   recipientName?: string;
   recipientAddress?: string;
   recipientPhone?: string;
@@ -126,11 +128,19 @@ export function buildRouteClosureData(input: RouteClosureInput): Record<string, 
     { code: 'TOTAL DEVOLUCIONES', count: returnedCount, rowFill: 'E8E8E8' },
   ];
 
+  // Identificador a mostrar: para DHL el PRINCIPAL es el JD (pieza); la guía (AWB) es
+  // secundaria. Para FedEx solo hay guía. `idPrimary`/`idSecondary` los consume el PDF/Excel.
+  const idPrimary = (p: RouteClosurePackage) => (isDhl(p) && p.jd ? p.jd : p.trackingNumber);
+  const idSecondary = (p: RouteClosurePackage) => (isDhl(p) && p.jd ? p.trackingNumber : undefined);
+
   const returnedRows = returnedPackages.map((p, i) => {
     const z = p.commitDateTime ? toZonedTime(new Date(p.commitDateTime), TZ) : zonedNow;
     return {
       index: i + 1,
       trackingNumber: p.trackingNumber,
+      jd: p.jd || undefined,
+      idPrimary: idPrimary(p),
+      idSecondary: idSecondary(p),
       shipmentTypeLabel: isDhl(p) ? 'DHL' : 'FedEx',
       motivoPdf: mapStatusToDex(p.status) || 'N/A',
       motivoExcel: p.exceptionCode ? `DEX-${p.exceptionCode}` : 'Devuelto',
@@ -161,6 +171,9 @@ export function buildRouteClosureData(input: RouteClosureInput): Record<string, 
     .filter((p) => p.payment?.amount != null)
     .map((p) => ({
       trackingNumber: p.trackingNumber,
+      jd: p.jd || undefined,
+      idPrimary: idPrimary(p),
+      idSecondary: idSecondary(p),
       type: p.payment!.type || 'N/A',
       amountPdf: `$${p.payment!.amount}`,
     }));
@@ -172,6 +185,9 @@ export function buildRouteClosureData(input: RouteClosureInput): Record<string, 
     .map((p, i) => ({
       index: i + 1,
       trackingNumber: p.trackingNumber,
+      jd: p.jd || undefined,
+      idPrimary: idPrimary(p),
+      idSecondary: idSecondary(p),
       amount: Number(p.payment!.amount) || 0,
       type: p.payment!.type || 'N/A',
       rowFill: i % 2 === 0 ? 'F8F9FA' : null,
