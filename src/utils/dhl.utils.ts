@@ -1,4 +1,41 @@
 import { ShipmentStatusType } from '../common/enums/shipment-status-type.enum';
+import { DhlStatusType } from '../common/enums/dhl-status-type.enum';
+
+/** Resultado de traducir un código de carrier a la capa canónica interna. */
+export interface CarrierStatusResolution {
+  /** Estatus canónico interno (agnóstico al carrier) para trazabilidad/reportes. */
+  internalStatus: ShipmentStatusType;
+  /** ¿Este código genera ingreso al cerrar ruta? */
+  chargeable: boolean;
+  /** ¿Es un desenlace final (no se espera más movimiento)? */
+  terminal: boolean;
+}
+
+/**
+ * TRADUCTOR DHL (adapter carrier → capa canónica). Mapea un código propio de DHL
+ * (`DhlStatusType`) al estatus canónico interno + reglas de negocio (cobro / terminal).
+ *
+ * Es la ÚNICA pieza que conoce la semántica DHL; el resto del sistema consume solo
+ * la capa canónica. Un carrier nuevo = su propio catálogo + su propio traductor,
+ * sin tocar consumidores internos.
+ *
+ * Regla de negocio (2026-07): SOLO `OK` (entregado/POD) cobra y es terminal.
+ * Código desconocido → pendiente, sin cobro, no terminal.
+ *
+ * Listo para enchufar la API oficial de DHL: basta llamar aquí con el código que
+ * devuelva DHL. (17track/WhereParcel quedaron descartados.)
+ */
+export function mapDhlCodeToInternal(code: string): CarrierStatusResolution {
+  const key = (code || '').trim().toUpperCase();
+  const map: Record<string, CarrierStatusResolution> = {
+    [DhlStatusType.OK]: { internalStatus: ShipmentStatusType.ENTREGADO, chargeable: true, terminal: true },
+    [DhlStatusType.NH]: { internalStatus: ShipmentStatusType.CLIENTE_NO_DISPONIBLE, chargeable: false, terminal: false },
+    [DhlStatusType.BA]: { internalStatus: ShipmentStatusType.DIRECCION_INCORRECTA, chargeable: false, terminal: false },
+    [DhlStatusType.RD]: { internalStatus: ShipmentStatusType.RECHAZADO, chargeable: false, terminal: false },
+    [DhlStatusType.CM]: { internalStatus: ShipmentStatusType.CAMBIO_DOMICILIO, chargeable: false, terminal: false },
+  };
+  return map[key] ?? { internalStatus: ShipmentStatusType.PENDIENTE, chargeable: false, terminal: false };
+}
 
 export function mapDhlStatusTextToEnum(code: string): ShipmentStatusType {
   const statusMap: Record<string, ShipmentStatusType> = {

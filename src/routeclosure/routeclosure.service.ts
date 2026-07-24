@@ -7,6 +7,8 @@ import { ValidateTrackingsForClosureDto } from './dto/validate-trackings-for-clo
 import { PackageDispatch } from 'src/entities/package-dispatch.entity';
 import { ValidatedPackageDispatchDto } from 'src/package-dispatch/dto/validated-package-dispatch.dto';
 import { ShipmentStatusType } from 'src/common/enums/shipment-status-type.enum';
+import { DhlStatusType } from 'src/common/enums/dhl-status-type.enum';
+import { mapDhlCodeToInternal } from 'src/utils/dhl.utils';
 import { ShipmentStatus, Collection, Shipment, Income, ChargeShipment, ShipmentNotInFiles } from 'src/entities';
 import { DispatchStatus } from 'src/common/enums/dispatch-enum';
 import { MailService } from 'src/mail/mail.service';
@@ -141,17 +143,21 @@ export class RouteclosureService {
       this.logger.log('🟡 [RouteClosure] Evaluando paquetes DHL para actualización e ingresos...');
       const currentDatetime = new Date().toISOString().slice(0, 19).replace('T', ' ');
 
+      // `code` = código propio de DHL (OK/NH/BA/RD/CM). `isCharge` = la pieza es un
+      // ChargeShipment (carga), NO significa "cobrar". `isDelivered` = de qué lista vino
+      // (pod = entregado), se usa como RESPALDO seguro si el frontend aún no manda `code`:
+      // pod sin código → OK; returned sin código → no entregado, sin cobro (nunca "todos OK").
       const packagesToProcess = [
         ...createRouteclosureDto.podPackages.map(pkg => ({
           id: typeof pkg === 'string' ? pkg : (pkg as any).id,
-          status: (pkg as any).status,
-          isCharge: (pkg as any).isCharge, 
+          code: (pkg as any).code as DhlStatusType | undefined,
+          isCharge: (pkg as any).isCharge,
           isDelivered: true,
         })),
         ...createRouteclosureDto.returnedPackages.map(pkg => ({
           id: typeof pkg === 'string' ? pkg : (pkg as any).id,
-          status: (pkg as any).status,
-          isCharge: (pkg as any).isCharge, 
+          code: (pkg as any).code as DhlStatusType | undefined,
+          isCharge: (pkg as any).isCharge,
           isDelivered: false,
         }))
       ];
@@ -164,21 +170,27 @@ export class RouteclosureService {
         let pPackage = null;
 
         if (item.isCharge) {
-          pPackage = await queryRunner.manager.findOne(ChargeShipment, { 
+          pPackage = await queryRunner.manager.findOne(ChargeShipment, {
             where: { id: item.id },
-            relations: ['subsidiary'] 
+            relations: ['subsidiary']
           });
         } else {
-          pPackage = await queryRunner.manager.findOne(Shipment, { 
+          pPackage = await queryRunner.manager.findOne(Shipment, {
             where: { id: item.id },
-            relations: ['subsidiary'] 
+            relations: ['subsidiary']
           });
         }
-        
+
         if (pPackage && pPackage.shipmentType === ShipmentType.DHL) {
           processedDhlCount++;
-          const finalStatus = item.status || pPackage.status; 
-          
+
+          // Traductor DHL → capa canónica interna + reglas de negocio (solo OK cobra/es terminal).
+          // Respaldo si no viene `code`: pod → OK; returned → no entregado (sin cobro).
+          const dhlCode = item.code ?? (item.isDelivered ? DhlStatusType.OK : null);
+          const { internalStatus, chargeable } = dhlCode
+            ? mapDhlCodeToInternal(dhlCode)
+            : { internalStatus: ShipmentStatusType.NO_ENTREGADO, chargeable: false };
+
           const existingIncome = await queryRunner.manager.findOne(Income, {
             where: {
               trackingNumber: pPackage.trackingNumber,
@@ -189,35 +201,18 @@ export class RouteclosureService {
           if (existingIncome) {
             this.logger.warn(`⚠️ [RouteClosure] El ingreso para el tracking DHL ${pPackage.trackingNumber} ya existe. Omitiendo cobro.`);
           } else {
-            let chargeCost = false;
-            let nonDeliveryStatusCode = null;
-            
-            const incomeType = item.isDelivered ? IncomeStatus.ENTREGADO : IncomeStatus.NO_ENTREGADO;
-
-            if (item.isDelivered) {
-              chargeCost = true;
-            } else {
-              const nonDeliveryCodes: Record<string, string> = {
-                [ShipmentStatusType.RECHAZADO]: '07',
-                [ShipmentStatusType.DIRECCION_INCORRECTA]: '03',
-                [ShipmentStatusType.CLIENTE_NO_DISPONIBLE]: '08',
-              };
-              
-              if (nonDeliveryCodes[finalStatus]) {
-                chargeCost = true;
-                nonDeliveryStatusCode = nonDeliveryCodes[finalStatus];
-              }
-            }
-
-            const calculatedCost = chargeCost ? (pPackage.subsidiary?.dhlCostPackage ?? 0) : 0;
+            // SOLO `OK` (chargeable) genera costo. Los no-OK quedan como registro NO_ENTREGADO
+            // con costo 0. `nonDeliveryStatus` guarda el CÓDIGO DHL (RD/NH/BA/CM), que por ser
+            // alfabético nunca choca con los filtros DEX numéricos ('03'/'07'/'08') de FedEx.
+            const calculatedCost = chargeable ? (pPackage.subsidiary?.dhlCostPackage ?? 0) : 0;
 
             const newIncome = queryRunner.manager.create(Income, {
               trackingNumber: pPackage.trackingNumber,
-              subsidiary: pPackage.subsidiary, 
+              subsidiary: pPackage.subsidiary,
               shipmentType: pPackage.shipmentType,
               cost: calculatedCost,
-              incomeType: incomeType, 
-              nonDeliveryStatus: nonDeliveryStatusCode,
+              incomeType: chargeable ? IncomeStatus.ENTREGADO : IncomeStatus.NO_ENTREGADO,
+              nonDeliveryStatus: chargeable ? null : dhlCode,
               isGrouped: false,
               sourceType: IncomeSourceType.SHIPMENT,
               shipment: pPackage,
@@ -228,10 +223,20 @@ export class RouteclosureService {
             await queryRunner.manager.save(Income, newIncome);
           }
 
+          // Historial: fila shipment_status con el código DHL en `exceptionCode` (trazabilidad).
+          const history = new ShipmentStatus();
+          history.status = internalStatus;
+          history.exceptionCode = dhlCode ?? '';
+          history.timestamp = new Date();
+          if (item.isCharge) history.chargeShipment = pPackage as ChargeShipment;
+          else history.shipment = pPackage as Shipment;
+          await queryRunner.manager.save(ShipmentStatus, history);
+
+          // Estatus canónico interno en la entidad (agnóstico al carrier).
           if (item.isCharge) {
-            await queryRunner.manager.update(ChargeShipment, { id: item.id }, { status: finalStatus });  
+            await queryRunner.manager.update(ChargeShipment, { id: item.id }, { status: internalStatus });
           } else {
-            await queryRunner.manager.update(Shipment, { id: item.id }, { status: finalStatus });  
+            await queryRunner.manager.update(Shipment, { id: item.id }, { status: internalStatus });
           }
         }
       }

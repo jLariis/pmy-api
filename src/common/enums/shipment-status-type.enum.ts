@@ -24,7 +24,11 @@ export enum ShipmentStatusType {
   EMPRESA_CERRADA = 'empresa_cerrada', // STAT42
   NO_SE_PUDO_RECOLECTAR_EL_COBRO = 'no_se_pudo_recolectar_el_cobro', // DEX93
   RESTRICCION_SEGURIDAD_UBICACION = 'restriccion_seguridad_ubicacion', // DEX05: "Location security restrictions - Delivery will be reattempted"
-  OTRO = 'otro' // DEX93 falta definir
+  OTRO = 'otro', // DEX93 falta definir
+  // IMPORTANTE: los valores nuevos van SIEMPRE al final del enum. En MySQL, agregar
+  // un valor de enum al final de la columna es un cambio de solo metadatos (instantáneo,
+  // no reescribe la tabla). Insertarlo en medio forzaría un rebuild de millones de filas.
+  CAMBIO_DOMICILIO = 'cambio_domicilio' // Canónico genérico. Primer uso: código DHL 'CM'.
   //17 - 17 - A request was made to change this delivery date.
   //84
   //14

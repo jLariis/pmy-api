@@ -2,6 +2,7 @@ import {
   ConsolidatedType, DispatchStatus, Frequency, IncomeSourceType, IncomeStatus,
   InventoryType, PaymentStatus, PaymentTypeEnum, Priority, ShipmentStatusType, ShipmentType,
   StatusEnum, TransferType, VehicleStatus, VehicleTypeEnum, ShipmentCanceledStatus, ShipmentFedexStatusType,
+  DhlStatusType,
 } from 'src/common/enums';
 import { OutboundType } from 'src/common/enums/outbound-type.enum';
 import { AuditAction, AuditModule, AuditResult, AuditSeverity } from 'src/common/enums/audit.enum';
@@ -13,6 +14,8 @@ export interface CatalogDef {
   enumObj: Record<string, string | number>;
   /** Valores extra (ej. variantes del frontend que no están en el enum backend). */
   extraKeys?: string[];
+  /** Etiquetas explícitas por key. Si falta una key, se cae a `prettify(key)`. */
+  labels?: Record<string, string>;
 }
 
 /** TODOS los enums del sistema → catálogo (unión front+back; los front-only van en extraKeys). */
@@ -25,6 +28,17 @@ export const CATALOG_DEFS: CatalogDef[] = [
   { type: 'shipment_status', label: 'Estatus de envío', enumObj: ShipmentStatusType as any },
   { type: 'shipment_canceled_status', label: 'Estatus cancelado (DEX)', enumObj: ShipmentCanceledStatus as any },
   { type: 'fedex_status', label: 'Estatus FedEx', enumObj: ShipmentFedexStatusType as any },
+  // Estatus DHL: catálogo propio del carrier (namespace independiente de FedEx). Extendible desde UI.
+  {
+    type: 'dhl_status', label: 'Estatus DHL', enumObj: DhlStatusType as any,
+    labels: {
+      OK: 'POD / Entregado',
+      NH: 'No estaba',
+      BA: 'Dirección incorrecta',
+      RD: 'Rechazado',
+      CM: 'Cambio de domicilio',
+    },
+  },
   { type: 'income_status', label: 'Estatus de ingreso', enumObj: IncomeStatus as any },
   { type: 'income_source_type', label: 'Origen de ingreso', enumObj: IncomeSourceType as any },
   { type: 'payment_status', label: 'Estatus de pago', enumObj: PaymentStatus as any },
@@ -67,7 +81,8 @@ export function deriveItems(def: CatalogDef): SeedItem[] {
     const norm = key.toLowerCase();
     if (seen.has(norm)) continue;
     seen.add(norm);
-    items.push({ type: def.type, key, label: prettify(key), sortOrder: order++ });
+    const label = def.labels?.[key] ?? prettify(key);
+    items.push({ type: def.type, key, label, sortOrder: order++ });
   }
   return items;
 }

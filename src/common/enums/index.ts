@@ -1,5 +1,6 @@
 export * from './category-enum';
 export * from './consolidated-type.enum';
+export * from './dhl-status-type.enum';
 export * from './dispatch-enum';
 export * from './frequency-enum';
 export * from './income-source-type.enum';
