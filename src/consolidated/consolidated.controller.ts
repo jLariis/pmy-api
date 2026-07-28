@@ -39,13 +39,26 @@ export class ConsolidatedController {
   @Get('')
   findAll(
     @Query('subsidiaryId') subsidiaryId: string,
+    @Query('subsidiaryIds') subsidiaryIds: string | string[],
+    @Query('zoneId') zoneId: string,
     @Query('fromDate') fromDate: string,
     @Query('toDate') toDate: string,
   ) {
     const fDate = new Date(fromDate);
     const tDate = new Date(toDate);
 
-    return this.consolidatedService.findAll(subsidiaryId, fDate, tDate);
+    // Alcance: todas (sin filtro) / por zona / por sucursal(es). Acepta subsidiaryIds
+    // como CSV ("a,b") o repetido (?subsidiaryIds=a&subsidiaryIds=b).
+    const idsArray = Array.isArray(subsidiaryIds)
+      ? subsidiaryIds
+      : (subsidiaryIds ? String(subsidiaryIds).split(',') : []);
+    const cleanIds = idsArray.map(s => (s ?? '').trim()).filter(Boolean);
+
+    return this.consolidatedService.findAll(
+      { subsidiaryId, subsidiaryIds: cleanIds, zoneId },
+      fDate,
+      tDate,
+    );
   }
 
   @Get(':id')

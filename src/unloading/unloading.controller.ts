@@ -275,4 +275,18 @@ export class UnloadingController {
     return this.unloadingService.getUnloadingSessionInit(subsidiaryId);
   }
 
+  /** Búsqueda directa de un consolidado por número (a BD) para desembarcarlo aunque
+   *  no aparezca en la lista del día. Devuelve el formato de session-init. */
+  @Get('consolidated-by-cons-number/:subsidiaryId')
+  @UseGuards(SubsidiaryScopeGuard)
+  getUnloadingConsolidatedByConsNumber(
+    @Param('subsidiaryId') subsidiaryId: string,
+    @Query('consNumber') consNumber: string,
+  ) {
+    if (!consNumber || !consNumber.trim()) {
+      throw new BadRequestException('El número de consolidado (consNumber) es requerido.');
+    }
+    return this.unloadingService.getUnloadingConsolidatedByConsNumber(subsidiaryId, consNumber);
+  }
+
 }

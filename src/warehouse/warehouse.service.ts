@@ -25,7 +25,7 @@ import { ShipmentStatusType } from 'src/common/enums';
 import { PaginatedResult, parsePagination, resolveDateRange } from 'src/common/pagination.util';
 import { CreateOutboundDto } from './dto/create-outbound.dto';
 import { assertOutboundConsistency } from './warehouse.validation';
-import { hydratePackageIds, splitShipmentIds } from './warehouse.helpers';
+import { hydratePackageIds, resolvePackagePayment, splitShipmentIds } from './warehouse.helpers';
 import { MailService } from 'src/mail/mail.service';
 import { format, toZonedTime } from 'date-fns-tz';
 import axios from 'axios';
@@ -96,8 +96,7 @@ export function buildWarehousePdfData(header: any, packages: any[], timeZone: st
   const isHermosillo = originName.toLowerCase().includes('hermosillo');
   const todayStr = format(toZonedTime(new Date(), timeZone), 'yyyy-MM-dd');
   const rows = packages.map((pkg, i) => {
-    const amount = pkg.payment?.amount ?? pkg.paymentAmount ?? null;
-    const hasPayment = amount != null;
+    const { amount, hasPayment } = resolvePackagePayment(pkg);
     const commit = pkg.commitDateTime ? toZonedTime(new Date(pkg.commitDateTime), timeZone) : null;
     const dateStr = commit ? format(commit, 'yyyy-MM-dd') : '';
     const venceHoy = dateStr === todayStr;
@@ -133,7 +132,10 @@ export function buildWarehouseExcelData(header: any, packages: any[], timeZone: 
   const { toZonedTime } = require('date-fns-tz');
   const now = toZonedTime(new Date(), timeZone);
   const rows = packages.map((pkg, i) => {
-    const amount = pkg.payment?.amount ?? pkg.paymentAmount ?? 0;
+    // Cobro (COD) vía helper compartido `resolvePackagePayment` (mismo criterio
+    // que el PDF y el generador legacy): se muestra cuando hay `payment`, sin
+    // importar `isCharge`.
+    const { amount, hasPayment } = resolvePackagePayment(pkg);
     // FECHA de fila = fecha de compromiso (commitDateTime) de la guía, NO hoy.
     // Antes se fijaba a `now` para toda fila, ocultando la fecha real de la BD.
     const commit = pkg.commitDateTime ? toZonedTime(new Date(pkg.commitDateTime), timeZone) : null;
@@ -143,7 +145,7 @@ export function buildWarehouseExcelData(header: any, packages: any[], timeZone: 
       recipientName: pkg.recipientName,
       recipientAddress: pkg.recipientAddress,
       recipientZip: pkg.recipientZip,
-      payment: pkg.isCharge ? amount : 'N/A',
+      payment: hasPayment ? amount : 'N/A',
       date: commit ? format(commit, 'dd/MM/yyyy') : '',
       recipientPhone: pkg.recipientPhone || '',
       signature: '',
@@ -1831,7 +1833,8 @@ export class WarehouseService {
 
     // Filas
     packages.forEach((pkg, index) => {
-      const amount = pkg.payment?.amount ?? pkg.paymentAmount ?? 0;
+      // Cobro vía helper compartido (mismo criterio que el mapper del motor y el PDF).
+      const { amount, hasPayment } = resolvePackagePayment(pkg);
       // FECHA de fila = commitDateTime (compromiso) de la guía, NO hoy.
       const commit = pkg.commitDateTime
         ? toZonedTime(new Date(pkg.commitDateTime), this.timeZone)
@@ -1842,7 +1845,7 @@ export class WarehouseService {
         pkg.recipientName,
         pkg.recipientAddress,
         pkg.recipientZip,
-        pkg.isCharge ? amount : 'N/A',
+        hasPayment ? amount : 'N/A',
         commit ? format(commit, 'dd/MM/yyyy') : '',
         pkg.recipientPhone || '',
         '',

@@ -196,16 +196,19 @@ export class UnloadingService {
     const startDate = new Date(todayLocal);
     const endDate = new Date(todayLocal);
 
-    // Si es lunes, retrocede 3 días (viernes)
+    // Ventana ampliada para que "consolidados nuevos" no se queden fuera por
+    // desfases de fecha/zona horaria (la fecha del consolidado puede venir del
+    // manifiesto y no del momento de carga). Si es lunes retrocede al viernes.
+    // Nota: la búsqueda directa por consNumber es el escape definitivo cuando un
+    // consolidado cae fuera de esta ventana.
     if (dayOfWeek === 1) {
-      startDate.setDate(startDate.getDate() - 3);
+      startDate.setDate(startDate.getDate() - 4); // lunes: cubre desde el jueves
     } else {
-      // En otros días, solo retrocede 1 (ayer)
-      startDate.setDate(startDate.getDate() - 1);
+      startDate.setDate(startDate.getDate() - 2); // resto: antier
     }
 
-    // Siempre sumamos 1 para incluir el siguiente día (mañana)
-    endDate.setDate(endDate.getDate() + 1);
+    // Incluir hasta pasado mañana para cubrir consolidados con fecha adelantada.
+    endDate.setDate(endDate.getDate() + 2);
 
     // 🔥 Consulta usando el rango ajustado
     const consolidatedT = await this.consolidatedReporsitory.find({
@@ -348,6 +351,57 @@ export class UnloadingService {
       airConsolidated: map(consolidateds.airConsolidated),
       groundConsolidated: map(consolidateds.groundConsolidated),
       f2Consolidated: map(consolidateds.f2Consolidated),
+    };
+  }
+
+  /** Presentación (type/typeCode/color) de un consolidado según su tipo. */
+  private consolidatedPresentation(type: ConsolidatedType): { type: string; typeCode: string; color: string } {
+    if (type === ConsolidatedType.AEREO) {
+      return { type: 'Áereo', typeCode: 'AER', color: 'text-green-600 bg-green-100' };
+    }
+    return { type: 'Terrestre', typeCode: 'TER', color: 'text-blue-600 bg-blue-100' };
+  }
+
+  /**
+   * Búsqueda directa por número de consolidado (consulta a BD, con alcance por
+   * sucursal) para desembarque. Devuelve el consolidado con su universo esperado
+   * en el MISMO formato que session-init, para que el cliente lo agregue a la lista
+   * y lo seleccione. Es el escape cuando un consolidado no aparece por la ventana
+   * de fechas o por caché.
+   */
+  async getUnloadingConsolidatedByConsNumber(
+    subsidiaryId: string,
+    consNumber: string,
+  ): Promise<ConsolidatedInitItemDto | null> {
+    const norm = (consNumber || '').trim().toUpperCase().replace(/\s+/g, ' ');
+    if (!norm) return null;
+
+    const qb = this.consolidatedReporsitory
+      .createQueryBuilder('c')
+      .where('TRIM(UPPER(c.consNumber)) = :norm', { norm });
+    if (subsidiaryId) qb.andWhere('c.subsidiaryId = :sid', { sid: subsidiaryId });
+
+    const consolidated = await qb.orderBy('c.createdAt', 'DESC').getOne();
+    if (!consolidated) return null;
+
+    const presentation = this.consolidatedPresentation(consolidated.type);
+    const item: ConsolidatedItemDto = {
+      id: consolidated.id,
+      ...presentation,
+      added: [],
+      notFound: [],
+    };
+
+    const expectedMap = await this.getExpectedMembersByConsolidated([item]);
+
+    return {
+      id: consolidated.id,
+      type: presentation.type,
+      typeCode: presentation.typeCode,
+      numberOfPackages: consolidated.numberOfPackages ?? 0,
+      consNumber: consolidated.consNumber ?? undefined,
+      color: presentation.color,
+      expected: expectedMap.get(consolidated.id) || [],
     };
   }
 
@@ -1833,16 +1887,34 @@ export class UnloadingService {
     return map;
   }
 
+  /**
+   * Identidad ÚNICA por pieza para conteos de desembarque.
+   *
+   * FedEx: cada paquete tiene su `trackingNumber` único.
+   * DHL: varias piezas comparten el `trackingNumber` (guía maestra / AWB), y el
+   * identificador único por pieza es el `dhlUniqueId` (JD/PID, que es justo lo que
+   * se escanea). Por eso la identidad es `dhlUniqueId` cuando existe, y sólo cae al
+   * `trackingNumber` cuando la pieza no tiene JD (DHL viejo importado sin PID).
+   *
+   * Deduplicar por `trackingNumber` colapsaba las piezas DHL de una misma guía y
+   * descuadraba el conteo (faltantes/agregados). Con `pieceKey` cuenta "igual que
+   * FedEx": por JD o, en su defecto, por trackingNumber.
+   */
+  private pieceKey(item: { trackingNumber?: string; dhlUniqueId?: string } | null | undefined): string {
+    return ((item?.dhlUniqueId || item?.trackingNumber) || '').trim().toUpperCase();
+  }
+
   private removeDuplicateTNs(items: any[]): any[] {
     const uniqueMap = new Map<string, any>();
-    
+
     for (let i = items.length - 1; i >= 0; i--) {
       const item = items[i];
-      if (!uniqueMap.has(item.trackingNumber)) {
-        uniqueMap.set(item.trackingNumber, item);
+      const key = this.pieceKey(item);
+      if (key && !uniqueMap.has(key)) {
+        uniqueMap.set(key, item);
       }
     }
-    
+
     return Array.from(uniqueMap.values());
   }
 

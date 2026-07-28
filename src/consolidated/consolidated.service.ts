@@ -2,7 +2,7 @@ import { forwardRef, Inject, Injectable, Logger } from '@nestjs/common';
 import { CreateConsolidatedDto } from './dto/create-consolidated.dto';
 import { UpdateConsolidatedDto } from './dto/update-consolidated.dto';
 import { In, MoreThanOrEqual, Not, Repository } from 'typeorm';
-import { ChargeShipment, Consolidated, Shipment, ShipmentStatus } from 'src/entities';
+import { ChargeShipment, Consolidated, Shipment, ShipmentStatus, Subsidiary } from 'src/entities';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ShipmentConsolidatedDto } from './dto/shipment.dto';
 import { ConsolidatedDto } from './dto/consolidated.dto';
@@ -23,8 +23,39 @@ export class ConsolidatedService {
     @Inject(forwardRef(() => ShipmentsService))
     private readonly shipmentService: ShipmentsService,
     @InjectRepository(ShipmentStatus)
-    private readonly shipmentStatusRepository: Repository<ShipmentStatus>
+    private readonly shipmentStatusRepository: Repository<ShipmentStatus>,
+    @InjectRepository(Subsidiary)
+    private readonly subsidiaryRepository: Repository<Subsidiary>,
   ){}
+
+  /**
+   * Resuelve el alcance del reporte (todas / por zona / por sucursal(es)) a una lista
+   * de subsidiaryIds. Un arreglo vacío significa "todas las sucursales" (sin filtro).
+   * Precedencia: subsidiaryIds explícitos > zoneId > subsidiaryId (legacy) > todas.
+   */
+  private async resolveSubsidiaryScope(scope: {
+    subsidiaryIds?: string[];
+    zoneId?: string;
+    subsidiaryId?: string;
+  }): Promise<string[]> {
+    const clean = (arr?: string[]) =>
+      (arr ?? []).map(s => (s ?? '').trim()).filter(Boolean);
+
+    const explicitIds = clean(scope.subsidiaryIds);
+    if (explicitIds.length > 0) return explicitIds;
+
+    if (scope.zoneId && scope.zoneId.trim()) {
+      const subs = await this.subsidiaryRepository.find({
+        where: { zoneId: scope.zoneId.trim() },
+        select: ['id'],
+      });
+      return subs.map(s => s.id);
+    }
+
+    if (scope.subsidiaryId && scope.subsidiaryId.trim()) return [scope.subsidiaryId.trim()];
+
+    return [];
+  }
 
   async create(createConsolidatedDto: CreateConsolidatedDto, userId?: string) {
     const newConsolidated = await this.consolidatedRepository.create({
@@ -273,7 +304,7 @@ export class ConsolidatedService {
   }
 
   async findAll(
-  subsidiaryId?: string,
+  scope: { subsidiaryId?: string; subsidiaryIds?: string[]; zoneId?: string } = {},
   fromDate?: Date,
   toDate?: Date,
 ): Promise<ConsolidatedDto[]> {
@@ -285,6 +316,9 @@ export class ConsolidatedService {
     utcToDate = new Date(Date.UTC(toDate.getUTCFullYear(), toDate.getUTCMonth(), toDate.getUTCDate(), 23, 59, 59));
   }
 
+  // Alcance: todas / por zona / por sucursal(es). Arreglo vacío = todas (sin filtro).
+  const subsidiaryIds = await this.resolveSubsidiaryScope(scope);
+
   const consolidatedQB = this.consolidatedRepository
     .createQueryBuilder('c')
     .leftJoin('c.subsidiary', 's')
@@ -295,7 +329,7 @@ export class ConsolidatedService {
     ])
     .orderBy('c.date', 'DESC');
 
-  if (subsidiaryId) consolidatedQB.andWhere('c.subsidiaryId = :subsidiaryId', { subsidiaryId });
+  if (subsidiaryIds.length > 0) consolidatedQB.andWhere('c.subsidiaryId IN (:...subsidiaryIds)', { subsidiaryIds });
   if (utcFromDate && utcToDate) {
     consolidatedQB.andWhere('c.date BETWEEN :fromDate AND :toDate', { fromDate: utcFromDate, toDate: utcToDate });
   }
@@ -306,26 +340,44 @@ export class ConsolidatedService {
   const consolidatedIds = consolidated.map(c => c.id);
   const getNum = (val: any): number => (val === null || val === undefined || isNaN(Number(val))) ? 0 : parseInt(val, 10);
 
-  const getAgg = (tableName: string) => this.consolidatedRepository.manager.createQueryBuilder()
-    .select('consolidatedId', 'consolidatedId')
-    .addSelect('COUNT(id)', 'total')
-    .addSelect(`SUM(CASE WHEN LOWER(status) IN ('entregado', 'entregada', 'pod') THEN 1 ELSE 0 END)`, 'entregado')
-    .addSelect(`SUM(CASE WHEN LOWER(status) IN ('devuelto_a_fedex', 'devuelto') THEN 1 ELSE 0 END)`, 'devuelto_fedex')
-    .addSelect(`SUM(CASE WHEN LOWER(status) IN ('retorno_abandono_fedex', 'retorno_abandono', 'abandono') THEN 1 ELSE 0 END)`, 'retorno_abandono')
-    .addSelect(`SUM(CASE WHEN LOWER(status) IN ('en_ruta', 'en ruta', 'ruta') THEN 1 ELSE 0 END)`, 'en_ruta')
-    .addSelect(`SUM(CASE WHEN LOWER(status) IN ('en_bodega', 'en bodega', 'bodega') THEN 1 ELSE 0 END)`, 'en_bodega')
-    .addSelect(`SUM(CASE WHEN LOWER(status) IN ('dex03', 'direccion_incorrecta') THEN 1 ELSE 0 END)`, 'dex03')
-    .addSelect(`SUM(CASE WHEN LOWER(status) IN ('dex07', 'rechazado') THEN 1 ELSE 0 END)`, 'dex07')
-    .addSelect(`SUM(CASE WHEN LOWER(status) IN ('dex08', 'cliente_no_disponible') THEN 1 ELSE 0 END)`, 'dex08')
-    .addSelect(`SUM(CASE WHEN LOWER(status) IN ('pendiente', 'creado', 'nuevo', 'sin_estado') THEN 1 ELSE 0 END)`, 'pendiente_directo')
-    .from(tableName, 't')
-    .where('consolidatedId IN (:...ids)', { ids: consolidatedIds })
-    .andWhere('status != :cancel', { cancel: 'cancelado' })
-    .groupBy('consolidatedId')
-    .getRawMany();
+  // Set PENDIENTE_MOV: guías que AÚN no se movieron (no entregado/dex/ocurre y sin desenlace de "otros").
+  const PENDIENTE_MOV_SQL = `'pendiente','creado','nuevo','sin_estado','en_bodega','en bodega','bodega','en_ruta','en ruta','ruta','en_transito','recibido_en_bodega','recoleccion'`;
 
-  const shipmentAgg = await getAgg('shipment');
-  const chargeAgg = await getAgg('charge_shipment');
+  const getAgg = (tableName: string, isShipment: boolean) => {
+    const qb = this.consolidatedRepository.manager.createQueryBuilder()
+      .select('t.consolidatedId', 'consolidatedId')
+      .addSelect('COUNT(t.id)', 'total')
+      .addSelect(`SUM(CASE WHEN LOWER(t.status) IN ('entregado', 'entregada', 'pod') THEN 1 ELSE 0 END)`, 'entregado')
+      .addSelect(`SUM(CASE WHEN LOWER(t.status) IN ('devuelto_a_fedex', 'devuelto') THEN 1 ELSE 0 END)`, 'devuelto_fedex')
+      .addSelect(`SUM(CASE WHEN LOWER(t.status) IN ('retorno_abandono_fedex', 'retorno_abandono', 'abandono') THEN 1 ELSE 0 END)`, 'retorno_abandono')
+      .addSelect(`SUM(CASE WHEN LOWER(t.status) IN ('en_ruta', 'en ruta', 'ruta') THEN 1 ELSE 0 END)`, 'en_ruta')
+      .addSelect(`SUM(CASE WHEN LOWER(t.status) IN ('en_bodega', 'en bodega', 'bodega') THEN 1 ELSE 0 END)`, 'en_bodega')
+      .addSelect(`SUM(CASE WHEN LOWER(t.status) IN ('dex03', 'direccion_incorrecta') THEN 1 ELSE 0 END)`, 'dex03')
+      .addSelect(`SUM(CASE WHEN LOWER(t.status) IN ('dex07', 'rechazado') THEN 1 ELSE 0 END)`, 'dex07')
+      .addSelect(`SUM(CASE WHEN LOWER(t.status) IN ('dex08', 'cliente_no_disponible') THEN 1 ELSE 0 END)`, 'dex08')
+      .addSelect(`SUM(CASE WHEN LOWER(t.status) = 'es_ocurre' THEN 1 ELSE 0 END)`, 'ocurre')
+      .addSelect(`SUM(CASE WHEN LOWER(t.status) = 'acargo_de_fedex' THEN 1 ELSE 0 END)`, 'acargo_fedex')
+      .addSelect(`SUM(CASE WHEN LOWER(t.status) = 'restriccion_seguridad_ubicacion' THEN 1 ELSE 0 END)`, 'restriccion_seguridad')
+      .addSelect(`SUM(CASE WHEN LOWER(t.status) = 'entregado_por_fedex' THEN 1 ELSE 0 END)`, 'entregado_por_fedex')
+      .addSelect(`SUM(CASE WHEN LOWER(t.status) = 'entregado_en_bodega' THEN 1 ELSE 0 END)`, 'entregado_en_bodega')
+      .addSelect(`SUM(CASE WHEN LOWER(t.status) IN (${PENDIENTE_MOV_SQL}) THEN 1 ELSE 0 END)`, 'pendiente_mov')
+      .addSelect(`SUM(CASE WHEN LOWER(t.status) IN ('pendiente', 'creado', 'nuevo', 'sin_estado') THEN 1 ELSE 0 END)`, 'pendiente_directo')
+      .from(tableName, 't')
+      .where('t.consolidatedId IN (:...ids)', { ids: consolidatedIds })
+      .andWhere('t.status != :cancel', { cancel: 'cancelado' })
+      .groupBy('t.consolidatedId');
+
+    // Alto Valor y Cobros (COD) solo aplican a shipment (subconjuntos de Normales).
+    if (isShipment) {
+      qb.leftJoin('payment', 'p', 'p.shipmentId = t.id')
+        .addSelect(`SUM(CASE WHEN t.isHighValue = 1 THEN 1 ELSE 0 END)`, 'high_value')
+        .addSelect(`SUM(CASE WHEN p.amount > 0 THEN 1 ELSE 0 END)`, 'cobros');
+    }
+    return qb.getRawMany();
+  };
+
+  const shipmentAgg = await getAgg('shipment', true);
+  const chargeAgg = await getAgg('charge_shipment', false);
   const shipmentMap = new Map(shipmentAgg.map(r => [r.consolidatedId, r]));
   const chargeMap = new Map(chargeAgg.map(r => [r.consolidatedId, r]));
 
@@ -359,15 +411,55 @@ export class ConsolidatedService {
     const n = getNum(ship.total);
     const f2 = getNum(charge.total);
     const total = n + f2;
-    const entregado = getNum(ship.entregado) + getNum(charge.entregado);
+    const totalCargas = total; // TOTAL CARGA del cuadre = Normales + F2
+
+    // Subconjuntos de Normales (solo shipment)
+    const countHighValue = getNum(ship.high_value);
+    const countCobros = getNum(ship.cobros);
+
+    const entregado = getNum(ship.entregado) + getNum(charge.entregado); // POD
     const devueltos = getNum(ship.devuelto_fedex) + getNum(charge.devuelto_fedex) + getNum(ship.retorno_abandono) + getNum(charge.retorno_abandono);
     const en_ruta = getNum(ship.en_ruta) + getNum(charge.en_ruta);
     const en_bodega = getNum(ship.en_bodega) + getNum(charge.en_bodega);
     const dex03 = getNum(ship.dex03) + getNum(charge.dex03);
     const dex07 = getNum(ship.dex07) + getNum(charge.dex07);
     const dex08 = getNum(ship.dex08) + getNum(charge.dex08);
+    const ocurre = getNum(ship.ocurre) + getNum(charge.ocurre);
     const totalDex = dex03 + dex07 + dex08;
 
+    // POD + DEX's (acomodo POD-07-03-08-Ocurre)
+    const podPlusDexs = entregado + dex07 + dex03 + dex08 + ocurre;
+
+    // Guías pendientes de movimiento: aún sin desenlace (incluye en_bodega/en_ruta/pendiente/...).
+    const guiasPendientesDeMov = getNum(ship.pendiente_mov) + getNum(charge.pendiente_mov);
+
+    // "Otros": ya tuvieron movimiento pero fuera de POD/DEX/Ocurre y no son pendientes.
+    let otros = totalCargas - podPlusDexs - guiasPendientesDeMov;
+    if (otros < 0) otros = 0;
+
+    const acargoFedex = getNum(ship.acargo_fedex) + getNum(charge.acargo_fedex);
+    const retornoAbandono = getNum(ship.retorno_abandono) + getNum(charge.retorno_abandono);
+    const devueltoFedex = getNum(ship.devuelto_fedex) + getNum(charge.devuelto_fedex);
+    const restriccionSeguridad = getNum(ship.restriccion_seguridad) + getNum(charge.restriccion_seguridad);
+    const entregadoPorFedex = getNum(ship.entregado_por_fedex) + getNum(charge.entregado_por_fedex);
+    const entregadoEnBodega = getNum(ship.entregado_en_bodega) + getNum(charge.entregado_en_bodega);
+    let otrosResto = otros - (acargoFedex + retornoAbandono + devueltoFedex + restriccionSeguridad + entregadoPorFedex + entregadoEnBodega);
+    if (otrosResto < 0) otrosResto = 0;
+    const otrosBreakdown: Record<string, number> = {
+      acargo_de_fedex: acargoFedex,
+      retorno_abandono_fedex: retornoAbandono,
+      devuelto_a_fedex: devueltoFedex,
+      restriccion_seguridad_ubicacion: restriccionSeguridad,
+      entregado_por_fedex: entregadoPorFedex,
+      entregado_en_bodega: entregadoEnBodega,
+      otros: otrosResto,
+    };
+
+    // Estatus del cuadre: cerrado cuando no quedan guías pendientes de movimiento.
+    const estatusCuadre: 'cerrado' | 'abierto' =
+      (totalCargas > 0 && guiasPendientesDeMov === 0) ? 'cerrado' : 'abierto';
+
+    // Campo legado (compatibilidad): pendiente "clásico".
     let pendiente = total - (entregado + totalDex + devueltos + en_ruta + en_bodega);
     const pendienteDirecto = getNum(ship.pendiente_directo) + getNum(charge.pendiente_directo);
     if (pendiente < pendienteDirecto) pendiente = pendienteDirecto;
@@ -383,8 +475,11 @@ export class ConsolidatedService {
       type: row.type,
       subsidiary: { id: row.subsidiary_id, name: row.subsidiary_name },
       isConsolidatedComplete: total > 0 && en_ruta === 0 && en_bodega === 0 && pendiente === 0,
+      estatusCuadre,
       shipmentCounts: {
-        total, countNormal: n, countF2: f2, entregado, totalDex, totalDevueltos: devueltos,
+        total, countNormal: n, countF2: f2, countHighValue, countCobros, totalCargas,
+        entregado, totalDex, ocurre, podPlusDexs, guiasPendientesDeMov, otros, otrosBreakdown,
+        totalDevueltos: devueltos,
         pendiente, en_ruta, en_bodega, dex03, dex07, dex08, other: 0,
         porcEfectividad: total > 0 ? parseFloat(((entregado / total) * 100).toFixed(2)) : 0,
         porcEfectividadEntrega: (entregado + totalDex) > 0 ? parseFloat(((entregado / (entregado + totalDex)) * 100).toFixed(2)) : 0,

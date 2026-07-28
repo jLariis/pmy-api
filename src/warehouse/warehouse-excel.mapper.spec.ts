@@ -69,22 +69,24 @@ describe('buildWarehouseExcelData', () => {
     expect(d.rows[0].trackingNumber).toBe('DHL1');
   });
 
-  it('paquete SIN cobro (isCharge:false) -> payment "N/A" aunque tenga payment.amount', () => {
+  it('envío normal (isCharge:false) CON payment.amount -> muestra el cobro (no "N/A")', () => {
+    // El cobro (COD) se carga sobre envíos normales (Shipment); debe mostrarse
+    // aunque isCharge sea false. Antes se ocultaba como "N/A".
     const d = buildWarehouseExcelData(
       {} as any,
       [{ trackingNumber: 'G2', isCharge: false, payment: { amount: 50 } }],
       'America/Hermosillo',
     );
-    expect(d.rows[0].payment).toBe('N/A');
+    expect(d.rows[0].payment).toBe(50);
   });
 
-  it('paquete de cobro (isCharge:true) sin payment ni paymentAmount -> payment 0', () => {
+  it('paquete sin payment ni paymentAmount -> "N/A" (aunque isCharge sea true)', () => {
     const d = buildWarehouseExcelData(
       {} as any,
       [{ trackingNumber: 'G3', isCharge: true }],
       'America/Hermosillo',
     );
-    expect(d.rows[0].payment).toBe(0);
+    expect(d.rows[0].payment).toBe(' ');
   });
 
   it('usa paymentAmount cuando no hay payment.amount', () => {
