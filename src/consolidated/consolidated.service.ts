@@ -340,8 +340,12 @@ export class ConsolidatedService {
   const consolidatedIds = consolidated.map(c => c.id);
   const getNum = (val: any): number => (val === null || val === undefined || isNaN(Number(val))) ? 0 : parseInt(val, 10);
 
-  // Set PENDIENTE_MOV: guías que AÚN no se movieron (no entregado/dex/ocurre y sin desenlace de "otros").
-  const PENDIENTE_MOV_SQL = `'pendiente','creado','nuevo','sin_estado','en_bodega','en bodega','bodega','en_ruta','en ruta','ruta','en_transito','recibido_en_bodega','recoleccion'`;
+  // Set PENDIENTE_MOV: guías que AÚN no se movieron. Definición única de "pendiente":
+  // en_ruta / en_bodega / pendiente (+ equivalentes salida a ruta / recibido en bodega).
+  // NO incluye ningún DEX (rechazado/direccion_incorrecta/cliente_no_disponible) ni entregas
+  // ni estatus de "otros": esos ya tuvieron movimiento y no cuentan como pendientes.
+  const PENDING_MOV_STATUSES = ['pendiente', 'en_ruta', 'en_transito', 'en_bodega', 'recibido_en_bodega'];
+  const PENDIENTE_MOV_SQL = PENDING_MOV_STATUSES.map(s => `'${s}'`).join(',');
 
   const getAgg = (tableName: string, isShipment: boolean) => {
     const qb = this.consolidatedRepository.manager.createQueryBuilder()
@@ -367,11 +371,19 @@ export class ConsolidatedService {
       .andWhere('t.status != :cancel', { cancel: 'cancelado' })
       .groupBy('t.consolidatedId');
 
-    // Alto Valor y Cobros (COD) solo aplican a shipment (subconjuntos de Normales).
+    // Cobros = paquetes con relación a `payment` (amount > 0). Aplica a AMBAS tablas.
+    // OJO con el sentido del FK (la relación es OneToOne con doble @JoinColumn):
+    //  - shipment: el FK canónico que escribe la app es `shipment.paymentId` → JOIN por p.id = t.paymentId.
+    //    (Usar `payment.shipmentId` deja fuera la mayoría de los registros: está poco poblado.)
+    //  - charge_shipment: NO tiene columna `paymentId`; el vínculo es `payment.chargeShipmentId`.
+    const paymentJoin = isShipment ? 'p.id = t.paymentId' : 'p.chargeShipmentId = t.id';
+    qb.leftJoin('payment', 'p', paymentJoin)
+      .addSelect(`SUM(CASE WHEN p.amount > 0 THEN 1 ELSE 0 END)`, 'cobros')
+      .addSelect(`SUM(CASE WHEN p.amount > 0 THEN p.amount ELSE 0 END)`, 'monto_cobros');
+
+    // Alto Valor: solo shipment (subconjunto de Normales).
     if (isShipment) {
-      qb.leftJoin('payment', 'p', 'p.shipmentId = t.id')
-        .addSelect(`SUM(CASE WHEN t.isHighValue = 1 THEN 1 ELSE 0 END)`, 'high_value')
-        .addSelect(`SUM(CASE WHEN p.amount > 0 THEN 1 ELSE 0 END)`, 'cobros');
+      qb.addSelect(`SUM(CASE WHEN t.isHighValue = 1 THEN 1 ELSE 0 END)`, 'high_value');
     }
     return qb.getRawMany();
   };
@@ -381,26 +393,23 @@ export class ConsolidatedService {
   const shipmentMap = new Map(shipmentAgg.map(r => [r.consolidatedId, r]));
   const chargeMap = new Map(chargeAgg.map(r => [r.consolidatedId, r]));
 
-  const pendingStatuses = ['entregado', 'devuelto_a_fedex', 'cancelado', 'rechazado', 'cliente_no_disponible', 'direccion_incorrecta', 'en_bodega'];
-  
-  // Pendientes unificados sin intentar buscar 'carrier' en detalle
-  const pendingShipments = await this.consolidatedRepository.manager.createQueryBuilder()
+  // Lista de pendientes = MISMA definición que el conteo (PENDING_MOV_STATUSES).
+  // DEX y demás desenlaces quedan fuera. Incluye datos del destinatario para el reporte.
+  const buildPendingQuery = (table: string) => this.consolidatedRepository.manager.createQueryBuilder()
     .select('consolidatedId', 'consolidatedId')
     .addSelect('trackingNumber', 'tracking')
     .addSelect('status', 'status')
-    .from('shipment', 's')
+    .addSelect('recipientName', 'recipientName')
+    .addSelect('recipientAddress', 'recipientAddress')
+    .addSelect('recipientZip', 'recipientZip')
+    .addSelect('commitDateTime', 'commitDateTime')
+    .from(table, 't')
     .where('consolidatedId IN (:...ids)', { ids: consolidatedIds })
-    .andWhere('status NOT IN (:...pendingStatuses)', { pendingStatuses })
+    .andWhere('status IN (:...pendingStatuses)', { pendingStatuses: PENDING_MOV_STATUSES })
     .getRawMany();
-    
-  const pendingCharges = await this.consolidatedRepository.manager.createQueryBuilder()
-    .select('consolidatedId', 'consolidatedId')
-    .addSelect('trackingNumber', 'tracking')
-    .addSelect('status', 'status')
-    .from('charge_shipment', 'cs')
-    .where('consolidatedId IN (:...ids)', { ids: consolidatedIds })
-    .andWhere('status NOT IN (:...pendingStatuses)', { pendingStatuses })
-    .getRawMany();
+
+  const pendingShipments = await buildPendingQuery('shipment');
+  const pendingCharges = await buildPendingQuery('charge_shipment');
 
   const allPending = [...pendingShipments, ...pendingCharges];
 
@@ -413,9 +422,13 @@ export class ConsolidatedService {
     const total = n + f2;
     const totalCargas = total; // TOTAL CARGA del cuadre = Normales + F2
 
-    // Subconjuntos de Normales (solo shipment)
+    // Alto Valor: subconjunto de Normales (solo shipment).
     const countHighValue = getNum(ship.high_value);
-    const countCobros = getNum(ship.cobros);
+    // Cobros: paquetes con pago (payment), pueden ser shipment o charge/F2.
+    const countCobros = getNum(ship.cobros) + getNum(charge.cobros);
+    // Monto total de cobros ($): SUM(payment.amount). Decimal → parseFloat (getNum truncaría).
+    const getFloat = (val: any): number => (val === null || val === undefined || isNaN(Number(val))) ? 0 : Number(val);
+    const montoCobros = getFloat(ship.monto_cobros) + getFloat(charge.monto_cobros);
 
     const entregado = getNum(ship.entregado) + getNum(charge.entregado); // POD
     const devueltos = getNum(ship.devuelto_fedex) + getNum(charge.devuelto_fedex) + getNum(ship.retorno_abandono) + getNum(charge.retorno_abandono);
@@ -477,7 +490,7 @@ export class ConsolidatedService {
       isConsolidatedComplete: total > 0 && en_ruta === 0 && en_bodega === 0 && pendiente === 0,
       estatusCuadre,
       shipmentCounts: {
-        total, countNormal: n, countF2: f2, countHighValue, countCobros, totalCargas,
+        total, countNormal: n, countF2: f2, countHighValue, countCobros, montoCobros, totalCargas,
         entregado, totalDex, ocurre, podPlusDexs, guiasPendientesDeMov, otros, otrosBreakdown,
         totalDevueltos: devueltos,
         pendiente, en_ruta, en_bodega, dex03, dex07, dex08, other: 0,
@@ -533,51 +546,58 @@ export class ConsolidatedService {
         return [];
       }
 
-      // 3. Consulta de shipments solo para el consolidatedId específico
-      const shipments = await this.shipmentRepository.find({
-        select: {
-          id: true,
-          trackingNumber: true,
-          recipientName: true,
-          commitDateTime: true,
-          consolidatedId: true,
+      // 3. Consulta de shipments Y charge_shipments (carga/F2/31.5) del consolidado.
+      //    Antes solo se traían shipments; la carga/F2 (charge_shipment) faltaba en el detalle.
+      const selectFields = {
+        id: true,
+        trackingNumber: true,
+        recipientName: true,
+        commitDateTime: true,
+        consolidatedId: true,
+        status: true,
+        statusHistory: {
           status: true,
-          statusHistory: {
-            status: true,
-            exceptionCode: true,
-            timestamp: true
-          },
-          subsidiary: {
-            id: true,
-            name: true
-          }
+          exceptionCode: true,
+          timestamp: true,
         },
-        where: { 
-          consolidatedId: consolidatedId // Solo shipments de este consolidado
+        subsidiary: {
+          id: true,
+          name: true,
         },
-        relations: ['subsidiary', 'statusHistory'],
-        order: { commitDateTime: 'DESC' },
-      });
+      };
 
-      // 4. Procesar los shipments (manteniendo toda la lógica original)
-      return shipments.map(shipment => {
-        // Ordenar historial de estados por fecha
-        if (shipment.statusHistory?.length > 0) {
-          shipment.statusHistory.sort(
-            (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+      const [shipments, chargeShipments] = await Promise.all([
+        this.shipmentRepository.find({
+          select: selectFields as any,
+          where: { consolidatedId },
+          relations: ['subsidiary', 'statusHistory'],
+          order: { commitDateTime: 'DESC' },
+        }),
+        this.chargeShipmentRepository.find({
+          select: selectFields as any,
+          where: { consolidatedId },
+          relations: ['subsidiary', 'statusHistory'],
+          order: { commitDateTime: 'DESC' },
+        }),
+      ]);
+
+      // 4. Procesar y unificar. `isCharge` distingue carga/F2 (charge_shipment) de normales.
+      const mapItem = (item: any, isCharge: boolean): ShipmentConsolidatedDto => {
+        if (item.statusHistory?.length > 0) {
+          item.statusHistory.sort(
+            (a: any, b: any) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
           );
         }
-
-        // Calcular días en ruta si está en estado 'en_ruta'
-        const daysInRoute = shipment.status === 'en_ruta'
+        const daysInRoute = item.status === 'en_ruta'
           ? this.calculateDaysDifference(new Date(consolidate.date), new Date())
           : 0;
+        return { ...item, daysInRoute, isCharge } as ShipmentConsolidatedDto;
+      };
 
-        return {
-          ...shipment,
-          daysInRoute,
-        } as ShipmentConsolidatedDto;
-      });
+      return [
+        ...shipments.map(s => mapItem(s, false)),
+        ...chargeShipments.map(cs => mapItem(cs, true)),
+      ];
   }
 
   async findOne(id: string) {

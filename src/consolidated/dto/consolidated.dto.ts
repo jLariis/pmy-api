@@ -18,7 +18,8 @@ export interface ConsolidatedDto {
     countNormal: number;
     countF2: number;
     countHighValue: number;   // Alto Valor: subconjunto de Normales (shipment.isHighValue)
-    countCobros: number;      // Cobros (COD): subconjunto de Normales (payment.amount > 0)
+    countCobros: number;      // Cobros: # de paquetes con pago (payment.amount > 0); shipment o charge/F2
+    montoCobros: number;      // Cobros: monto total $ (SUM payment.amount) de esos paquetes
     totalCargas: number;      // TOTAL CARGA del cuadre = countNormal + countF2
     en_ruta: number;
     en_bodega: number;
