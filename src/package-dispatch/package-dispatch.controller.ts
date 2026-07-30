@@ -2,6 +2,7 @@ import { Controller, Get, Post, Body, Patch, Param, Delete, UseInterceptors, Upl
 import { PackageDispatchService } from './package-dispatch.service';
 import { CreatePackageDispatchDto } from './dto/create-package-dispatch.dto';
 import { UpdatePackageDispatchDto } from './dto/update-package-dispatch.dto';
+import { ValidateTrackingsDto } from './dto/validate-trackings.dto';
 import { ApiTags, ApiBearerAuth, ApiConsumes, ApiOperation, ApiBody } from '@nestjs/swagger';
 import { FilesInterceptor } from '@nestjs/platform-express';
 
@@ -66,6 +67,12 @@ export class PackageDispatchController {
   @Get('validate-tracking-number/:trackingNumber/:subsidiaryId')
   validateTrackingNumber(@Param('trackingNumber') trackingNumber: string, @Param('subsidiaryId') subsidiaryId: string) {
     return this.packageDispatchService.validateTrackingNumber(trackingNumber, subsidiaryId);
+  }
+
+  @Post('validate-trackings')
+  @ApiOperation({ summary: 'Validar una lista de trackings en un solo request (modo batch por sucursal)' })
+  validateTrackings(@Body() dto: ValidateTrackingsDto) {
+    return this.packageDispatchService.validateTrackingsList(dto);
   }
 
   @Patch(':id')

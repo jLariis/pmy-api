@@ -6,8 +6,9 @@ import { PackageDispatch } from 'src/entities/package-dispatch.entity';
 import { Between, DataSource, In, Not, Repository } from 'typeorm';
 import { differenceInCalendarDays } from 'date-fns';
 import { LD_QUALIFYING_SQL_IN } from 'src/common/ld-codes';
-import { Shipment, ChargeShipment, Consolidated, ShipmentStatus } from 'src/entities';
+import { Shipment, ChargeShipment, Consolidated, ShipmentStatus, Subsidiary } from 'src/entities';
 import { ValidatedPackageDispatchDto } from './dto/validated-package-dispatch.dto';
+import { ValidateTrackingsDto } from './dto/validate-trackings.dto';
 import { Devolution } from 'src/entities/devolution.entity';
 import { MailService } from 'src/mail/mail.service';
 import { ShipmentStatusType, TERMINAL_SHIPMENT_STATUSES } from 'src/common/enums/shipment-status-type.enum';
@@ -35,6 +36,8 @@ export class PackageDispatchService {
     private readonly chargeShipmentRepository: Repository<ChargeShipment>,
     @InjectRepository(Consolidated)
     private readonly consolidatedRepository: Repository<Consolidated>,
+    @InjectRepository(Subsidiary)
+    private readonly subsidiaryRepository: Repository<Subsidiary>,
     @InjectRepository(Devolution)
     private readonly devolutionRepository: Repository<Devolution>,
     private readonly mailService: MailService,
@@ -67,6 +70,43 @@ export class PackageDispatchService {
       if (!Number.isNaN(na) && !Number.isNaN(nb)) return na - nb;
       return za.localeCompare(zb);
     });
+  }
+
+  /**
+   * Ordena según la config de la sucursal: por CP si `sortByPostalCode` está
+   * activo, o conservando el orden de entrada (orden de escaneo) si no. Único
+   * punto de decisión de orden en backend para salidas a ruta.
+   */
+  private sortShipmentsForSubsidiary<T extends { recipientZip?: string }>(
+    items: T[] = [],
+    sortByPostalCode?: boolean,
+  ): T[] {
+    return sortByPostalCode ? this.sortByRecipientZip(items) : [...items];
+  }
+
+  /**
+   * Valida una lista completa de trackings en un solo request (modo batch por
+   * sucursal). Reusa `validateTrackingNumber` por cada código y devuelve los
+   * resultados ordenados según `sortDispatchByPostalCode` de la sucursal.
+   */
+  async validateTrackingsList(dto: ValidateTrackingsDto): Promise<any[]> {
+    const { subsidiaryId } = dto;
+    // Dedupe conservando el orden de escaneo (primer índice gana).
+    const codes = Array.from(new Set((dto.trackingNumbers || []).map(t => (t ?? '').trim()).filter(Boolean)));
+
+    if (codes.length === 0) {
+      throw new BadRequestException('No se recibieron trackings para validar.');
+    }
+
+    const subsidiary = subsidiaryId
+      ? await this.subsidiaryRepository.findOne({ where: { id: subsidiaryId } })
+      : null;
+
+    const results = await Promise.all(
+      codes.map(code => this.validateTrackingNumber(code, subsidiaryId)),
+    );
+
+    return this.sortShipmentsForSubsidiary(results, subsidiary?.sortDispatchByPostalCode);
   }
 
   async create(dto: CreatePackageDispatchDto, userId: string): Promise<PackageDispatch> {
@@ -1062,12 +1102,13 @@ export class PackageDispatchService {
 
     // === 4. RETORNAR EL OBJETO ARMADO ===
     // Devolvemos el dispatch original pero le incrustamos los arreglos de envíos
-    // (ordenados por código postal). Esto hace match perfecto con tu interface
-    // PackageDispatch en el frontend.
+    // ordenados según la config de la sucursal (CP o orden de escaneo). Esto hace
+    // match perfecto con tu interface PackageDispatch en el frontend.
+    const sortByCp = dispatch.subsidiary?.sortDispatchByPostalCode;
     return {
       ...dispatch,
-      shipments: this.sortByRecipientZip(shipments),
-      chargeShipments: this.sortByRecipientZip(chargeShipments)
+      shipments: this.sortShipmentsForSubsidiary(shipments, sortByCp),
+      chargeShipments: this.sortShipmentsForSubsidiary(chargeShipments, sortByCp)
     };
   }
 
@@ -1147,7 +1188,7 @@ export class PackageDispatchService {
       trackingNumber: dispatch?.trackingNumber ?? '',
       packages: [...shipments.map((s) => map(s, false)), ...chargeShipments.map((s) => map(s, true))],
       invalidTrackings: [],
-      sortByPostalCode: true,
+      sortByPostalCode: Boolean(dispatch?.subsidiary?.sortDispatchByPostalCode),
       createdAt: dispatch?.createdAt,
     };
   }
@@ -1431,9 +1472,10 @@ export class PackageDispatchService {
       throw new NotFoundException('Package dispatch not found'); // Mejor usar la excepción de Nest
     }
 
-    // Ordenar los envíos por código postal para la salida a ruta.
-    packageDispatch.shipments = this.sortByRecipientZip(packageDispatch.shipments);
-    packageDispatch.chargeShipments = this.sortByRecipientZip(packageDispatch.chargeShipments);
+    // Ordenar los envíos según la config de la sucursal (CP o orden de escaneo).
+    const sortByCp = packageDispatch.subsidiary?.sortDispatchByPostalCode;
+    packageDispatch.shipments = this.sortShipmentsForSubsidiary(packageDispatch.shipments, sortByCp);
+    packageDispatch.chargeShipments = this.sortShipmentsForSubsidiary(packageDispatch.chargeShipments, sortByCp);
 
     return packageDispatch;
   }

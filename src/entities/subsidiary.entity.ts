@@ -166,6 +166,15 @@ export class Subsidiary {
   @Column({ default: false })
   sortDispatchByPostalCode: boolean;
 
+  /**
+   * Salidas a ruta: modo de validación de paquetes. Si está activo, el escaneo
+   * completo se valida en UN solo request por lista (endpoint batch) y el backend
+   * devuelve los paquetes ya ordenados. Si está en false (default), se conserva el
+   * comportamiento histórico: validación uno-por-uno.
+   */
+  @Column({ default: false })
+  validateDispatchByList: boolean;
+
   // ---- Reglas de INGRESO por sucursal (defaults = comportamiento histórico) ----
   /**
    * ¿El DEX03 (dirección incorrecta) cuenta como ingreso? Default false: el
