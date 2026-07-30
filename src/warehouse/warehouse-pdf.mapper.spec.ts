@@ -5,7 +5,7 @@ describe('buildWarehousePdfData', () => {
   it('arma title, flags e isHermosillo + filas con rowClass/payment', () => {
     const header: any = { title: 'SALIDA A RUTA', subsidiary: { name: 'Cd. Obregón' }, vehicle: { name: 'V1' }, trackingNumber: 'T1' };
     const pkgs: any[] = [
-      { trackingNumber: 'G1', recipientName: 'Ana', recipientAddress: 'Calle 1', recipientZip: '85000', recipientPhone: '644', isCharge: true, payment: { amount: 100 }, commitDateTime: new Date() },
+      { trackingNumber: 'G1', recipientName: 'Ana', recipientAddress: 'Calle 1', recipientZip: '85000', recipientPhone: '644', isCharge: true, payment: { amount: 100, type: 'COD' }, commitDateTime: new Date() },
     ];
     const d = buildWarehousePdfData(header, pkgs, 'America/Hermosillo');
     expect(d.title).toBe('SALIDA A RUTA');
@@ -14,7 +14,7 @@ describe('buildWarehousePdfData', () => {
     expect(d.isHermosillo).toBe(false);
     expect(d.totalPackages).toBe(1);
     expect(d.rows[0].trackingNumber).toBe('G1');
-    expect(d.rows[0].payment).toContain('100');   // cobro formateado
+    expect(d.rows[0].payment).toBe('COD $100.00');   // TIPO + monto formateado
     expect(['pago', '', 'vencehoy']).toContain(d.rows[0].rowClass);
     expect(d.rows[0].index).toBe(1);
   });
@@ -50,13 +50,13 @@ describe('buildWarehousePdfData', () => {
         recipientZip: '85001',
         recipientPhone: '644',
         isCharge: false,
-        payment: { amount: 50 },
+        payment: { amount: 50, type: 'FTC' },
         // fecha de compromiso lejos de hoy para no disparar vencehoy
         commitDateTime: new Date('2000-01-01T00:00:00Z'),
       },
     ];
     const d = buildWarehousePdfData(header, pkgs, 'America/Hermosillo');
-    expect(d.rows[0].payment).toBe('$50');
+    expect(d.rows[0].payment).toBe('FTC $50.00');
     expect(d.rows[0].rowClass).toBe('pago');
   });
 
@@ -90,12 +90,12 @@ describe('buildWarehousePdfData', () => {
         recipientZip: '85003',
         recipientPhone: '644',
         isCharge: true,
-        payment: { amount: 200 },
+        payment: { amount: 200, type: 'COD' },
         commitDateTime: new Date(), // hoy
       },
     ];
     const d = buildWarehousePdfData(header, pkgs, 'America/Hermosillo');
-    expect(d.rows[0].payment).toBe('$200');
+    expect(d.rows[0].payment).toBe('COD $200.00');
     expect(d.rows[0].rowClass).toBe('vencehoy');
   });
 });

@@ -12,7 +12,7 @@ describe('buildWarehouseExcelData', () => {
     const pkgs: any[] = [
       {
         trackingNumber: 'G1', recipientName: 'Ana', recipientAddress: 'Calle 1',
-        recipientZip: '85000', recipientPhone: '644', isCharge: true, payment: { amount: 100 },
+        recipientZip: '85000', recipientPhone: '644', isCharge: true, payment: { amount: 100, type: 'COD' },
         // 2026-07-10T12:00:00Z en Hermosillo (UTC-7) => 2026-07-10 05:00 => 10/07/2026
         commitDateTime: '2026-07-10T12:00:00Z',
       },
@@ -31,7 +31,8 @@ describe('buildWarehouseExcelData', () => {
     expect(d.rows[0].recipientName).toBe('Ana');
     expect(d.rows[0].recipientAddress).toBe('Calle 1');
     expect(d.rows[0].recipientZip).toBe('85000');
-    expect(d.rows[0].payment).toBe(100);
+    // Cobro = TIPO + monto con 2 decimales.
+    expect(d.rows[0].payment).toBe('COD $100.00');
     // La FECHA de fila proviene de commitDateTime (compromiso), NO de hoy.
     expect(d.rows[0].date).toBe('10/07/2026');
     expect(d.rows[0].recipientPhone).toBe('644');
@@ -74,10 +75,10 @@ describe('buildWarehouseExcelData', () => {
     // aunque isCharge sea false. Antes se ocultaba como "N/A".
     const d = buildWarehouseExcelData(
       {} as any,
-      [{ trackingNumber: 'G2', isCharge: false, payment: { amount: 50 } }],
+      [{ trackingNumber: 'G2', isCharge: false, payment: { amount: 50, type: 'FTC' } }],
       'America/Hermosillo',
     );
-    expect(d.rows[0].payment).toBe(50);
+    expect(d.rows[0].payment).toBe('FTC $50.00');
   });
 
   it('paquete sin payment ni paymentAmount -> "N/A" (aunque isCharge sea true)', () => {
@@ -86,16 +87,25 @@ describe('buildWarehouseExcelData', () => {
       [{ trackingNumber: 'G3', isCharge: true }],
       'America/Hermosillo',
     );
-    expect(d.rows[0].payment).toBe(' ');
+    expect(d.rows[0].payment).toBe('N/A');
   });
 
-  it('usa paymentAmount cuando no hay payment.amount', () => {
+  it('usa paymentAmount/paymentType aplanados cuando no hay relación payment', () => {
     const d = buildWarehouseExcelData(
       {} as any,
-      [{ trackingNumber: 'G4', isCharge: true, paymentAmount: 75 }],
+      [{ trackingNumber: 'G4', isCharge: true, paymentAmount: 75, paymentType: 'ROD' }],
       'America/Hermosillo',
     );
-    expect(d.rows[0].payment).toBe(75);
+    expect(d.rows[0].payment).toBe('ROD $75.00');
+  });
+
+  it('cobro sin tipo -> solo monto formateado ($amount)', () => {
+    const d = buildWarehouseExcelData(
+      {} as any,
+      [{ trackingNumber: 'G6', payment: { amount: 958.44 } }],
+      'America/Hermosillo',
+    );
+    expect(d.rows[0].payment).toBe('$958.44');
   });
 
   it('recipientPhone cae a cadena vacía cuando falta', () => {

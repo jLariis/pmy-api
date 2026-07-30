@@ -25,7 +25,7 @@ import { ShipmentStatusType } from 'src/common/enums';
 import { PaginatedResult, parsePagination, resolveDateRange } from 'src/common/pagination.util';
 import { CreateOutboundDto } from './dto/create-outbound.dto';
 import { assertOutboundConsistency } from './warehouse.validation';
-import { hydratePackageIds, resolvePackagePayment, splitShipmentIds } from './warehouse.helpers';
+import { formatPaymentDisplay, hydratePackageIds, resolvePackagePayment, splitShipmentIds } from './warehouse.helpers';
 import { MailService } from 'src/mail/mail.service';
 import { format, toZonedTime } from 'date-fns-tz';
 import axios from 'axios';
@@ -54,6 +54,7 @@ interface HydratedPackage {
   isCharge: boolean;
   isHighValue: boolean;
   paymentAmount?: number;
+  paymentType?: PaymentTypeEnum | string | null;
 }
 
 /**
@@ -96,7 +97,7 @@ export function buildWarehousePdfData(header: any, packages: any[], timeZone: st
   const isHermosillo = originName.toLowerCase().includes('hermosillo');
   const todayStr = format(toZonedTime(new Date(), timeZone), 'yyyy-MM-dd');
   const rows = packages.map((pkg, i) => {
-    const { amount, hasPayment } = resolvePackagePayment(pkg);
+    const { amount, hasPayment, type } = resolvePackagePayment(pkg);
     const commit = pkg.commitDateTime ? toZonedTime(new Date(pkg.commitDateTime), timeZone) : null;
     const dateStr = commit ? format(commit, 'yyyy-MM-dd') : '';
     const venceHoy = dateStr === todayStr;
@@ -106,7 +107,8 @@ export function buildWarehousePdfData(header: any, packages: any[], timeZone: st
       recipientName: pkg.recipientName ?? '',
       recipientAddress: pkg.recipientAddress ?? '',
       recipientZip: pkg.recipientZip ?? '',
-      payment: hasPayment ? `$${amount}` : 'N/A',
+      // Cobro con TIPO antepuesto: "COD $1500.00" / "FTC $958.44".
+      payment: formatPaymentDisplay(amount, type),
       date: dateStr,
       time: commit ? format(commit, 'HH:mm:ss') : '',
       recipientPhone: pkg.recipientPhone ?? '',
@@ -135,7 +137,7 @@ export function buildWarehouseExcelData(header: any, packages: any[], timeZone: 
     // Cobro (COD) vía helper compartido `resolvePackagePayment` (mismo criterio
     // que el PDF y el generador legacy): se muestra cuando hay `payment`, sin
     // importar `isCharge`.
-    const { amount, hasPayment } = resolvePackagePayment(pkg);
+    const { amount, type } = resolvePackagePayment(pkg);
     // FECHA de fila = fecha de compromiso (commitDateTime) de la guía, NO hoy.
     // Antes se fijaba a `now` para toda fila, ocultando la fecha real de la BD.
     const commit = pkg.commitDateTime ? toZonedTime(new Date(pkg.commitDateTime), timeZone) : null;
@@ -145,7 +147,8 @@ export function buildWarehouseExcelData(header: any, packages: any[], timeZone: 
       recipientName: pkg.recipientName,
       recipientAddress: pkg.recipientAddress,
       recipientZip: pkg.recipientZip,
-      payment: hasPayment ? amount : 'N/A',
+      // Cobro con TIPO antepuesto: "COD $1500.00" / "FTC $958.44".
+      payment: formatPaymentDisplay(amount, type),
       date: commit ? format(commit, 'dd/MM/yyyy') : '',
       recipientPhone: pkg.recipientPhone || '',
       signature: '',
@@ -775,7 +778,7 @@ export class WarehouseService {
           recipientPhone: true,
           commitDateTime: true,
           isHighValue: true,
-          payment: { id: true, amount: true },
+          payment: { id: true, amount: true, type: true },
         },
         relations: ['payment'],
       }),
@@ -790,7 +793,7 @@ export class WarehouseService {
           recipientPhone: true,
           commitDateTime: true,
           isHighValue: true,
-          payment: { id: true, amount: true },
+          payment: { id: true, amount: true, type: true },
         },
         relations: ['payment'],
       }),
@@ -802,6 +805,7 @@ export class WarehouseService {
         ...s,
         isCharge: false,
         paymentAmount: s.payment?.amount ?? null,
+        paymentType: s.payment?.type ?? null,
       }),
     );
     charges.forEach((c) =>
@@ -809,6 +813,7 @@ export class WarehouseService {
         ...c,
         isCharge: true,
         paymentAmount: c.payment?.amount ?? null,
+        paymentType: c.payment?.type ?? null,
       }),
     );
 
@@ -1833,8 +1838,9 @@ export class WarehouseService {
 
     // Filas
     packages.forEach((pkg, index) => {
-      // Cobro vía helper compartido (mismo criterio que el mapper del motor y el PDF).
-      const { amount, hasPayment } = resolvePackagePayment(pkg);
+      // Cobro vía helper compartido (mismo criterio y formato que el mapper del
+      // motor y el PDF): TIPO + monto, p. ej. "COD $1500.00".
+      const { amount, type } = resolvePackagePayment(pkg);
       // FECHA de fila = commitDateTime (compromiso) de la guía, NO hoy.
       const commit = pkg.commitDateTime
         ? toZonedTime(new Date(pkg.commitDateTime), this.timeZone)
@@ -1845,7 +1851,7 @@ export class WarehouseService {
         pkg.recipientName,
         pkg.recipientAddress,
         pkg.recipientZip,
-        hasPayment ? amount : 'N/A',
+        formatPaymentDisplay(amount, type),
         commit ? format(commit, 'dd/MM/yyyy') : '',
         pkg.recipientPhone || '',
         '',
@@ -1920,8 +1926,7 @@ export class WarehouseService {
 
       // Filas de datos
       packages.forEach((pkg, index) => {
-        const amount = pkg.payment?.amount ?? pkg.paymentAmount ?? null;
-        const hasPayment = amount != null;
+        const { amount, hasPayment, type } = resolvePackagePayment(pkg);
         const isExpiringToday = pkg.commitDateTime
           ? format(
               toZonedTime(new Date(pkg.commitDateTime), this.timeZone),
@@ -1945,7 +1950,8 @@ export class WarehouseService {
               'HH:mm:ss',
             )
           : '';
-        const paymentText = hasPayment ? `$${amount}` : 'N/A';
+        // Cobro con TIPO antepuesto: "COD $1500.00" / "FTC $958.44".
+        const paymentText = formatPaymentDisplay(amount, type);
 
         const rowData: TableCell[] = [
           { text: `${index + 1}`, color: '#cc0000', bold: true },
