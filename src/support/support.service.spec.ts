@@ -6,13 +6,16 @@ function make(overrides: any = {}) {
     create: (d: any) => d,
     save: (t: any) => { const row = { id: 't1', ...t }; savedTickets.push(row); return Promise.resolve(row); },
     count: overrides.count ?? (() => Promise.resolve(0)),
-    findOne: overrides.findOne ?? (() => Promise.resolve(savedTickets[savedTickets.length - 1] ?? { id: 't1', folio: 'SUP-0001', estado: 'pendiente', prioridad: 'media', requesterId: 'r1' })),
+    findOne: overrides.findOne ?? (() => Promise.resolve(savedTickets[savedTickets.length - 1] ?? { id: 't1', folio: 'SUP-0001', estado: 'pendiente', prioridad: 'media', requesterId: 'r1', createdAt: new Date(), updatedAt: null })),
     find: () => Promise.resolve([]),
+    update: () => Promise.resolve({ affected: 1 }),
   };
   const commentRepo: any = { create: (d: any) => d, save: (c: any) => Promise.resolve({ id: 'c1', ...c }) };
   const attachmentRepo: any = { create: (d: any) => d, save: (a: any) => Promise.resolve(a) };
+  // Sin usuario con el email del agente default → auto-asignación cae al id de config.
+  const userRepo: any = { findOne: overrides.userFindOne ?? (() => Promise.resolve(undefined)) };
   const notifier: any = { emit: jest.fn(() => Promise.resolve()) };
-  const svc = new SupportService(ticketRepo, commentRepo, attachmentRepo, notifier);
+  const svc = new SupportService(ticketRepo, commentRepo, attachmentRepo, userRepo, notifier);
   return { svc, savedTickets, notifier, ticketRepo };
 }
 
@@ -25,6 +28,14 @@ describe('SupportService.create', () => {
     expect(savedTickets[0].folio).toBe('SUP-0005');
     expect(t.folio).toBe('SUP-0005');
     expect(notifier.emit).toHaveBeenCalledWith(expect.objectContaining({ type: 'ticket.creada' }));
+  });
+
+  it('auto-asigna al agente default (admin@delyaqui.com) y fija slaDueAt', async () => {
+    const { svc, savedTickets } = make();
+    await svc.create({ tipo: 'error', titulo: 'Falla', descripcion: 'x' } as any, requester as any, []);
+    expect(savedTickets[0].assigneeEmail).toBe('admin@delyaqui.com');
+    expect(savedTickets[0].assigneeName).toBeTruthy();
+    expect(savedTickets[0].slaDueAt).toBeInstanceOf(Date);
   });
 
   it('persists attachment rows for uploaded files', async () => {

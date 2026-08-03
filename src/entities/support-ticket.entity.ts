@@ -3,7 +3,13 @@ import { SupportTicketComment } from './support-ticket-comment.entity';
 import { SupportTicketAttachment } from './support-ticket-attachment.entity';
 
 export type TicketType = 'mejora' | 'cambio' | 'eliminar' | 'error';
-export type TicketStatus = 'pendiente' | 'en_progreso' | 'completado' | 'rechazado';
+export type TicketStatus =
+  | 'pendiente' // "Backlog" en el tablero
+  | 'por_hacer'
+  | 'en_progreso'
+  | 'en_revision'
+  | 'completado' // "Hecho" en el tablero
+  | 'rechazado';
 export type TicketPriority = 'baja' | 'media' | 'alta' | 'urgente';
 
 @Entity('support_ticket')
@@ -50,6 +56,12 @@ export class SupportTicket {
   // Asignación
   @Column({ type: 'char', length: 36, nullable: true }) assigneeId: string | null;
   @Column({ type: 'varchar', length: 160, nullable: true }) assigneeName: string | null;
+  @Column({ type: 'varchar', length: 160, nullable: true }) assigneeEmail: string | null;
+
+  // SLA
+  @Column({ type: 'datetime', nullable: true }) slaDueAt: Date | null;
+  /** Marca para no repetir el aviso de SLA vencido (cron). */
+  @Column({ type: 'datetime', nullable: true }) slaNotifiedAt: Date | null;
 
   // Contexto auto-capturado
   @Column({ type: 'varchar', length: 60, nullable: true }) appVersion: string | null;

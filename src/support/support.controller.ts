@@ -13,7 +13,7 @@ import { SupportService } from './support.service';
 import { CreateTicketDto } from './dto/create-ticket.dto';
 import { UpdateTicketDto } from './dto/update-ticket.dto';
 import { AddCommentDto } from './dto/add-comment.dto';
-import { getSupportAgents } from './support-agents';
+import { getSupportAgents } from './support-config';
 
 const uploadRoot = path.join(process.cwd(), 'uploads', 'support');
 
@@ -29,8 +29,15 @@ export class SupportController {
   agents() { return getSupportAgents().map(({ id, nombre, email }) => ({ id, nombre, email })); }
 
   @Get('tickets')
-  list(@Query('estado') estado?: string, @Query('tipo') tipo?: string, @Query('q') q?: string) {
-    return this.service.list({ estado, tipo, q }).then((tickets) => ({ tickets }));
+  list(
+    @Query('estado') estado?: string,
+    @Query('tipo') tipo?: string,
+    @Query('prioridad') prioridad?: string,
+    @Query('q') q?: string,
+    @Query('sucursal') sucursal?: string,
+    @Query('asignado') asignado?: string,
+  ) {
+    return this.service.list({ estado, tipo, prioridad, q, sucursal, asignado }).then((tickets) => ({ tickets }));
   }
 
   @Get('tickets/mine')

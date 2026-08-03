@@ -5,13 +5,23 @@ import * as path from 'path';
 import { SupportTicket } from 'src/entities/support-ticket.entity';
 import { SupportTicketComment } from 'src/entities/support-ticket-comment.entity';
 import { SupportTicketAttachment } from 'src/entities/support-ticket-attachment.entity';
+import { User } from 'src/entities/user.entity';
 import { NotificationsService } from 'src/notifications/notifications.service';
 import { CreateTicketDto } from './dto/create-ticket.dto';
 import { UpdateTicketDto } from './dto/update-ticket.dto';
 import { AddCommentDto } from './dto/add-comment.dto';
-import { getSupportAgents } from './support-agents';
+import { findAgentById, defaultAgent, getSupportAgents, getSlaHours } from './support-config';
+import { computeSlaDueAt, isSlaBreached, urgencyScore, hoursBetween, isResolved } from './support-logic';
 
 type ReqUser = { userId: string; name?: string; lastName?: string; email?: string; subsidiaryId?: string };
+
+/** Ticket con campos calculados para el tablero (no persistidos). */
+export type TicketView = SupportTicket & {
+  urgencyScore: number;
+  slaBreached: boolean;
+  ageHours: number;
+  timeInColumnHours: number;
+};
 
 @Injectable()
 export class SupportService {
@@ -19,6 +29,7 @@ export class SupportService {
     @InjectRepository(SupportTicket) private readonly ticketRepo: Repository<SupportTicket>,
     @InjectRepository(SupportTicketComment) private readonly commentRepo: Repository<SupportTicketComment>,
     @InjectRepository(SupportTicketAttachment) private readonly attachmentRepo: Repository<SupportTicketAttachment>,
+    @InjectRepository(User) private readonly userRepo: Repository<User>,
     private readonly notifier: NotificationsService,
   ) {}
 
@@ -27,30 +38,53 @@ export class SupportService {
     return `SUP-${String(n).padStart(4, '0')}`;
   }
 
-  private supportAgentUserId(): string | undefined {
-    // El destinatario del equipo. Hoy = Javier (config). Su userId real se
-    // resuelve por email si existe; si no, se notifica por correo/WhatsApp igual.
-    return process.env.SUPPORT_AGENT_USER_ID || undefined;
+  /** Resuelve el userId de un email (para dirigir bell+correo al asignado real). */
+  private async userIdByEmail(email?: string | null): Promise<string | undefined> {
+    if (!email) return undefined;
+    const u = await this.userRepo.findOne({ where: { email: email.toLowerCase() }, select: ['id'] });
+    return u?.id;
   }
 
-  async create(dto: CreateTicketDto, user: ReqUser, files: Express.Multer.File[]): Promise<SupportTicket> {
+  /** Agrega los campos calculados (urgencia, SLA, tiempos) a un ticket. */
+  private serialize(t: SupportTicket, now = new Date()): TicketView {
+    return Object.assign({}, t, {
+      urgencyScore: urgencyScore(t, now),
+      slaBreached: isSlaBreached(t, now),
+      ageHours: Math.round(hoursBetween(t.createdAt, now) * 10) / 10,
+      timeInColumnHours: Math.round(hoursBetween(t.updatedAt ?? t.createdAt, now) * 10) / 10,
+    }) as TicketView;
+  }
+
+  async create(dto: CreateTicketDto, user: ReqUser, files: Express.Multer.File[]): Promise<TicketView> {
     const folio = await this.nextFolio();
+    const now = new Date();
+    const prioridad = 'media';
+
+    // Auto-asignación al agente default (admin@delyaqui.com), resolviendo su userId real.
+    const agent = defaultAgent();
+    const assigneeUserId = await this.userIdByEmail(agent.email);
+
     const ticket = await this.ticketRepo.save(this.ticketRepo.create({
       ...dto,
       folio,
       estado: 'pendiente',
-      prioridad: 'media',
+      prioridad,
       requesterId: user.userId,
       requesterName: [user.name, user.lastName].filter(Boolean).join(' ') || null,
       requesterEmail: user.email ?? null,
       subsidiaryId: user.subsidiaryId ?? null,
-      createdAt: new Date(),
+      // Guardamos el id de config del agente (p.ej. 'admin') para que el dropdown de
+      // reasignación lo refleje; el userId real se resuelve por email para notificar.
+      assigneeId: agent.id,
+      assigneeName: agent.nombre,
+      assigneeEmail: agent.email,
+      slaDueAt: computeSlaDueAt(now, prioridad, getSlaHours()),
+      slaNotifiedAt: null,
+      createdAt: now,
     }));
 
     for (const f of files ?? []) {
-      // NOTA (reconciliación T3/T4): el controller de subida (Task 4) usa multer
-      // diskStorage con una carpeta ALEATORIA (no el id del ticket). La URL debe
-      // derivarse de dónde realmente quedó el archivo (f.path), no de ticket.id.
+      // La URL se deriva de dónde realmente quedó el archivo (carpeta aleatoria del multer).
       await this.attachmentRepo.save(this.attachmentRepo.create({
         ticketId: ticket.id,
         filename: f.filename,
@@ -60,10 +94,9 @@ export class SupportService {
       }));
     }
 
-    const agentUserId = this.supportAgentUserId();
     await this.notifier.emit({
       type: 'ticket.creada',
-      audience: agentUserId ? { userId: agentUserId } : { role: 'superadmin' },
+      audience: assigneeUserId ? { userId: assigneeUserId } : { role: 'superadmin' },
       title: `Nuevo ticket ${folio}: ${ticket.titulo}`,
       body: ticket.descripcion,
       link: `/support/admin?ticket=${ticket.id}`,
@@ -75,53 +108,72 @@ export class SupportService {
     return this.getOne(ticket.id);
   }
 
-  async list(filters: { estado?: string; tipo?: string; q?: string } = {}): Promise<SupportTicket[]> {
+  async list(
+    filters: { estado?: string; tipo?: string; prioridad?: string; q?: string; sucursal?: string; asignado?: string } = {},
+  ): Promise<TicketView[]> {
     const qb = this.ticketRepo.createQueryBuilder('t')
       .leftJoinAndSelect('t.comentarios', 'c')
       .leftJoinAndSelect('t.imagenes', 'img')
       .orderBy('t.createdAt', 'DESC');
     if (filters.estado && filters.estado !== 'todos') qb.andWhere('t.estado = :e', { e: filters.estado });
     if (filters.tipo && filters.tipo !== 'todos') qb.andWhere('t.tipo = :ti', { ti: filters.tipo });
-    if (filters.q) qb.andWhere('(t.titulo LIKE :q OR t.descripcion LIKE :q OR t.requesterName LIKE :q)', { q: `%${filters.q}%` });
-    return qb.getMany();
+    if (filters.prioridad && filters.prioridad !== 'todos') qb.andWhere('t.prioridad = :p', { p: filters.prioridad });
+    if (filters.sucursal && filters.sucursal !== 'todos') qb.andWhere('t.subsidiaryId = :s', { s: filters.sucursal });
+    if (filters.asignado && filters.asignado !== 'todos') qb.andWhere('t.assigneeId = :a', { a: filters.asignado });
+    if (filters.q) qb.andWhere('(t.titulo LIKE :q OR t.descripcion LIKE :q OR t.requesterName LIKE :q OR t.folio LIKE :q)', { q: `%${filters.q}%` });
+    const rows = await qb.getMany();
+    const now = new Date();
+    return rows.map((t) => this.serialize(t, now));
   }
 
-  async listMine(userId: string): Promise<SupportTicket[]> {
-    return this.ticketRepo.find({
+  async listMine(userId: string): Promise<TicketView[]> {
+    const rows = await this.ticketRepo.find({
       where: { requesterId: userId },
       relations: ['comentarios', 'imagenes'],
       order: { createdAt: 'DESC' },
     });
+    const now = new Date();
+    return rows.map((t) => this.serialize(t, now));
   }
 
-  async getOne(id: string): Promise<SupportTicket> {
+  async getOne(id: string): Promise<TicketView> {
     const t = await this.ticketRepo.findOne({ where: { id }, relations: ['comentarios', 'imagenes'] });
     if (!t) throw new NotFoundException('Ticket no encontrado');
-    return t;
+    return this.serialize(t);
   }
 
-  async update(id: string, dto: UpdateTicketDto, actor: ReqUser): Promise<SupportTicket> {
+  async update(id: string, dto: UpdateTicketDto, actor: ReqUser): Promise<TicketView> {
     const t = await this.getOne(id);
     const patch: Partial<SupportTicket> = { updatedAt: new Date() };
 
     if (dto.assigneeId && dto.assigneeId !== t.assigneeId) {
-      const agent = getSupportAgents().find((a) => a.id === dto.assigneeId);
+      // Puede venir un id de agente config o un userId real; resolvemos ambos.
+      const agent = findAgentById(dto.assigneeId) ?? getSupportAgents().find((a) => a.email === dto.assigneeId);
       patch.assigneeId = dto.assigneeId;
       patch.assigneeName = agent?.nombre ?? dto.assigneeId;
+      patch.assigneeEmail = agent?.email ?? null;
     }
     if (dto.estado && dto.estado !== t.estado) {
       patch.estado = dto.estado;
-      if (dto.estado === 'completado' || dto.estado === 'rechazado') patch.resolvedAt = new Date();
+      patch.resolvedAt = isResolved(dto.estado) ? new Date() : null;
+      // Reabrir un ticket resuelto reactiva su SLA.
+      if (isResolved(t.estado) && !isResolved(dto.estado)) patch.slaNotifiedAt = null;
     }
-    if (dto.prioridad) patch.prioridad = dto.prioridad;
+    if (dto.prioridad && dto.prioridad !== t.prioridad) {
+      patch.prioridad = dto.prioridad;
+      // Recalcular SLA con la nueva prioridad y rearmar el aviso.
+      patch.slaDueAt = computeSlaDueAt(t.createdAt, dto.prioridad, getSlaHours());
+      patch.slaNotifiedAt = null;
+    }
 
     await this.ticketRepo.update({ id }, patch);
     const updated = await this.getOne(id);
 
-    // Notificaciones declarativas
+    // Notificaciones declarativas.
     if (patch.assigneeId) {
+      const assigneeUserId = (await this.userIdByEmail(updated.assigneeEmail)) ?? updated.assigneeId!;
       await this.notifier.emit({
-        type: 'ticket.asignado', audience: { userId: updated.assigneeId! },
+        type: 'ticket.asignado', audience: { userId: assigneeUserId },
         title: `Ticket ${updated.folio} asignado`, body: updated.titulo,
         link: `/support/admin?ticket=${id}`, entityId: id,
         actor: { id: actor.userId, name: [actor.name, actor.lastName].filter(Boolean).join(' ') },
@@ -145,7 +197,7 @@ export class SupportService {
     return updated;
   }
 
-  async addComment(id: string, dto: AddCommentDto, author: ReqUser): Promise<SupportTicket> {
+  async addComment(id: string, dto: AddCommentDto, author: ReqUser): Promise<TicketView> {
     const t = await this.getOne(id);
     await this.commentRepo.save(this.commentRepo.create({
       ticketId: id,
