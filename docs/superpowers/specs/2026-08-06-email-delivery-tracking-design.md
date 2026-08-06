@@ -20,10 +20,15 @@ pero **solo se cablea a `package-dispatch`** como piloto en esta iteración.
 
 ## 2. Contexto técnico relevante
 
-- **Backend**: NestJS + TypeORM sobre **MySQL**. Deploy en **Vercel serverless**
-  (`@vercel/node`) ⇒ el disco local es efímero, por lo que los adjuntos se guardan en la
-  base de datos (LONGBLOB), no en disco ni en un bucket (no hay almacenamiento en la nube
-  configurado).
+- **Backend**: NestJS + TypeORM sobre **MySQL**. Deploy en **Ubuntu Server 24.04** (VPS con
+  **disco persistente**; el `vercel.json` del repo es legacy y no refleja el runtime real).
+  Los adjuntos se guardan **en disco**, no en la base de datos, para no inflarla. La BD solo
+  guarda la ruta + metadatos del archivo.
+- **Almacenamiento en disco (patrón ya existente)**: `main.ts` sirve `uploads/` como estático
+  (`express.static(join(process.cwd(), 'uploads'))`) y `support.controller.ts` guarda en
+  `uploads/support/` con `multer diskStorage`. Reusamos ese patrón: los adjuntos de correo van
+  a `uploads/email/<module>/<entityId>/<filename>` (relativo a `process.cwd()`). El operador
+  (Javier) mantiene y purga esta carpeta con el tiempo.
 - **Esquema**: se maneja por **migraciones** (`src/database/migrations`), no por `synchronize`
   en producción. Todo cambio de esquema va en una migración nueva.
 - **Flujo de correo actual**:
@@ -49,7 +54,10 @@ pero **solo se cablea a `package-dispatch`** como piloto en esta iteración.
 ## 3. Decisiones tomadas
 
 1. **Fuente de los adjuntos en el reenvío**: se **guardan los archivos en el primer envío** y el
-   reenvío usa exactamente esos mismos bytes (fidelidad 100%). Almacenamiento: LONGBLOB en MySQL.
+   reenvío usa exactamente esos mismos bytes (fidelidad 100%). Almacenamiento: **en disco** bajo
+   `uploads/email/...`; la BD guarda solo la ruta + metadatos (no los bytes), para no inflarla.
+   Como el operador purga archivos viejos con el tiempo, el reenvío de una salida cuyo archivo ya
+   no exista en disco usa el *fallback* de regeneración (ver 5.3).
 2. **Fallo en el primer envío**: **no revienta** el request. El despacho se crea/queda igual, el
    correo fallido se registra como `ERROR`, y el botón (rojo) permite reenviar.
 3. **Filtro de ambiente dev**: el reenvío **respeta `applyDevFilters`** igual que el resto del
@@ -86,20 +94,22 @@ Un renglón por **cada intento** de envío (primer envío y cada reenvío).
 
 ### 4.2 `email_attachment` (entidad `EmailAttachment`) — genérica
 
-Los bytes guardados **una sola vez por entidad**. Los reenvíos leen de aquí; no se duplican.
+Referencia a los archivos guardados **en disco**, una sola vez por entidad. Los reenvíos leen
+del disco por esta ruta; no se duplican. **La BD no guarda los bytes.**
 
 | Columna | Tipo | Notas |
 |---|---|---|
 | `id` | uuid PK | |
 | `module` | varchar | |
 | `entityId` | varchar | |
-| `filename` | varchar | |
+| `filename` | varchar | nombre original del archivo |
 | `mimeType` | varchar | |
-| `size` | int | |
-| `content` | LONGBLOB | bytes del archivo |
+| `size` | int | tamaño en bytes (para mostrar/validar) |
+| `storagePath` | varchar | ruta **relativa** a `process.cwd()`, p.ej. `uploads/email/package_dispatch/<id>/<file>` |
 | `createdAt` | timestamp | |
 
-Índice: `(module, entityId)`.
+Índice: `(module, entityId)`. La ruta es relativa para que sobreviva a cambios de working dir
+del proceso; se resuelve con `join(process.cwd(), storagePath)` al leer.
 
 ### 4.3 Columnas denormalizadas en `package_dispatch`
 
@@ -120,10 +130,13 @@ Las filas existentes quedan en `NOT_SENT` por el default de la migración.
 
 No conoce `package_dispatch`; opera solo por `(module, entityId)`.
 
-- `persistAttachments(module, entityId, files): Promise<void>` — guarda los adjuntos una vez.
-  Idempotente: si ya existen para esa entidad, no los duplica (reemplaza o no-op).
-- `getAttachments(module, entityId): Promise<EmailAttachment[]>`
-- `hasAttachments(module, entityId): Promise<boolean>`
+- `persistAttachments(module, entityId, files): Promise<void>` — escribe los archivos a
+  `uploads/email/<module>/<entityId>/` (crea la carpeta con `mkdir recursive`) y registra un
+  renglón `email_attachment` por archivo con su `storagePath` relativo. Idempotente: si ya hay
+  registros para esa entidad, no duplica (reemplaza carpeta/registros o no-op).
+- `loadAttachments(module, entityId): Promise<{ filename, content: Buffer }[] | null>` — lee de
+  disco los archivos registrados. Devuelve `null` si no hay registros **o si algún archivo ya no
+  existe en disco** (fue purgado), para que el llamador dispare el *fallback*.
 - `record(entry): Promise<EmailLog>` — escribe un renglón de log.
 - `getHistory(module, entityId): Promise<EmailLog[]>` — ordenado por `createdAt` desc.
 
@@ -148,8 +161,9 @@ No conoce `package_dispatch`; opera solo por `(module, entityId)`.
   5. **No relanza**: devuelve un resultado estructurado (`{ status, error? }`) para que el
      front informe. (Los adjuntos se guardan incluso si el envío falla, para permitir reenvío.)
 - `resendEmail(dispatchId, userId)` (nuevo):
-  1. Lee adjuntos guardados. Si no hay (despacho histórico), **fallback**: regenera con
-     `renderRouteDispatchDocuments`, los persiste, y continúa.
+  1. `loadAttachments(...)`. Si devuelve `null` (despacho histórico sin registro, o archivos ya
+     purgados del disco), **fallback**: regenera con `renderRouteDispatchDocuments`, los
+     persiste de nuevo, y continúa.
   2. Reenvía a los mismos destinatarios (mismo cálculo + filtro dev).
   3. `record({... isResend: true, triggeredById: userId})`.
   4. Actualiza columnas denormalizadas.
@@ -186,13 +200,16 @@ Tipos: extender `PackageDispatch` (listado) con `emailStatus`, `emailLastSentAt`
 
 ## 7. Testing
 
-- **Unit** (`EmailLogService`): `persistAttachments` idempotente; `record` escribe status
-  correcto; lógica `SENT` vs `ERROR` cuando `rejected` no está vacío.
+- **Unit** (`EmailLogService`): `persistAttachments` escribe a disco + registra ruta y es
+  idempotente; `loadAttachments` devuelve `null` cuando falta un archivo en disco; `record`
+  escribe el status correcto; lógica `SENT` vs `ERROR` cuando `rejected` no está vacío. Se usa
+  un directorio temporal como raíz de `uploads` en los tests (no tocar el real).
 - **Integration** (patrón `*.integration.spec.ts` del módulo):
-  - Primer envío OK ⇒ `emailStatus = SENT`, se crea `email_log`, se guardan adjuntos.
+  - Primer envío OK ⇒ `emailStatus = SENT`, se crea `email_log`, se escriben archivos en disco
+    + registro `email_attachment`.
   - Envío que falla ⇒ `emailStatus = ERROR`, se registra el log, **el request no revienta**.
-  - Reenvío ⇒ usa adjuntos guardados, agrega `email_log` con `isResend = true`.
-  - Reenvío de despacho sin adjuntos ⇒ **fallback** regenera, persiste y envía.
+  - Reenvío ⇒ usa archivos guardados en disco, agrega `email_log` con `isResend = true`.
+  - Reenvío con archivos ausentes/purgados ⇒ **fallback** regenera, persiste y envía.
 
 ## 8. Fuera de alcance (YAGNI)
 
