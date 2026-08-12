@@ -19,6 +19,8 @@ import { ConsolidatedModule } from './consolidated/consolidated.module';
 import { DashboardModule } from './dashboard/dashboard.module';
 import { MailerModule } from '@nestjs-modules/mailer';
 import { DevolutionsModule } from './devolutions/devolutions.module';
+import { ReturningModule } from './returning/returning.module';
+import { FedexStatusModule } from './fedex-status/fedex-status.module';
 import { DriversModule } from './drivers/drivers.module';
 import { RoutesModule } from './routes/routes.module';
 import { VehiclesModule } from './vehicles/vehicles.module';
@@ -117,6 +119,8 @@ import { DocumentsModule } from './documents/documents.module';
     GuacamoleModule,
     SupportModule,
     DocumentsModule,
+    ReturningModule,
+    FedexStatusModule,
   ],
   controllers: [AppController],
   providers: [

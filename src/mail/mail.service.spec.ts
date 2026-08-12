@@ -12,14 +12,19 @@ describe('MailService.sendHighPriorityPackageDispatchEmail', () => {
   it('renderiza el correo por plantilla route_dispatch y lo envía', async () => {
     const { svc, mailer, templates } = make();
     const pd: any = { vehicle: { name: 'V1' }, drivers: [{ name: 'Juan' }], routes: [{ name: 'R1' }], trackingNumber: 'T1', createdAt: new Date(), subsidiary: { officeEmail: 'a@x.com', officeEmailToCopy: 'b@x.com' } };
-    const pdf: any = { originalname: 'r.pdf', buffer: Buffer.from('x') };
-    const xls: any = { originalname: 'r.xlsx', buffer: Buffer.from('y') };
-    await svc.sendHighPriorityPackageDispatchEmail(pdf, xls, 'Sucursal X', pd);
+    const attachments = [
+      { filename: 'r.pdf', content: Buffer.from('x') },
+      { filename: 'r.xlsx', content: Buffer.from('y') },
+    ];
+    const result = await svc.sendHighPriorityPackageDispatchEmail(attachments, 'Sucursal X', pd);
     expect(templates.render).toHaveBeenCalledWith('route_dispatch', expect.objectContaining({ subsidiaryName: 'Sucursal X', trackingNumber: 'T1' }));
     expect(mailer.sendMail).toHaveBeenCalled();
     const arg = mailer.sendMail.mock.calls[0][0];
     expect(arg.html).toContain('ok');
     expect(arg.attachments).toHaveLength(2);
+    // Devuelve un resultado estructurado para la bitácora.
+    expect(result.subject).toBe('Salida a ruta - Juan');
+    expect(result.to).toContain('a@x.com');
   });
 });
 

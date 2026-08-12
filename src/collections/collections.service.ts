@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, In, Repository } from 'typeorm';
+import { DataSource, EntityManager, In, Repository } from 'typeorm';
 import { CollectionDto } from './dto/collection.dto';
 import { FedexService } from 'src/shipments/fedex.service';
 import { FedExTrackingResponseDto } from 'src/shipments/dto/fedex/fedex-tracking-response.dto';
@@ -38,76 +38,11 @@ export class CollectionsService {
       await queryRunner.startTransaction();
 
       try {
-        // 1. Validar y filtrar colecciones duplicadas
-        const uniqueCollections: CollectionDto[] = [];
-        for (const dto of collectionDto) {
-          const existingCollection = await queryRunner.manager.findOneBy(Collection, {
-            trackingNumber: dto.trackingNumber,
-          });
-          if (existingCollection) {
-            duplicates.push(dto.trackingNumber);
-            this.logger.warn(`Collection duplicada - Tracking: ${dto.trackingNumber}`);
-            continue;
-          }
-          uniqueCollections.push(dto);
-        }
-
-        // 2. Si todo era duplicado, no hay nada que guardar.
-        if (uniqueCollections.length === 0) {
-          await queryRunner.rollbackTransaction();
-          this.logger.warn('No se guardaron collections, todas eran duplicadas');
-          return { savedCollections: [], duplicates, errors };
-        }
-
-        // 3. Crear y guardar collections
-        const newCollections = queryRunner.manager.create(
-          Collection,
-          uniqueCollections.map((dto) => ({ ...dto, createdById: userId ?? null })),
-        );
-        const savedCollections = await queryRunner.manager.save(newCollections);
-        this.logger.log(`Se guardaron ${savedCollections.length} collections`);
-
-        // 4. Resolver las sucursales involucradas (puede haber más de una en el lote).
-        //    Antes se usaba savedCollections[0].subsidiary para TODAS, lo que asignaba
-        //    el costo/sucursal equivocados si el lote mezclaba sucursales.
-        const subsidiaryIds = [
-          ...new Set(savedCollections.map((c) => c.subsidiary?.id).filter(Boolean)),
-        ];
-        const subsidiaries = subsidiaryIds.length
-          ? await queryRunner.manager.find(Subsidiary, { where: { id: In(subsidiaryIds) } })
-          : [];
-        const subsidiaryById = new Map(subsidiaries.map((s) => [s.id, s]));
-
-        // 5. Crear incomes — uno por recolección, con la sucursal/costo correctos.
-        //    La recolección se cobra COMO recolección (sourceType=COLLECTION); el
-        //    incomeType=entregado se mantiene por compatibilidad, pero en los reportes
-        //    se categoriza por sourceType, no por incomeType.
-        const newIncomes = savedCollections.map((collection) => {
-          const subsidiary = subsidiaryById.get(collection.subsidiary?.id);
-          if (!subsidiary) {
-            throw new Error(
-              `Sucursal no encontrada (id: ${collection.subsidiary?.id}) para la recolección ${collection.trackingNumber}`,
-            );
-          }
-          return queryRunner.manager.create(Income, {
-            subsidiary,
-            trackingNumber: collection.trackingNumber,
-            shipmentType: ShipmentType.FEDEX,
-            incomeType: IncomeStatus.ENTREGADO,
-            cost: subsidiary.fedexCostPackage,
-            isGrouped: false,
-            sourceType: IncomeSourceType.COLLECTION,
-            collection: { id: collection.id },
-            date: new Date(),
-            createdById: userId ?? null,
-          });
-        });
-        await queryRunner.manager.save(newIncomes);
-        this.logger.log(`Se crearon ${newIncomes.length} incomes`);
-
+        const result = await this.saveCollectionsWithManager(queryRunner.manager, collectionDto, { userId });
+        duplicates.push(...result.duplicates);
         // 6. Commit atómico: o se guardan recolecciones + ingresos juntos, o nada.
         await queryRunner.commitTransaction();
-        return { savedCollections, duplicates, errors };
+        return { savedCollections: result.savedCollections, duplicates, errors };
       } catch (error) {
         await queryRunner.rollbackTransaction();
         this.logger.error('Error en el proceso save (rollback aplicado)', error.stack);
@@ -119,6 +54,86 @@ export class CollectionsService {
       } finally {
         await queryRunner.release();
       }
+    }
+
+    /**
+     * Guarda recolecciones + sus ingresos sobre el `manager` recibido (sin transacción propia),
+     * para reusarlo en `save()` y en el guardado unificado de una "Salida" (todo en una sola
+     * transacción). Enlaza `returningHistoryId` si se provee. Lanza ante error inesperado (el
+     * caller decide el rollback); los duplicados se saltan y se devuelven.
+     */
+    async saveCollectionsWithManager(
+      manager: EntityManager,
+      collectionDto: CollectionDto[],
+      opts: { userId?: string; returningHistoryId?: string } = {},
+    ): Promise<{ savedCollections: Collection[]; duplicates: string[] }> {
+      const duplicates: string[] = [];
+
+      // 1. Validar y filtrar colecciones duplicadas (por trackingNumber existente).
+      const uniqueCollections: CollectionDto[] = [];
+      for (const dto of collectionDto) {
+        const existingCollection = await manager.findOneBy(Collection, {
+          trackingNumber: dto.trackingNumber,
+        });
+        if (existingCollection) {
+          duplicates.push(dto.trackingNumber);
+          this.logger.warn(`Collection duplicada - Tracking: ${dto.trackingNumber}`);
+          continue;
+        }
+        uniqueCollections.push(dto);
+      }
+
+      if (uniqueCollections.length === 0) {
+        this.logger.warn('No se guardaron collections, todas eran duplicadas');
+        return { savedCollections: [], duplicates };
+      }
+
+      // 2. Crear y guardar collections (enlazadas a la salida si aplica).
+      const newCollections = manager.create(
+        Collection,
+        uniqueCollections.map((dto) => ({
+          ...dto,
+          createdById: opts.userId ?? null,
+          returningHistory: opts.returningHistoryId ? ({ id: opts.returningHistoryId } as any) : null,
+        })),
+      );
+      const savedCollections = await manager.save(newCollections);
+      this.logger.log(`Se guardaron ${savedCollections.length} collections`);
+
+      // 3. Resolver las sucursales involucradas (puede haber más de una en el lote).
+      const subsidiaryIds = [
+        ...new Set(savedCollections.map((c) => c.subsidiary?.id).filter(Boolean)),
+      ];
+      const subsidiaries = subsidiaryIds.length
+        ? await manager.find(Subsidiary, { where: { id: In(subsidiaryIds) } })
+        : [];
+      const subsidiaryById = new Map(subsidiaries.map((s) => [s.id, s]));
+
+      // 4. Crear incomes — uno por recolección, con la sucursal/costo correctos.
+      const newIncomes = savedCollections.map((collection) => {
+        const subsidiary = subsidiaryById.get(collection.subsidiary?.id);
+        if (!subsidiary) {
+          throw new Error(
+            `Sucursal no encontrada (id: ${collection.subsidiary?.id}) para la recolección ${collection.trackingNumber}`,
+          );
+        }
+        return manager.create(Income, {
+          subsidiary,
+          trackingNumber: collection.trackingNumber,
+          shipmentType: ShipmentType.FEDEX,
+          incomeType: IncomeStatus.ENTREGADO,
+          cost: subsidiary.fedexCostPackage,
+          isGrouped: false,
+          sourceType: IncomeSourceType.COLLECTION,
+          collection: { id: collection.id },
+          date: new Date(),
+          createdById: opts.userId ?? null,
+        });
+      });
+      await manager.save(newIncomes);
+      this.logger.log(`Se crearon ${newIncomes.length} incomes`);
+
+      return { savedCollections, duplicates };
     }
 
     async getByTrackingNumber(trackingNumber: string){

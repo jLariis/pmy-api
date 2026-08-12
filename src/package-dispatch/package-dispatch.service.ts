@@ -22,6 +22,20 @@ import { PaginatedResult, parsePagination, resolveDateRange } from 'src/common/p
 import { TemplateService } from 'src/documents/template.service';
 import { buildRouteDispatchData, RouteDispatchInput, RouteDispatchPackage } from 'src/documents/data/route-dispatch.mapper';
 import { buildDriverReportData } from 'src/documents/data/driver-report.mapper';
+import { EmailLogService, EmailFile } from 'src/email-log/email-log.service';
+import { EmailStatus } from 'src/common/enums/email-status.enum';
+import { EmailLog } from 'src/entities/email-log.entity';
+
+/** Módulo con el que se etiquetan bitácora y adjuntos de correo de salidas a ruta. */
+const EMAIL_MODULE = 'package_dispatch';
+/** Tipo/origen del correo de salida a ruta (coincide con la clave de plantilla). */
+const EMAIL_TYPE_ROUTE_DISPATCH = 'route_dispatch';
+
+/** Quién realizó el (re)envío, para la bitácora. */
+export interface EmailActor {
+  id?: string | null;
+  name?: string | null;
+}
 
 @Injectable()
 export class PackageDispatchService {
@@ -50,6 +64,7 @@ export class PackageDispatchService {
     private readonly packageDispatchHistoryRepository: Repository<PackageDispatchHistory>,
     private readonly dataSource: DataSource,
     private readonly templateService: TemplateService,
+    private readonly emailLogService: EmailLogService,
 
   ){ }
 
@@ -566,6 +581,9 @@ export class PackageDispatchService {
         'pd.status',
         'pd.createdAt',
         'pd.closedAt',
+        'pd.emailStatus',
+        'pd.emailLastSentAt',
+        'pd.emailLastError',
         'subsidiary.id',
         'subsidiary.name',
         'routes.id',
@@ -1049,15 +1067,16 @@ export class PackageDispatchService {
     return `This action removes a #${id} packageDispatch`;
   }
 
-  async sendByEmail(pdfFile: Express.Multer.File, excelfile: Express.Multer.File, subsidiaryName: string, packageDispatchId: string) {
-    console.log("🚀 ~ PackageDispatchService ~ sendByEmail ~ packageDispatchId:", packageDispatchId)
-
+  async sendByEmail(pdfFile: Express.Multer.File, excelfile: Express.Multer.File, subsidiaryName: string, packageDispatchId: string, actor?: EmailActor, isResend = false) {
     const packageDispatch = await this.packageDispatchRepository.findOne(
       {
         where: {id: packageDispatchId},
         relations: ['drivers', 'routes', 'vehicle', 'subsidiary']
       });
-    console.log("🚀 ~ PackageDispatchService ~ sendByEmail ~ packageDispatch:", packageDispatch)
+
+    if (!packageDispatch) {
+      throw new NotFoundException(`No se encontró el dispatch con ID: ${packageDispatchId}`);
+    }
 
     // Unificación "Salida a Ruta": detrás de flag, el backend genera PDF/Excel por el
     // Motor de Plantillas (plantilla canónica única). Si algo falla, se conservan los
@@ -1073,7 +1092,111 @@ export class PackageDispatchService {
       }
     }
 
-    return await this.mailService.sendHighPriorityPackageDispatchEmail(pdfFile, excelfile, subsidiaryName, packageDispatch)
+    const attachments: EmailFile[] = [
+      { filename: pdfFile.originalname, content: pdfFile.buffer, mimeType: pdfFile.mimetype },
+      { filename: excelfile.originalname, content: excelfile.buffer, mimeType: excelfile.mimetype },
+    ];
+
+    // Guardamos SIEMPRE los adjuntos en disco (aunque el correo falle) para poder
+    // reenviar después sin depender del frontend.
+    try {
+      await this.emailLogService.persistAttachments(EMAIL_MODULE, packageDispatchId, attachments);
+    } catch (e: any) {
+      this.logger.warn(`No se pudieron guardar los adjuntos en disco: ${e?.message}`);
+    }
+
+    return this.sendAndTrack(packageDispatch, subsidiaryName, attachments, { isResend, actor });
+  }
+
+  /** Historial de envíos de correo de una salida a ruta. */
+  async getEmailHistory(packageDispatchId: string): Promise<EmailLog[]> {
+    return this.emailLogService.getHistory(EMAIL_MODULE, packageDispatchId);
+  }
+
+  /**
+   * Envía el correo, registra el intento en la bitácora y actualiza el estado
+   * denormalizado del despacho. NO relanza: un fallo de correo queda registrado
+   * como ERROR y se informa al llamador con `{ status, error? }`.
+   */
+  private async sendAndTrack(
+    packageDispatch: PackageDispatch,
+    subsidiaryName: string,
+    attachments: EmailFile[],
+    opts: { isResend: boolean; actor?: EmailActor },
+  ): Promise<{ status: EmailStatus; error?: string; to?: string }> {
+    const recipients = this.mailService.resolveDispatchRecipients(packageDispatch);
+    const attachmentsMeta = attachments.map((a) => ({ filename: a.filename, size: a.content.length }));
+
+    // Datos comunes de trazabilidad (tipo, sucursal, folio, usuario).
+    const meta = {
+      module: EMAIL_MODULE,
+      emailType: EMAIL_TYPE_ROUTE_DISPATCH,
+      entityId: packageDispatch.id,
+      referenceTracking: packageDispatch.trackingNumber ?? null,
+      subsidiaryId: packageDispatch.subsidiary?.id ?? null,
+      subsidiaryName: packageDispatch.subsidiary?.name ?? subsidiaryName ?? null,
+      isResend: opts.isResend,
+      triggeredById: opts.actor?.id ?? null,
+      triggeredByName: opts.actor?.name ?? null,
+      attachmentsMeta,
+    };
+
+    try {
+      const result = await this.mailService.sendHighPriorityPackageDispatchEmail(
+        attachments,
+        subsidiaryName,
+        packageDispatch,
+        recipients,
+      );
+
+      // El SMTP aceptó pero rechazó algunas direcciones => lo tratamos como ERROR.
+      const hasRejections = result.rejected.length > 0;
+      const status = hasRejections ? EmailStatus.ERROR : EmailStatus.SENT;
+      const error = hasRejections ? `Direcciones rechazadas: ${result.rejected.join(', ')}` : null;
+
+      await this.emailLogService.record({
+        ...meta,
+        to: result.to,
+        cc: result.cc,
+        subject: result.subject,
+        status,
+        error,
+        messageId: result.messageId,
+        rejected: result.rejected,
+      });
+
+      await this.updateEmailStatus(packageDispatch.id, status, error);
+      return { status, error: error ?? undefined, to: result.to };
+    } catch (e: any) {
+      const message = e?.message ?? String(e);
+      this.logger.error(`Fallo al enviar correo de salida a ruta ${packageDispatch.id}: ${message}`);
+
+      await this.emailLogService.record({
+        ...meta,
+        to: this.recipientsToText(recipients.to),
+        cc: this.recipientsToText(recipients.cc),
+        subject: `Salida a Ruta ${packageDispatch.trackingNumber ?? ''}`.trim(),
+        status: EmailStatus.ERROR,
+        error: message,
+      });
+
+      await this.updateEmailStatus(packageDispatch.id, EmailStatus.ERROR, message);
+      return { status: EmailStatus.ERROR, error: message };
+    }
+  }
+
+  /** Actualiza las columnas denormalizadas de estado de correo del despacho. */
+  private async updateEmailStatus(id: string, status: EmailStatus, error: string | null): Promise<void> {
+    await this.packageDispatchRepository.update(id, {
+      emailStatus: status,
+      emailLastSentAt: new Date(),
+      emailLastError: error ? error.slice(0, 500) : null,
+    });
+  }
+
+  private recipientsToText(value?: string | string[] | null): string {
+    if (!value) return '';
+    return Array.isArray(value) ? value.filter(Boolean).join(', ') : value;
   }
 
   /** Genera PDF+Excel de "Salida a Ruta" por el motor. Si un formato no entrega buffer, queda undefined (respaldo). */

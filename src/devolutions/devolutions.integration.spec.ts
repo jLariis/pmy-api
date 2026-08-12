@@ -3,6 +3,8 @@
 jest.mock('p-limit', () => ({ __esModule: true, default: () => (fn: any) => fn() }));
 
 import { DevolutionsService } from './devolutions.service';
+import { Shipment, ChargeShipment } from 'src/entities';
+import { ShipmentStatusType } from 'src/common/enums/shipment-status-type.enum';
 
 describe('DevolutionsService.renderReturningDocuments', () => {
   const baseInput = { subsidiaryName: 'Obregon', devolutions: [], collections: [] };
@@ -74,6 +76,117 @@ describe('DevolutionsService.loadReturningInput (privado, vía any)', () => {
     const svc = makeService(null, [], []);
     const input = await svc.loadReturningInput('SUB-X');
     expect(input.subsidiaryName).toBe('N/A');
+  });
+});
+
+describe('DevolutionsService.create — guías en varios consolidados (Bug #1)', () => {
+  function makeHarness(opts: {
+    shipments: any[];
+    charges: any[];
+    existingDevolution?: any;
+  }) {
+    const updates: Array<{ entity: any; id: string; patch: any }> = [];
+    const savedEntities: any[] = [];
+
+    const manager = {
+      find: jest.fn((entity: any) => {
+        if (entity === Shipment) return Promise.resolve(opts.shipments);
+        if (entity === ChargeShipment) return Promise.resolve(opts.charges);
+        return Promise.resolve([]);
+      }),
+      findOne: jest.fn(() => Promise.resolve(opts.existingDevolution ?? null)),
+      create: jest.fn((entity: any, data: any) => ({ __entity: entity, ...data })),
+      save: jest.fn((e: any) => {
+        savedEntities.push(e);
+        return Promise.resolve(e);
+      }),
+      update: jest.fn((entity: any, id: string, patch: any) => {
+        updates.push({ entity, id, patch });
+        return Promise.resolve({ affected: 1 });
+      }),
+    };
+
+    const queryRunner = {
+      connect: jest.fn(),
+      startTransaction: jest.fn(),
+      commitTransaction: jest.fn(),
+      rollbackTransaction: jest.fn(),
+      release: jest.fn(),
+      manager,
+    };
+
+    const svc = Object.create(DevolutionsService.prototype) as any;
+    svc.logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
+    svc.dataSource = { createQueryRunner: () => queryRunner };
+
+    return { svc, manager, queryRunner, updates, savedEntities };
+  }
+
+  const dto = { trackingNumber: 'T1', subsidiary: { id: 'SUB-1' } } as any;
+
+  it('marca DEVUELTO_A_FEDEX en TODAS las filas (2 shipments de distinto consolidado + 1 charge)', async () => {
+    const { svc, updates, savedEntities } = makeHarness({
+      shipments: [
+        { id: 's-old', consolidatedId: 'CONS-A', status: 'pendiente', createdAt: '2026-08-01' },
+        { id: 's-new', consolidatedId: 'CONS-B', status: 'pendiente', createdAt: '2026-08-09' },
+      ],
+      charges: [{ id: 'c-1', consolidatedId: 'CONS-A', status: 'pendiente', createdAt: '2026-08-05' }],
+    });
+
+    const res = await svc.create([dto], 'user-1');
+
+    // Se actualizan las 3 filas a DEVUELTO_A_FEDEX
+    expect(updates).toHaveLength(3);
+    const updatedIds = updates.map((u) => u.id).sort();
+    expect(updatedIds).toEqual(['c-1', 's-new', 's-old']);
+    expect(updates.every((u) => u.patch.status === ShipmentStatusType.DEVUELTO_A_FEDEX)).toBe(true);
+
+    // La Devolution se asocia al consolidado del match MÁS RECIENTE (s-new → CONS-B)
+    const devolution = savedEntities.find((e) => e.consolidatedId !== undefined && e.date);
+    expect(devolution.consolidatedId).toBe('CONS-B');
+
+    expect(res.success).toEqual(['T1']);
+    expect(res.notFound).toEqual([]);
+  });
+
+  it('con Devolution previa del mismo consolidado: NO duplica el registro pero SÍ garantiza el estatus', async () => {
+    const { svc, updates, savedEntities } = makeHarness({
+      shipments: [{ id: 's-new', consolidatedId: 'CONS-B', status: 'no_entregado', createdAt: '2026-08-09' }],
+      charges: [],
+      existingDevolution: { id: 'dev-prev', trackingNumber: 'T1', consolidatedId: 'CONS-B' },
+    });
+
+    const res = await svc.create([dto], 'user-1');
+
+    // No se crea una nueva Devolution...
+    const createdDevolution = savedEntities.find((e) => e.date && e.consolidatedId !== undefined);
+    expect(createdDevolution).toBeUndefined();
+    expect(res.duplicates).toEqual(['T1']);
+    expect(res.success).toEqual([]);
+
+    // ...pero el estatus del shipment SÍ pasa a DEVUELTO_A_FEDEX (corrección del bug)
+    expect(updates).toHaveLength(1);
+    expect(updates[0].id).toBe('s-new');
+    expect(updates[0].patch.status).toBe(ShipmentStatusType.DEVUELTO_A_FEDEX);
+  });
+
+  it('guía inexistente en ambas tablas -> notFound, sin updates', async () => {
+    const { svc, updates } = makeHarness({ shipments: [], charges: [] });
+    const res = await svc.create([dto], 'user-1');
+    expect(res.notFound).toEqual(['T1']);
+    expect(updates).toHaveLength(0);
+  });
+
+  it('idempotente: fila ya en DEVUELTO_A_FEDEX no se re-actualiza ni agrega historial', async () => {
+    const { svc, updates, savedEntities } = makeHarness({
+      shipments: [{ id: 's-1', consolidatedId: 'CONS-A', status: ShipmentStatusType.DEVUELTO_A_FEDEX, createdAt: '2026-08-09' }],
+      charges: [],
+    });
+    await svc.create([dto], 'user-1');
+    expect(updates).toHaveLength(0);
+    // Solo se guarda la Devolution, ningún ShipmentStatus (historial)
+    const historyRows = savedEntities.filter((e) => e.timestamp);
+    expect(historyRows).toHaveLength(0);
   });
 });
 

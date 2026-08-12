@@ -1,6 +1,6 @@
 import { BadRequestException, forwardRef, Inject, Injectable, Logger } from '@nestjs/common';
 import { CreateDevolutionDto } from './dto/create-devolution.dto';
-import { Between, DataSource, Repository } from 'typeorm';
+import { Between, DataSource, EntityManager, IsNull, Repository } from 'typeorm';
 import { Devolution } from 'src/entities/devolution.entity';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ChargeShipment, Collection, Income, Shipment, ShipmentStatus, Subsidiary } from 'src/entities';
@@ -11,6 +11,7 @@ import { ShipmentsService } from 'src/shipments/shipments.service';
 import { fromZonedTime, toZonedTime } from 'date-fns-tz';
 import { TemplateService } from 'src/documents/template.service';
 import { buildReturningData, ReturningInput } from 'src/documents/data/returning.mapper';
+import { FedexStatusResolver } from 'src/fedex-status/fedex-status.resolver';
 
 const RETURNING_TZ = 'America/Hermosillo';
 
@@ -36,116 +37,8 @@ export class DevolutionsService {
     private readonly shipmentService: ShipmentsService,
     private dataSource: DataSource,
     private readonly templateService: TemplateService,
+    private readonly fedexStatusResolver: FedexStatusResolver,
   ) {}
-
-  async createResp1002(devolutions: CreateDevolutionDto[]): Promise<{
-    success: Devolution[];
-    duplicates: string[];
-    notFound: string[];
-    errors: Array<{ trackingNumber: string; error: string }>;
-  }> {
-    const success: Devolution[] = [];
-    const duplicates: string[] = [];
-    const notFound: string[] = [];
-    const errors: Array<{ trackingNumber: string; error: string }> = [];
-
-    for (const dto of devolutions) {
-      const { trackingNumber } = dto;
-      
-      try {
-        this.logger.log(`Procesando devolución para tracking: ${trackingNumber}`);
-
-        // 1. Validar si la devolución ya existe
-        const existingDevolution = await this.devolutionRepository.findOneBy({ trackingNumber });
-
-        if (existingDevolution) {
-          duplicates.push(trackingNumber);
-          this.logger.warn(`Devolución duplicada: ${trackingNumber}`);
-          continue;
-        }
-
-        // 2. Crear nueva devolución
-        const newDevolution = this.devolutionRepository.create({
-          ...dto,
-          date: new Date()
-        });
-
-        const savedDevolution = await this.devolutionRepository.save(newDevolution);
-        success.push(savedDevolution);
-        this.logger.log(`Devolución creada ID: ${savedDevolution.id}`);
-
-        // 3. Actualizar estado (shipment o charge_shipment)
-        try {
-          // Intentar actualizar shipment primero
-          let updateResult = await this.shipmentRepository.update(
-            { trackingNumber },
-            { 
-              status: ShipmentStatusType.DEVUELTO_A_FEDEX,
-            }
-          );
-
-          // Si no se encontró en shipment, buscar en charge_shipment
-          if (updateResult.affected === 0) {
-            updateResult = await this.chargeShipmentRepository.update(
-              { trackingNumber },
-              { 
-                status: ShipmentStatusType.DEVUELTO_A_FEDEX,
-              }
-            );
-
-            if (updateResult.affected === 0) {
-              notFound.push(trackingNumber);
-              this.logger.warn(`No encontrado en shipment ni charge_shipment: ${trackingNumber}`);
-            } else {
-              this.logger.log(`ChargeShipment actualizado: ${trackingNumber}`);
-            }
-          } else {
-            this.logger.log(`Shipment actualizado: ${trackingNumber}`);
-          }
-        } catch (updateError) {
-          this.logger.error(`Error al actualizar estado: ${trackingNumber}`, updateError.stack);
-          errors.push({ 
-            trackingNumber, 
-            error: `Error actualizando estado: ${updateError.message}` 
-          });
-        }
-
-        /* 
-        // 4. Validación y eliminación de income (pendiente)
-        try {
-          // Lógica especial para income vendrá aquí
-        } catch (incomeError) {
-          this.logger.error(`Error procesando income: ${trackingNumber}`, incomeError.stack);
-          errors.push({
-            trackingNumber,
-            error: `Error procesando income: ${incomeError.message}`
-          });
-        }
-        */
-
-      } catch (error) {
-        const errorMessage = `Error procesando devolución ${trackingNumber}: ${error.message}`;
-        this.logger.error(errorMessage, error.stack);
-        errors.push({ trackingNumber, error: errorMessage });
-      }
-    }
-
-    // Reporte final
-    this.logger.log(`
-      Resultado final:
-      - Creadas: ${success.length}
-      - Duplicadas: ${duplicates.length}
-      - No encontradas: ${notFound.length}
-      - Errores: ${errors.length}
-    `);
-
-    return { 
-      success, 
-      duplicates, 
-      notFound,
-      errors 
-    };
-  }
 
   async create(devolutions: CreateDevolutionDto[], userId?: string): Promise<{
   success: string[];
@@ -159,85 +52,20 @@ export class DevolutionsService {
   const errors: Array<{ trackingNumber: string; error: string }> = [];
 
   for (const dto of devolutions) {
-    const { trackingNumber, subsidiary, status } = dto;
     const queryRunner = this.dataSource.createQueryRunner();
     await queryRunner.connect();
     await queryRunner.startTransaction();
 
     try {
-      // 1. Validaciones previas de integridad del DTO
-      if (!subsidiary) {
-        throw new Error('La sucursal es obligatoria para procesar la devolución.');
-      }
-
-      // 2. Verificar duplicados en devoluciones
-      const existingDevolution = await queryRunner.manager.findOne(Devolution, { 
-        where: { trackingNumber } 
-      });
-      if (existingDevolution) {
-        duplicates.push(trackingNumber);
-        await queryRunner.rollbackTransaction();
-        continue;
-      }
-
-      // 3. Buscar el paquete en Shipment o ChargeShipment.
-      // Con guías duplicadas, SIEMPRE el más reciente (order createdAt DESC).
-      let shipment = await queryRunner.manager.findOne(Shipment, { where: { trackingNumber }, order: { createdAt: 'DESC' } });
-      let chargeShipment = null;
-      let relationKey: 'shipment' | 'chargeShipment' = 'shipment';
-
-      if (!shipment) {
-        chargeShipment = await queryRunner.manager.findOne(ChargeShipment, { where: { trackingNumber }, order: { createdAt: 'DESC' } });
-        relationKey = 'chargeShipment';
-      }
-
-      if (!shipment && !chargeShipment) {
-        notFound.push(trackingNumber);
-        await queryRunner.rollbackTransaction();
-        continue;
-      }
-
-      // 4. Crear registro de Devolución
-      const newDevolution = queryRunner.manager.create(Devolution, {
-        ...dto,
-        date: new Date(),
-        createdById: userId ?? null,
-      });
-      await queryRunner.manager.save(newDevolution);
-
-      // 5. Actualizar Estatus del Paquete
-      const targetEntity = shipment ? Shipment : ChargeShipment;
-      const packageId = shipment ? shipment.id : chargeShipment.id;
-
-      await queryRunner.manager.update(targetEntity, packageId, {
-        status: ShipmentStatusType.DEVUELTO_A_FEDEX,
-      });
-
-      // 6. Generar Historial (Timestamp Hermosillo)
-      const now = new Date();
-      const utcDate = fromZonedTime(now, 'America/Hermosillo');
-
-      const history = queryRunner.manager.create(ShipmentStatus, {
-        status: ShipmentStatusType.DEVUELTO_A_FEDEX,
-        exceptionCode: '', // Código interno para devoluciones
-        notes: `Devolución registrada en sucursal: ${subsidiary}. Motivo: ${status || 'No especificado'}`,
-        timestamp: utcDate,
-        [relationKey]: { id: packageId }
-      });
-      await queryRunner.manager.save(history);
-
-      // 7. Commit de la transacción
+      const outcome = await this.processOneDevolution(queryRunner.manager, dto, { userId });
       await queryRunner.commitTransaction();
-      success.push(trackingNumber);
-      this.logger.log(`Devolución exitosa: ${trackingNumber}`);
-
+      if (outcome === 'success') success.push(dto.trackingNumber);
+      else if (outcome === 'duplicate') duplicates.push(dto.trackingNumber);
+      else if (outcome === 'notFound') notFound.push(dto.trackingNumber);
     } catch (error) {
       await queryRunner.rollbackTransaction();
-      this.logger.error(`Error en devolución ${trackingNumber}: ${error.message}`);
-      errors.push({ 
-        trackingNumber, 
-        error: error.message 
-      });
+      this.logger.error(`Error en devolución ${dto.trackingNumber}: ${error.message}`);
+      errors.push({ trackingNumber: dto.trackingNumber, error: error.message });
     } finally {
       await queryRunner.release();
     }
@@ -245,6 +73,92 @@ export class DevolutionsService {
 
   return { success, duplicates, notFound, errors };
 }
+
+  /**
+   * Procesa UNA devolución sobre el `manager` recibido (sin abrir transacción propia), para poder
+   * reusarla tanto en `create()` (una transacción por dto) como en el guardado unificado de una
+   * "Salida" (todo en una sola transacción). Devuelve el desenlace sin lanzar por duplicado/no
+   * encontrado; solo lanza ante errores inesperados (para que el caller decida el rollback).
+   *
+   * Regla (Bug #1): una guía reciclada/máster vive en varias filas de distintos consolidados; se
+   * marca DEVUELTO_A_FEDEX en TODAS, y el registro de Devolution es único por (guía + consolidado).
+   */
+  async processOneDevolution(
+    manager: EntityManager,
+    dto: CreateDevolutionDto,
+    opts: { userId?: string; returningHistoryId?: string } = {},
+  ): Promise<'success' | 'duplicate' | 'notFound'> {
+    const { trackingNumber, subsidiary, status } = dto;
+    if (!subsidiary) {
+      throw new Error('La sucursal es obligatoria para procesar la devolución.');
+    }
+
+    const shipments = await manager.find(Shipment, { where: { trackingNumber } });
+    const charges = await manager.find(ChargeShipment, { where: { trackingNumber } });
+
+    if (shipments.length === 0 && charges.length === 0) {
+      return 'notFound';
+    }
+
+    // Consolidado del match más reciente (puede ser null si el envío no trae consolidado).
+    const consolidatedId =
+      [...shipments, ...charges]
+        .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0]
+        ?.consolidatedId ?? null;
+
+    // Duplicado por (guía + consolidado): no re-crea el registro, pero SÍ garantiza el estatus.
+    const existingDevolution = await manager.findOne(Devolution, {
+      where: {
+        trackingNumber,
+        consolidatedId: consolidatedId === null ? IsNull() : consolidatedId,
+      },
+    });
+
+    if (!existingDevolution) {
+      const newDevolution = manager.create(Devolution, {
+        ...dto,
+        consolidatedId,
+        date: new Date(),
+        createdById: opts.userId ?? null,
+        returningHistory: opts.returningHistoryId ? ({ id: opts.returningHistoryId } as any) : null,
+      });
+      await manager.save(newDevolution);
+    }
+
+    // Marcar DEVUELTO_A_FEDEX en TODAS las filas de la guía + historial por fila (idempotente).
+    const utcDate = fromZonedTime(new Date(), RETURNING_TZ);
+    const note = `Devolución registrada en sucursal: ${subsidiary}. Motivo: ${status || 'No especificado'}`;
+
+    for (const s of shipments) {
+      if (s.status === ShipmentStatusType.DEVUELTO_A_FEDEX) continue;
+      await manager.update(Shipment, s.id, { status: ShipmentStatusType.DEVUELTO_A_FEDEX });
+      await manager.save(
+        manager.create(ShipmentStatus, {
+          status: ShipmentStatusType.DEVUELTO_A_FEDEX,
+          exceptionCode: '',
+          notes: note,
+          timestamp: utcDate,
+          shipment: { id: s.id },
+        }),
+      );
+    }
+
+    for (const c of charges) {
+      if (c.status === ShipmentStatusType.DEVUELTO_A_FEDEX) continue;
+      await manager.update(ChargeShipment, c.id, { status: ShipmentStatusType.DEVUELTO_A_FEDEX });
+      await manager.save(
+        manager.create(ShipmentStatus, {
+          status: ShipmentStatusType.DEVUELTO_A_FEDEX,
+          exceptionCode: '',
+          notes: note,
+          timestamp: utcDate,
+          chargeShipment: { id: c.id },
+        }),
+      );
+    }
+
+    return existingDevolution ? 'duplicate' : 'success';
+  }
 
   async findAll(subsidiaryId: string) {
     return await this.devolutionRepository.find({
@@ -267,13 +181,13 @@ export class DevolutionsService {
     // 🚀 1. VALIDACIÓN EN FEDEX ANTES DE TODO LO DEMÁS
     // ---------------------------------------------------------------
 
-    try {
-      await this.shipmentService.checkStatusOnFedexBySubsidiaryRulesTesting(
-        [trackingNumber],
-        true,
+    // Servicio NUEVO (read-only): trae SIEMPRE el último estatus fresco desde FedEx, sin
+    // depender del pipeline legado ni escribir en BD. Sirve para shipment y charge por igual.
+    const latest = await this.fedexStatusResolver.getLatestStatus(trackingNumber);
+    if (!latest.validation.ok) {
+      this.logger.warn(
+        `Estatus FedEx de ${trackingNumber} con observaciones: ${latest.validation.issues.join('; ')}`,
       );
-    } catch (error) {
-      console.error(`❌ Error al validar tracking ${trackingNumber} en FedEx`, error);
     }
 
     // ---------------------------------------------------------------
@@ -331,32 +245,35 @@ export class DevolutionsService {
         where: { trackingNumber },
       });
 
+      // Estatus/código EFECTIVOS: preferimos lo fresco de FedEx (resolver); si no lo trajo,
+      // caemos a lo persistido en el charge.
+      const effStatus = (latest.found && latest.status) || chargeShipment.status;
+      const effException = latest.found ? latest.exceptionCode : chargeShipment.exceptionCode || null;
+
       const isProblematic =
-        chargeShipment.status === ShipmentStatusType.NO_ENTREGADO &&
-        ['03', '07', '08', '17'].includes(chargeShipment.exceptionCode || '');
+        effStatus === ShipmentStatusType.NO_ENTREGADO &&
+        ['03', '07', '08', '17'].includes(effException || '');
 
       if (isProblematic) {
         console.warn(
-          `⚠️ ChargeShipment ${chargeShipment.trackingNumber} tiene un estado NO_ENTREGADO con excepción ${chargeShipment.exceptionCode}`,
+          `⚠️ ChargeShipment ${chargeShipment.trackingNumber} NO_ENTREGADO con excepción ${effException}`,
         );
       }
 
       return {
         id: chargeShipment.id,
         trackingNumber: chargeShipment.trackingNumber,
-        status: chargeShipment.status,
+        status: effStatus,
         subsidiaryId: chargeShipment.subsidiary.id,
         subsidiaryName: chargeShipment.subsidiary.name,
         hasIncome: incomeExists,
         isCharge: true,
         hasError: isProblematic ? true : false,
-        errorMessage: isProblematic
-          ? 'No tiene un dex registrado se debe revisar'
-          : '',
+        errorMessage: isProblematic ? 'No tiene un dex registrado se debe revisar' : '',
         lastStatus: {
-          type: chargeShipment.status || null,
-          exceptionCode: chargeShipment.exceptionCode || null,
-          notes: null,
+          type: effStatus || null,
+          exceptionCode: effException || null,
+          notes: latest.found ? latest.description : null,
         },
       };
     }
@@ -382,17 +299,23 @@ export class DevolutionsService {
     const lastStatus = orderedHistory[orderedHistory.length - 1];
 
     // ---------------------------------------------------------------
-    // 6. Validar estatus problemático
+    // 6. Estatus EFECTIVO: lo fresco de FedEx (resolver) manda; si no lo trajo, el último
+    //    historial persistido. Así la validación SIEMPRE refleja el último estatus de FedEx.
     // ---------------------------------------------------------------
 
+    const effStatus = (latest.found && latest.status) || latestShipment.status;
+    const effException = latest.found
+      ? latest.exceptionCode
+      : lastStatus?.exceptionCode || null;
+    const effNotes = latest.found ? latest.description : lastStatus?.notes ?? null;
+
     const isProblematic =
-      lastStatus &&
-      lastStatus.status === ShipmentStatusType.NO_ENTREGADO &&
-      ['03', '07', '08', '17'].includes(lastStatus.exceptionCode || '');
+      effStatus === ShipmentStatusType.NO_ENTREGADO &&
+      ['03', '07', '08', '17'].includes(effException || '');
 
     if (isProblematic) {
       console.warn(
-        `⚠️ Shipment ${latestShipment.trackingNumber} tiene un último estado NO_ENTREGADO con excepción ${lastStatus.exceptionCode}`,
+        `⚠️ Shipment ${latestShipment.trackingNumber} NO_ENTREGADO con excepción ${effException}`,
       );
     }
 
@@ -407,22 +330,18 @@ export class DevolutionsService {
     return {
       id: latestShipment.id,
       trackingNumber: latestShipment.trackingNumber,
-      status: latestShipment.status,
+      status: effStatus,
       subsidiaryId: latestShipment.subsidiary.id,
       subsidiaryName: latestShipment.subsidiary.name,
       hasIncome: incomeExists,
       isCharge: false,
       hasError: isProblematic ? true : false,
-      errorMessage: isProblematic
-        ? 'No tiene un dex registrado se debe revisar'
-        : '',
-      lastStatus: lastStatus
-        ? {
-            type: lastStatus.status,
-            exceptionCode: lastStatus.exceptionCode || null,
-            notes: lastStatus.notes,
-          }
-        : null,
+      errorMessage: isProblematic ? 'No tiene un dex registrado se debe revisar' : '',
+      lastStatus: {
+        type: effStatus || null,
+        exceptionCode: effException || null,
+        notes: effNotes,
+      },
     };
   }
 

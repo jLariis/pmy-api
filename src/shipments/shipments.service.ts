@@ -6636,10 +6636,18 @@ export class ShipmentsService {
           return true;
         }
 
-        // Permitir códigos de excepción específicos
+        // Permitir códigos de excepción específicos.
+        //
+        // Estos códigos son AUTORITATIVOS de FedEx: el propio código define el estatus
+        // (14→retorno_abandono_fedex, 08→cliente_no_disponible, 17→cambio_fecha, OD→acargo_de_fedex,
+        // 16→pago recibido). El "tipo de evento" (IT, AR, DE, …) NO aplica para ellos, por eso
+        // caían al `return false` y el refresh los rechazaba ("No se encontró evento válido…").
+        // Todos ya están en `allowedExceptionCodes`, así que solo se destraba lo que el sistema
+        // ya pretende procesar.
+        const FEDEX_AUTHORITATIVE_CODES = ['07', '08', '17', '14', '16', 'OD'];
         if ((exceptionCode === '03' && rules.allowException03) ||
-            (exceptionCode === '07')) {
-          console.log(`✅ Exception code ${exceptionCode} válido`);
+            FEDEX_AUTHORITATIVE_CODES.includes(exceptionCode)) {
+          console.log(`✅ Exception code ${exceptionCode} válido (define estatus por código FedEx)`);
           return true;
         }
 

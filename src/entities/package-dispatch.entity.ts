@@ -9,6 +9,7 @@ import { ChargeShipment } from "./charge-shipment.entity";
 import { RouteClosure } from "./route-closure.entity";
 import { PackageDispatchHistory } from "./package-dispatch-history.entity";
 import { User } from "./user.entity";
+import { EmailStatus } from "src/common/enums/email-status.enum";
 
 @Entity('package_dispatch')
 export class PackageDispatch {
@@ -85,6 +86,17 @@ export class PackageDispatch {
 
   @Column({ nullable: true })
   createdById: string;
+
+  // --- Trazabilidad de envío de correo (denormalizado para pintar el botón en
+  // el listado sin joins pesados; el detalle por intento vive en `email_log`). ---
+  @Column({ type: 'enum', enum: EmailStatus, default: EmailStatus.NOT_SENT })
+  emailStatus: EmailStatus;
+
+  @Column({ type: 'timestamp', nullable: true })
+  emailLastSentAt: Date | null;
+
+  @Column({ type: 'varchar', length: 500, nullable: true })
+  emailLastError: string | null;
 
   @BeforeInsert()
   setDefaults() {

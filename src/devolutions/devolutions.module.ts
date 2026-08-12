@@ -14,10 +14,12 @@ import { PackageDispatch } from 'src/entities/package-dispatch.entity';
 import { Unloading } from 'src/entities/unloading.entity';
 import { DhlService } from 'src/shipments/dhl.service';
 import { DocumentsModule } from 'src/documents/documents.module';
+import { FedexStatusModule } from 'src/fedex-status/fedex-status.module';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Devolution, Shipment, ShipmentStatus, Subsidiary, Income, Charge, ChargeShipment, Consolidated, ForPickUp, PackageDispatch, Unloading, Collection]), DocumentsModule],
+  imports: [TypeOrmModule.forFeature([Devolution, Shipment, ShipmentStatus, Subsidiary, Income, Charge, ChargeShipment, Consolidated, ForPickUp, PackageDispatch, Unloading, Collection]), DocumentsModule, FedexStatusModule],
   controllers: [DevolutionsController],
   providers: [DevolutionsService, MailService, FedexService, DhlService, SubsidiariesService, ConsolidatedService, ShipmentsService],
+  exports: [DevolutionsService],
 })
 export class DevolutionsModule {}

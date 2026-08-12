@@ -1,0 +1,17 @@
+{
+  "// nota": "Perfil pensado para maquinas de 8GB: acota el TS server (default 3072) y saca carpetas pesadas del file-watcher.",
+  "typescript.tsserver.maxTsServerMemory": 2048,
+  "typescript.disableAutomaticTypeAcquisition": true,
+  "files.watcherExclude": {
+    "**/node_modules/**": true,
+    "**/dist/**": true,
+    "**/coverage/**": true,
+    "**/graphify-out/**": true
+  },
+  "search.exclude": {
+    "**/node_modules": true,
+    "**/dist": true,
+    "**/coverage": true,
+    "**/graphify-out": true
+  }
+}

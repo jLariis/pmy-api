@@ -64,6 +64,19 @@ export class PackageDispatchController {
     return this.packageDispatchService.findOne(id);
   }
 
+  @Get(':id/email-history')
+  @ApiOperation({ summary: 'Historial de envíos de correo de una salida a ruta' })
+  getEmailHistory(@Param('id') id: string) {
+    return this.packageDispatchService.getEmailHistory(id);
+  }
+
+  /** Extrae el actor (id + nombre legible) del usuario autenticado. */
+  private actorFromReq(req: any): { id?: string; name?: string } {
+    const u = req?.user ?? {};
+    const name = [u.name, u.lastName].filter(Boolean).join(' ').trim() || u.email || undefined;
+    return { id: u.userId, name };
+  }
+
   @Get('validate-tracking-number/:trackingNumber/:subsidiaryId')
   validateTrackingNumber(@Param('trackingNumber') trackingNumber: string, @Param('subsidiaryId') subsidiaryId: string) {
     return this.packageDispatchService.validateTrackingNumber(trackingNumber, subsidiaryId);
@@ -112,26 +125,26 @@ export class PackageDispatchController {
   sendEmail(
     @UploadedFiles() files: Express.Multer.File[],
     @Body('subsidiaryName') subsidiaryName: string,
-    @Body('packageDispatchId') packageDispatchId: string
+    @Body('packageDispatchId') packageDispatchId: string,
+    @Body('isResend') isResend: string,
+    @Req() req: any,
   ) {
-    console.log('🚀 ~ PackageDispatchController ~ sendEmail ~ files:', files);
-        console.log('🚀 ~ PackageDispatchController ~ sendEmail ~ subsidiaryName:', subsidiaryName);
-        console.log('🚀 ~ PackageDispatchController ~ sendEmail ~ packageDispatchId:', packageDispatchId);
-    
-        // Validate that both files are present
-        if (!files || files.length !== 2) {
-          throw new BadRequestException('Se esperan exactamente dos archivos: un PDF y un Excel.');
-        }
-    
-        // Identify PDF and Excel files based on mimetype or filename
-        const pdfFile = files.find((file) => file.mimetype === 'application/pdf');
-        const excelFile = files.find((file) =>
-          file.mimetype === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-        );
-    
-        if (!pdfFile || !excelFile) {
-          throw new BadRequestException('Se requiere un archivo PDF y un archivo Excel.');
-        }
-    return this.packageDispatchService.sendByEmail(pdfFile, excelFile, subsidiaryName, packageDispatchId)
+    // Validate that both files are present
+    if (!files || files.length !== 2) {
+      throw new BadRequestException('Se esperan exactamente dos archivos: un PDF y un Excel.');
+    }
+
+    // Identify PDF and Excel files based on mimetype or filename
+    const pdfFile = files.find((file) => file.mimetype === 'application/pdf');
+    const excelFile = files.find((file) =>
+      file.mimetype === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    );
+
+    if (!pdfFile || !excelFile) {
+      throw new BadRequestException('Se requiere un archivo PDF y un archivo Excel.');
+    }
+    // `isResend` llega como string en multipart/form-data.
+    const resend = isResend === 'true' || (isResend as any) === true;
+    return this.packageDispatchService.sendByEmail(pdfFile, excelFile, subsidiaryName, packageDispatchId, this.actorFromReq(req), resend)
   }
 }

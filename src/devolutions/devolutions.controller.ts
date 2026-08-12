@@ -59,9 +59,6 @@ export class DevolutionsController {
     @Body('subsidiaryName') subsidiaryName: string,
     @Body('subsidiaryId') subsidiaryId?: string,
   ) {
-    console.log('🚀 ~ PackageDispatchController ~ sendEmail ~ files:', files);
-        console.log('🚀 ~ PackageDispatchController ~ sendEmail ~ subsidiaryName:', subsidiaryName);
-    
         // Validate that both files are present
         if (!files || files.length !== 2) {
           throw new BadRequestException('Se esperan exactamente dos archivos: un PDF y un Excel.');

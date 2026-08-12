@@ -18,6 +18,16 @@ interface SendEmailOptions {
   attachments?: { filename: string; content: Buffer }[];
 }
 
+/** Resultado estructurado de un envío, para trazabilidad (bitácora de correo). */
+export interface MailSendResult {
+  to: string;
+  cc: string | null;
+  subject: string;
+  accepted: string[];
+  rejected: string[];
+  messageId?: string;
+}
+
 @Injectable()
 export class MailService {
   constructor(
@@ -132,34 +142,61 @@ export class MailService {
     }
   }
 
-  /*** Enviar correo Salida a Ruta */
+  /** Normaliza una lista de direcciones (string o string[]) a un string legible. */
+  private recipientsToString(value?: string | string[] | null): string | null {
+    if (!value) return null;
+    return Array.isArray(value) ? value.filter(Boolean).join(', ') : value;
+  }
+
+  /** Extrae direcciones del `accepted`/`rejected` de nodemailer (string | {address}). */
+  private infoAddresses(list: any[]): string[] {
+    if (!Array.isArray(list)) return [];
+    return list.map((x) => (typeof x === 'string' ? x : x?.address)).filter(Boolean);
+  }
+
+  /**
+   * Destinatarios (con filtro de ambiente) de una salida a ruta. Público para
+   * que el orquestador registre en la bitácora los mismos que se usan al enviar,
+   * incluso si el envío falla.
+   */
+  resolveDispatchRecipients(packageDispatch: PackageDispatch): { to: string | string[]; cc: string | string[] } {
+    return this.applyDevFilters(
+      packageDispatch.subsidiary.officeEmail,
+      `${packageDispatch.subsidiary.officeEmailToCopy}, sistemas@paqueteriaymensajeriadelyaqui.com`,
+    );
+  }
+
+  /**
+   * Enviar correo Salida a Ruta. Devuelve un resultado estructurado para la
+   * bitácora (accepted/rejected/messageId). Relanza en fallo duro del SMTP; el
+   * orquestador lo atrapa y registra el ERROR.
+   */
   async sendHighPriorityPackageDispatchEmail(
-    pdfFile: Express.Multer.File, excelFile: Express.Multer.File, subsidiaryName: string, packageDispatch: PackageDispatch,
-  ) {
-    const attachments = [
-      { filename: pdfFile.originalname, content: pdfFile.buffer },
-      { filename: excelFile.originalname, content: excelFile.buffer },
-    ];
+    attachments: { filename: string; content: Buffer }[],
+    subsidiaryName: string,
+    packageDispatch: PackageDispatch,
+    recipients?: { to: string | string[]; cc?: string | string[] },
+  ): Promise<MailSendResult> {
     const rendered = await this.templates.render('route_dispatch', {
       subsidiaryName,
       vehicleName: packageDispatch.vehicle?.name ?? 'N/A',
       createdAt: packageDispatch.createdAt,
-      drivers: packageDispatch.drivers.map((d) => d.name).join(' - '),
-      routes: packageDispatch.routes.map((r) => r.name).join(' -> '),
+      drivers: (packageDispatch.drivers ?? []).map((d) => d.name).join(' - '),
+      routes: (packageDispatch.routes ?? []).map((r) => r.name).join(' -> '),
       trackingNumber: packageDispatch.trackingNumber,
       driverName: packageDispatch.drivers?.[0]?.name ?? 'Sin chofer',
       detailLink: this.buildDetailLink('/operaciones/salidas-a-ruta', packageDispatch.trackingNumber),
     });
-    const { to, cc } = this.applyDevFilters(
-      packageDispatch.subsidiary.officeEmail,
-      `${packageDispatch.subsidiary.officeEmailToCopy}, sistemas@paqueteriaymensajeriadelyaqui.com`,
-    );
-    try {
-      await this.dispatch({ to, cc, subject: rendered.subject, html: rendered.html, attachments });
-    } catch (error) {
-      console.log(error);
-      throw error;
-    }
+    const { to, cc } = recipients ?? this.resolveDispatchRecipients(packageDispatch);
+    const info: any = await this.dispatch({ to, cc, subject: rendered.subject, html: rendered.html, attachments });
+    return {
+      to: this.recipientsToString(to) ?? '',
+      cc: this.recipientsToString(cc),
+      subject: rendered.subject,
+      accepted: this.infoAddresses(info?.accepted),
+      rejected: this.infoAddresses(info?.rejected),
+      messageId: info?.messageId,
+    };
   }
 
   /*** Enviar correo Desembarque */

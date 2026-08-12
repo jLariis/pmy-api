@@ -77,7 +77,11 @@ Un renglón por **cada intento** de envío (primer envío y cada reenvío).
 |---|---|---|
 | `id` | uuid PK | |
 | `module` | varchar | discriminador, p.ej. `'package_dispatch'` |
+| `emailType` | varchar, default `'unknown'` | tipo/origen del correo (de dónde salió): `route_dispatch`, `unloading`, `route_closure`, `inventory`, `devolutions`, … (suele coincidir con la clave de plantilla) |
 | `entityId` | varchar | id de la entidad origen (polimórfico, sin FK dura) |
+| `referenceTracking` | varchar nullable | folio/guía legible de la entidad origen (p.ej. `trackingNumber` del despacho) |
+| `subsidiaryId` | varchar nullable | sucursal a la que corresponde el correo |
+| `subsidiaryName` | varchar nullable | nombre de la sucursal (denormalizado para mostrar sin joins) |
 | `to` | text | destinatarios reales usados (ya con filtro dev aplicado) |
 | `cc` | text nullable | |
 | `subject` | varchar | |
@@ -86,9 +90,13 @@ Un renglón por **cada intento** de envío (primer envío y cada reenvío).
 | `messageId` | varchar nullable | de la respuesta SMTP |
 | `rejected` | text nullable | direcciones rechazadas por el SMTP, si hubo |
 | `isResend` | boolean, default false | |
-| `triggeredById` | uuid nullable | usuario que disparó el reenvío |
+| `triggeredById` | uuid nullable | usuario que realizó el envío/reenvío |
+| `triggeredByName` | varchar nullable | nombre del usuario (denormalizado) |
 | `attachmentsMeta` | json | `[{ filename, size }]` para mostrar sin cargar bytes |
 | `createdAt` | timestamp | hora del envío |
+
+Índices: `(module, entityId, createdAt)` y `(emailType)`. El **actor** (usuario) se toma de
+`req.user` (`userId`, `name`/`lastName`, `email`) tanto en el primer envío como en el reenvío.
 
 Índice: `(module, entityId, createdAt)` para consultar el historial de una entidad.
 
@@ -152,29 +160,32 @@ No conoce `package_dispatch`; opera solo por `(module, entityId)`.
 
 ### 5.3 `PackageDispatchService`
 
-- `sendByEmail(...)` (primer envío):
+- `sendByEmail(pdf, excel, subsidiaryName, dispatchId, actor?, isResend=false)` — vía única de
+  (re)envío. Tanto el primer envío como el **reenvío** pasan por aquí (el frontend sube los
+  archivos en ambos casos; el reenvío marca `isResend=true`):
   1. `emailLogService.persistAttachments('package_dispatch', dispatchId, [pdf, excel])`.
   2. Intenta enviar; captura resultado o excepción.
-  3. `emailLogService.record({...})` con `SENT` o `ERROR` (incluye `to`, `cc`, `subject`,
-     `error`, `messageId`, `rejected`, `attachmentsMeta`, `isResend: false`).
+  3. `emailLogService.record({...})` con `SENT` o `ERROR` (incluye tipo/origen, folio, sucursal,
+     `to`, `cc`, `subject`, `error`, `messageId`, `rejected`, `attachmentsMeta`, `isResend`,
+     `triggeredById`/`triggeredByName`).
   4. Actualiza `emailStatus`/`emailLastSentAt`/`emailLastError` en el despacho.
-  5. **No relanza**: devuelve un resultado estructurado (`{ status, error? }`) para que el
-     front informe. (Los adjuntos se guardan incluso si el envío falla, para permitir reenvío.)
-- `resendEmail(dispatchId, userId)` (nuevo):
-  1. `loadAttachments(...)`. Si devuelve `null` (despacho histórico sin registro, o archivos ya
-     purgados del disco), **fallback**: regenera con `renderRouteDispatchDocuments`, los
-     persiste de nuevo, y continúa.
-  2. Reenvía a los mismos destinatarios (mismo cálculo + filtro dev).
-  3. `record({... isResend: true, triggeredById: userId})`.
-  4. Actualiza columnas denormalizadas.
-  5. Devuelve `{ status, error? }`.
-- `getEmailHistory(dispatchId)` (nuevo): delega en `emailLogService.getHistory`.
+  5. **No relanza**: devuelve `{ status, error?, to? }` para que el front informe.
+- `getEmailHistory(dispatchId)`: delega en `emailLogService.getHistory`.
 - `findAllBySubsidiary`: agrega `pd.emailStatus`, `pd.emailLastSentAt`, `pd.emailLastError` al
   `select` del listado.
 
-### 5.4 `PackageDispatchController` (endpoints nuevos)
+> **Nota (corrección post-diseño):** el reenvío NO se hace regenerando en el backend. El PDF
+> real solo lo produce el cliente (`@react-pdf/renderer`); el motor de plantillas del backend
+> (`route_dispatch_pdf`) no entrega un buffer PDF en este entorno, así que un reenvío backend
+> mandaba un correo parcial (solo Excel). Se eliminaron `resendEmail`,
+> `regenerateAndPersistAttachments` y el endpoint `POST /resend-email`. El reenvío ahora
+> **regenera PDF+Excel en el cliente y sube por `/upload`** con `isResend=true`. `loadAttachments`
+> se conserva (genérico) por si a futuro un módulo sí puede regenerar en backend.
 
-- `POST /package-dispatchs/:id/resend-email` → `resendEmail(id, req.user?.userId)`.
+### 5.4 `PackageDispatchController` (endpoints)
+
+- `POST /package-dispatchs/upload` → `sendByEmail(...)` con `isResend` opcional (primer envío
+  **y** reenvío).
 - `GET /package-dispatchs/:id/email-history` → `getEmailHistory(id)`.
 
 ## 6. Frontend — diseño

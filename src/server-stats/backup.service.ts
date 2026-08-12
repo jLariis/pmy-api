@@ -246,7 +246,16 @@ export class BackupService {
     onBytes: (n: number) => void,
     log: (stream: 'stdout' | 'stderr', line: string) => void,
   ): Promise<void> {
-    const args = [`--host=${db.host}`, `--port=${db.port}`, `--user=${db.username}`, db.database];
+    // --max-allowed-packet alto: los dumps traen INSERTs extendidos grandes; con
+    // el default (~16M) el cliente mysql aborta a media restauración con
+    // "packet too large", que era una de las causas de la caída.
+    const args = [
+      `--host=${db.host}`,
+      `--port=${db.port}`,
+      `--user=${db.username}`,
+      '--max-allowed-packet=1073741824',
+      db.database,
+    ];
     return new Promise<void>((resolve, reject) => {
       const child = spawn(this.mysqlBin(), args, { env: { ...process.env, MYSQL_PWD: db.password } });
       let read = 0;
@@ -266,8 +275,17 @@ export class BackupService {
       child.on('error', (err) => reject(new Error(`mysql no disponible: ${err.message}`)));
       child.on('close', (code) => (code === 0 ? resolve() : reject(new Error(`mysql exit ${code}: ${stderr.slice(0, 500)}`))));
 
-      gz.pipe(gunzip).pipe(child.stdin);
+      // Sin este handler, si mysql cierra stdin antes de tiempo (salió por un
+      // error SQL), el EPIPE al escribir es un 'error' NO capturado que tumba
+      // todo el proceso del API (el cliente lo veía como "conexión forzada por
+      // el host remoto"). Lo absorbemos: el 'close' con código != 0 ya reporta
+      // el error real de mysql, que es lo que queremos que llegue a la UI.
+      child.stdin.on('error', (err: any) => {
+        if (err?.code !== 'EPIPE') reject(new Error(`Fallo escribiendo a mysql: ${err.message}`));
+      });
+      gz.on('error', (err) => reject(err));
       gunzip.on('error', (err) => reject(err));
+      gz.pipe(gunzip).pipe(child.stdin);
     });
   }
 

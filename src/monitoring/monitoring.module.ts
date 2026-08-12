@@ -20,6 +20,7 @@ import { PackageDispatchHistory } from 'src/entities/package-dispatch-history.en
 import { DhlService } from 'src/shipments/dhl.service';
 import { GeocodeModule } from 'src/geocode/geocode.module';
 import { DocumentsModule } from 'src/documents/documents.module';
+import { EmailLogModule } from 'src/email-log/email-log.module';
 
 
 @Module({
@@ -27,6 +28,7 @@ import { DocumentsModule } from 'src/documents/documents.module';
     TypeOrmModule.forFeature([Shipment, ChargeShipment, Consolidated, Subsidiary, PackageDispatch, Devolution, RouteClosure, Income, Charge, ShipmentStatus, ForPickUp, Unloading, Inventory, PackageDispatchHistory]),
     GeocodeModule,
     DocumentsModule,
+    EmailLogModule,
   ],
   controllers: [MonitoringController],
   providers: [

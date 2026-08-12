@@ -1,7 +1,7 @@
 import { JwtModule, JwtService } from '@nestjs/jwt'
 import { Test, TestingModule } from '@nestjs/testing'
 import { getRepositoryToken } from '@nestjs/typeorm'
-import { User } from '../users/dto/user.entity'
+import { User } from 'src/entities'
 import { UsersService } from '../users/users.service'
 import { Repository } from 'typeorm'
 import { AuthController } from './auth.controller'
