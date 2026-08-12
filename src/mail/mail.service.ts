@@ -279,6 +279,36 @@ export class MailService {
 
   }
 
+  /**
+   * Enviar correo Devoluciones/Recolecciones de una SALIDA, devolviendo un resultado
+   * ESTRUCTURADO (accepted/rejected/messageId) para la bitácora. Relanza en fallo del SMTP;
+   * el orquestador (ReturningService.sendAndTrack) lo atrapa y registra el ERROR.
+   */
+  async sendHighPriorityDevolutionsEmailTracked(
+    attachments: { filename: string; content: Buffer }[],
+    subsidiary: Subsidiary,
+    recipients?: { to: string | string[]; cc?: string | string[] },
+  ): Promise<MailSendResult> {
+    const rendered = await this.templates.render('devolutions', {
+      subsidiaryName: subsidiary.name,
+      createdAt: new Date(),
+      detailLink: this.buildDetailLink('/operaciones/devoluciones'),
+    });
+    const { to, cc } = recipients ?? this.applyDevFilters(
+      subsidiary.officeEmail,
+      `${subsidiary.officeEmailToCopy}, sistemas@paqueteriaymensajeriadelyaqui.com`,
+    );
+    const info: any = await this.dispatch({ to, cc, subject: rendered.subject, html: rendered.html, attachments });
+    return {
+      to: this.recipientsToString(to) ?? '',
+      cc: this.recipientsToString(cc),
+      subject: rendered.subject,
+      accepted: this.infoAddresses(info?.accepted),
+      rejected: this.infoAddresses(info?.rejected),
+      messageId: info?.messageId,
+    };
+  }
+
   /*** Correos de DEX03 - Reporte */
   async sendHighPriorityShipmentWithStatus03(
     subsidiary: Subsidiary,

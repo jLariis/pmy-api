@@ -42,7 +42,7 @@ export class CreateReturningHistoryBatch1786000000008 implements MigrationInterf
       await queryRunner.query(`
         CREATE TABLE \`returning_history\` (
           \`id\` varchar(36) NOT NULL,
-          \`folio\` int NOT NULL AUTO_INCREMENT,
+          \`trackingNumber\` varchar(255) NULL,
           \`date\` timestamp NOT NULL,
           \`subsidiaryId\` varchar(36) NULL,
           \`vehicleId\` varchar(36) NULL,
@@ -51,26 +51,22 @@ export class CreateReturningHistoryBatch1786000000008 implements MigrationInterf
           \`createdById\` char(36) NULL,
           \`createdAt\` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
           PRIMARY KEY (\`id\`),
-          UNIQUE KEY \`IDX_returning_history_folio\` (\`folio\`),
+          INDEX \`IDX_returning_history_tracking\` (\`trackingNumber\`),
           INDEX \`IDX_returning_history_subsidiary\` (\`subsidiaryId\`)
         )
       `);
     } else {
       // La tabla ya existía (synchronize) con esquema viejo: agregar solo lo que falte.
+      await this.addColumnIfMissing(queryRunner, 'returning_history', 'trackingNumber', '`trackingNumber` varchar(255) NULL');
       await this.addColumnIfMissing(queryRunner, 'returning_history', 'subsidiaryId', '`subsidiaryId` varchar(36) NULL');
       await this.addColumnIfMissing(queryRunner, 'returning_history', 'vehicleId', '`vehicleId` varchar(36) NULL');
       await this.addColumnIfMissing(queryRunner, 'returning_history', 'devolutionsCount', '`devolutionsCount` int NOT NULL DEFAULT 0');
       await this.addColumnIfMissing(queryRunner, 'returning_history', 'collectionsCount', '`collectionsCount` int NOT NULL DEFAULT 0');
       await this.addColumnIfMissing(queryRunner, 'returning_history', 'createdById', '`createdById` char(36) NULL');
       await this.addColumnIfMissing(queryRunner, 'returning_history', 'createdAt', '`createdAt` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP');
-      if (!(await this.columnExists(queryRunner, 'returning_history', 'folio'))) {
-        // AUTO_INCREMENT exige índice: el UNIQUE lo satisface y numera las filas existentes.
-        await queryRunner.query(
-          `ALTER TABLE \`returning_history\` ADD COLUMN \`folio\` int NOT NULL AUTO_INCREMENT UNIQUE`,
-        );
-      }
-      if (!(await this.columnExists(queryRunner, 'returning_history', 'subsidiaryId'))) {
-        // (por si acaso) ya cubierto arriba; no-op.
+      // Si un intento previo creó `folio`, lo quitamos (ahora se usa trackingNumber).
+      if (await this.columnExists(queryRunner, 'returning_history', 'folio')) {
+        await queryRunner.query('ALTER TABLE `returning_history` DROP COLUMN `folio`');
       }
     }
 
@@ -97,7 +93,7 @@ export class CreateReturningHistoryBatch1786000000008 implements MigrationInterf
     }
     // Solo revertimos las columnas que ESTA migración agrega; no tocamos `id`/`date` ni la tabla
     // base (predataba a esta migración por synchronize).
-    for (const col of ['folio', 'subsidiaryId', 'vehicleId', 'devolutionsCount', 'collectionsCount', 'createdById', 'createdAt']) {
+    for (const col of ['trackingNumber', 'subsidiaryId', 'vehicleId', 'devolutionsCount', 'collectionsCount', 'createdById', 'createdAt']) {
       if (await this.columnExists(queryRunner, 'returning_history', col)) {
         await queryRunner.query(`ALTER TABLE \`returning_history\` DROP COLUMN \`${col}\``);
       }

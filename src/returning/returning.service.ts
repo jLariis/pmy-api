@@ -3,11 +3,23 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository } from 'typeorm';
 import { ReturningHistory } from 'src/entities/returning-history.entity';
 import { Devolution } from 'src/entities/devolution.entity';
-import { Collection } from 'src/entities';
+import { Collection, Subsidiary } from 'src/entities';
+import { EmailLog } from 'src/entities/email-log.entity';
 import { DevolutionsService } from 'src/devolutions/devolutions.service';
 import { CollectionsService } from 'src/collections/collections.service';
 import { CreateReturningDto } from './dto/create-returning.dto';
 import { PaginatedResult, parsePagination, resolveDateRange } from 'src/common/pagination.util';
+import { EmailFile, EmailLogService } from 'src/email-log/email-log.service';
+import { MailService } from 'src/mail/mail.service';
+import { EmailStatus } from 'src/common/enums/email-status.enum';
+
+const EMAIL_MODULE = 'returning';
+const EMAIL_TYPE_RETURNING = 'returning';
+
+export interface EmailActor {
+  id?: string;
+  name?: string;
+}
 
 @Injectable()
 export class ReturningService {
@@ -16,9 +28,13 @@ export class ReturningService {
   constructor(
     @InjectRepository(ReturningHistory)
     private readonly returningRepository: Repository<ReturningHistory>,
+    @InjectRepository(Subsidiary)
+    private readonly subsidiaryRepository: Repository<Subsidiary>,
     private readonly dataSource: DataSource,
     private readonly devolutionsService: DevolutionsService,
     private readonly collectionsService: CollectionsService,
+    private readonly emailLogService: EmailLogService,
+    private readonly mailService: MailService,
   ) {}
 
   /**
@@ -96,13 +112,13 @@ export class ReturningService {
 
       await queryRunner.commitTransaction();
       this.logger.log(
-        `Salida ${savedHistory.folio ?? savedHistory.id}: ` +
+        `Salida ${savedHistory.trackingNumber ?? savedHistory.id}: ` +
           `${devResult.success.length} devs, ${colResult.savedCollections.length} recos guardadas`,
       );
 
       return {
         id: savedHistory.id,
-        folio: savedHistory.folio,
+        trackingNumber: savedHistory.trackingNumber,
         devolutions: devResult,
         collections: {
           saved: colResult.savedCollections.map((c) => c.trackingNumber),
@@ -140,8 +156,8 @@ export class ReturningService {
       .andWhere('rh.date BETWEEN :start AND :end', { start, end });
 
     if (search) {
-      // Búsqueda por folio (número de salida).
-      qb.andWhere('CAST(rh.folio AS CHAR) LIKE :search', { search: `%${search}%` });
+      // Búsqueda por número de rastreo de la salida.
+      qb.andWhere('rh.trackingNumber LIKE :search', { search: `%${search}%` });
     }
 
     const [data, total] = await qb
@@ -175,5 +191,147 @@ export class ReturningService {
     ]);
 
     return { ...history, devolutions, collections };
+  }
+
+  // ============================ CORREO ============================
+
+  /**
+   * Envía (o reenvía) el correo de una salida: guarda los adjuntos en disco, envía, registra el
+   * intento en la bitácora genérica (module='returning') y actualiza el estado denormalizado.
+   * Espejo de package-dispatch.
+   */
+  async sendByEmail(
+    pdfFile: Express.Multer.File,
+    excelFile: Express.Multer.File,
+    subsidiaryName: string,
+    returningHistoryId: string,
+    actor?: EmailActor,
+    isResend = false,
+  ) {
+    const salida = await this.returningRepository.findOne({
+      where: { id: returningHistoryId },
+      relations: { subsidiary: true },
+    });
+    if (!salida) {
+      throw new BadRequestException(`No se encontró la salida ${returningHistoryId}.`);
+    }
+
+    const subsidiary =
+      salida.subsidiary ??
+      (salida.subsidiaryId ? await this.subsidiaryRepository.findOneBy({ id: salida.subsidiaryId }) : null);
+    if (!subsidiary) {
+      throw new BadRequestException(`La salida ${returningHistoryId} no tiene sucursal para el correo.`);
+    }
+
+    const attachments: EmailFile[] = [
+      { filename: pdfFile.originalname, content: pdfFile.buffer, mimeType: pdfFile.mimetype },
+      { filename: excelFile.originalname, content: excelFile.buffer, mimeType: excelFile.mimetype },
+    ];
+
+    // Guardar SIEMPRE los adjuntos en disco (aunque el correo falle) para poder reenviar.
+    try {
+      await this.emailLogService.persistAttachments(EMAIL_MODULE, returningHistoryId, attachments);
+    } catch (e: any) {
+      this.logger.warn(`No se pudieron guardar los adjuntos de la salida ${returningHistoryId}: ${e?.message}`);
+    }
+
+    return this.sendAndTrack(salida, subsidiary, subsidiaryName, attachments, { isResend, actor });
+  }
+
+  /** Historial de envíos de correo de una salida. */
+  async getEmailHistory(returningHistoryId: string): Promise<EmailLog[]> {
+    return this.emailLogService.getHistory(EMAIL_MODULE, returningHistoryId);
+  }
+
+  /** Envía, registra en bitácora y actualiza el estado denormalizado. No relanza. */
+  private async sendAndTrack(
+    salida: ReturningHistory,
+    subsidiary: Subsidiary,
+    subsidiaryName: string,
+    attachments: EmailFile[],
+    opts: { isResend: boolean; actor?: EmailActor },
+  ): Promise<{ status: EmailStatus; error?: string; to?: string }> {
+    const attachmentsMeta = attachments.map((a) => ({ filename: a.filename, size: a.content.length }));
+    const meta = {
+      module: EMAIL_MODULE,
+      emailType: EMAIL_TYPE_RETURNING,
+      entityId: salida.id,
+      referenceTracking: salida.trackingNumber ?? null,
+      subsidiaryId: subsidiary.id,
+      subsidiaryName: subsidiary.name ?? subsidiaryName ?? null,
+      isResend: opts.isResend,
+      triggeredById: opts.actor?.id ?? null,
+      triggeredByName: opts.actor?.name ?? null,
+      attachmentsMeta,
+    };
+
+    try {
+      const result = await this.mailService.sendHighPriorityDevolutionsEmailTracked(
+        attachments.map((a) => ({ filename: a.filename, content: a.content })),
+        subsidiary,
+      );
+
+      const hasRejections = result.rejected.length > 0;
+      const status = hasRejections ? EmailStatus.ERROR : EmailStatus.SENT;
+      const error = hasRejections ? `Direcciones rechazadas: ${result.rejected.join(', ')}` : null;
+
+      await this.emailLogService.record({
+        ...meta,
+        to: result.to,
+        cc: result.cc,
+        subject: result.subject,
+        status,
+        error,
+        messageId: result.messageId,
+        rejected: result.rejected,
+      });
+      await this.updateEmailStatus(salida.id, status, error);
+      return { status, error: error ?? undefined, to: result.to };
+    } catch (e: any) {
+      const message = e?.message ?? String(e);
+      this.logger.error(`Fallo al enviar correo de salida ${salida.id}: ${message}`);
+      await this.emailLogService.record({
+        ...meta,
+        to: '',
+        subject: `Salida de Devoluciones y Recolecciones ${salida.trackingNumber ?? ''}`.trim(),
+        status: EmailStatus.ERROR,
+        error: message,
+      });
+      await this.updateEmailStatus(salida.id, EmailStatus.ERROR, message);
+      return { status: EmailStatus.ERROR, error: message };
+    }
+  }
+
+  private async updateEmailStatus(id: string, status: EmailStatus, error: string | null): Promise<void> {
+    await this.returningRepository.update(id, {
+      emailStatus: status,
+      emailLastSentAt: new Date(),
+      emailLastError: error ? error.slice(0, 500) : null,
+    });
+  }
+
+  // ============================ KPIs ============================
+
+  /** KPIs agregados por semana (nº salidas, devs, recos, correos enviados/pendientes). */
+  async getKpis(subsidiaryId: string, opts: { from?: string; to?: string } = {}) {
+    const { start, end } = resolveDateRange(opts.from, opts.to);
+    const raw = await this.returningRepository
+      .createQueryBuilder('rh')
+      .select('COUNT(*)', 'salidas')
+      .addSelect('COALESCE(SUM(rh.devolutionsCount), 0)', 'devoluciones')
+      .addSelect('COALESCE(SUM(rh.collectionsCount), 0)', 'recolecciones')
+      .addSelect("SUM(CASE WHEN rh.emailStatus = 'sent' THEN 1 ELSE 0 END)", 'correosEnviados')
+      .addSelect("SUM(CASE WHEN rh.emailStatus <> 'sent' THEN 1 ELSE 0 END)", 'correosPendientes')
+      .where('rh.subsidiaryId = :subsidiaryId', { subsidiaryId })
+      .andWhere('rh.date BETWEEN :start AND :end', { start, end })
+      .getRawOne();
+
+    return {
+      salidas: Number(raw?.salidas ?? 0),
+      devoluciones: Number(raw?.devoluciones ?? 0),
+      recolecciones: Number(raw?.recolecciones ?? 0),
+      correosEnviados: Number(raw?.correosEnviados ?? 0),
+      correosPendientes: Number(raw?.correosPendientes ?? 0),
+    };
   }
 }
