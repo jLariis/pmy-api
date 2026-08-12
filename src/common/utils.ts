@@ -17,6 +17,38 @@ export function toHermosilloDateString(input: string | Date): string {
   return formatInTimeZone(d, 'America/Hermosillo', 'yyyy-MM-dd');
 }
 
+/**
+ * Ancla un "día calendario flotante" (una fecha SIN hora — la que el usuario elige en
+ * un <input type="date"> y llega serializada como medianoche UTC) a la MEDIANOCHE de
+ * Hermosillo (UTC-7), expresada en UTC = 07:00Z.
+ *
+ * Por qué: el resto del sistema (dashboard, KPIs y la tabla de ingresos) ancla "el día"
+ * a las 07:00Z. Si un ingreso se guarda a 00:00Z, cae en el bucket del día ANTERIOR y
+ * desaparece del rango consultado. Este helper corrige ese desfase para orígenes que
+ * traen una fecha flotante (p.ej. `transferDate` de los traslados).
+ *
+ * Se toma el día CALENDARIO en UTC del valor recibido (no se reinterpreta como instante
+ * real, lo cual lo correría al día anterior). Hermosillo no tiene horario de verano, así
+ * que el offset fijo de +7h es exacto — igual que `hermosilloToday()` en kpi.service.
+ */
+export function hermosilloDayStartUtc(input: string | Date): Date {
+  const d = input instanceof Date ? input : new Date(input);
+  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 7, 0, 0, 0));
+}
+
+/**
+ * Ancla un INSTANTE real (p.ej. `dispatch.createdAt`, la salida a ruta) a la medianoche
+ * de Hermosillo de SU DÍA en zona Hermosillo (UTC-7), expresada en UTC = 07:00Z.
+ *
+ * Diferencia clave con `hermosilloDayStartUtc`: aquí el día se calcula CONVIRTIENDO el
+ * instante a hora de Hermosillo (importa la hora), no tomando el día calendario UTC. Así,
+ * una salida a ruta a las 19:00 de Hermosillo (que en UTC ya es el día siguiente) cuenta
+ * para el día correcto de Hermosillo. Úsalo para fechar ingresos por la fecha de la RUTA.
+ */
+export function hermosilloDayStartFromInstant(instant: string | Date): Date {
+  return new Date(`${toHermosilloDateString(instant)}T07:00:00.000Z`);
+}
+
 export function formatToHermosillo(timestamp: string | Date): string {
   const date = new Date(timestamp);
 

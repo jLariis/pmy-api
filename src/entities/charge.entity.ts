@@ -20,6 +20,10 @@ export class Charge{
     @Column({ default: false})
     isChargeComplete: boolean;
 
+    // Carga de 1.5 toneladas: el ingreso usó subsidiary.chargeCostHalfTon en vez de chargeCost.
+    @Column({ default: false })
+    isHalfTon: boolean;
+
     @Column({ type: 'datetime', default: () => 'CURRENT_TIMESTAMP' })
     createdAt: Date;
 

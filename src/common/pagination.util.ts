@@ -25,7 +25,11 @@ export function parsePagination(
   return { page: p, limit: l, skip: (p - 1) * l };
 }
 
-/** Lunes 00:00:00.000 a Domingo 23:59:59.999 de la semana actual (hora del servidor). */
+/**
+ * Lunes 00:00:00.000 a Sábado 23:59:59.999 de la semana actual (hora del servidor).
+ * Semana operativa lun–sáb (el domingo no forma parte de la semana), consistente con
+ * `getWeekRange` del frontend (lib/week.ts).
+ */
 export function currentWeekRange(): { start: Date; end: Date } {
   const now = new Date();
   const day = now.getDay(); // 0=Dom .. 6=Sab
@@ -34,14 +38,14 @@ export function currentWeekRange(): { start: Date; end: Date } {
   start.setDate(now.getDate() + diffToMonday);
   start.setHours(0, 0, 0, 0);
   const end = new Date(start);
-  end.setDate(start.getDate() + 6);
+  end.setDate(start.getDate() + 5); // lunes + 5 = sábado
   end.setHours(23, 59, 59, 999);
   return { start, end };
 }
 
 /**
  * Resuelve el rango de fechas a usar: si llegan `from`/`to` válidos se usan
- * (normalizando inicio/fin de día); si no, se usa la semana actual (lun-dom).
+ * (normalizando inicio/fin de día); si no, se usa la semana actual (lun-sáb).
  */
 export function resolveDateRange(from?: string, to?: string): { start: Date; end: Date } {
   if (from && to) {

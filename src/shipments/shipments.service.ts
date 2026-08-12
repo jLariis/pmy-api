@@ -1,6 +1,7 @@
 import { BadRequestException, forwardRef, HttpStatus, Inject, Injectable, InternalServerErrorException, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Between, Brackets, EntityManager, In, MoreThanOrEqual, Repository } from 'typeorm';
+import { resolveChargeCost } from './charge-cost';
+import { Between, Brackets, EntityManager, In, Repository } from 'typeorm';
 import { Shipment } from 'src/entities/shipment.entity';
 import { ShipmentStatusType, TERMINAL_SHIPMENT_STATUSES } from 'src/common/enums/shipment-status-type.enum';
 import * as XLSX from 'xlsx';
@@ -833,7 +834,7 @@ export class ShipmentsService {
     return { exist: count > 0, shipment: _[0] };
   }
 
-  async processFileF2(file: Express.Multer.File, subsidiaryId: string, consNumber: string, consDate?: Date, userId?: string) {
+  async processFileF2(file: Express.Multer.File, subsidiaryId: string, consNumber: string, consDate?: Date, userId?: string, isHalfTon: boolean = false) {
     this.logger.log("🚀 Iniciando migración masiva y carga directa (F2)");
 
     if (!file) throw new BadRequestException('No se subió ningún archivo');
@@ -863,9 +864,13 @@ export class ShipmentsService {
         subsidiary: chargeSubsidiary,
         chargeDate: consDate || new Date(),
         numberOfPackages: shipmentsToProcess.length,
-        consNumber
+        consNumber,
+        isHalfTon,
       });
       const savedCharge = await queryRunner.manager.save(newCharge);
+
+      // Carga 1.5 ton: usa chargeCostHalfTon si aplica, si no el chargeCost normal.
+      const chargeCostToUse = resolveChargeCost(chargeSubsidiary, isHalfTon);
 
       // 3. Procesamiento Atómico Paquete por Paquete
       for (const data of shipmentsToProcess) {
@@ -964,7 +969,7 @@ export class ShipmentsService {
           subsidiary: chargeSubsidiary,
           shipmentType: ShipmentType.FEDEX,
           incomeType: IncomeStatus.ENTREGADO,
-          cost: chargeSubsidiary.chargeCost || 0,
+          cost: chargeCostToUse || 0,
           isGrouped: true,
           sourceType: IncomeSourceType.CHARGE,
           charge: savedCharge,
@@ -998,166 +1003,8 @@ export class ShipmentsService {
     }
   }
 
-  async processFileF2Resp23012026(file: Express.Multer.File, subsidiaryId: string, consNumber: string, consDate?: Date) {
-    this.logger.log("🚀 Iniciando migración masiva (F2)");
-
-    if (!file) throw new BadRequestException('No se subió ningún archivo');
-
-    const { buffer, originalname } = file;
-    const notFoundTrackings: any[] = [];
-    const errors: any[] = [];
-    const migrated: ChargeShipment[] = [];
-
-    try {
-      // 1. Validación de archivo y lectura de Excel
-      if (!originalname.match(/\.(csv|xlsx?)$/i)) throw new BadRequestException('Tipo de archivo no soportado');
-
-      const workbook = XLSX.read(buffer, { type: 'buffer', cellDates: true, cellText: false });
-      if (!workbook.SheetNames?.length) throw new BadRequestException('El archivo Excel está vacío');
-
-      const sheet = workbook.Sheets[workbook.SheetNames[0]];
-      const shipmentsToUpdate = parseDynamicFileF2(sheet);
-      this.logger.log(`📦 Envíos encontrados en archivo: ${shipmentsToUpdate.length}`);
-
-      if (shipmentsToUpdate.length === 0) return { message: 'No hay envíos para procesar.' };
-
-      // 2. Obtener Subsidiaria y Crear Charge (Cabecera)
-      const chargeSubsidiary = await this.subsidiaryRepository.findOne({ where: { id: subsidiaryId } });
-      if (!chargeSubsidiary) throw new BadRequestException('Subsidiaria no encontrada');
-
-      const newCharge = this.chargeRepository.create({
-        subsidiary: chargeSubsidiary,
-        chargeDate: consDate || new Date(),
-        numberOfPackages: shipmentsToUpdate.length,
-        consNumber
-      });
-      const savedCharge = await this.chargeRepository.save(newCharge);
-
-      // 3. Procesamiento por Lotes
-      const BATCH_SIZE = 50;
-      for (let i = 0; i < shipmentsToUpdate.length; i += BATCH_SIZE) {
-        const batch = shipmentsToUpdate.slice(i, i + BATCH_SIZE);
-        
-        const batchPromises = batch.map(async (shipmentData) => {
-          try {
-            const validation = await this.existShipmentByTrackSpecial(
-              shipmentData.trackingNumber,
-              shipmentData.recipientName,
-              shipmentData.recipientAddress,
-              shipmentData.recipientZip
-            );
-
-            if (!validation.exist) {
-              notFoundTrackings.push(shipmentData);
-              return;
-            }
-
-            // CARGA CRUCIAL: Traemos todas las relaciones del original
-            const original = await this.shipmentRepository.findOne({
-              where: { id: validation.shipment.id },
-              relations: ['statusHistory', 'payment', 'subsidiary'],
-            });
-
-            if (!original) {
-              notFoundTrackings.push(shipmentData);
-              return;
-            }
-
-            // --- MIGRACIÓN DE DATOS ---
-
-            // A. Eliminar income previo para evitar duplicidad de costos
-            await this.incomeRepository.delete({ trackingNumber: original.trackingNumber });
-
-            // B. Crear ChargeShipment incluyendo las NUEVAS COLUMNAS
-            const chargeShipment = this.chargeShipmentRepository.create({
-              ...original, // Esto copia trackingNumber, recipientName, etc.
-              id: undefined, 
-              charge: savedCharge,
-              subsidiary: chargeSubsidiary,
-              // Mapeo explícito de las columnas de FedEx capturadas en addConsMaster
-              fedexUniqueId: original.fedexUniqueId,
-              carrierCode: original.carrierCode,
-              status: original.status || ShipmentStatusType.PENDIENTE,
-            });
-
-            // Mantener el payment si existía
-            if (original.payment) {
-              chargeShipment.payment = original.payment;
-            }
-
-            const savedChargeShipment = await this.chargeShipmentRepository.save(chargeShipment);
-
-            // C. MIGRACIÓN DEL HISTORIAL (ShipmentStatus)
-            if (original.statusHistory?.length > 0) {
-              const newHistory = original.statusHistory.map(oldStatus => {
-                return this.shipmentStatusRepository.create({
-                  status: oldStatus.status,
-                  exceptionCode: oldStatus.exceptionCode,
-                  timestamp: oldStatus.timestamp,
-                  notes: oldStatus.notes,
-                  createdAt: oldStatus.createdAt,
-                  // Vinculamos al nuevo ChargeShipment y limpiamos la del Shipment viejo
-                  chargeShipment: { id: savedChargeShipment.id },
-                  shipment: null 
-                });
-              });
-
-              // Guardado físico en tabla shipment_status
-              await this.shipmentStatusRepository.save(newHistory);
-              savedChargeShipment.statusHistory = newHistory; 
-            }
-
-            // D. ELIMINACIÓN DEL ORIGINAL (Solo después de que todo lo anterior tuvo éxito)
-            await this.shipmentRepository.delete(original.id);
-
-            migrated.push(savedChargeShipment);
-            this.logger.log(`✅ Migrado con historial: ${original.trackingNumber}`);
-
-          } catch (err) {
-            this.logger.error(`❌ Error en tracking ${shipmentData.trackingNumber}: ${err.message}`);
-            errors.push({ tracking: shipmentData.trackingNumber, reason: err.message });
-          }
-        });
-
-        await Promise.allSettled(batchPromises);
-      }
-
-      // 4. Crear el Income global (Agrupado por el Charge)
-      if (migrated.length > 0) {
-        const newIncome = this.incomeRepository.create({
-          subsidiary: chargeSubsidiary,
-          shipmentType: ShipmentType.FEDEX,
-          incomeType: IncomeStatus.ENTREGADO,
-          cost: chargeSubsidiary.chargeCost || 0,
-          isGrouped: true,
-          sourceType: IncomeSourceType.CHARGE,
-          charge: savedCharge,
-          date: consDate || new Date(),
-        });
-        await this.incomeRepository.save(newIncome);
-      }
-
-      return {
-        migrated: migrated.length,
-        notFound: notFoundTrackings.length,
-        errors: errors.length,
-        details: {
-          migratedTrackings: migrated.map(m => ({
-            trackingNumber: m.trackingNumber,
-            historyCount: m.statusHistory?.length || 0
-          })),
-          errorDetails: errors
-        }
-      };
-
-    } catch (error) {
-      this.logger.error(`💥 Error crítico en F2: ${error.message}`);
-      throw new InternalServerErrorException(error.message);
-    }
-  }
-
   /*** NUEVO SI SE USA */
-  async addChargeShipments(file: Express.Multer.File, subsidiaryId: string, consNumber: string, consDate?: Date, userId?: string) {
+  async addChargeShipments(file: Express.Multer.File, subsidiaryId: string, consNumber: string, consDate?: Date, userId?: string, isHalfTon: boolean = false) {
     console.log("🟢 START addChargeShipments method");
     
     if (!file) throw new BadRequestException('No file uploaded');
@@ -1194,7 +1041,8 @@ export class ShipmentsService {
         subsidiary: { id: subsidiaryId },
         chargeDate: consDate ? format(consDate, 'yyyy-MM-dd HH:mm:ss') : format(new Date(), 'yyyy-MM-dd HH:mm:ss'),
         numberOfPackages: chargeShipmentsToSave.length,
-        consNumber
+        consNumber,
+        isHalfTon,
       });
 
       console.log("💾 Saving charge...");
@@ -1277,13 +1125,16 @@ export class ShipmentsService {
 
       if (savedChargeShipments.length > 0 && chargeSubsidiary) {
         try {
-          console.log("💵 Creating income with cost:", chargeSubsidiary.chargeCost);
-          
+          // Carga 1.5 ton: usa chargeCostHalfTon si aplica, si no el chargeCost normal.
+          const chargeCostToUse = resolveChargeCost(chargeSubsidiary, isHalfTon);
+
+          console.log("💵 Creating income with cost:", chargeCostToUse, "| isHalfTon:", isHalfTon);
+
           const newIncome = this.incomeRepository.create({
             subsidiary: chargeSubsidiary,
             shipmentType: ShipmentType.FEDEX,
             incomeType: IncomeStatus.ENTREGADO,
-            cost: chargeSubsidiary.chargeCost || 0,
+            cost: chargeCostToUse || 0,
             isGrouped: true,
             sourceType: IncomeSourceType.CHARGE,
             charge: { id: savedCharge.id },
@@ -1888,7 +1739,6 @@ export class ShipmentsService {
     return { isValid: true, timestamp: eventDate };
   }
 
-
   async checkStatusOnFedex(): Promise<void> {
     const shipmentsWithError: { trackingNumber: string; reason: string }[] = [];
     const unusualCodes: { trackingNumber: string; derivedCode: string; exceptionCode?: string; eventDate: string; statusByLocale?: string }[] = [];
@@ -2295,145 +2145,18 @@ export class ShipmentsService {
     return statuses;
   }
 
-  async addConsMasterBySubsidiaryResp0705(
-    file: Express.Multer.File,
-    subsidiaryId: string,
-    consNumber: string,
-    consDate?: Date,
-    isAereo?: boolean,
-    userId?: string,
-  ): Promise<any> {
-      const startTime = Date.now();
-      this.logger.log(`📂 Procesando archivo: ${file?.originalname} | Tipo: ${isAereo ? 'AÉREO' : 'ORDINARIO'}`);
 
-      if (!file) throw new BadRequestException('No se ha recibido el archivo de Excel.');
-      
-      const predefinedSubsidiary = await this.subsidiaryService.findById(subsidiaryId);
-      if (!predefinedSubsidiary) throw new BadRequestException(`La subsidiaria seleccionada no es válida.`);
-
-      // Unicidad NORMALIZADA + por sucursal/carrier (evita falsos positivos entre
-      // sucursales y atrapa variaciones de espacios/mayúsculas).
-      const existingCons = await this.consolidatedService.findByConsNumberScoped(consNumber, subsidiaryId, ShipmentType.FEDEX);
-      if (existingCons) {
-        const fecha = existingCons.date ? new Date(existingCons.date).toLocaleDateString('es-MX') : 's/fecha';
-        throw new BadRequestException(`El consolidado '${consNumber}' ya existe en esta sucursal (${existingCons.numberOfPackages ?? 0} guías, ${fecha}).`);
-      }
-
-      let shipmentsToSave: any[] = [];
-      try {
-          const workbook = XLSX.read(file.buffer, { type: 'buffer' });
-          shipmentsToSave = parseDynamicSheet(workbook, { fileName: file.originalname });
-          if (!shipmentsToSave || shipmentsToSave.length === 0) throw new Error('El archivo no contiene filas de datos.');
-      } catch (excelError) {
-          throw new BadRequestException(`Error en formato de Excel: ${excelError.message}`);
-      }
-
-      const result = { saved: 0, failed: 0, duplicated: 0, duplicatedTrackings: [], failedTrackings: [] };
-      const processedTrackingNumbers = new Set<string>();
-      const shipmentsToGenerateIncomes: any[] = [];
-      
-      const batches = Array.from({ length: Math.ceil(shipmentsToSave.length / this.BATCH_SIZE) }, (_, i) => 
-          shipmentsToSave.slice(i * this.BATCH_SIZE, (i + 1) * this.BATCH_SIZE)
-      );
-
-      return await this.shipmentRepository.manager.transaction(async (transactionalEntityManager) => {
-          const consolidated = transactionalEntityManager.create(Consolidated, {
-              date: consDate || new Date(),
-              type: isAereo ? ConsolidatedType.AEREO : ConsolidatedType.ORDINARIA,
-              numberOfPackages: shipmentsToSave.length,
-              subsidiary: predefinedSubsidiary,
-              consNumber,
-              isCompleted: false,
-              efficiency: 0,
-              commitDateTime: new Date(),
-              createdById: userId ?? null,
-          });
-
-          const savedCons = await transactionalEntityManager.save(Consolidated, consolidated);
-
-          for (let i = 0; i < batches.length; i++) {
-              this.shipmentBatch = []; 
-
-              await Promise.all(
-                  batches[i].map((shipment, index) =>
-                      this.processShipment(
-                          shipment,
-                          predefinedSubsidiary,
-                          savedCons,
-                          result,
-                          null,
-                          i + 1,
-                          index + 1,
-                          processedTrackingNumbers,
-                          shipmentsToGenerateIncomes,
-                          savedCons.id,
-                          userId,
-                      )
-                  )
-              );
-
-              if (this.shipmentBatch.length > 0) {
-                  try {
-                      const statusHistoryMap = new Map();
-                      const paymentMap = new Map();
-                      const now = new Date();
-
-                      this.shipmentBatch.forEach(s => {
-                          if (s.statusHistory?.length) statusHistoryMap.set(s.trackingNumber, [...s.statusHistory]);
-                          if (s.payment) paymentMap.set(s.trackingNumber, s.payment);
-                          s.statusHistory = [];
-                          s.payment = undefined;
-                      });
-
-                      // A. Insertar Guías (CHUNK de 50 para estabilidad)
-                      const savedShipments = await transactionalEntityManager.save(Shipment, this.shipmentBatch, { chunk: 50 });
-
-                      const paymentsToSave = [];
-                      const historiesToSave = [];
-
-                      savedShipments.forEach(s => {
-                          const pay = paymentMap.get(s.trackingNumber);
-                          if (pay) { pay.shipment = { id: s.id }; paymentsToSave.push(pay); }
-
-                          const fedexHist = statusHistoryMap.get(s.trackingNumber);
-                          if (fedexHist) {
-                              fedexHist.forEach(h => { h.shipment = { id: s.id }; historiesToSave.push(h); });
-                          }
-
-                          // INYECTAR HISTORIA INICIAL (Garantiza que el inicio sea PENDIENTE en el log)
-                          historiesToSave.push(transactionalEntityManager.create(ShipmentStatus, {
-                              status: ShipmentStatusType.PENDIENTE,
-                              notes: `Registro inicial. Cons: ${savedCons.consNumber}`,
-                              timestamp: now,
-                              shipment: { id: s.id },
-                              exceptionCode: 'INIT'
-                          }));
-                      });
-
-                      if (paymentsToSave.length) await transactionalEntityManager.save(Payment, paymentsToSave);
-                      if (historiesToSave.length) await transactionalEntityManager.save(ShipmentStatus, historiesToSave, { chunk: 100 });
-
-                      for (const item of shipmentsToGenerateIncomes) {
-                          await this.generateIncomes(item.shipment, item.timestamp, item.exceptionCode, transactionalEntityManager);
-                      }
-                      shipmentsToGenerateIncomes.length = 0;
-
-                  } catch (err) {
-                      this.logger.error(`❌ Error en lote ${i + 1}: ${err.message}`);
-                      throw new InternalServerErrorException(`Error al guardar datos: ${err.message}`);
-                  }
-              }
-          }
-
-          savedCons.isCompleted = true;
-          savedCons.efficiency = (result.saved / shipmentsToSave.length) * 100;
-          await transactionalEntityManager.save(Consolidated, savedCons);
-
-          return { ...result, duration: `${((Date.now() - startTime) / 60000).toFixed(2)} min`, consNumber: savedCons.consNumber };
-      });
-  }
-
-  async addConsMasterBySubsidiary(
+  /**
+   * Creación de consolidad con sus shipments (Cons Master)
+   * @param file 
+   * @param subsidiaryId 
+   * @param consNumber 
+   * @param consDate 
+   * @param isAereo 
+   * @param userId 
+   * @returns 
+   */
+  async addConsMasterBySubsidiaryResp1108(
     file: Express.Multer.File,
     subsidiaryId: string,
     consNumber: string,
@@ -2610,6 +2333,262 @@ export class ShipmentsService {
           return { ...result, duration: `${((Date.now() - startTime) / 60000).toFixed(2)} min`, consNumber: savedCons.consNumber };
       });
   }
+
+  async addConsMasterBySubsidiary(
+    file: Express.Multer.File,
+    subsidiaryId: string,
+    consNumber: string,
+    consDate?: Date | string,
+    isAereo?: boolean,
+    userId?: string,
+  ): Promise<any> {
+    const startTime = Date.now();
+    this.logger.log(`📂 Procesando archivo: ${file?.originalname} | Tipo: ${isAereo ? 'AÉREO' : 'ORDINARIO'}`);
+
+    if (!file) throw new BadRequestException('No se ha recibido el archivo de Excel.');
+    
+    const predefinedSubsidiary = await this.subsidiaryService.findById(subsidiaryId);
+    if (!predefinedSubsidiary) throw new BadRequestException(`La subsidiaria seleccionada no es válida.`);
+
+    // Normalización de zona horaria
+    let normalizedDateStr: string;
+    if (consDate) {
+        if (typeof consDate === 'string') {
+            normalizedDateStr = consDate.split('T')[0];
+        } else {
+            const year = consDate.getFullYear();
+            const month = String(consDate.getMonth() + 1).padStart(2, '0');
+            const day = String(consDate.getDate()).padStart(2, '0');
+            normalizedDateStr = `${year}-${month}-${day}`;
+        }
+    } else {
+        const now = new Date();
+        const year = now.getFullYear();
+        const month = String(now.getMonth() + 1).padStart(2, '0');
+        const day = String(now.getDate()).padStart(2, '0');
+        normalizedDateStr = `${year}-${month}-${day}`;
+    }
+
+    // 1. Manejo del consolidado: Buscar si ya existe (para reusarlo)
+    let targetCons = await this.consolidatedService.findByConsNumberScoped(consNumber, subsidiaryId, ShipmentType.FEDEX);
+    
+    if (!targetCons) {
+        const dateMatch = await this.consolidatedService.findByDateScoped(normalizedDateStr, subsidiaryId, ShipmentType.FEDEX);
+        if (dateMatch) {
+            throw new BadRequestException(`Ya existe otro consolidado en esta fecha (${dateMatch.consNumber}). No se permite más de un consolidado por día.`);
+        }
+    }
+
+    let shipmentsToSave: any[] = [];
+    try {
+        const workbook = XLSX.read(file.buffer, { type: 'buffer' });
+        shipmentsToSave = parseDynamicSheet(workbook, { fileName: file.originalname });
+        if (!shipmentsToSave || shipmentsToSave.length === 0) throw new Error('El archivo no contiene filas de datos.');
+    } catch (excelError) {
+        throw new BadRequestException(`Error en formato de Excel: ${excelError.message}`);
+    }
+
+    const result = { saved: 0, failed: 0, duplicated: 0, recycled: 0, duplicatedTrackings: [], failedTrackings: [] };
+    const processedTrackingNumbers = new Set<string>();
+    const shipmentsToGenerateIncomes: any[] = [];
+    
+    return await this.shipmentRepository.manager.transaction(async (transactionalEntityManager) => {
+        if (!targetCons) {
+            const consolidated = transactionalEntityManager.create(Consolidated, {
+                date: new Date(`${normalizedDateStr}T00:00:00`), 
+                type: isAereo ? ConsolidatedType.AEREO : ConsolidatedType.ORDINARIA,
+                numberOfPackages: 0,
+                subsidiary: predefinedSubsidiary,
+                consNumber,
+                isCompleted: false,
+                efficiency: 0,
+                commitDateTime: new Date(),
+                createdById: userId ?? null,
+            });
+            targetCons = await transactionalEntityManager.save(Consolidated, consolidated);
+        }
+
+        // --- 2. DETECCIÓN DE GUÍAS REUTILIZADAS VS NUEVAS ---
+        const allTns = shipmentsToSave.map(s => String(s.trackingNumber || s.TrackingNumber || '').trim()).filter(Boolean);
+
+        // Buscamos TODOS los shipments históricos de la sucursal con estos tracking numbers.
+        // SIN ventana de tiempo: una guía que aparece en otro consolidado SIEMPRE se recicla
+        // (se cierra la vieja marcándola devuelta y se inserta una nueva), sin importar la
+        // antigüedad. La inmutabilidad del historial la garantiza el marcado + nota, no un plazo.
+        const existingShipments = allTns.length > 0 ? await transactionalEntityManager.find(Shipment, {
+            where: { trackingNumber: In(allTns), subsidiary: { id: subsidiaryId } },
+            order: { createdAt: 'DESC' },
+        }) : [];
+
+        // Una guía puede tener varias filas históricas (reciclar NO borra las viejas). Al
+        // construir el mapa priorizamos la fila de ESTE consolidado (para detectar el
+        // duplicado real); si no existe, la más reciente (orden DESC → primera vista).
+        const existingMap = new Map<string, Shipment>();
+        for (const es of existingShipments) {
+            const prev = existingMap.get(es.trackingNumber);
+            if (!prev) { existingMap.set(es.trackingNumber, es); continue; }
+            if (es.consolidatedId === targetCons.id && prev.consolidatedId !== targetCons.id) {
+                existingMap.set(es.trackingNumber, es);
+            }
+        }
+        const shipmentsToProcess: any[] = [];
+        const now = new Date();
+
+        for (const shipment of shipmentsToSave) {
+            const tNum = String(shipment.trackingNumber || shipment.TrackingNumber || '').trim();
+            if (!tNum) continue;
+
+            const existingEs = existingMap.get(tNum);
+
+            // A) No existe en la sucursal → guía 100% nueva.
+            if (!existingEs) {
+                shipmentsToProcess.push(shipment);
+                continue;
+            }
+
+            // B) Ya existe en ESTE MISMO consolidado → duplicado real: se ignora por completo
+            //    (no se actualiza ni se inserta nada).
+            if (existingEs.consolidatedId === targetCons.id) {
+                result.duplicated++;
+                continue;
+            }
+
+            // C) Existe en un consolidado ANTERIOR/diferente → reingreso (devolución).
+            //    Cerramos el ciclo de la guía vieja SOLO si aún no está marcada como devuelta;
+            //    si YA tiene ese estatus, no la re-marcamos ni duplicamos historia: únicamente
+            //    insertamos el nuevo shipment limpio para el consolidado actual.
+            const alreadyReturned = ShipmentsService.RETURN_STATUSES_BYPASS_DEDUP.includes(existingEs.status as any);
+            if (!alreadyReturned) {
+                const oldCons = existingEs.consolidatedId
+                    ? await transactionalEntityManager.findOne(Consolidated, { where: { id: existingEs.consolidatedId } })
+                    : null;
+                const oldConsDateFormatted = oldCons?.date ? new Date(oldCons.date).toLocaleDateString('es-MX') : 's/fecha';
+                const oldConsNumberStr = oldCons?.consNumber || 'S/N';
+
+                // Paso A: marcamos la guía vieja como devuelta. Inmutabilidad: NO se mueve al
+                // consolidado nuevo; solo se cierra su ciclo en su consolidado original.
+                existingEs.status = ShipmentStatusType.DEVUELTO_A_FEDEX;
+                await transactionalEntityManager.save(Shipment, existingEs);
+
+                // Paso B: nota automática en el historial de la guía vieja.
+                await transactionalEntityManager.save(ShipmentStatus, transactionalEntityManager.create(ShipmentStatus, {
+                    status: ShipmentStatusType.DEVUELTO_A_FEDEX,
+                    notes: `El sistema detectó que no se realizó devolución del día ${oldConsDateFormatted} (Cons: ${oldConsNumberStr}) y se ejecutó en automático.`,
+                    timestamp: now,
+                    shipment: { id: existingEs.id },
+                    exceptionCode: 'AUTO-RETURN'
+                }));
+            }
+
+            // Paso C: en AMBOS casos, INSERT de la nueva instancia limpia ligada al consolidado actual.
+            shipmentsToProcess.push(shipment);
+            result.recycled++;
+        }
+
+        // --- 3. PROCESAMIENTO GENERAL POR LOTES (Nuevas y Reingresos) ---
+        const batches = Array.from({ length: Math.ceil(shipmentsToProcess.length / this.BATCH_SIZE) }, (_, i) => 
+            shipmentsToProcess.slice(i * this.BATCH_SIZE, (i + 1) * this.BATCH_SIZE)
+        );
+
+        for (let i = 0; i < batches.length; i++) {
+            this.shipmentBatch = []; 
+
+            await Promise.all(
+                batches[i].map((shipment, index) =>
+                    this.processShipment(
+                        shipment,
+                        predefinedSubsidiary,
+                        targetCons,
+                        result,
+                        null,
+                        i + 1,
+                        index + 1,
+                        processedTrackingNumbers,
+                        shipmentsToGenerateIncomes,
+                        targetCons.id,
+                        userId,
+                        true, // preFiltered: el loop externo ya decidió nuevas + recicladas
+                    )
+                )
+            );
+
+            if (this.shipmentBatch.length > 0) {
+                try {
+                    const statusHistoryMap = new Map();
+                    const paymentMap = new Map();
+
+                    this.shipmentBatch.forEach(s => {
+                        if (s.statusHistory?.length) statusHistoryMap.set(s.trackingNumber, [...s.statusHistory]);
+                        if (s.payment) paymentMap.set(s.trackingNumber, s.payment);
+                        s.statusHistory = [];
+                        s.payment = undefined;
+                    });
+
+                    let savedShipments;
+                    try {
+                        // Se crea un NUEVO shipment limpio (INSERT) para este nuevo consolidado
+                        savedShipments = await transactionalEntityManager.save(Shipment, this.shipmentBatch, { chunk: 50 });
+                    } catch (err) {
+                        this.logger.error(`🚨 ERROR EXACTO EN TABLA 'Shipment' (Lote ${i + 1}): ${err.message}`);
+                        throw new Error(`Fallo en tabla Shipment: ${err.message}`);
+                    }
+
+                    const paymentsToSave = [];
+                    const historiesToSave = [];
+
+                    savedShipments.forEach(s => {
+                        const pay = paymentMap.get(s.trackingNumber);
+                        if (pay) { pay.shipment = { id: s.id }; paymentsToSave.push(pay); }
+
+                        const fedexHist = statusHistoryMap.get(s.trackingNumber);
+                        if (fedexHist) {
+                            fedexHist.forEach(h => { h.shipment = { id: s.id }; historiesToSave.push(h); });
+                        }
+
+                        historiesToSave.push(transactionalEntityManager.create(ShipmentStatus, {
+                            status: ShipmentStatusType.PENDIENTE,
+                            notes: `Registro inicial. Cons: ${targetCons.consNumber}`,
+                            timestamp: now,
+                            shipment: { id: s.id },
+                            exceptionCode: 'INIT'
+                        }));
+                    });
+
+                    if (paymentsToSave.length) {
+                        await transactionalEntityManager.save(Payment, paymentsToSave);
+                    }
+
+                    if (historiesToSave.length) {
+                        for (let idx = 0; idx < historiesToSave.length; idx++) {
+                            await transactionalEntityManager.save(ShipmentStatus, historiesToSave[idx]);
+                        }
+                    }
+
+                    for (const item of shipmentsToGenerateIncomes) {
+                        await this.generateIncomes(item.shipment, item.timestamp, item.exceptionCode, transactionalEntityManager);
+                    }
+                    shipmentsToGenerateIncomes.length = 0;
+
+                } catch (err) {
+                    this.logger.error(`❌ Error general en lote ${i + 1}: ${err.message}`);
+                    throw new InternalServerErrorException(`Error al guardar datos: ${err.message}`);
+                }
+            }
+        }
+
+        targetCons.isCompleted = true;
+        // numberOfPackages = paquetes REALMENTE insertados (no los intentados): si algo
+        // falla o se omite dentro de processShipment, no se debe sobrecontar.
+        targetCons.numberOfPackages = (targetCons.numberOfPackages || 0) + result.saved;
+        // efficiency = guardadas / intentadas (antes dividía una variable entre sí misma → 100% fijo).
+        const totalProcesado = shipmentsToProcess.length;
+        targetCons.efficiency = totalProcesado > 0 ? (result.saved / totalProcesado) * 100 : targetCons.efficiency;
+
+        await transactionalEntityManager.save(Consolidated, targetCons);
+
+        return { ...result, duration: `${((Date.now() - startTime) / 60000).toFixed(2)} min`, consNumber: targetCons.consNumber };
+    });
+  }
  /*** */ 
 
   private async processShipment(
@@ -2624,6 +2603,12 @@ export class ShipmentsService {
     shipmentsToGenerateIncomes: { shipment: Shipment; timestamp: Date; exceptionCode: string | undefined }[],
     consolidatedId: string,
     userId?: string,
+    // Cuando el llamador YA decidió qué guías procesar (nuevas + recicladas) y ya
+    // marcó las devoluciones dentro de la misma transacción, este método NO debe
+    // volver a deduplicar contra BD: `existShipmentForSubsidiary` usa un repo fuera
+    // de la transacción y vería la guía vieja con su estatus previo, descartando
+    // por error el reingreso limpio. El anti-duplicado dentro del archivo se mantiene.
+    preFiltered: boolean = false,
   ): Promise<void> {
     const trackingNumber = shipment.trackingNumber?.toString().trim();
 
@@ -2634,9 +2619,11 @@ export class ShipmentsService {
       return;
     }
 
-    // 2. Validación de Duplicados (archivo + BD a nivel SUCURSAL → no permite
-    //    reimportar las mismas guías aunque cambien el consNumber).
-    if (processedTrackingNumbers.has(trackingNumber) || await this.existShipmentForSubsidiary(trackingNumber, predefinedSubsidiary?.id)) {
+    // 2. Validación de Duplicados. El anti-duplicado DENTRO del archivo siempre
+    //    aplica. El dedup contra BD a nivel sucursal solo cuando el llamador NO
+    //    prefiltró (flujo legacy); en el flujo nuevo la decisión ya se tomó arriba.
+    const isDbDuplicate = !preFiltered && await this.existShipmentForSubsidiary(trackingNumber, predefinedSubsidiary?.id);
+    if (processedTrackingNumbers.has(trackingNumber) || isDbDuplicate) {
       result.duplicated++;
       result.duplicatedTrackings.push(shipment);
       processedTrackingNumbers.add(trackingNumber);
@@ -2927,27 +2914,15 @@ export class ShipmentsService {
     }
   }
 
-  /**
-   * Ventana (días) para considerar una guía "duplicada". Una guía importada hace
-   * MÁS de estos días NO se considera duplicada: FedEx a veces regresa un paquete
-   * y lo reenvía semanas después con la misma guía → debe poder re-subirse.
-   */
-  private readonly DEDUP_WINDOW_DAYS = 21;
-  private dedupCutoff(): Date {
-    return new Date(Date.now() - this.DEDUP_WINDOW_DAYS * 24 * 60 * 60 * 1000);
-  }
-
-  /** Estatus que, si son el ÚLTIMO estatus guardado de la guía, permiten volver a
-   * subirla sin importar cuánto tiempo pasó: FedEx la regresó y no debe quedar
-   * atrapada esperando los 21 días para poder reingresarla. */
+  /** Estatus de devolución. Si la guía vieja YA tiene uno de estos, no se re-marca al
+   * reingresar: solo se inserta el nuevo shipment para el consolidado actual. */
   private static readonly RETURN_STATUSES_BYPASS_DEDUP = [
     ShipmentStatusType.DEVUELTO_A_FEDEX,
     ShipmentStatusType.RETORNO_ABANDONO_FEDEX,
   ];
 
-  /** Existe la guía en la sucursal DENTRO de la ventana reciente (no las de semanas
-   * atrás) Y no está devuelta — una guía devuelta puede volver a subirse en
-   * cualquier momento. */
+  /** Existe la guía en la sucursal Y no está devuelta (una guía devuelta puede volver
+   * a subirse). Sin ventana de tiempo. */
   private async existShipmentForSubsidiary(trackingNumber: string, subsidiaryId?: string): Promise<boolean> {
     if (!subsidiaryId) return false;
     try {
@@ -2956,7 +2931,7 @@ export class ShipmentsService {
       // truena con "Unknown column ...createdAt" si createdAt no está en el
       // select. Costo de traer la fila completa es irrelevante (1 fila).
       const existing = await this.shipmentRepository.findOne({
-        where: { trackingNumber, subsidiary: { id: subsidiaryId }, createdAt: MoreThanOrEqual(this.dedupCutoff()) },
+        where: { trackingNumber, subsidiary: { id: subsidiaryId } },
         order: { createdAt: 'DESC' },
       });
       if (!existing) return false;
@@ -2983,9 +2958,9 @@ export class ShipmentsService {
         .addSelect('c.date', 'date')
         .where('sub.id = :subsidiaryId', { subsidiaryId })
         .andWhere('s.trackingNumber IN (:...slice)', { slice })
-        .andWhere('s.createdAt >= :cutoff', { cutoff: this.dedupCutoff() }) // solo recientes (FedEx reenvía guías viejas)
-        // Devueltas: se pueden re-subir en cualquier momento, no cuentan como "ya importadas".
-        .andWhere('s.status NOT IN (:...returnStatuses)', { returnStatuses: ShipmentsService.RETURN_STATUSES_BYPASS_DEDUP })
+        // Sin ventana de tiempo ni filtro de devueltas: toda guía existente cuenta. La
+        // clasificación nueva/reingreso/duplicado se decide por consNumber en previewUpload,
+        // igual que el backend decide por consolidatedId.
         .getRawMany();
       out.push(...rows);
     }
@@ -2993,7 +2968,7 @@ export class ShipmentsService {
   }
 
   /** Pre-validación de un archivo FedEx SIN guardar (para avisar antes de subir). */
-  async previewUpload(file: Express.Multer.File, subsidiaryId: string, consNumber: string, carrier: ShipmentType = ShipmentType.FEDEX) {
+  async previewUploadResp1108(file: Express.Multer.File, subsidiaryId: string, consNumber: string, carrier: ShipmentType = ShipmentType.FEDEX) {
     if (!file) throw new BadRequestException('No se recibió el archivo.');
     const sub = await this.subsidiaryService.findById(subsidiaryId);
     if (!sub) throw new BadRequestException('La sucursal seleccionada no es válida.');
@@ -3032,6 +3007,159 @@ export class ShipmentsService {
         id: consExists.id, consNumber: consExists.consNumber, type: consExists.type,
         date: consExists.date, numberOfPackages: consExists.numberOfPackages,
         subsidiary: consExists.subsidiary?.name ?? null,
+      } : null,
+    };
+  }
+
+  async previewUploadResp11082(
+    file: Express.Multer.File, 
+    subsidiaryId: string, 
+    consNumber: string, 
+    date: string, 
+    carrier: ShipmentType = ShipmentType.FEDEX
+  ) {
+    if (!file) throw new BadRequestException('No se recibió el archivo.');
+    const sub = await this.subsidiaryService.findById(subsidiaryId);
+    if (!sub) throw new BadRequestException('La sucursal seleccionada no es válida.');
+
+    let rows: any[] = [];
+    let parseError: string | null = null;
+    try {
+      const wb = XLSX.read(file.buffer, { type: 'buffer' });
+      rows = parseDynamicSheet(wb, { fileName: file.originalname }) || [];
+    } catch (e: any) {
+      parseError = e?.message ?? 'No se pudo leer el archivo.';
+    }
+
+    const all = rows.map((r) => String(r?.trackingNumber ?? '').trim());
+    const withTn = all.filter(Boolean);
+    const seen = new Set<string>();
+    const dupInFile = new Set<string>();
+    withTn.forEach((t) => { if (seen.has(t)) dupInFile.add(t); else seen.add(t); });
+    const uniqueTns = [...seen];
+
+    const existing = uniqueTns.length ? await this.findExistingTrackings(uniqueTns, subsidiaryId) : [];
+    const existingSet = new Set(existing.map((e) => String(e.trackingNumber)));
+    
+    // Consultamos si existe por número de consolidado o por fecha
+    const exactConsMatch = await this.consolidatedService.findByConsNumberScoped(consNumber, subsidiaryId, carrier);
+    const dateMatch = date ? await this.consolidatedService.findByDateScoped(date, subsidiaryId, carrier) : null;
+
+    // Determinamos el tipo de coincidencia para informar al frontend
+    const matchedConsolidate = exactConsMatch || dateMatch;
+    const isExactMatch = !!exactConsMatch;
+    const isDateConflict = !exactConsMatch && !!dateMatch;
+
+    return {
+      fileName: file.originalname,
+      parseError,
+      totalRows: all.length,
+      withTracking: withTn.length,
+      emptyTracking: all.length - withTn.length,
+      duplicatesInFile: dupInFile.size,
+      alreadyImportedCount: existingSet.size,
+      alreadyImported: existing.slice(0, 100),
+      newCount: uniqueTns.filter((t) => !existingSet.has(t)).length,
+      consNumberExists: matchedConsolidate ? {
+        id: matchedConsolidate.id, 
+        consNumber: matchedConsolidate.consNumber, 
+        type: matchedConsolidate.type,
+        date: matchedConsolidate.date, 
+        numberOfPackages: matchedConsolidate.numberOfPackages,
+        subsidiary: matchedConsolidate.subsidiary?.name ?? null,
+        isExactMatch,
+        isDateConflict
+      } : null,
+    };
+  }
+
+  async previewUpload(
+    file: Express.Multer.File, 
+    subsidiaryId: string, 
+    consNumber: string, 
+    date: string, 
+    carrier: ShipmentType = ShipmentType.FEDEX
+  ) {
+    if (!file) throw new BadRequestException('No se recibió el archivo.');
+    const sub = await this.subsidiaryService.findById(subsidiaryId);
+    if (!sub) throw new BadRequestException('La sucursal seleccionada no es válida.');
+
+    let rows: any[] = [];
+    let parseError: string | null = null;
+    try {
+      const wb = XLSX.read(file.buffer, { type: 'buffer' });
+      rows = parseDynamicSheet(wb, { fileName: file.originalname }) || [];
+    } catch (e: any) {
+      parseError = e?.message ?? 'No se pudo leer el archivo.';
+    }
+
+    const all = rows.map((r) => String(r?.trackingNumber ?? '').trim());
+    const withTn = all.filter(Boolean);
+    const seen = new Set<string>();
+    const dupInFile = new Set<string>();
+    withTn.forEach((t) => { if (seen.has(t)) dupInFile.add(t); else seen.add(t); });
+    const uniqueTns = [...seen];
+
+    // Obtenemos TODAS las filas existentes en la BD (sin ventana ni filtro de devueltas).
+    const existing = uniqueTns.length ? await this.findExistingTrackings(uniqueTns, subsidiaryId) : [];
+
+    // Clasificación por GUÍA ÚNICA (no por ocurrencias), espejo del backend:
+    //  - si tiene alguna fila en ESTE mismo consNumber → duplicado real (se omite)
+    //  - si solo existe en otro(s) consolidado(s)      → reingreso (se recicla)
+    //  - si no existe                                   → nueva
+    // Comparación normalizada (TRIM/UPPER/espacios) igual que findByConsNumberScoped.
+    const normCons = (s: any) => String(s ?? '').trim().toUpperCase().replace(/\s+/g, ' ');
+    const target = normCons(consNumber);
+
+    const consByTn = new Map<string, Set<string>>();
+    existing.forEach((e) => {
+      const tn = String(e.trackingNumber);
+      if (!consByTn.has(tn)) consByTn.set(tn, new Set());
+      consByTn.get(tn)!.add(normCons(e.consNumber));
+    });
+
+    const trulyIgnored: string[] = []; // mismo consolidado → se omite
+    const toRecycle: string[] = [];    // otro consolidado → reingreso
+    for (const [tn, consSet] of consByTn) {
+      if (consSet.has(target)) trulyIgnored.push(tn);
+      else toRecycle.push(tn);
+    }
+
+    const trulyIgnoredSet = new Set(trulyIgnored);
+    const toRecycleSet = new Set(toRecycle);
+
+    // Las puramente nuevas son las que no están en ninguno de los dos sets anteriores
+    const purelyNewCount = uniqueTns.filter(t => !trulyIgnoredSet.has(t) && !toRecycleSet.has(t)).length;
+
+    const exactConsMatch = await this.consolidatedService.findByConsNumberScoped(consNumber, subsidiaryId, carrier);
+    const dateMatch = date ? await this.consolidatedService.findByDateScoped(date, subsidiaryId, carrier) : null;
+
+    const matchedConsolidate = exactConsMatch || dateMatch;
+    const isExactMatch = !!exactConsMatch;
+    const isDateConflict = !exactConsMatch && !!dateMatch;
+
+    return {
+      fileName: file.originalname,
+      parseError,
+      totalRows: all.length,
+      withTracking: withTn.length,
+      emptyTracking: all.length - withTn.length,
+      duplicatesInFile: dupInFile.size,
+      
+      // ACTUALIZACIÓN DE CONTADORES:
+      newCount: purelyNewCount, // Guías 100% nuevas
+      recycledCount: toRecycle.length, // Guías de ayer que reingresarán
+      alreadyImportedCount: trulyIgnored.length, // Guías que sí se van a ignorar
+
+      consNumberExists: matchedConsolidate ? {
+        id: matchedConsolidate.id, 
+        consNumber: matchedConsolidate.consNumber, 
+        type: matchedConsolidate.type,
+        date: matchedConsolidate.date, 
+        numberOfPackages: matchedConsolidate.numberOfPackages,
+        subsidiary: matchedConsolidate.subsidiary?.name ?? null,
+        isExactMatch,
+        isDateConflict
       } : null,
     };
   }

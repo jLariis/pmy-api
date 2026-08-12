@@ -1,5 +1,6 @@
 import {
   computeSlaDueAt,
+  computeSlaWarnAt,
   isSlaBreached,
   urgencyScore,
   slaHoursFor,
@@ -30,6 +31,22 @@ describe('support-logic', () => {
     it('suma las horas de la prioridad a createdAt', () => {
       const due = computeSlaDueAt(base, 'urgente');
       expect(due.getTime()).toBe(base.getTime() + 4 * 3600_000);
+    });
+  });
+
+  describe('computeSlaWarnAt', () => {
+    it('avisa a la fracción del SLA (default 80%)', () => {
+      const warn = computeSlaWarnAt(base, 'alta'); // 24h → 80% = 19.2h
+      expect(warn.getTime()).toBe(base.getTime() + 0.8 * 24 * 3600_000);
+    });
+    it('respeta una fracción explícita', () => {
+      const warn = computeSlaWarnAt(base, 'urgente', undefined, 0.5); // 4h → 2h
+      expect(warn.getTime()).toBe(base.getTime() + 2 * 3600_000);
+    });
+    it('el aviso siempre cae antes del vencimiento', () => {
+      const warn = computeSlaWarnAt(base, 'media').getTime();
+      const due = computeSlaDueAt(base, 'media').getTime();
+      expect(warn).toBeLessThan(due);
     });
   });
 

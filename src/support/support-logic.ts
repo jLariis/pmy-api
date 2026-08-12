@@ -54,6 +54,22 @@ export function computeSlaDueAt(
   return new Date(new Date(createdAt).getTime() + slaHoursFor(priority, cfg) * HOUR_MS);
 }
 
+/** Fracción del SLA a la que se dispara el aviso preventivo (env `SUPPORT_SLA_WARN_FRACTION`). */
+export function slaWarnFraction(): number {
+  const n = Number(process.env.SUPPORT_SLA_WARN_FRACTION);
+  return Number.isFinite(n) && n > 0 && n < 1 ? n : 0.8;
+}
+
+/** Umbral de aviso preventivo = createdAt + fracción·horas(prioridad). */
+export function computeSlaWarnAt(
+  createdAt: Date,
+  priority: string | null | undefined,
+  cfg?: Record<string, number>,
+  fraction: number = slaWarnFraction(),
+): Date {
+  return new Date(new Date(createdAt).getTime() + slaHoursFor(priority, cfg) * fraction * HOUR_MS);
+}
+
 /** ¿El ticket está vencido? Solo aplica a tickets abiertos con slaDueAt definido. */
 export function isSlaBreached(
   t: { estado: string; slaDueAt?: Date | string | null },

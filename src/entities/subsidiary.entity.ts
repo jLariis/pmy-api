@@ -81,6 +81,16 @@ export class Subsidiary {
   })
   chargeCost: number;
 
+  // Costo de carga de 1.5 toneladas. 0 = no aplica para esta sucursal.
+  // Se siembra en 3900 solo para Hermosillo (migración 1786000000045).
+  @Column({
+    type: 'decimal',
+    precision: 10,
+    scale: 2,
+    default: 0.00,
+  })
+  chargeCostHalfTon: number;
+
   @Column({
     type: 'decimal',
     precision: 10,

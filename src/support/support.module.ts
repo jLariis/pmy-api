@@ -7,14 +7,17 @@ import { User } from 'src/entities/user.entity';
 import { SupportService } from './support.service';
 import { SupportController } from './support.controller';
 import { SupportSlaCron } from './support-sla.cron';
+import { CodeLocatorService } from './code-locator.service';
+import { AiModule } from 'src/ai/ai.module';
 import { NotificationsModule } from 'src/notifications/notifications.module';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([SupportTicket, SupportTicketComment, SupportTicketAttachment, User]),
     NotificationsModule,
+    AiModule,
   ],
   controllers: [SupportController],
-  providers: [SupportService, SupportSlaCron],
+  providers: [SupportService, SupportSlaCron, CodeLocatorService],
 })
 export class SupportModule {}

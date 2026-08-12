@@ -8,6 +8,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { randomUUID } from 'crypto';
 import { JwtAuthGuard } from 'src/auth/guards/jwt-auth.guard';
+import { SuperAdminGuard } from 'src/auth/guards/super-admin.guard';
 import { NoAudit } from 'src/audit/audit.decorator';
 import { SupportService } from './support.service';
 import { CreateTicketDto } from './dto/create-ticket.dto';
@@ -47,6 +48,16 @@ export class SupportController {
 
   @Get('tickets/:id')
   getOne(@Param('id') id: string) { return this.service.getOne(id); }
+
+  /**
+   * Prompt de IA (superadmin) con archivos/componentes reales del grafo.
+   * `?engine=ia` lo mejora con DeepSeek; default `deterministico` (sin costo de API).
+   */
+  @Get('tickets/:id/prompt')
+  @UseGuards(SuperAdminGuard)
+  aiPrompt(@Param('id') id: string, @Query('engine') engine?: string) {
+    return this.service.buildAiPrompt(id, engine === 'ia' ? 'ia' : 'deterministico');
+  }
 
   @Post('tickets')
   @ApiConsumes('multipart/form-data')

@@ -60,8 +60,19 @@ export class SupportTicket {
 
   // SLA
   @Column({ type: 'datetime', nullable: true }) slaDueAt: Date | null;
+  /** Umbral de aviso preventivo (createdAt + fracción·SLA, p. ej. 80%). */
+  @Column({ type: 'datetime', nullable: true }) slaWarnAt: Date | null;
+  /** Marca para no repetir el aviso preventivo (cron). */
+  @Column({ type: 'datetime', nullable: true }) slaWarnedAt: Date | null;
   /** Marca para no repetir el aviso de SLA vencido (cron). */
   @Column({ type: 'datetime', nullable: true }) slaNotifiedAt: Date | null;
+
+  // SLA de primera respuesta
+  @Column({ type: 'datetime', nullable: true }) firstResponseDueAt: Date | null;
+  /** Se sella con la primera acción del agente (comentario o inicio de trabajo). */
+  @Column({ type: 'datetime', nullable: true }) firstRespondedAt: Date | null;
+  /** Marca para no repetir el aviso de primera respuesta vencida (cron). */
+  @Column({ type: 'datetime', nullable: true }) firstResponseNotifiedAt: Date | null;
 
   // Contexto auto-capturado
   @Column({ type: 'varchar', length: 60, nullable: true }) appVersion: string | null;

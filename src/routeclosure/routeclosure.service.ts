@@ -13,6 +13,7 @@ import { ShipmentStatus, Collection, Shipment, Income, ChargeShipment, ShipmentN
 import { DispatchStatus } from 'src/common/enums/dispatch-enum';
 import { MailService } from 'src/mail/mail.service';
 import { fromZonedTime } from 'date-fns-tz';
+import { hermosilloDayStartFromInstant } from 'src/common/utils';
 import { ShipmentType } from 'src/common/enums/shipment-type.enum';
 import { IncomeStatus } from 'src/common/enums/income-status.enum';
 import { IncomeSourceType } from 'src/common/enums/income-source-type.enum';
@@ -141,7 +142,12 @@ export class RouteclosureService {
       // 5. PROCESAR PAQUETES DHL (Cobros y Estatus)
       // ==========================================
       this.logger.log('🟡 [RouteClosure] Evaluando paquetes DHL para actualización e ingresos...');
-      const currentDatetime = new Date().toISOString().slice(0, 19).replace('T', ' ');
+
+      // El ingreso DHL pertenece al DÍA DE LA RUTA (salida a ruta = dispatch.createdAt),
+      // NO al día en que se cierra. Si una ruta del 07 se cierra el 08, el ingreso es del
+      // 07. Anclamos al día de Hermosillo de la ruta (07:00Z) para que caiga en el bucket
+      // correcto del dashboard/tabla de ingresos. Fallback: fecha de cierre si faltara.
+      const routeIncomeDate = hermosilloDayStartFromInstant(packageDispatch.createdAt ?? new Date());
 
       // `code` = código propio de DHL (OK/NH/BA/RD/CM). `isCharge` = la pieza es un
       // ChargeShipment (carga), NO significa "cobrar". `isDelivered` = de qué lista vino
@@ -214,6 +220,16 @@ export class RouteclosureService {
               // Sin código (returned sin `code`) → costo 0 (no facturable, no hay regla que aplicar).
               const calculatedCost = dhlCode ? (pPackage.subsidiary?.dhlCostPackage ?? 0) : 0;
 
+              // Alerta de configuración: si el paquete DEBERÍA cobrar (tiene código DHL)
+              // pero la sucursal tiene costo 0, se genera un ingreso en $0 silencioso.
+              // Consistente con el FINANCE_ERROR del flujo FedEx (shipments.service).
+              if (dhlCode && calculatedCost <= 0) {
+                this.logger.error(
+                  `❌ FINANCE_ERROR: La sucursal "${pPackage.subsidiary?.name ?? pPackage.subsidiary?.id}" tiene dhlCostPackage=0; ` +
+                  `el ingreso DHL de la guía ${pPackage.trackingNumber} se registró en $0. Revisa la configuración de costo DHL.`,
+                );
+              }
+
               const newIncome = queryRunner.manager.create(Income, {
                 trackingNumber: pPackage.trackingNumber,
                 subsidiary: pPackage.subsidiary,
@@ -224,7 +240,7 @@ export class RouteclosureService {
                 isGrouped: false,
                 sourceType: IncomeSourceType.SHIPMENT,
                 shipment: pPackage as Shipment,
-                date: currentDatetime,
+                date: routeIncomeDate, // día de la RUTA, no del cierre
                 createdById: userId ?? null,
               });
 

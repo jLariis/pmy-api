@@ -11,7 +11,9 @@ export const config = () => {
         username: process.env.DB_USER,
         password: process.env.DB_PASSWORD,
         database: process.env.DB_NAME,
-        synchronize: JSON.parse(process.env.DB_SYNC),
+        // Regla del proyecto: el esquema SIEMPRE se cambia por migraciones, NUNCA por synchronize.
+        // Se fuerza en false a propósito (se ignora DB_SYNC) para que nadie lo reactive por error.
+        synchronize: false,
         logging: JSON.parse(process.env.DB_LOGGING),
         timezone: "Z",
         entities: [__dirname + '/../entities/*.entity.{js,ts}'],

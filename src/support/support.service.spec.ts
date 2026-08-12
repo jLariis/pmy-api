@@ -15,7 +15,9 @@ function make(overrides: any = {}) {
   // Sin usuario con el email del agente default → auto-asignación cae al id de config.
   const userRepo: any = { findOne: overrides.userFindOne ?? (() => Promise.resolve(undefined)) };
   const notifier: any = { emit: jest.fn(() => Promise.resolve()) };
-  const svc = new SupportService(ticketRepo, commentRepo, attachmentRepo, userRepo, notifier);
+  const locator: any = { contextFor: () => ({ repo: null, files: [], components: [], confidence: 'ninguna' }) };
+  const deepseek: any = { isEnabled: () => false, complete: jest.fn() };
+  const svc = new SupportService(ticketRepo, commentRepo, attachmentRepo, userRepo, notifier, locator, deepseek);
   return { svc, savedTickets, notifier, ticketRepo };
 }
 

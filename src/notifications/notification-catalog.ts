@@ -15,8 +15,10 @@ const CATALOG: Record<string, Partial<Presentation>> = {
   'ticket.asignado':   { category: 'soporte', icon: 'user-check',    severity: 'info',    channels: ['bell', 'email'] },
   'ticket.estado':     { category: 'soporte', icon: 'refresh-cw',    severity: 'info',    channels: ['bell', 'email'] },
   'ticket.comentario': { category: 'soporte', icon: 'message-square', severity: 'info',   channels: ['bell', 'email'] },
-  'ticket.urgente':    { category: 'soporte', icon: 'alert-triangle', severity: 'warning', channels: ['whatsapp'] },
-  'ticket.sla_vencido':{ category: 'soporte', icon: 'timer-off',      severity: 'error',   channels: ['bell', 'email'] },
+  'ticket.urgente':    { category: 'soporte', icon: 'alert-triangle', severity: 'warning', channels: ['bell', 'email', 'whatsapp'] },
+  'ticket.sla_por_vencer': { category: 'soporte', icon: 'timer',      severity: 'warning', channels: ['bell', 'email'] },
+  'ticket.primera_respuesta_vencida': { category: 'soporte', icon: 'clock-alert', severity: 'warning', channels: ['bell', 'email'] },
+  'ticket.sla_vencido':{ category: 'soporte', icon: 'timer-off',      severity: 'error',   channels: ['bell', 'email', 'whatsapp'] },
   // ---- Sesión ----
   'auth.login':        { category: 'sesion', icon: 'log-in',  severity: 'info', channels: ['bell'] },
   'auth.logout':       { category: 'sesion', icon: 'log-out', severity: 'info', channels: ['bell'] },

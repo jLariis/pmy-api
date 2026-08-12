@@ -1,4 +1,4 @@
-type IncomeType = 'shipment' | 'carga' | 'collection';
+type IncomeType = 'shipment' | 'carga' | 'collection' | 'traslado';
 
 interface ReportItem {
   type: IncomeType;
@@ -21,6 +21,13 @@ export class FormatIncomesDto {
   dhl: {
     ba: number;
     ne: number;
+    total: number;
+    totalIncome: string;
+  };
+  transfers: {
+    tyco: number;
+    aeropuerto: number;
+    especial: number;
     total: number;
     totalIncome: string;
   };

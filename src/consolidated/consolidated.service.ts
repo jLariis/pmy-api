@@ -526,6 +526,20 @@ export class ConsolidatedService {
     return qb.getOne();
   }
 
+  async findByDateScoped(date: string, subsidiaryId?: string, carrier?: string): Promise<Consolidated | null> {
+    if (!date) return null;
+    
+    const qb = this.consolidatedRepository.createQueryBuilder('c')
+      .leftJoinAndSelect('c.subsidiary', 'sub')
+      .where('DATE(c.date) = :date', { date });
+
+    if (subsidiaryId) qb.andWhere('sub.id = :subsidiaryId', { subsidiaryId });
+    if (carrier) qb.andWhere('c.carrier = :carrier', { carrier });
+
+    return qb.getOne();
+  }
+
+
   async getShipmentsByConsolidatedId(consolidatedId): Promise<ShipmentConsolidatedDto[]> { // Cambiamos el tipo de retorno a solo shipments
       // 1. Validación - consolidatedId es requerido
       if (!consolidatedId) {

@@ -314,9 +314,10 @@ export class IncomeService {
                   const hermDate = toHermosilloDate(i.date);
                   
                   // Mapeo dinámico del tipo para el frontend
-                  let displayType: 'shipment' | 'collection' | 'carga' = 'shipment';
+                  let displayType: 'shipment' | 'collection' | 'carga' | 'traslado' = 'shipment';
                   if (i.sourceType === 'collection') displayType = 'collection';
                   if (i.sourceType === 'charge') displayType = 'carga';
+                  if (['tyco', 'aeropuerto', 'special_transfer'].includes(String(i.sourceType))) displayType = 'traslado';
 
                   // Estatus mostrado en el detalle. Una recolección se cobra COMO
                   // recolección, no como "entregado": el ingreso de collection se crea
@@ -359,6 +360,17 @@ export class IncomeService {
                       ne: dhlNotDelivered,
                       total: dhlDelivered + dhlNotDelivered,
                       totalIncome: formatCurrency(dhlTotalIncome),
+                  },
+                  // Traslados (tyco/aeropuerto/especial): bucket propio para desglose en
+                  // la tabla. `total` es el conteo de operaciones; `totalIncome` es SOLO
+                  // lo facturable (según countTransfers de la sucursal) y ya está incluido
+                  // en el `totalIncome` del día (transferTotalIncome más abajo).
+                  transfers: {
+                      tyco: dayTransfers.filter(i => i.sourceType === 'tyco').length,
+                      aeropuerto: dayTransfers.filter(i => i.sourceType === 'aeropuerto').length,
+                      especial: dayTransfers.filter(i => i.sourceType === 'special_transfer').length,
+                      total: dayTransfers.length,
+                      totalIncome: formatCurrency(transferTotalIncome),
                   },
                   collections: dayCollections.length,
                   cargas: dayCharges.length,

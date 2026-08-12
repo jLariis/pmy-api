@@ -10,8 +10,15 @@ import { NotificationsService } from 'src/notifications/notifications.service';
 import { CreateTicketDto } from './dto/create-ticket.dto';
 import { UpdateTicketDto } from './dto/update-ticket.dto';
 import { AddCommentDto } from './dto/add-comment.dto';
-import { findAgentById, defaultAgent, getSupportAgents, getSlaHours } from './support-config';
-import { computeSlaDueAt, isSlaBreached, urgencyScore, hoursBetween, isResolved } from './support-logic';
+import {
+  findAgentById, defaultAgent, getSupportAgents, getInitialPriority,
+  slaDueAtFor, slaWarnAtFor, firstResponseDueAtFor,
+} from './support-config';
+import { isSlaBreached, urgencyScore, hoursBetween, isResolved } from './support-logic';
+import { buildPrompt } from './prompt-builder';
+import { CodeLocatorService } from './code-locator.service';
+import { buildAiRefinementMessages } from './ai-prompt';
+import { DeepseekService, DeepseekDisabledError } from '../ai/deepseek.service';
 
 type ReqUser = { userId: string; name?: string; lastName?: string; email?: string; subsidiaryId?: string };
 
@@ -31,6 +38,8 @@ export class SupportService {
     @InjectRepository(SupportTicketAttachment) private readonly attachmentRepo: Repository<SupportTicketAttachment>,
     @InjectRepository(User) private readonly userRepo: Repository<User>,
     private readonly notifier: NotificationsService,
+    private readonly locator: CodeLocatorService,
+    private readonly deepseek: DeepseekService,
   ) {}
 
   async nextFolio(): Promise<string> {
@@ -58,7 +67,7 @@ export class SupportService {
   async create(dto: CreateTicketDto, user: ReqUser, files: Express.Multer.File[]): Promise<TicketView> {
     const folio = await this.nextFolio();
     const now = new Date();
-    const prioridad = 'media';
+    const prioridad = getInitialPriority(dto.tipo);
 
     // Auto-asignación al agente default (admin@delyaqui.com), resolviendo su userId real.
     const agent = defaultAgent();
@@ -78,8 +87,13 @@ export class SupportService {
       assigneeId: agent.id,
       assigneeName: agent.nombre,
       assigneeEmail: agent.email,
-      slaDueAt: computeSlaDueAt(now, prioridad, getSlaHours()),
+      slaDueAt: slaDueAtFor(now, prioridad),
+      slaWarnAt: slaWarnAtFor(now, prioridad),
+      slaWarnedAt: null,
       slaNotifiedAt: null,
+      firstResponseDueAt: firstResponseDueAtFor(now, prioridad),
+      firstRespondedAt: null,
+      firstResponseNotifiedAt: null,
       createdAt: now,
     }));
 
@@ -103,6 +117,7 @@ export class SupportService {
       entityId: ticket.id,
       subsidiaryId: ticket.subsidiaryId ?? undefined,
       actor: { id: user.userId, name: ticket.requesterName ?? undefined },
+      data: agent.phone ? { whatsappTo: agent.phone } : undefined,
     });
 
     return this.getOne(ticket.id);
@@ -156,14 +171,28 @@ export class SupportService {
     if (dto.estado && dto.estado !== t.estado) {
       patch.estado = dto.estado;
       patch.resolvedAt = isResolved(dto.estado) ? new Date() : null;
-      // Reabrir un ticket resuelto reactiva su SLA.
-      if (isResolved(t.estado) && !isResolved(dto.estado)) patch.slaNotifiedAt = null;
+      // Iniciar el trabajo (o revisarlo) cuenta como primera respuesta.
+      if (!t.firstRespondedAt && (dto.estado === 'en_progreso' || dto.estado === 'en_revision')) {
+        patch.firstRespondedAt = new Date();
+      }
+      // Reabrir un ticket resuelto reactiva su SLA (avisos incluidos).
+      if (isResolved(t.estado) && !isResolved(dto.estado)) {
+        patch.slaNotifiedAt = null;
+        patch.slaWarnedAt = null;
+      }
     }
     if (dto.prioridad && dto.prioridad !== t.prioridad) {
       patch.prioridad = dto.prioridad;
-      // Recalcular SLA con la nueva prioridad y rearmar el aviso.
-      patch.slaDueAt = computeSlaDueAt(t.createdAt, dto.prioridad, getSlaHours());
+      // Recalcular SLA con la nueva prioridad y rearmar los avisos.
+      patch.slaDueAt = slaDueAtFor(t.createdAt, dto.prioridad);
+      patch.slaWarnAt = slaWarnAtFor(t.createdAt, dto.prioridad);
+      patch.slaWarnedAt = null;
       patch.slaNotifiedAt = null;
+      // La meta de primera respuesta también depende de la prioridad, mientras no se haya respondido.
+      if (!t.firstRespondedAt) {
+        patch.firstResponseDueAt = firstResponseDueAtFor(t.createdAt, dto.prioridad);
+        patch.firstResponseNotifiedAt = null;
+      }
     }
 
     await this.ticketRepo.update({ id }, patch);
@@ -210,6 +239,12 @@ export class SupportService {
 
     // Si comenta el agente (no el solicitante) y no es nota interna → avisa al solicitante.
     const isAgentComment = author.userId !== t.requesterId;
+
+    // El primer comentario del agente cuenta como primera respuesta (SLA).
+    if (isAgentComment && !t.firstRespondedAt) {
+      await this.ticketRepo.update({ id }, { firstRespondedAt: new Date() });
+    }
+
     if (!dto.internal) {
       await this.notifier.emit({
         type: 'ticket.comentario',
@@ -221,5 +256,79 @@ export class SupportService {
       });
     }
     return this.getOne(id);
+  }
+
+  /**
+   * Genera (on-demand, superadmin) un prompt para IA a partir del ticket.
+   * - `deterministico` (default): plantilla + archivos/componentes reales del grafo.
+   *   Cero costo de API, reproducible.
+   * - `ia`: toma el prompt determinista y lo **mejora con DeepSeek** (conserva las
+   *   rutas reales). Si la IA no está configurada o falla, cae al determinista con aviso.
+   */
+  async buildAiPrompt(
+    id: string,
+    engine: 'deterministico' | 'ia' = 'deterministico',
+  ): Promise<{
+    prompt: string;
+    context: ReturnType<CodeLocatorService['contextFor']>;
+    engine: 'deterministico' | 'ia';
+    aiAvailable: boolean;
+    warning?: string;
+  }> {
+    const t = await this.ticketRepo.findOne({ where: { id }, relations: ['imagenes'] });
+    if (!t) throw new NotFoundException('Ticket no encontrado');
+
+    const context = this.locator.contextFor({
+      route: t.route,
+      menuPrincipal: t.menuPrincipal,
+      submenu: t.submenu,
+      seccion: t.seccion,
+      subseccion: t.subseccion,
+      menuError: t.menuError,
+      submenuError: t.submenuError,
+      nuevoMenu: t.nuevoMenu,
+      titulo: t.titulo,
+      descripcion: t.descripcion,
+      pasosReplicar: t.pasosReplicar,
+    });
+
+    const deterministicPrompt = buildPrompt({
+      ticket: {
+        folio: t.folio,
+        tipo: t.tipo,
+        titulo: t.titulo,
+        descripcion: t.descripcion,
+        pasosReplicar: t.pasosReplicar,
+        menuPrincipal: t.menuPrincipal,
+        submenu: t.submenu,
+        seccion: t.seccion,
+        subseccion: t.subseccion,
+        nuevoMenu: t.nuevoMenu,
+        menuError: t.menuError,
+        submenuError: t.submenuError,
+        route: t.route,
+        appVersion: t.appVersion,
+        imagenes: (t.imagenes ?? []).map((i) => ({ url: i.url })),
+      },
+      codeContext: context,
+    });
+
+    const aiAvailable = this.deepseek.isEnabled();
+
+    if (engine !== 'ia') {
+      return { prompt: deterministicPrompt, context, engine: 'deterministico', aiAvailable };
+    }
+
+    // Modo IA: mejorar el determinista con DeepSeek (best-effort, con fallback).
+    try {
+      const refined = await this.deepseek.complete(buildAiRefinementMessages(deterministicPrompt));
+      return { prompt: refined, context, engine: 'ia', aiAvailable: true };
+    } catch (e: any) {
+      const warning =
+        e instanceof DeepseekDisabledError
+          ? 'IA no configurada (falta DEEPSEEK_API_KEY); se usó el generador determinista.'
+          : `La IA no respondió (${e?.message ?? 'error'}); se usó el generador determinista.`;
+      return { prompt: deterministicPrompt, context, engine: 'deterministico', aiAvailable, warning };
+    }
   }
 }

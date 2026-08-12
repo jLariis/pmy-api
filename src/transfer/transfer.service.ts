@@ -4,6 +4,7 @@ import { DataSource, Repository } from 'typeorm';
 import { CreateTransferDto } from './dto/create-transfer.dto';
 import { Income, Subsidiary, Transfer } from 'src/entities';
 import { IncomeSourceType, IncomeStatus, ShipmentType, TransferType } from 'src/common/enums';
+import { hermosilloDayStartUtc } from 'src/common/utils';
 
 @Injectable()
 export class TransferService {
@@ -66,7 +67,11 @@ export class TransferService {
         incomeType: incomeType,
         isGrouped: false,
         sourceType: sourceType,
-        date: createTransferDto.transferDate, // Usamos la fecha del traslado
+        // La fecha del traslado es un "día flotante" (viene como medianoche UTC). La
+        // anclamos a medianoche de Hermosillo (07:00Z) para que el ingreso caiga en el
+        // MISMO día que el dashboard/KPIs y la tabla de ingresos. Antes se guardaba a
+        // 00:00Z y caía un día antes → el ingreso "desaparecía" del día del traslado.
+        date: hermosilloDayStartUtc(createTransferDto.transferDate),
         createdById: userId ?? null,
       });
 

@@ -384,8 +384,12 @@ export class FedexService {
 
   mapFedexToValidatedDto(fedexResponse: FedExTrackingResponseDto): ValidatedPackageDispatchDto[] {
     const results: ValidatedPackageDispatchDto[] = [];
-    for (const complete of fedexResponse.output.completeTrackResults) {
-      for (const track of complete.trackResults) {
+    // FedEx puede responder 200 sin `output` (p.ej. payload de errores por guía o guía
+    // desconocida); sin este guard el acceso a `.completeTrackResults` truena con
+    // "Cannot read properties of undefined (reading 'completeTrackResults')".
+    const completeTrackResults = fedexResponse?.output?.completeTrackResults ?? [];
+    for (const complete of completeTrackResults) {
+      for (const track of complete?.trackResults ?? []) {
         const lastScan = this.latestScanEvent(track.scanEvents);
         const dto: ValidatedPackageDispatchDto = {
           id: undefined,

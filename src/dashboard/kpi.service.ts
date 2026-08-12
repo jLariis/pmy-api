@@ -191,7 +191,10 @@ export class KpiService {
     const subsidiaries = await subsidiariesQuery.getMany();
 
     const hasSubsidiaryFilter = subsidiaryIds?.length > 0;
-    const subsidiaryCondition = hasSubsidiaryFilter ? 'subsidiaryId IN (:...subsidiaryIds)' : '1=1';
+    // Calificamos la columna por alias: la query de ingresos hace JOIN a `sub`, `crs` y `crg`
+    // (todas con columna `subsidiaryId`), por lo que la columna sin calificar es ambigua (ER_NON_UNIQ_ERROR).
+    const subsidiaryCondition = (alias: string) =>
+      hasSubsidiaryFilter ? `${alias}.subsidiaryId IN (:...subsidiaryIds)` : '1=1';
 
     // 2. Definimos los estatus FINALES (los que ya no son Backlog)
     // Todo lo que NO esté en esta lista, se considera un paquete "Vivo" (Bodega, Pendiente, En Ruta, etc.)
@@ -228,7 +231,7 @@ export class KpiService {
           // Condición 2: El Backlog (Nacieron antes de este mes, pero siguen vivos hoy)
             .orWhere('shipment.createdAt < :startDate AND shipment.status NOT IN (:...finalStatuses)', { startDate: startDateObj, finalStatuses });
         }))
-        .andWhere(subsidiaryCondition, { subsidiaryIds })
+        .andWhere(subsidiaryCondition('shipment'), { subsidiaryIds })
         .groupBy('shipment.subsidiaryId')
         .getRawMany(),
 
@@ -238,7 +241,7 @@ export class KpiService {
         .addSelect('COUNT(charge.id)', 'totalCharges')
         .addSelect('SUM(charge.numberOfPackages)', 'totalPackagesFromCharges')
         .where('charge.chargeDate BETWEEN :startDate AND :endDate', { startDate: startDateObj, endDate: endDateObj })
-        .andWhere(subsidiaryCondition, { subsidiaryIds })
+        .andWhere(subsidiaryCondition('charge'), { subsidiaryIds })
         .groupBy('charge.subsidiaryId')
         .getRawMany(),
 
@@ -248,7 +251,7 @@ export class KpiService {
           qb.where('expense.periodStart IS NOT NULL AND expense.periodEnd IS NOT NULL AND expense.periodStart <= :endDay AND expense.periodEnd >= :startDay', { startDay: baseStartDate, endDay: baseEndDate })
             .orWhere('(expense.periodStart IS NULL OR expense.periodEnd IS NULL) AND expense.date BETWEEN :startDay AND :endDay', { startDay: baseStartDate, endDay: baseEndDate });
         }))
-        .andWhere(subsidiaryCondition, { subsidiaryIds })
+        .andWhere(subsidiaryCondition('expense'), { subsidiaryIds })
         .getMany(),
 
       // -- D. INGRESOS TOTALES --
@@ -259,7 +262,7 @@ export class KpiService {
         .select('income.subsidiaryId', 'subsidiaryId')
         .addSelect(COUNTABLE_REVENUE_SQL, 'totalRevenue')
         .where('income.date BETWEEN :startDate AND :endDate', { startDate: startDateObj, endDate: endDateObj })
-        .andWhere(subsidiaryCondition, { subsidiaryIds })
+        .andWhere(subsidiaryCondition('income'), { subsidiaryIds })
         .groupBy('income.subsidiaryId')
         .getRawMany(),
 
@@ -269,7 +272,7 @@ export class KpiService {
         .addSelect(`SUM(CASE WHEN cons.type = '${ConsolidatedType.ORDINARIA}' THEN 1 ELSE 0 END)`, 'ordinary')
         .addSelect(`SUM(CASE WHEN cons.type = '${ConsolidatedType.AEREO}' THEN 1 ELSE 0 END)`, 'air')
         .where('cons.date BETWEEN :startDate AND :endDate', { startDate: startDateObj, endDate: endDateObj })
-        .andWhere(subsidiaryCondition, { subsidiaryIds })
+        .andWhere(subsidiaryCondition('cons'), { subsidiaryIds })
         .groupBy('cons.subsidiaryId')
         .getRawMany()
     ]);

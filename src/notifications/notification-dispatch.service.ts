@@ -44,7 +44,9 @@ export class NotificationDispatchService {
     }
 
     if (wantWa) {
-      const phone = process.env.SUPPORT_WHATSAPP;
+      // Teléfono destino: el que el evento indique (p. ej. el del agente asignado)
+      // con fallback al número de soporte global.
+      const phone = (event.data?.whatsappTo as string | undefined) || process.env.SUPPORT_WHATSAPP;
       if (phone) {
         try {
           await this.whatsapp.sendText(phone, `*${event.title ?? 'PMY'}*\n${event.body ?? ''}`.trim());

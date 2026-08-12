@@ -367,9 +367,18 @@ export class ShipmentsController {
   @ApiConsumes('multipart/form-data')
   async previewUpload(
     @UploadedFile() file: Express.Multer.File,
-    @Body() body: { subsidiaryId: string; consNumber?: string; carrier?: string },
+    @Body() body: { subsidiaryId: string; consNumber?: string; date?: string; carrier?: string },
   ) {
-    return this.shipmentsService.previewUpload(file, body.subsidiaryId, body.consNumber || '', body.carrier as any);
+    // Orden del servicio: (file, subsidiaryId, consNumber, date, carrier). Antes se
+    // pasaba `carrier` en el slot de `date` y nunca se leía `body.date` → el chequeo
+    // de conflicto de fecha nunca funcionaba con datos reales.
+    return this.shipmentsService.previewUpload(
+      file,
+      body.subsidiaryId,
+      body.consNumber || '',
+      body.date || '',
+      (body.carrier as any) || undefined,
+    );
   }
 
   @Post('upload-charge')
@@ -397,19 +406,28 @@ export class ShipmentsController {
     @Body('consNumber') consNumber: string,
     @Body('consDate') consDate?: string,
     @Body('notRemoveCharge') notRemoveCharge: any = false,
+    @Body('isHalfTon') isHalfTon: any = false,
     @Req() req?: any,
   ) {
       console.log("🚀 ~ Raw notRemoveCharge:", notRemoveCharge);
-  
+
     // Conversión robusta a boolean
-    const shouldNotRemove = 
-      notRemoveCharge === 'true' || 
-      notRemoveCharge === true || 
-      notRemoveCharge === '1' || 
+    const shouldNotRemove =
+      notRemoveCharge === 'true' ||
+      notRemoveCharge === true ||
+      notRemoveCharge === '1' ||
       notRemoveCharge === 1;
-    
-    console.log("🚀 ~ Parsed notRemoveCharge:", shouldNotRemove);
-    
+
+    // Carga 1.5 toneladas (mismo parseo robusto). El costo real lo decide el
+    // servicio según subsidiary.chargeCostHalfTon (autoritativo en backend).
+    const halfTon =
+      isHalfTon === 'true' ||
+      isHalfTon === true ||
+      isHalfTon === '1' ||
+      isHalfTon === 1;
+
+    console.log("🚀 ~ Parsed notRemoveCharge:", shouldNotRemove, "| isHalfTon:", halfTon);
+
     let dateForCons = null;
     if(consDate) {
       dateForCons = new Date(consDate);
@@ -417,11 +435,11 @@ export class ShipmentsController {
 
     if(shouldNotRemove) {
       console.log('🔍 Calling addChargeShipments');
-      return this.shipmentsService.addChargeShipments(file, subsidiaryId, consNumber, dateForCons, req?.user?.userId);
+      return this.shipmentsService.addChargeShipments(file, subsidiaryId, consNumber, dateForCons, req?.user?.userId, halfTon);
     }
 
     console.log('🔍 Calling processFileF2');
-    return this.shipmentsService.processFileF2(file, subsidiaryId, consNumber, dateForCons, req?.user?.userId);
+    return this.shipmentsService.processFileF2(file, subsidiaryId, consNumber, dateForCons, req?.user?.userId, halfTon);
   }
 
   @Post('upload-payment')
