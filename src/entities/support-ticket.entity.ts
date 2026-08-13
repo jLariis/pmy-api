@@ -74,6 +74,13 @@ export class SupportTicket {
   /** Marca para no repetir el aviso de primera respuesta vencida (cron). */
   @Column({ type: 'datetime', nullable: true }) firstResponseNotifiedAt: Date | null;
 
+  // Aprobación (gobernanza por zona; ortogonal al `estado` del kanban)
+  @Column({ type: 'varchar', length: 20, default: 'no_requiere' }) approvalStatus: 'no_requiere' | 'pendiente' | 'aprobado' | 'rechazado';
+  @Column({ type: 'char', length: 36, nullable: true }) approvedById: string | null;
+  @Column({ type: 'varchar', length: 160, nullable: true }) approvedByName: string | null;
+  @Column({ type: 'datetime', nullable: true }) approvalAt: Date | null;
+  @Column({ type: 'text', nullable: true }) approvalNote: string | null;
+
   // Contexto auto-capturado
   @Column({ type: 'varchar', length: 60, nullable: true }) appVersion: string | null;
   @Column({ type: 'varchar', length: 300, nullable: true }) route: string | null;

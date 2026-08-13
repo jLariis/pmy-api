@@ -19,6 +19,10 @@ const CATALOG: Record<string, Partial<Presentation>> = {
   'ticket.sla_por_vencer': { category: 'soporte', icon: 'timer',      severity: 'warning', channels: ['bell', 'email'] },
   'ticket.primera_respuesta_vencida': { category: 'soporte', icon: 'clock-alert', severity: 'warning', channels: ['bell', 'email'] },
   'ticket.sla_vencido':{ category: 'soporte', icon: 'timer-off',      severity: 'error',   channels: ['bell', 'email', 'whatsapp'] },
+  'ticket.prueba_canal':{ category: 'soporte', icon: 'bell-ring',     severity: 'info',    channels: ['bell'] },
+  'ticket.por_aprobar': { category: 'soporte', icon: 'gavel',         severity: 'warning', channels: ['bell', 'email'] },
+  'ticket.aprobado':    { category: 'soporte', icon: 'check-circle',   severity: 'info',    channels: ['bell', 'email'] },
+  'ticket.rechazado_aprobacion': { category: 'soporte', icon: 'x-circle', severity: 'warning', channels: ['bell', 'email'] },
   // ---- Sesión ----
   'auth.login':        { category: 'sesion', icon: 'log-in',  severity: 'info', channels: ['bell'] },
   'auth.logout':       { category: 'sesion', icon: 'log-out', severity: 'info', channels: ['bell'] },

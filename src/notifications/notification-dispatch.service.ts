@@ -57,6 +57,68 @@ export class NotificationDispatchService {
     }
   }
 
+  /** Estado operativo de cada canal lateral (para diagnóstico de soporte). */
+  channelHealth() {
+    const emailConfigured = !!(
+      process.env.EMAIL_SERVICE_HOST && process.env.EMAIL_SERVICE_EMAIL && process.env.EMAIL_SERVICE_PASSWORD
+    );
+    const wa = this.whatsapp.getStatus();
+    const waPhone = process.env.SUPPORT_WHATSAPP;
+    return {
+      bell: { ready: true, detail: 'Notificaciones dentro de la app (siempre disponible).' },
+      email: {
+        ready: emailConfigured,
+        detail: emailConfigured
+          ? `SMTP ${process.env.EMAIL_SERVICE_HOST}`
+          : 'Falta configurar EMAIL_SERVICE_HOST / EMAIL / PASSWORD.',
+      },
+      whatsapp: {
+        ready: wa.status === 'connected' && !!waPhone,
+        status: wa.status,
+        detail:
+          wa.status === 'connected'
+            ? waPhone
+              ? `Conectado (${wa.me ?? 'sin número'})`
+              : 'Conectado, pero falta SUPPORT_WHATSAPP (número destino).'
+            : `Gateway ${wa.status}${wa.lastError ? ` — ${wa.lastError}` : ''}. Vincular por QR.`,
+      },
+    };
+  }
+
+  /** Envía una notificación de prueba por email y WhatsApp; reporta por canal. */
+  async sendTest(recipient: { email?: string | null; phone?: string | null }) {
+    const out: Record<string, { sent: boolean; error?: string }> = {};
+
+    if (recipient.email) {
+      try {
+        await this.mailer.sendMail({
+          to: recipient.email,
+          subject: 'Prueba de canal — Soporte PMY',
+          html: '<p>Esta es una <b>notificación de prueba</b> del canal de correo de Soporte PMY.</p>',
+        });
+        out.email = { sent: true };
+      } catch (e: any) {
+        out.email = { sent: false, error: e?.message ?? 'error' };
+      }
+    } else {
+      out.email = { sent: false, error: 'El destinatario no tiene correo.' };
+    }
+
+    const phone = recipient.phone || process.env.SUPPORT_WHATSAPP;
+    if (phone) {
+      try {
+        await this.whatsapp.sendText(phone, '*PMY Soporte*\nNotificación de prueba del canal WhatsApp.');
+        out.whatsapp = { sent: true };
+      } catch (e: any) {
+        out.whatsapp = { sent: false, error: e?.message ?? 'error' };
+      }
+    } else {
+      out.whatsapp = { sent: false, error: 'No hay número de WhatsApp (SUPPORT_WHATSAPP).' };
+    }
+
+    return out;
+  }
+
   private async renderEmail(event: NotificationEvent): Promise<{ subject: string; html: string }> {
     try {
       const link = event.link ? `${process.env.FRONTEND_URL ?? ''}${event.link}` : undefined;

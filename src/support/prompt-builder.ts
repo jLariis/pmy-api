@@ -76,9 +76,9 @@ function locationTrail(t: PromptTicketInput): string[] {
 }
 
 const CONFIDENCE_NOTE: Record<CodeConfidence, string> = {
-  alta: 'Candidatos derivados de la ruta exacta en el grafo. Verificar antes de editar.',
+  alta: 'Ubicaciones del directorio de módulos / ruta exacta. Verificar antes de editar.',
   media: 'Candidatos por coincidencia de palabra clave (no ruta exacta). Verificar antes de editar.',
-  ninguna: 'El grafo no ubicó archivos; usar la ubicación de arriba para localizar el código.',
+  ninguna: 'No se ubicaron archivos; usar la ubicación de arriba para localizar el código.',
 };
 
 /**
@@ -105,7 +105,7 @@ export function buildPrompt({ ticket: t, codeContext: cc }: BuildPromptArgs): st
   const ctxLines: string[] = [];
   if (cc.repo) ctxLines.push(`Repositorio: ${cc.repo}`);
   if (cc.files.length) {
-    ctxLines.push('Archivos probables:');
+    ctxLines.push('Archivos/carpetas probables:');
     for (const f of cc.files) ctxLines.push(`- ${f}`);
   }
   if (cc.components.length) {

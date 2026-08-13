@@ -1,5 +1,5 @@
 import {
-  Body, Controller, Get, Param, Patch, Post, Query, Req, UploadedFiles, UseGuards, UseInterceptors, BadRequestException,
+  Body, Controller, Delete, Get, Param, Patch, Post, Query, Req, UploadedFiles, UseGuards, UseInterceptors, BadRequestException,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiConsumes, ApiTags } from '@nestjs/swagger';
 import { FilesInterceptor } from '@nestjs/platform-express';
@@ -28,6 +28,16 @@ export class SupportController {
 
   @Get('agents')
   agents() { return getSupportAgents().map(({ id, nombre, email }) => ({ id, nombre, email })); }
+
+  /** Diagnóstico de canales de notificación (superadmin). */
+  @Get('channels/health')
+  @UseGuards(SuperAdminGuard)
+  channelsHealth() { return this.service.channelHealth(); }
+
+  /** Envía una notificación de prueba por los 3 canales al usuario actual (superadmin). */
+  @Post('channels/test')
+  @UseGuards(SuperAdminGuard)
+  channelsTest(@Req() req: any) { return this.service.sendChannelTest(req.user.userId); }
 
   @Get('tickets')
   list(
@@ -84,8 +94,54 @@ export class SupportController {
     return this.service.update(id, dto, req.user);
   }
 
+  // ---- Aprobación (D) ----
+  /** Aprueba el ticket. El servicio valida que el actor sea superadmin o autorizador de la zona. */
+  @Post('tickets/:id/approve')
+  approve(@Param('id') id: string, @Req() req: any) { return this.service.approveTicket(id, req.user); }
+
+  /** Rechaza el ticket con un motivo. Mismo control de permiso que aprobar. */
+  @Post('tickets/:id/reject')
+  reject(@Param('id') id: string, @Body() body: { note?: string }, @Req() req: any) {
+    return this.service.rejectTicket(id, req.user, body?.note ?? '');
+  }
+
+  /** Zonas que el usuario actual puede autorizar (para el frontend). */
+  @Get('approvals/mine')
+  myApprovalZones(@Req() req: any) {
+    return this.service.myApprovalZones(req.user.userId).then((zoneIds) => ({ zoneIds }));
+  }
+
+  /** Config de autorizadores por zona (superadmin). */
+  @Get('authorizers')
+  @UseGuards(SuperAdminGuard)
+  authorizers(@Query('zoneId') zoneId?: string) { return this.service.listAuthorizers(zoneId); }
+
+  @Post('authorizers')
+  @UseGuards(SuperAdminGuard)
+  addAuthorizer(@Body() body: { zoneId: string; userId: string }) {
+    return this.service.addAuthorizer(body?.zoneId, body?.userId);
+  }
+
+  @Delete('authorizers/:id')
+  @UseGuards(SuperAdminGuard)
+  removeAuthorizer(@Param('id') id: string) { return this.service.removeAuthorizer(id); }
+
   @Post('tickets/:id/comments')
-  addComment(@Param('id') id: string, @Body() dto: AddCommentDto, @Req() req: any) {
-    return this.service.addComment(id, dto, req.user);
+  @ApiConsumes('multipart/form-data')
+  @UseInterceptors(FilesInterceptor('imagenes', 6, {
+    storage: diskStorage({
+      destination: (req, file, cb) => {
+        const dir = path.join(uploadRoot, 'comments', (req as any).__commentDir ?? ((req as any).__commentDir = randomUUID()));
+        fs.mkdirSync(dir, { recursive: true });
+        cb(null, dir);
+      },
+      filename: (req, file, cb) => cb(null, `${Date.now()}-${file.originalname.replace(/[^\w.-]/g, '_')}`),
+    }),
+    limits: { fileSize: 5 * 1024 * 1024 },
+    fileFilter: (req, file, cb) =>
+      file.mimetype.startsWith('image/') ? cb(null, true) : cb(new BadRequestException('Solo imágenes'), false),
+  }))
+  addComment(@Param('id') id: string, @Body() dto: AddCommentDto, @UploadedFiles() files: Express.Multer.File[], @Req() req: any) {
+    return this.service.addComment(id, dto, req.user, files);
   }
 }

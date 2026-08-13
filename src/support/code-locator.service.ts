@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { CodeContext } from './prompt-builder';
 import { GraphData, locateInGraph, routePath } from './code-locator';
+import { resolveModule } from './module-directory';
 
 interface GraphSource {
   repo: string;
@@ -81,6 +82,22 @@ export class CodeLocatorService {
    * Elige el de mayor confianza (alta > media > ninguna) y, a igualdad, más archivos.
    */
   contextFor(t: TicketHints): CodeContext {
+    // 1) Directorio de módulos versionado (fuente primaria, siempre disponible en prod).
+    const dir = resolveModule([
+      t.submenu, t.subseccion, t.submenuError, t.nuevoMenu,
+      ...routePath(t.route).split('/'),
+      t.seccion, t.menuPrincipal, t.menuError,
+    ]);
+    if (dir) {
+      return {
+        repo: 'app-pmy (front) + pmy-api (back)',
+        files: [...dir.frontend, ...dir.backend],
+        components: [],
+        confidence: 'alta',
+      };
+    }
+
+    // 2) Grafo de graphify (enriquecimiento en dev; ausente en prod).
     const hints = this.hintsFrom(t);
     const rank = { alta: 3, media: 2, ninguna: 1 } as const;
     let best: CodeContext | null = null;

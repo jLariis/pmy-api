@@ -297,6 +297,37 @@ export class NotificationsService {
     }
   }
 
+  /** Diagnóstico: estado operativo de los canales (bell/email/whatsapp). */
+  channelHealth() {
+    return this.dispatch.channelHealth();
+  }
+
+  /**
+   * Envía una notificación de prueba al usuario por los 3 canales y reporta el
+   * resultado por canal. Bell se persiste como notificación real; email/whatsapp
+   * se intentan en vivo.
+   */
+  async sendChannelTest(userId: string): Promise<Record<string, { sent: boolean; error?: string }>> {
+    const u = await this.userRepo.findOne({ where: { id: userId }, select: ['id', 'email', 'name'] }).catch(() => null);
+
+    let bell: { sent: boolean; error?: string } = { sent: false, error: 'usuario no encontrado' };
+    try {
+      await this.emit({
+        type: 'ticket.prueba_canal',
+        audience: { userId },
+        title: 'Prueba de canal',
+        body: 'Notificación de prueba (campana). Si la ves, este canal funciona.',
+        channels: ['bell'],
+      });
+      bell = { sent: true };
+    } catch (e: any) {
+      bell = { sent: false, error: e?.message ?? 'error' };
+    }
+
+    const side = await this.dispatch.sendTest({ email: u?.email });
+    return { bell, ...side };
+  }
+
   /**
    * Puente desde el interceptor de auditoría. Fire-and-forget: construye un
    * NotificationEvent a partir del resultado ya calculado por resolveAudit().

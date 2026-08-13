@@ -10,15 +10,21 @@ function make(overrides: any = {}) {
     find: () => Promise.resolve([]),
     update: () => Promise.resolve({ affected: 1 }),
   };
-  const commentRepo: any = { create: (d: any) => d, save: (c: any) => Promise.resolve({ id: 'c1', ...c }) };
+  const savedComments: any[] = [];
+  const commentRepo: any = { create: (d: any) => d, save: (c: any) => { const row = { id: 'c1', ...c }; savedComments.push(row); return Promise.resolve(row); } };
   const attachmentRepo: any = { create: (d: any) => d, save: (a: any) => Promise.resolve(a) };
+  const commentAttachmentRepo: any = { create: (d: any) => d, save: (a: any) => Promise.resolve(a) };
   // Sin usuario con el email del agente default → auto-asignación cae al id de config.
   const userRepo: any = { findOne: overrides.userFindOne ?? (() => Promise.resolve(undefined)) };
   const notifier: any = { emit: jest.fn(() => Promise.resolve()) };
   const locator: any = { contextFor: () => ({ repo: null, files: [], components: [], confidence: 'ninguna' }) };
   const deepseek: any = { isEnabled: () => false, complete: jest.fn() };
-  const svc = new SupportService(ticketRepo, commentRepo, attachmentRepo, userRepo, notifier, locator, deepseek);
-  return { svc, savedTickets, notifier, ticketRepo };
+  const approval: any = {
+    zoneMap: () => Promise.resolve(new Map()),
+    notifyPendingApproval: jest.fn(() => Promise.resolve()),
+  };
+  const svc = new SupportService(ticketRepo, commentRepo, attachmentRepo, commentAttachmentRepo, userRepo, notifier, locator, deepseek, approval);
+  return { svc, savedTickets, savedComments, notifier, ticketRepo };
 }
 
 const requester = { userId: 'r1', name: 'Ana', lastName: 'Ruiz', email: 'ana@x.com', subsidiaryId: 's1' };
@@ -45,5 +51,28 @@ describe('SupportService.create', () => {
     const files = [{ filename: 'a.png', mimetype: 'image/png', size: 10, path: 'uploads/support/t1/a.png' }];
     await svc.create({ tipo: 'error', titulo: 'x', descripcion: 'y' } as any, requester as any, files as any);
     // no throw = attachment save path exercised
+  });
+});
+
+describe('SupportService.addComment', () => {
+  const agent = { userId: 'admin', name: 'Admin', email: 'admin@x.com' };
+
+  it('un comentario del solicitante NUNCA es interno, aunque mande el flag', async () => {
+    const { svc, savedComments } = make();
+    await svc.addComment('t1', { texto: 'hola', internal: 'true' } as any, requester as any, []);
+    expect(savedComments[0].internal).toBe(false);
+  });
+
+  it('coacciona internal="true" (multipart) a boolean para el agente', async () => {
+    const { svc, savedComments } = make();
+    await svc.addComment('t1', { texto: 'nota', internal: 'true' } as any, agent as any, []);
+    expect(savedComments[0].internal).toBe(true);
+  });
+
+  it('guarda las imágenes adjuntas del comentario', async () => {
+    const { svc } = make();
+    const files = [{ filename: 'a.png', path: '/x/abc/a.png', mimetype: 'image/png', size: 10 }];
+    await svc.addComment('t1', { texto: 'con foto' } as any, requester as any, files as any);
+    // no throw = comment attachment save path exercised
   });
 });

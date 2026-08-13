@@ -1,5 +1,6 @@
-import { Column, Entity, JoinColumn, ManyToOne, PrimaryGeneratedColumn } from 'typeorm';
+import { Column, Entity, JoinColumn, ManyToOne, OneToMany, PrimaryGeneratedColumn } from 'typeorm';
 import { SupportTicket } from './support-ticket.entity';
+import { SupportTicketCommentAttachment } from './support-ticket-comment-attachment.entity';
 
 @Entity('support_ticket_comment')
 export class SupportTicketComment {
@@ -15,4 +16,6 @@ export class SupportTicketComment {
   @Column({ type: 'text' }) texto: string;
   @Column({ type: 'boolean', default: false }) internal: boolean;
   @Column({ type: 'datetime', default: () => 'CURRENT_TIMESTAMP' }) createdAt: Date;
+
+  @OneToMany(() => SupportTicketCommentAttachment, (a) => a.comment) imagenes: SupportTicketCommentAttachment[];
 }

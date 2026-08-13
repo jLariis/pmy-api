@@ -5,6 +5,7 @@ import * as path from 'path';
 import { SupportTicket } from 'src/entities/support-ticket.entity';
 import { SupportTicketComment } from 'src/entities/support-ticket-comment.entity';
 import { SupportTicketAttachment } from 'src/entities/support-ticket-attachment.entity';
+import { SupportTicketCommentAttachment } from 'src/entities/support-ticket-comment-attachment.entity';
 import { User } from 'src/entities/user.entity';
 import { NotificationsService } from 'src/notifications/notifications.service';
 import { CreateTicketDto } from './dto/create-ticket.dto';
@@ -19,8 +20,11 @@ import { buildPrompt } from './prompt-builder';
 import { CodeLocatorService } from './code-locator.service';
 import { buildAiRefinementMessages } from './ai-prompt';
 import { DeepseekService, DeepseekDisabledError } from '../ai/deepseek.service';
+import { SupportApprovalService, ApprovalActor } from './support-approval.service';
+import { initialApprovalStatus, isBlockedByApproval, isSuperRole } from './approval-logic';
+import { ForbiddenException } from '@nestjs/common';
 
-type ReqUser = { userId: string; name?: string; lastName?: string; email?: string; subsidiaryId?: string };
+type ReqUser = { userId: string; name?: string; lastName?: string; email?: string; subsidiaryId?: string; role?: string };
 
 /** Ticket con campos calculados para el tablero (no persistidos). */
 export type TicketView = SupportTicket & {
@@ -28,6 +32,7 @@ export type TicketView = SupportTicket & {
   slaBreached: boolean;
   ageHours: number;
   timeInColumnHours: number;
+  zoneId: string | null;
 };
 
 @Injectable()
@@ -36,11 +41,37 @@ export class SupportService {
     @InjectRepository(SupportTicket) private readonly ticketRepo: Repository<SupportTicket>,
     @InjectRepository(SupportTicketComment) private readonly commentRepo: Repository<SupportTicketComment>,
     @InjectRepository(SupportTicketAttachment) private readonly attachmentRepo: Repository<SupportTicketAttachment>,
+    @InjectRepository(SupportTicketCommentAttachment) private readonly commentAttachmentRepo: Repository<SupportTicketCommentAttachment>,
     @InjectRepository(User) private readonly userRepo: Repository<User>,
     private readonly notifier: NotificationsService,
     private readonly locator: CodeLocatorService,
     private readonly deepseek: DeepseekService,
+    private readonly approval: SupportApprovalService,
   ) {}
+
+  /** Diagnóstico de canales de notificación (bell/email/whatsapp). */
+  channelHealth() {
+    return this.notifier.channelHealth();
+  }
+
+  /** Envía una notificación de prueba al usuario por los 3 canales. */
+  sendChannelTest(userId: string) {
+    return this.notifier.sendChannelTest(userId);
+  }
+
+  // ---- Aprobación (D) ----
+  async approveTicket(id: string, actor: ApprovalActor): Promise<TicketView> {
+    await this.approval.approve(id, actor);
+    return this.getOne(id);
+  }
+  async rejectTicket(id: string, actor: ApprovalActor, note: string): Promise<TicketView> {
+    await this.approval.reject(id, actor, note);
+    return this.getOne(id);
+  }
+  listAuthorizers(zoneId?: string) { return this.approval.listAuthorizers(zoneId); }
+  addAuthorizer(zoneId: string, userId: string) { return this.approval.addAuthorizer(zoneId, userId); }
+  removeAuthorizer(id: string) { return this.approval.removeAuthorizer(id); }
+  myApprovalZones(userId: string) { return this.approval.myZones(userId); }
 
   async nextFolio(): Promise<string> {
     const n = (await this.ticketRepo.count()) + 1;
@@ -61,7 +92,15 @@ export class SupportService {
       slaBreached: isSlaBreached(t, now),
       ageHours: Math.round(hoursBetween(t.createdAt, now) * 10) / 10,
       timeInColumnHours: Math.round(hoursBetween(t.updatedAt ?? t.createdAt, now) * 10) / 10,
+      zoneId: null,
     }) as TicketView;
+  }
+
+  /** Resuelve la zona (vía sucursal) de una lista de vistas, en un solo query. */
+  private async attachZones(views: TicketView[]): Promise<TicketView[]> {
+    const map = await this.approval.zoneMap(views.map((v) => v.subsidiaryId));
+    for (const v of views) v.zoneId = v.subsidiaryId ? map.get(v.subsidiaryId) ?? null : null;
+    return views;
   }
 
   async create(dto: CreateTicketDto, user: ReqUser, files: Express.Multer.File[]): Promise<TicketView> {
@@ -78,6 +117,7 @@ export class SupportService {
       folio,
       estado: 'pendiente',
       prioridad,
+      approvalStatus: initialApprovalStatus(dto.tipo),
       requesterId: user.userId,
       requesterName: [user.name, user.lastName].filter(Boolean).join(' ') || null,
       requesterEmail: user.email ?? null,
@@ -120,6 +160,11 @@ export class SupportService {
       data: agent.phone ? { whatsappTo: agent.phone } : undefined,
     });
 
+    // Si la mejora requiere aprobación, avisa a los autorizadores de la zona.
+    if (ticket.approvalStatus === 'pendiente') {
+      await this.approval.notifyPendingApproval(ticket);
+    }
+
     return this.getOne(ticket.id);
   }
 
@@ -138,28 +183,34 @@ export class SupportService {
     if (filters.q) qb.andWhere('(t.titulo LIKE :q OR t.descripcion LIKE :q OR t.requesterName LIKE :q OR t.folio LIKE :q)', { q: `%${filters.q}%` });
     const rows = await qb.getMany();
     const now = new Date();
-    return rows.map((t) => this.serialize(t, now));
+    return this.attachZones(rows.map((t) => this.serialize(t, now)));
   }
 
   async listMine(userId: string): Promise<TicketView[]> {
     const rows = await this.ticketRepo.find({
       where: { requesterId: userId },
-      relations: ['comentarios', 'imagenes'],
+      relations: ['comentarios', 'comentarios.imagenes', 'imagenes'],
       order: { createdAt: 'DESC' },
     });
     const now = new Date();
-    return rows.map((t) => this.serialize(t, now));
+    return this.attachZones(rows.map((t) => this.serialize(t, now)));
   }
 
   async getOne(id: string): Promise<TicketView> {
-    const t = await this.ticketRepo.findOne({ where: { id }, relations: ['comentarios', 'imagenes'] });
+    const t = await this.ticketRepo.findOne({ where: { id }, relations: ['comentarios', 'comentarios.imagenes', 'imagenes'] });
     if (!t) throw new NotFoundException('Ticket no encontrado');
-    return this.serialize(t);
+    return (await this.attachZones([this.serialize(t)]))[0];
   }
 
   async update(id: string, dto: UpdateTicketDto, actor: ReqUser): Promise<TicketView> {
     const t = await this.getOne(id);
     const patch: Partial<SupportTicket> = { updatedAt: new Date() };
+
+    // Bloqueo duro: una mejora pendiente de aprobación no avanza a estados de
+    // trabajo, salvo override del superadmin.
+    if (dto.estado && isBlockedByApproval(t.approvalStatus, dto.estado, isSuperRole(actor.role))) {
+      throw new ForbiddenException('Este ticket requiere aprobación de la zona antes de pasar a desarrollo.');
+    }
 
     if (dto.assigneeId && dto.assigneeId !== t.assigneeId) {
       // Puede venir un id de agente config o un userId real; resolvemos ambos.
@@ -226,26 +277,44 @@ export class SupportService {
     return updated;
   }
 
-  async addComment(id: string, dto: AddCommentDto, author: ReqUser): Promise<TicketView> {
+  async addComment(
+    id: string,
+    dto: AddCommentDto,
+    author: ReqUser,
+    files: Express.Multer.File[] = [],
+  ): Promise<TicketView> {
     const t = await this.getOne(id);
-    await this.commentRepo.save(this.commentRepo.create({
+    // `internal` puede venir como boolean (JSON) o string (multipart).
+    const internal = dto.internal === true || dto.internal === 'true';
+    // Nota interna solo tiene sentido para el equipo; el solicitante nunca la usa.
+    const isAgentComment = author.userId !== t.requesterId;
+    const isInternal = internal && isAgentComment;
+
+    const comment = await this.commentRepo.save(this.commentRepo.create({
       ticketId: id,
       authorId: author.userId,
       authorName: [author.name, author.lastName].filter(Boolean).join(' ') || null,
       texto: dto.texto,
-      internal: dto.internal ?? false,
+      internal: isInternal,
       createdAt: new Date(),
     }));
 
-    // Si comenta el agente (no el solicitante) y no es nota interna → avisa al solicitante.
-    const isAgentComment = author.userId !== t.requesterId;
+    for (const f of files ?? []) {
+      await this.commentAttachmentRepo.save(this.commentAttachmentRepo.create({
+        commentId: comment.id,
+        filename: f.filename,
+        url: `/api/uploads/support/comments/${path.basename(path.dirname(f.path))}/${f.filename}`,
+        mime: f.mimetype,
+        size: f.size,
+      }));
+    }
 
     // El primer comentario del agente cuenta como primera respuesta (SLA).
     if (isAgentComment && !t.firstRespondedAt) {
       await this.ticketRepo.update({ id }, { firstRespondedAt: new Date() });
     }
 
-    if (!dto.internal) {
+    if (!isInternal) {
       await this.notifier.emit({
         type: 'ticket.comentario',
         audience: isAgentComment ? { userId: t.requesterId } : { userId: t.assigneeId ?? t.requesterId },
