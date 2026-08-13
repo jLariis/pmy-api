@@ -71,6 +71,16 @@ export class PackageDispatch {
   @Column({nullable: true, default: ''})
   kms: string;
 
+  // Día operativo de la ruta, fijado al crear la salida a ruta (default hoy en el
+  // servicio). Ancla de TODOS los ingresos del cierre (DHL, recolecciones, No VAN).
+  // Fallback a `createdAt` si es null (rutas creadas antes de esta columna).
+  @Column({ type: 'date', nullable: true })
+  routeDate: Date | null;
+
+  // Marca de ruta 31.5. true ⇒ los paquetes "No VAN" NO generan ingreso en el cierre.
+  @Column({ type: 'boolean', default: false })
+  is315: boolean;
+
   @Column({ type: 'timestamp', default: () => 'CURRENT_TIMESTAMP' })
   createdAt: Date;
 
