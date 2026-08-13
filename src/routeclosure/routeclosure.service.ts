@@ -102,6 +102,28 @@ export class RouteclosureService {
 
       const savedClosure = await queryRunner.manager.save(RouteClosure, newRouteClosure);
 
+      // El ingreso del cierre (DHL, recolecciones y No VAN) pertenece al DÍA DE LA RUTA,
+      // ahora fijado explícitamente al crear la salida a ruta (packageDispatch.routeDate).
+      // Fallback a createdAt para rutas viejas sin la prop; last-resort hoy. Anclamos al
+      // inicio de día Hermosillo (07:00Z) para caer en el bucket correcto del dashboard.
+      const routeIncomeDate = hermosilloDayStartFromInstant(
+        packageDispatch.routeDate ?? packageDispatch.createdAt ?? new Date(),
+      );
+
+      // Pre-resolución FedEx de los No VAN: solo si la ruta NO es 31.5 (si es 31.5 no cobran).
+      // Las llamadas FedEx son de solo lectura, acotadas al # de No VAN de la ruta. Si FedEx
+      // falla, el outcome sale resolved=false y esa guía simplemente no cobra (el cierre no
+      // se rompe). Se resuelve aquí, antes de generar los ingresos.
+      const noVanInputs = (createRouteclosureDto.noVanPackages ?? []).map(pkg =>
+        typeof pkg === 'string' ? { trackingNumber: pkg } : pkg,
+      );
+      let noVanOutcomes: NoVanFedexOutcome[] = [];
+      if (!packageDispatch.is315 && noVanInputs.length > 0) {
+        noVanOutcomes = await Promise.all(
+          noVanInputs.map(n => this.resolveNoVanOutcome(n.trackingNumber)),
+        );
+      }
+
       // =====================================================================
       // 🛡️ GUARDAR PAQUETES NO VAN (ShipmentNotInFiles)
       // =====================================================================
@@ -121,18 +143,67 @@ export class RouteclosureService {
           });
         });
 
-        // Faltaría agregar el ingreso de los paquetes que cumplan como lo hace para agregar los de DHL
-
         await queryRunner.manager.save(ShipmentNotInFiles, noVanEntities);
         this.logger.log(`🟢 [RouteClosure] ${noVanEntities.length} registros insertados en shipment_not_in_files.`);
-      }
 
-      // El ingreso de la ruta (DHL y recolecciones) pertenece al DÍA DE LA RUTA
-      // (salida a ruta = dispatch.createdAt), NO al día en que se cierra. Si una ruta
-      // del 07 se cierra el 08, el ingreso es del 07. Anclamos al día de Hermosillo de
-      // la ruta (07:00Z) para que caiga en el bucket correcto del dashboard/tabla de
-      // ingresos. Fallback: fecha de cierre si faltara.
-      const routeIncomeDate = hermosilloDayStartFromInstant(packageDispatch.createdAt ?? new Date());
+        // Ingreso de No VAN — espejo del patrón DHL: se guarda SIEMPRE el costo completo +
+        // código; qué CUENTA lo decide charge_rule en lectura. Solo si la ruta NO es 31.5.
+        if (packageDispatch.is315) {
+          this.logger.log('🟡 [RouteClosure] Ruta 31.5: los No VAN NO generan ingreso.');
+        } else {
+          const noVanCost = packageDispatch.subsidiary?.fedexCostPackage ?? 0;
+          const noVanIncomes = [];
+          for (const outcome of noVanOutcomes) {
+            // Sin validación FedEx (no encontrado / caído) ⇒ no se cobra.
+            if (!outcome.resolved) {
+              this.logger.warn(`⚠️ [RouteClosure] No VAN ${outcome.trackingNumber} sin estatus FedEx; no se cobra.`);
+              continue;
+            }
+            // En tránsito / sin entregar ni DEX ⇒ no hay código que aplicar, no se cobra.
+            if (!outcome.delivered && !outcome.dexCode) {
+              continue;
+            }
+
+            const existingIncome = await queryRunner.manager.findOne(Income, {
+              where: {
+                trackingNumber: outcome.trackingNumber,
+                sourceType: IncomeSourceType.SHIPMENT,
+              },
+            });
+            if (existingIncome) {
+              this.logger.warn(`⚠️ [RouteClosure] Ya existe ingreso (shipment) para No VAN ${outcome.trackingNumber}. Omitiendo.`);
+              continue;
+            }
+
+            // Alerta de configuración: si debe cobrar pero la sucursal tiene costo 0,
+            // el ingreso se registra en $0 (consistente con el FINANCE_ERROR de DHL/FedEx).
+            if (noVanCost <= 0) {
+              this.logger.error(
+                `❌ FINANCE_ERROR: La sucursal "${packageDispatch.subsidiary?.name ?? packageDispatch.subsidiary?.id}" tiene fedexCostPackage=0; ` +
+                `el ingreso No VAN de la guía ${outcome.trackingNumber} se registró en $0. Revisa la configuración de costo FedEx.`,
+              );
+            }
+
+            noVanIncomes.push(queryRunner.manager.create(Income, {
+              trackingNumber: outcome.trackingNumber,
+              subsidiary: packageDispatch.subsidiary,
+              shipmentType: ShipmentType.FEDEX,
+              cost: noVanCost,
+              incomeType: outcome.delivered ? IncomeStatus.ENTREGADO : IncomeStatus.NO_ENTREGADO,
+              nonDeliveryStatus: outcome.delivered ? null : outcome.dexCode,
+              isGrouped: false,
+              sourceType: IncomeSourceType.SHIPMENT,
+              date: routeIncomeDate, // día de la RUTA, no del cierre
+              createdById: userId ?? null,
+            }));
+          }
+
+          if (noVanIncomes.length > 0) {
+            await queryRunner.manager.save(Income, noVanIncomes);
+            this.logger.log(`🟢 [RouteClosure] Se crearon ${noVanIncomes.length} ingresos de No VAN.`);
+          }
+        }
+      }
 
       // 4. Crear registros independientes en la tabla 'Collection' + su INGRESO.
       if (trackingNumbers.length > 0) {

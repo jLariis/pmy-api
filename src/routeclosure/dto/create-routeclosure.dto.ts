@@ -13,6 +13,17 @@ export interface RouteClosurePackageInput {
     isCharge?: boolean;
 }
 
+/**
+ * Paquete "No VAN" agregado en el cierre. El front lo valida contra FedEx y lo envía
+ * como objeto (`trackingNumber` + `status`). El backend re-valida contra FedEx para
+ * decidir el ingreso; `status` es informativo. Se tolera `string` por retrocompatibilidad.
+ */
+export interface NoVanPackageInput {
+    trackingNumber: string;
+    status?: string;
+    isCharge?: boolean;
+}
+
 export class CreateRouteclosureDto {
     claseDate: Date;
     returnedPackages: (Shipment | RouteClosurePackageInput)[];
@@ -22,5 +33,5 @@ export class CreateRouteclosureDto {
     createdBy: User;
     actualKms: string;
     collections: string[];
-    noVanPackages: string[];
+    noVanPackages: (NoVanPackageInput | string)[];
 }
