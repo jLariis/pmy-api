@@ -21,6 +21,14 @@ import { FedexService } from 'src/shipments/fedex.service';
 import { TemplateService } from 'src/documents/template.service';
 import { buildRouteClosureData, RouteClosureInput, RouteClosurePackage, RouteClosureNoVanPackage } from 'src/documents/data/route-closure.mapper';
 
+/** Estatus FedEx autoritativo de una guía "No VAN", para decidir su ingreso en el cierre. */
+interface NoVanFedexOutcome {
+  trackingNumber: string;
+  delivered: boolean;
+  dexCode: string | null;
+  resolved: boolean; // false si FedEx no devolvió datos / hubo error
+}
+
 @Injectable()
 export class RouteclosureService {
   private readonly logger = new Logger(RouteclosureService.name);
@@ -500,30 +508,82 @@ export class RouteclosureService {
     }
   }
 
+  /**
+   * Devuelve el trackResult "ganador" de FedEx (mejor generación, con reintento label-only)
+   * o null. Arbitraje compartido por `getBestFedexStatus` (string para UI) y
+   * `resolveNoVanOutcome` (códigos para ingreso).
+   */
+  private async getWinningTrackResult(trackingNumber: string): Promise<any | null> {
+    let response = await this.fedexService.trackPackage(trackingNumber);
+    let results = response?.output?.completeTrackResults?.[0]?.trackResults || [];
+
+    // 1. Manejo de reintentos (label-only: solo OC con <=1 scan)
+    const isLabelOnly = results.some(r => r.latestStatusDetail?.code === 'OC' && (r.scanEvents?.length || 0) <= 1);
+    if (results.length === 0 || isLabelOnly) {
+      const retry = await this.fedexService.trackPackage(trackingNumber, undefined);
+      results = retry?.output?.completeTrackResults?.[0]?.trackResults || results;
+    }
+
+    if (results.length === 0) return null;
+
+    // 2. Selección de la generación (UniqueID): la secuencia más alta = generación más reciente.
+    if (results.length > 1) {
+      results.sort((a, b) => {
+        const seqA = parseInt(a.trackingNumberInfo?.trackingNumberUniqueId?.split('~')[0] || '0');
+        const seqB = parseInt(b.trackingNumberInfo?.trackingNumberUniqueId?.split('~')[0] || '0');
+        return seqB - seqA;
+      });
+    }
+
+    return results[0];
+  }
+
+  /**
+   * Resuelve el estatus FedEx AUTORITATIVO de una guía "No VAN" para decidir el ingreso.
+   * Trabaja sobre los CÓDIGOS de FedEx (no el string lossy de `getBestFedexStatus`):
+   *  - Entregado: header/scan 'DL' ⇒ delivered=true.
+   *  - Excepción de entrega (DEX): header/scan 'DE' ⇒ dexCode = código específico (03/07/08…).
+   *  - Otro estatus (tránsito, etc.): resolved=true, sin cobro por código.
+   *  - No encontrado / error: resolved=false ⇒ no se cobra.
+   */
+  private async resolveNoVanOutcome(trackingNumber: string): Promise<NoVanFedexOutcome> {
+    try {
+      const winner = await this.getWinningTrackResult(trackingNumber);
+      if (!winner) {
+        return { trackingNumber, delivered: false, dexCode: null, resolved: false };
+      }
+
+      const headerCode = winner.latestStatusDetail?.code; // p.ej. 'DL' (entregado), 'DE' (excepción)
+      const scans = winner.scanEvents || [];
+      const latestScan = [...scans].sort(
+        (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime(),
+      )[0];
+
+      // Entregado.
+      if (headerCode === 'DL' || latestScan?.eventType === 'DL') {
+        return { trackingNumber, delivered: true, dexCode: null, resolved: true };
+      }
+
+      // Excepción de entrega (DEX): extraer el código específico.
+      if (headerCode === 'DE' || latestScan?.eventType === 'DE') {
+        const specificCode = latestScan?.exceptionCode
+          || winner.latestStatusDetail?.ancillaryDetails?.[0]?.reason
+          || null;
+        return { trackingNumber, delivered: false, dexCode: specificCode, resolved: true };
+      }
+
+      // Otro estatus: resuelto pero sin código que aplicar.
+      return { trackingNumber, delivered: false, dexCode: null, resolved: true };
+    } catch (error) {
+      this.logger.error(`[NoVan:${trackingNumber}] resolveNoVanOutcome error: ${error.message}`);
+      return { trackingNumber, delivered: false, dexCode: null, resolved: false };
+    }
+  }
+
   private async getBestFedexStatus(trackingNumber: string): Promise<string | null> {
     try {
-      let response = await this.fedexService.trackPackage(trackingNumber);
-      let results = response?.output?.completeTrackResults?.[0]?.trackResults || [];
-
-      // 1. Manejo de reintentos
-      const isLabelOnly = results.some(r => r.latestStatusDetail?.code === 'OC' && (r.scanEvents?.length || 0) <= 1);
-      if (results.length === 0 || isLabelOnly) {
-        const retry = await this.fedexService.trackPackage(trackingNumber, undefined);
-        results = retry?.output?.completeTrackResults?.[0]?.trackResults || results;
-      }
-
-      if (results.length === 0) return null;
-
-      // 2. Selección de la generación (UniqueID)
-      if (results.length > 1) {
-        results.sort((a, b) => {
-          const seqA = parseInt(a.trackingNumberInfo?.trackingNumberUniqueId?.split('~')[0] || '0');
-          const seqB = parseInt(b.trackingNumberInfo?.trackingNumberUniqueId?.split('~')[0] || '0');
-          return seqB - seqA;
-        });
-      }
-
-      const winner = results[0];
+      const winner = await this.getWinningTrackResult(trackingNumber);
+      if (!winner) return null;
 
       // =================================================================================
       // 🛡️ EXTRACCIÓN DE ESTATUS Y CÓDIGOS DE EXCEPCIÓN
