@@ -214,6 +214,15 @@ export class Subsidiary {
   @Column({ default: true })
   countTransfersAsIncome: boolean;
 
+  /**
+   * Cierre de ruta: si está activo, se permite CERRAR la ruta aunque queden paquetes
+   * en "Otros Estatus" (sin resolver) con fecha compromiso de hoy. Default false =
+   * comportamiento histórico (bloquea). Se siembra en true solo para la sucursal
+   * Hermosillo (no Bodega Hermosillo) en la migración 1786000000050.
+   */
+  @Column({ default: false })
+  allowRouteClosureWithOtherStatus: boolean;
+
   @BeforeInsert()
   setCreatedAt() {
     this.createdAt = new Date(); // Fecha en UTC

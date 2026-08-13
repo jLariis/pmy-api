@@ -91,6 +91,8 @@ export class SupportTicket {
   /** Se sella la primera vez que el ticket entra a `en_progreso` (inicio de trabajo). */
   @Column({ type: 'datetime', nullable: true }) startedAt: Date | null;
   @Column({ type: 'datetime', nullable: true }) resolvedAt: Date | null;
+  /** El solicitante confirmó que quedó resuelto (ticket cerrado). */
+  @Column({ type: 'datetime', nullable: true }) confirmedAt: Date | null;
 
   @OneToMany(() => SupportTicketComment, (c) => c.ticket) comentarios: SupportTicketComment[];
   @OneToMany(() => SupportTicketAttachment, (a) => a.ticket) imagenes: SupportTicketAttachment[];

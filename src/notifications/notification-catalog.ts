@@ -23,6 +23,8 @@ const CATALOG: Record<string, Partial<Presentation>> = {
   'ticket.por_aprobar': { category: 'soporte', icon: 'gavel',         severity: 'warning', channels: ['bell', 'email'] },
   'ticket.aprobado':    { category: 'soporte', icon: 'check-circle',   severity: 'info',    channels: ['bell', 'email'] },
   'ticket.rechazado_aprobacion': { category: 'soporte', icon: 'x-circle', severity: 'warning', channels: ['bell', 'email'] },
+  'ticket.confirmado': { category: 'soporte', icon: 'badge-check',   severity: 'info',    channels: ['bell', 'email'] },
+  'ticket.reabierto':  { category: 'soporte', icon: 'rotate-ccw',    severity: 'warning', channels: ['bell', 'email'] },
   // ---- Sesión ----
   'auth.login':        { category: 'sesion', icon: 'log-in',  severity: 'info', channels: ['bell'] },
   'auth.logout':       { category: 'sesion', icon: 'log-out', severity: 'info', channels: ['bell'] },

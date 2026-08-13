@@ -91,4 +91,7 @@ export class CreateSubsidiaryDto {
   @IsBoolean() @IsOptional() chargeDelivered?: boolean;
   @IsBoolean() @IsOptional() generateDhlIncomeOnDelivery?: boolean;
   @IsBoolean() @IsOptional() countTransfersAsIncome?: boolean;
+
+  // Cierre de ruta: permitir cerrar con paquetes en "otros estatus" (solo Hermosillo por ahora).
+  @IsBoolean() @IsOptional() allowRouteClosureWithOtherStatus?: boolean;
 }

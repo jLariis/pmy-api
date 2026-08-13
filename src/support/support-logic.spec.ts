@@ -6,6 +6,7 @@ import {
   slaHoursFor,
   DEFAULT_SLA_HOURS,
   isResolved,
+  commentReadState,
 } from './support-logic';
 
 describe('support-logic', () => {
@@ -66,6 +67,30 @@ describe('support-logic', () => {
     });
     it('es false sin slaDueAt', () => {
       expect(isSlaBreached({ estado: 'pendiente', slaDueAt: null }, base)).toBe(false);
+    });
+  });
+
+  describe('commentReadState', () => {
+    const c = (authorId: string, iso: string) => ({ authorId, createdAt: new Date(iso) });
+    it('unread=true si hay un comentario de otro posterior a lastViewedAt', () => {
+      const comments = [c('u1', '2026-08-10T10:00:00Z'), c('u2', '2026-08-10T12:00:00Z')];
+      const r = commentReadState(comments, 'u1', new Date('2026-08-10T11:00:00Z'));
+      expect(r).toEqual({ count: 2, unread: true });
+    });
+    it('unread=false si ya vio el último de otros', () => {
+      const comments = [c('u2', '2026-08-10T12:00:00Z')];
+      expect(commentReadState(comments, 'u1', new Date('2026-08-10T13:00:00Z')).unread).toBe(false);
+    });
+    it('los comentarios propios no cuentan como nuevos', () => {
+      const comments = [c('u1', '2026-08-10T12:00:00Z')];
+      expect(commentReadState(comments, 'u1', null).unread).toBe(false);
+    });
+    it('nunca visto + comentario de otro → unread', () => {
+      const comments = [c('u2', '2026-08-10T12:00:00Z')];
+      expect(commentReadState(comments, 'u1', null).unread).toBe(true);
+    });
+    it('sin comentarios → count 0, no unread', () => {
+      expect(commentReadState([], 'u1', null)).toEqual({ count: 0, unread: false });
     });
   });
 

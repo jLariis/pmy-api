@@ -80,6 +80,28 @@ export function isSlaBreached(
 }
 
 // ---------------------------------------------------------------------------
+// Comentarios: conteo y "no leídos" por usuario
+// ---------------------------------------------------------------------------
+
+/**
+ * Estado de comentarios para un usuario: total y si hay NUEVOS (comentarios de
+ * OTROS posteriores a `lastViewedAt`). Los propios no cuentan como "nuevo".
+ */
+export function commentReadState(
+  comments: { authorId?: string | null; createdAt: Date | string }[],
+  viewerId: string | undefined,
+  lastViewedAt: Date | string | null | undefined,
+): { count: number; unread: boolean } {
+  const count = comments.length;
+  if (!viewerId || count === 0) return { count, unread: false };
+  const others = comments.filter((c) => String(c.authorId ?? '') !== String(viewerId));
+  if (!others.length) return { count, unread: false };
+  const latest = Math.max(...others.map((c) => new Date(c.createdAt).getTime()));
+  const seen = lastViewedAt ? new Date(lastViewedAt).getTime() : 0;
+  return { count, unread: latest > seen };
+}
+
+// ---------------------------------------------------------------------------
 // Urgencia (algoritmo)
 // ---------------------------------------------------------------------------
 

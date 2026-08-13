@@ -41,6 +41,7 @@ export class SupportController {
 
   @Get('tickets')
   list(
+    @Req() req: any,
     @Query('estado') estado?: string,
     @Query('tipo') tipo?: string,
     @Query('prioridad') prioridad?: string,
@@ -48,8 +49,12 @@ export class SupportController {
     @Query('sucursal') sucursal?: string,
     @Query('asignado') asignado?: string,
   ) {
-    return this.service.list({ estado, tipo, prioridad, q, sucursal, asignado }).then((tickets) => ({ tickets }));
+    return this.service.list({ estado, tipo, prioridad, q, sucursal, asignado }, req.user?.userId).then((tickets) => ({ tickets }));
   }
+
+  /** Marca el ticket como visto por el usuario actual (limpia el "nuevo" del tablero). */
+  @Post('tickets/:id/seen')
+  markSeen(@Param('id') id: string, @Req() req: any) { return this.service.markSeen(req.user.userId, id); }
 
   @Get('tickets/mine')
   mine(@Req() req: any) {
@@ -97,6 +102,12 @@ export class SupportController {
   /** Notifica el estatus actual del ticket a su creador (campana + WhatsApp). */
   @Post('tickets/:id/notify-status')
   notifyStatus(@Param('id') id: string) { return this.service.notifyStatusToRequester(id); }
+
+  /** El creador confirma si su ticket (en "Hecho") quedó resuelto (cierra) o no (regresa a Por hacer). */
+  @Post('tickets/:id/confirm-resolution')
+  confirmResolution(@Param('id') id: string, @Body() body: { resolved: boolean; note?: string }, @Req() req: any) {
+    return this.service.confirmResolution(id, req.user, !!body?.resolved, body?.note);
+  }
 
   // ---- Aprobación (D) ----
   /** Aprueba el ticket. El servicio valida que el actor sea superadmin o autorizador de la zona. */

@@ -1,12 +1,13 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import * as path from 'path';
 import * as fs from 'fs';
 import { SupportTicket } from 'src/entities/support-ticket.entity';
 import { SupportTicketComment } from 'src/entities/support-ticket-comment.entity';
 import { SupportTicketAttachment } from 'src/entities/support-ticket-attachment.entity';
 import { SupportTicketCommentAttachment } from 'src/entities/support-ticket-comment-attachment.entity';
+import { SupportTicketRead } from 'src/entities/support-ticket-read.entity';
 import { User } from 'src/entities/user.entity';
 import { NotificationsService } from 'src/notifications/notifications.service';
 import { CreateTicketDto } from './dto/create-ticket.dto';
@@ -16,14 +17,14 @@ import {
   findAgentById, defaultAgent, getSupportAgents, getInitialPriority,
   slaDueAtFor, slaWarnAtFor, firstResponseDueAtFor,
 } from './support-config';
-import { isSlaBreached, urgencyScore, hoursBetween, isResolved } from './support-logic';
+import { isSlaBreached, urgencyScore, hoursBetween, isResolved, commentReadState } from './support-logic';
 import { buildPrompt } from './prompt-builder';
 import { CodeLocatorService } from './code-locator.service';
 import { buildAiRefinementMessages } from './ai-prompt';
 import { DeepseekService, DeepseekDisabledError } from '../ai/deepseek.service';
 import { SupportApprovalService, ApprovalActor } from './support-approval.service';
 import { initialApprovalStatus, isBlockedByApproval, isSuperRole } from './approval-logic';
-import { ForbiddenException } from '@nestjs/common';
+import { ForbiddenException, BadRequestException } from '@nestjs/common';
 
 type ReqUser = { userId: string; name?: string; lastName?: string; email?: string; subsidiaryId?: string; role?: string };
 
@@ -48,6 +49,8 @@ export type TicketView = SupportTicket & {
   timeInColumnHours: number;
   workedHours: number | null;
   zoneId: string | null;
+  commentsCount: number;
+  unread: boolean;
 };
 
 @Injectable()
@@ -57,6 +60,7 @@ export class SupportService {
     @InjectRepository(SupportTicketComment) private readonly commentRepo: Repository<SupportTicketComment>,
     @InjectRepository(SupportTicketAttachment) private readonly attachmentRepo: Repository<SupportTicketAttachment>,
     @InjectRepository(SupportTicketCommentAttachment) private readonly commentAttachmentRepo: Repository<SupportTicketCommentAttachment>,
+    @InjectRepository(SupportTicketRead) private readonly readRepo: Repository<SupportTicketRead>,
     @InjectRepository(User) private readonly userRepo: Repository<User>,
     private readonly notifier: NotificationsService,
     private readonly locator: CodeLocatorService,
@@ -102,6 +106,59 @@ export class SupportService {
       : { sent: false, error: 'El usuario no tiene teléfono registrado.' };
 
     return { whatsapp, hasPhone: !!phone };
+  }
+
+  /**
+   * El creador del ticket confirma (tras "Hecho") si quedó resuelto:
+   * - resolved=true → sella `confirmedAt` (ticket cerrado) y avisa al asignado.
+   * - resolved=false → regresa a "Por hacer", agrega el motivo como comentario y avisa.
+   * Solo el solicitante (o superadmin) puede hacerlo, y solo si el ticket está en "Hecho".
+   */
+  async confirmResolution(id: string, actor: ReqUser, resolved: boolean, note?: string): Promise<TicketView> {
+    const t = await this.ticketRepo.findOne({ where: { id } });
+    if (!t) throw new NotFoundException('Ticket no encontrado');
+    if (t.requesterId !== actor.userId && !isSuperRole(actor.role)) {
+      throw new ForbiddenException('Solo el creador del ticket puede confirmar la resolución.');
+    }
+    if (t.estado !== 'completado') {
+      throw new BadRequestException('El ticket debe estar en "Hecho" para confirmar la resolución.');
+    }
+
+    const assigneeUserId = (await this.userIdByEmail(t.assigneeEmail)) ?? t.assigneeId ?? undefined;
+
+    if (resolved) {
+      await this.ticketRepo.update({ id }, { confirmedAt: new Date() });
+      await this.notifier.emit({
+        type: 'ticket.confirmado',
+        audience: assigneeUserId ? { userId: assigneeUserId } : { role: 'superadmin' },
+        title: `Resolución confirmada: ${t.folio}`,
+        body: `El usuario confirmó que "${t.titulo}" quedó resuelto. Ticket cerrado.`,
+        link: `/support/admin?ticket=${id}`, entityId: id,
+        actor: { id: actor.userId, name: [actor.name, actor.lastName].filter(Boolean).join(' ') },
+      });
+    } else {
+      await this.ticketRepo.update({ id }, { estado: 'por_hacer', resolvedAt: null, confirmedAt: null });
+      if (note?.trim()) {
+        await this.commentRepo.save(this.commentRepo.create({
+          ticketId: id,
+          authorId: actor.userId,
+          authorName: [actor.name, actor.lastName].filter(Boolean).join(' ') || null,
+          texto: `Reapertura: ${note.trim()}`,
+          internal: false,
+          createdAt: new Date(),
+        }));
+      }
+      await this.notifier.emit({
+        type: 'ticket.reabierto',
+        audience: assigneeUserId ? { userId: assigneeUserId } : { role: 'superadmin' },
+        title: `Reabierto por el usuario: ${t.folio}`,
+        body: note?.trim() ? `"${t.titulo}" no quedó resuelto: ${note.trim()}` : `"${t.titulo}" no quedó resuelto.`,
+        link: `/support/admin?ticket=${id}`, entityId: id,
+        actor: { id: actor.userId, name: [actor.name, actor.lastName].filter(Boolean).join(' ') },
+      });
+    }
+
+    return this.getOne(id);
   }
 
   /** Ruta local en disco a partir de la URL servida (`/api/uploads/...` → `uploads/...`). */
@@ -183,7 +240,39 @@ export class SupportService {
         ? Math.round(hoursBetween(t.startedAt, t.resolvedAt ? new Date(t.resolvedAt) : now) * 10) / 10
         : null,
       zoneId: null,
+      commentsCount: t.comentarios?.length ?? 0,
+      unread: false,
     }) as TicketView;
+  }
+
+  /** Marca por usuario si cada ticket tiene comentarios NUEVOS (para el tablero). */
+  private async attachReadState(views: TicketView[], viewerId?: string): Promise<TicketView[]> {
+    if (!viewerId || views.length === 0) return views;
+    let seen = new Map<string, Date>();
+    try {
+      const rows = await this.readRepo.find({
+        where: { userId: viewerId, ticketId: In(views.map((v) => String(v.id))) },
+      });
+      seen = new Map(rows.map((r) => [r.ticketId, r.lastViewedAt]));
+    } catch {
+      /* degrada: sin marca de lectura, nada "nuevo" */
+    }
+    for (const v of views) {
+      const state = commentReadState(v.comentarios ?? [], viewerId, seen.get(String(v.id)) ?? null);
+      v.commentsCount = state.count;
+      v.unread = state.unread;
+    }
+    return views;
+  }
+
+  /** Registra que el usuario vio el ticket (limpia el "nuevo"). */
+  async markSeen(userId: string, ticketId: string): Promise<{ ok: boolean }> {
+    try {
+      await this.readRepo.upsert({ userId, ticketId, lastViewedAt: new Date() }, ['userId', 'ticketId']);
+      return { ok: true };
+    } catch {
+      return { ok: false };
+    }
   }
 
   /** Resuelve la zona (vía sucursal) de una lista de vistas, en un solo query. */
@@ -260,6 +349,7 @@ export class SupportService {
 
   async list(
     filters: { estado?: string; tipo?: string; prioridad?: string; q?: string; sucursal?: string; asignado?: string } = {},
+    viewerId?: string,
   ): Promise<TicketView[]> {
     const qb = this.ticketRepo.createQueryBuilder('t')
       .leftJoinAndSelect('t.comentarios', 'c')
@@ -273,7 +363,8 @@ export class SupportService {
     if (filters.q) qb.andWhere('(t.titulo LIKE :q OR t.descripcion LIKE :q OR t.requesterName LIKE :q OR t.folio LIKE :q)', { q: `%${filters.q}%` });
     const rows = await qb.getMany();
     const now = new Date();
-    return this.attachZones(rows.map((t) => this.serialize(t, now)));
+    const views = await this.attachZones(rows.map((t) => this.serialize(t, now)));
+    return this.attachReadState(views, viewerId);
   }
 
   async listMine(userId: string): Promise<TicketView[]> {
