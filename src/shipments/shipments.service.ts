@@ -2369,15 +2369,13 @@ export class ShipmentsService {
         normalizedDateStr = `${year}-${month}-${day}`;
     }
 
-    // 1. Manejo del consolidado: Buscar si ya existe (para reusarlo)
+    // 1. Manejo del consolidado: Buscar si ya existe (para reusarlo).
+    //    Regla: una sucursal puede tener VARIOS consolidados el mismo día
+    //    (p. ej. VIC-xxxx y VJ-xxxx con paquetes distintos). Solo reutilizamos
+    //    cuando el consNumber EXACTO ya existe; un consNumber nuevo crea un
+    //    consolidado nuevo aunque existan otros ese mismo día (ya NO se bloquea
+    //    por "un consolidado por día").
     let targetCons = await this.consolidatedService.findByConsNumberScoped(consNumber, subsidiaryId, ShipmentType.FEDEX);
-    
-    if (!targetCons) {
-        const dateMatch = await this.consolidatedService.findByDateScoped(normalizedDateStr, subsidiaryId, ShipmentType.FEDEX);
-        if (dateMatch) {
-            throw new BadRequestException(`Ya existe otro consolidado en esta fecha (${dateMatch.consNumber}). No se permite más de un consolidado por día.`);
-        }
-    }
 
     let shipmentsToSave: any[] = [];
     try {
@@ -3131,12 +3129,14 @@ export class ShipmentsService {
     // Las puramente nuevas son las que no están en ninguno de los dos sets anteriores
     const purelyNewCount = uniqueTns.filter(t => !trulyIgnoredSet.has(t) && !toRecycleSet.has(t)).length;
 
+    // Solo reportamos coincidencia EXACTA de consNumber (para avisar que se
+    // reutilizará ese consolidado). Ya NO se marca conflicto por "otro
+    // consolidado el mismo día": una sucursal puede tener varios consolidados
+    // distintos en la misma fecha.
     const exactConsMatch = await this.consolidatedService.findByConsNumberScoped(consNumber, subsidiaryId, carrier);
-    const dateMatch = date ? await this.consolidatedService.findByDateScoped(date, subsidiaryId, carrier) : null;
-
-    const matchedConsolidate = exactConsMatch || dateMatch;
+    const matchedConsolidate = exactConsMatch;
     const isExactMatch = !!exactConsMatch;
-    const isDateConflict = !exactConsMatch && !!dateMatch;
+    const isDateConflict = false;
 
     return {
       fileName: file.originalname,
@@ -3145,7 +3145,7 @@ export class ShipmentsService {
       withTracking: withTn.length,
       emptyTracking: all.length - withTn.length,
       duplicatesInFile: dupInFile.size,
-      
+
       // ACTUALIZACIÓN DE CONTADORES:
       newCount: purelyNewCount, // Guías 100% nuevas
       recycledCount: toRecycle.length, // Guías de ayer que reingresarán
@@ -4991,6 +4991,13 @@ export class ShipmentsService {
     async validateCode67BySubsidiary(subsidiaryId: string, thresholdDays = 1) {
       const targetStatuses = [ShipmentStatusType.PENDIENTE, ShipmentStatusType.EN_BODEGA];
 
+      // Cada sucursal monitorea el escaneo local con el código 67 por default, o el 44 (llegada a
+      // estación) si así está configurada (`monitorFedexCode44`) — mismo criterio que
+      // MonitoringService.getMonitorConfig / getFedex44Visibility. Sin esto, las guías de una
+      // sucursal de código 44 escaneadas HOY con 44 caían en categoría 'nunca' (SUP-0005).
+      const subsidiary = await this.subsidiaryRepository.findOneBy({ id: subsidiaryId });
+      const scanCode: '67' | '44' = subsidiary?.monitorFedexCode44 === true ? '44' : '67';
+
       const [shipments, chargeShipments] = await Promise.all([
         this.shipmentRepository.find({
           where: { subsidiary: { id: subsidiaryId }, status: In(targetStatuses) },
@@ -5026,7 +5033,7 @@ export class ShipmentsService {
           if (t) {
             firstStatus = !firstStatus || t < firstStatus ? t : firstStatus;
             lastStatus = !lastStatus || t > lastStatus ? t : lastStatus;
-            if (h.exceptionCode === '67') max67 = maxDate(max67, t);
+            if (h.exceptionCode === scanCode) max67 = maxDate(max67, t);
           }
         }
 
@@ -5072,7 +5079,7 @@ export class ShipmentsService {
           exceptionCodes: Array.from(codes),
           firstStatusDate: firstStatus ? firstStatus.toISOString() : null,
           lastStatusDate: lastStatus ? lastStatus.toISOString() : null,
-          comment: category === 'nunca' ? 'Nunca registró 67' : category === 'sin67' ? `Sin 67 hace ${daysSinceLast67} día(s)` : 'Tiene 67 hoy',
+          comment: category === 'nunca' ? `Nunca registró ${scanCode}` : category === 'sin67' ? `Sin ${scanCode} hace ${daysSinceLast67} día(s)` : `Tiene ${scanCode} hoy`,
         };
       });
 
