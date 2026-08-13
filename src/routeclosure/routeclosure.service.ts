@@ -20,14 +20,7 @@ import { IncomeSourceType } from 'src/common/enums/income-source-type.enum';
 import { FedexService } from 'src/shipments/fedex.service';
 import { TemplateService } from 'src/documents/template.service';
 import { buildRouteClosureData, RouteClosureInput, RouteClosurePackage, RouteClosureNoVanPackage } from 'src/documents/data/route-closure.mapper';
-
-/** Estatus FedEx autoritativo de una guía "No VAN", para decidir su ingreso en el cierre. */
-interface NoVanFedexOutcome {
-  trackingNumber: string;
-  delivered: boolean;
-  dexCode: string | null;
-  resolved: boolean; // false si FedEx no devolvió datos / hubo error
-}
+import { noVanIncomeDecision, NoVanFedexOutcome } from './novan-income.util';
 
 @Injectable()
 export class RouteclosureService {
@@ -154,13 +147,13 @@ export class RouteclosureService {
           const noVanCost = packageDispatch.subsidiary?.fedexCostPackage ?? 0;
           const noVanIncomes = [];
           for (const outcome of noVanOutcomes) {
-            // Sin validación FedEx (no encontrado / caído) ⇒ no se cobra.
-            if (!outcome.resolved) {
-              this.logger.warn(`⚠️ [RouteClosure] No VAN ${outcome.trackingNumber} sin estatus FedEx; no se cobra.`);
-              continue;
-            }
-            // En tránsito / sin entregar ni DEX ⇒ no hay código que aplicar, no se cobra.
-            if (!outcome.delivered && !outcome.dexCode) {
+            // Decisión pura (probada en novan-income.util.spec): null ⇒ no se genera ingreso
+            // (sin validación FedEx, o en tránsito sin entregar ni DEX).
+            const decision = noVanIncomeDecision(outcome);
+            if (!decision) {
+              if (!outcome.resolved) {
+                this.logger.warn(`⚠️ [RouteClosure] No VAN ${outcome.trackingNumber} sin estatus FedEx; no se cobra.`);
+              }
               continue;
             }
 
@@ -189,8 +182,8 @@ export class RouteclosureService {
               subsidiary: packageDispatch.subsidiary,
               shipmentType: ShipmentType.FEDEX,
               cost: noVanCost,
-              incomeType: outcome.delivered ? IncomeStatus.ENTREGADO : IncomeStatus.NO_ENTREGADO,
-              nonDeliveryStatus: outcome.delivered ? null : outcome.dexCode,
+              incomeType: decision.incomeType,
+              nonDeliveryStatus: decision.nonDeliveryStatus,
               isGrouped: false,
               sourceType: IncomeSourceType.SHIPMENT,
               date: routeIncomeDate, // día de la RUTA, no del cierre
