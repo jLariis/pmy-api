@@ -16,7 +16,11 @@ function make(overrides: any = {}) {
   const commentAttachmentRepo: any = { create: (d: any) => d, save: (a: any) => Promise.resolve(a) };
   // Sin usuario con el email del agente default → auto-asignación cae al id de config.
   const userRepo: any = { findOne: overrides.userFindOne ?? (() => Promise.resolve(undefined)) };
-  const notifier: any = { emit: jest.fn(() => Promise.resolve()) };
+  const notifier: any = {
+    emit: jest.fn(() => Promise.resolve()),
+    sendSupportGroupCard: jest.fn(() => Promise.resolve({ sent: true })),
+    sendWhatsapp: jest.fn(() => Promise.resolve({ sent: true })),
+  };
   const locator: any = { contextFor: () => ({ repo: null, files: [], components: [], confidence: 'ninguna' }) };
   const deepseek: any = { isEnabled: () => false, complete: jest.fn() };
   const approval: any = {

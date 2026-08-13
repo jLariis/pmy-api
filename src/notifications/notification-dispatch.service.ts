@@ -57,6 +57,42 @@ export class NotificationDispatchService {
     }
   }
 
+  /** Envía un WhatsApp puntual y reporta el resultado (para acciones con feedback). */
+  async sendWhatsapp(phone: string, text: string): Promise<{ sent: boolean; error?: string }> {
+    if (!phone) return { sent: false, error: 'Sin número de teléfono.' };
+    try {
+      await this.whatsapp.sendText(phone, text);
+      return { sent: true };
+    } catch (e: any) {
+      return { sent: false, error: e?.message ?? 'error' };
+    }
+  }
+
+  /**
+   * Envía una "tarjeta" a un grupo de WhatsApp resuelto por nombre. Si hay imagen
+   * la manda con el texto como caption; si la imagen falla, cae a solo texto.
+   * Best-effort: nunca lanza.
+   */
+  async sendGroupCard(groupName: string, text: string, imagePath?: string | null): Promise<{ sent: boolean; error?: string }> {
+    try {
+      const jid = await this.whatsapp.findGroupJid(groupName);
+      if (!jid) return { sent: false, error: `Grupo "${groupName}" no encontrado o WhatsApp desconectado.` };
+      if (imagePath) {
+        try {
+          await this.whatsapp.sendImage(jid, imagePath, text);
+          return { sent: true };
+        } catch (e: any) {
+          this.logger.warn(`imagen a grupo falló, envío solo texto: ${e?.message}`);
+        }
+      }
+      await this.whatsapp.sendText(jid, text);
+      return { sent: true };
+    } catch (e: any) {
+      this.logger.warn(`sendGroupCard falló: ${e?.message}`);
+      return { sent: false, error: e?.message ?? 'error' };
+    }
+  }
+
   /** Estado operativo de cada canal lateral (para diagnóstico de soporte). */
   channelHealth() {
     const emailConfigured = !!(

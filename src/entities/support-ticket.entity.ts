@@ -88,6 +88,8 @@ export class SupportTicket {
 
   @Column({ type: 'datetime', default: () => 'CURRENT_TIMESTAMP' }) createdAt: Date;
   @Column({ type: 'datetime', nullable: true }) updatedAt: Date | null;
+  /** Se sella la primera vez que el ticket entra a `en_progreso` (inicio de trabajo). */
+  @Column({ type: 'datetime', nullable: true }) startedAt: Date | null;
   @Column({ type: 'datetime', nullable: true }) resolvedAt: Date | null;
 
   @OneToMany(() => SupportTicketComment, (c) => c.ticket) comentarios: SupportTicketComment[];

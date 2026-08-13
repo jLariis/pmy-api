@@ -65,6 +65,10 @@ export class User {
   @Column({ nullable: true })
   avatar?: string;
 
+  /** Teléfono / WhatsApp del usuario (para notificarle el estatus de sus tickets). */
+  @Column({ nullable: true })
+  phone?: string;
+
   @Column({ nullable: true, default: true })
   active: boolean;
 

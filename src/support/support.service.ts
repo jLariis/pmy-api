@@ -2,6 +2,7 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import * as path from 'path';
+import * as fs from 'fs';
 import { SupportTicket } from 'src/entities/support-ticket.entity';
 import { SupportTicketComment } from 'src/entities/support-ticket-comment.entity';
 import { SupportTicketAttachment } from 'src/entities/support-ticket-attachment.entity';
@@ -26,12 +27,26 @@ import { ForbiddenException } from '@nestjs/common';
 
 type ReqUser = { userId: string; name?: string; lastName?: string; email?: string; subsidiaryId?: string; role?: string };
 
+/** Estados cuyo cambio dispara el aviso al grupo de WhatsApp (evita ruido). */
+const GROUP_NOTIFY_STATES = ['en_progreso', 'completado', 'rechazado'];
+
+/** Etiquetas legibles de estado (para el mensaje de WhatsApp/campana al solicitante). */
+const STATUS_LABELS: Record<string, string> = {
+  pendiente: 'En espera (backlog)',
+  por_hacer: 'Por hacer',
+  en_progreso: 'En progreso',
+  en_revision: 'En revisión',
+  completado: 'Completado',
+  rechazado: 'Rechazado',
+};
+
 /** Ticket con campos calculados para el tablero (no persistidos). */
 export type TicketView = SupportTicket & {
   urgencyScore: number;
   slaBreached: boolean;
   ageHours: number;
   timeInColumnHours: number;
+  workedHours: number | null;
   zoneId: string | null;
 };
 
@@ -57,6 +72,77 @@ export class SupportService {
   /** Envía una notificación de prueba al usuario por los 3 canales. */
   sendChannelTest(userId: string) {
     return this.notifier.sendChannelTest(userId);
+  }
+
+  /**
+   * Notifica el estatus actual del ticket a su creador: campana (siempre) +
+   * WhatsApp al teléfono registrado del usuario (con resultado para la UI).
+   */
+  async notifyStatusToRequester(id: string): Promise<{ whatsapp: { sent: boolean; error?: string }; hasPhone: boolean }> {
+    const t = await this.ticketRepo.findOne({ where: { id } });
+    if (!t) throw new NotFoundException('Ticket no encontrado');
+    const requester = await this.userRepo.findOne({ where: { id: t.requesterId }, select: ['id', 'phone', 'name'] as any });
+    const estadoLabel = STATUS_LABELS[t.estado] ?? t.estado.replace('_', ' ');
+    const title = `Estatus de tu ticket ${t.folio}`;
+    const body = `"${t.titulo}" ahora está: ${estadoLabel}.` + (t.assigneeName ? ` Atiende: ${t.assigneeName}.` : '');
+
+    await this.notifier.emit({
+      type: 'ticket.estado',
+      audience: { userId: t.requesterId },
+      title,
+      body,
+      link: `/support/my-tickets?ticket=${id}`,
+      entityId: id,
+      channels: ['bell'],
+    });
+
+    const phone = (requester as any)?.phone as string | undefined;
+    const whatsapp = phone
+      ? await this.notifier.sendWhatsapp(phone, `*${title}*\n${body}`)
+      : { sent: false, error: 'El usuario no tiene teléfono registrado.' };
+
+    return { whatsapp, hasPhone: !!phone };
+  }
+
+  /** Ruta local en disco a partir de la URL servida (`/api/uploads/...` → `uploads/...`). */
+  private localPathFromUrl(url?: string | null): string | undefined {
+    if (!url) return undefined;
+    const rel = url.replace(/^\/api\/uploads\//, '');
+    if (rel === url) return undefined; // no era una URL de uploads
+    const p = path.join(process.cwd(), 'uploads', rel);
+    try {
+      return fs.existsSync(p) ? p : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * Aviso al grupo de WhatsApp de Sistemas cuando la tarjeta cambia de estado:
+   * datos del ticket + estatus + último comentario (con su imagen si tiene).
+   */
+  private async notifyGroupOnMove(t: TicketView): Promise<void> {
+    const estadoLabel = STATUS_LABELS[t.estado] ?? t.estado.replace('_', ' ');
+    const lines: string[] = [
+      `🎫 *${t.folio}* → *${estadoLabel}*`,
+      `*${t.titulo}*`,
+      `Tipo: ${t.tipo} · Prioridad: ${t.prioridad}`,
+    ];
+    if (t.requesterName) lines.push(`Solicitante: ${t.requesterName}`);
+    if (t.assigneeName) lines.push(`Atiende: ${t.assigneeName}`);
+    if (t.workedHours != null) lines.push(`Trabajado: ${t.workedHours} h`);
+
+    // Último comentario visible (no interno) + su primera imagen si tiene.
+    const comments = (t.comentarios ?? []).filter((c) => !c.internal);
+    const last = comments[comments.length - 1];
+    let imagePath: string | undefined;
+    if (last) {
+      lines.push('', `💬 ${last.authorName ?? 'Comentario'}: ${last.texto}`);
+      const img = (last.imagenes ?? [])[0];
+      imagePath = this.localPathFromUrl(img?.url);
+    }
+
+    await this.notifier.sendSupportGroupCard(lines.join('\n'), imagePath);
   }
 
   // ---- Aprobación (D) ----
@@ -92,6 +178,10 @@ export class SupportService {
       slaBreached: isSlaBreached(t, now),
       ageHours: Math.round(hoursBetween(t.createdAt, now) * 10) / 10,
       timeInColumnHours: Math.round(hoursBetween(t.updatedAt ?? t.createdAt, now) * 10) / 10,
+      // Tiempo trabajado: desde el inicio (en_progreso) hasta resolución o ahora.
+      workedHours: t.startedAt
+        ? Math.round(hoursBetween(t.startedAt, t.resolvedAt ? new Date(t.resolvedAt) : now) * 10) / 10
+        : null,
       zoneId: null,
     }) as TicketView;
   }
@@ -226,6 +316,10 @@ export class SupportService {
       if (!t.firstRespondedAt && (dto.estado === 'en_progreso' || dto.estado === 'en_revision')) {
         patch.firstRespondedAt = new Date();
       }
+      // Fecha de inicio de trabajo: la primera vez que entra a "en progreso".
+      if (dto.estado === 'en_progreso' && !t.startedAt) {
+        patch.startedAt = new Date();
+      }
       // Reabrir un ticket resuelto reactiva su SLA (avisos incluidos).
       if (isResolved(t.estado) && !isResolved(dto.estado)) {
         patch.slaNotifiedAt = null;
@@ -266,6 +360,10 @@ export class SupportService {
         body: updated.titulo, link: `/support/my-tickets?ticket=${id}`, entityId: id,
         actor: { id: actor.userId, name: [actor.name, actor.lastName].filter(Boolean).join(' ') },
       });
+      // Aviso al grupo de WhatsApp solo en transiciones clave (En progreso / Hecho / Rechazado).
+      if (GROUP_NOTIFY_STATES.includes(updated.estado)) {
+        void this.notifyGroupOnMove(updated).catch(() => undefined);
+      }
     }
     if (patch.prioridad === 'urgente') {
       await this.notifier.emit({

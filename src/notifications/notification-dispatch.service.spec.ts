@@ -5,6 +5,8 @@ function make() {
   const wa: any = {
     sendText: jest.fn(() => Promise.resolve({ ok: true })),
     getStatus: jest.fn(() => ({ status: 'connected', me: '52...', qr: null, lastError: null })),
+    findGroupJid: jest.fn(() => Promise.resolve('123@g.us')),
+    sendImage: jest.fn(() => Promise.resolve({ ok: true })),
   };
   const userRepo: any = {
     find: () => Promise.resolve([{ id: 'u1', email: 'u1@x.com', name: 'Uno' }]),
@@ -84,5 +86,40 @@ describe('NotificationDispatchService.channelHealth / sendTest', () => {
     expect(r.email.sent).toBe(false);
     expect(r.whatsapp.sent).toBe(false);
     expect(r.whatsapp.error).toContain('no conectado');
+  });
+});
+
+describe('NotificationDispatchService.sendGroupCard', () => {
+  it('con imagen → manda sendImage con el texto como caption', async () => {
+    const { svc, wa } = make();
+    const r = await svc.sendGroupCard('Sistemas PMY', 'hola', '/x/a.png');
+    expect(r.sent).toBe(true);
+    expect(wa.sendImage).toHaveBeenCalledWith('123@g.us', '/x/a.png', 'hola');
+    expect(wa.sendText).not.toHaveBeenCalled();
+  });
+
+  it('si la imagen falla, cae a solo texto', async () => {
+    const { svc, wa } = make();
+    wa.sendImage = jest.fn(() => Promise.reject(new Error('media fail')));
+    const r = await svc.sendGroupCard('Sistemas PMY', 'hola', '/x/a.png');
+    expect(r.sent).toBe(true);
+    expect(wa.sendText).toHaveBeenCalledTimes(1);
+  });
+
+  it('sin imagen → manda texto', async () => {
+    const { svc, wa } = make();
+    const r = await svc.sendGroupCard('Sistemas PMY', 'hola');
+    expect(r.sent).toBe(true);
+    expect(wa.sendText).toHaveBeenCalledTimes(1);
+    expect(wa.sendImage).not.toHaveBeenCalled();
+  });
+
+  it('grupo no encontrado → sent:false, no lanza', async () => {
+    const { svc, wa } = make();
+    wa.findGroupJid = jest.fn(() => Promise.resolve(null));
+    const r = await svc.sendGroupCard('Inexistente', 'hola', '/x/a.png');
+    expect(r.sent).toBe(false);
+    expect(wa.sendImage).not.toHaveBeenCalled();
+    expect(wa.sendText).not.toHaveBeenCalled();
   });
 });

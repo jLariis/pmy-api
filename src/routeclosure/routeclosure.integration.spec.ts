@@ -1,4 +1,97 @@
 import { RouteclosureService } from './routeclosure.service';
+import { Collection, Income } from 'src/entities';
+import { IncomeSourceType } from 'src/common/enums/income-source-type.enum';
+
+describe('RouteclosureService.create — ingreso por recolección', () => {
+  function makeService(packageDispatch: any) {
+    const savedIncomes: any[] = [];
+    const savedCollections: any[] = [];
+
+    const manager: any = {
+      findOne: jest.fn(async (entity: any) => {
+        if (entity === Income) return null; // no hay ingreso previo
+        return packageDispatch; // PackageDispatch
+      }),
+      create: jest.fn((_entity: any, data: any) => data),
+      save: jest.fn(async (entity: any, data: any) => {
+        if (entity === Collection) {
+          const arr = Array.isArray(data) ? data : [data];
+          const withIds = arr.map((c: any, i: number) => ({ ...c, id: `COL-${i + 1}` }));
+          savedCollections.push(...withIds);
+          return withIds;
+        }
+        if (entity === Income) {
+          const arr = Array.isArray(data) ? data : [data];
+          savedIncomes.push(...arr);
+          return arr;
+        }
+        return data;
+      }),
+      update: jest.fn(),
+    };
+
+    const queryRunner: any = {
+      connect: jest.fn(),
+      startTransaction: jest.fn(),
+      commitTransaction: jest.fn(),
+      rollbackTransaction: jest.fn(),
+      release: jest.fn(),
+      manager,
+    };
+
+    const svc = Object.create(RouteclosureService.prototype) as any;
+    svc.logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
+    svc.dataSource = { createQueryRunner: () => queryRunner };
+
+    return { svc, savedIncomes, savedCollections, manager };
+  }
+
+  const baseDto = {
+    packageDispatch: { id: 'PD-1' },
+    collections: ['REC-1', 'REC-2'],
+    podPackages: [],
+    returnedPackages: [],
+    noVanPackages: [],
+  };
+
+  it('crea un Income sourceType=collection por cada recolección del cierre', async () => {
+    const packageDispatch = {
+      id: 'PD-1',
+      subsidiary: { id: 'S1', name: 'Test', fedexCostPackage: 45 },
+      createdAt: new Date('2026-08-10T15:00:00Z'),
+    };
+    const { svc, savedIncomes } = makeService(packageDispatch);
+
+    await svc.create(baseDto as any, 'USER-1');
+
+    expect(savedIncomes).toHaveLength(2);
+    expect(savedIncomes.every((i) => i.sourceType === IncomeSourceType.COLLECTION)).toBe(true);
+    expect(savedIncomes.every((i) => Number(i.cost) === 45)).toBe(true);
+    expect(savedIncomes.map((i) => i.trackingNumber).sort()).toEqual(['REC-1', 'REC-2']);
+    expect(savedIncomes.every((i) => i.createdById === 'USER-1')).toBe(true);
+  });
+
+  it('no duplica el ingreso si la recolección ya tenía Income de collection', async () => {
+    const packageDispatch = {
+      id: 'PD-1',
+      subsidiary: { id: 'S1', name: 'Test', fedexCostPackage: 45 },
+      createdAt: new Date('2026-08-10T15:00:00Z'),
+    };
+    const { svc, savedIncomes, manager } = makeService(packageDispatch);
+    // Simular que REC-1 ya tenía ingreso de recolección.
+    manager.findOne = jest.fn(async (entity: any, opts: any) => {
+      if (entity === Income) {
+        return opts?.where?.trackingNumber === 'REC-1' ? { id: 'EXISTING' } : null;
+      }
+      return packageDispatch;
+    });
+
+    await svc.create(baseDto as any, 'USER-1');
+
+    expect(savedIncomes).toHaveLength(1);
+    expect(savedIncomes[0].trackingNumber).toBe('REC-2');
+  });
+});
 
 describe('RouteclosureService.renderRouteClosureDocuments', () => {
   const baseInput = { subsidiaryName: 'Obregon', drivers: [], routes: [], trackingNumber: 'S', allPackages: [], returnedPackages: [], podPackages: [] };

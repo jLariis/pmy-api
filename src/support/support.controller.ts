@@ -94,6 +94,10 @@ export class SupportController {
     return this.service.update(id, dto, req.user);
   }
 
+  /** Notifica el estatus actual del ticket a su creador (campana + WhatsApp). */
+  @Post('tickets/:id/notify-status')
+  notifyStatus(@Param('id') id: string) { return this.service.notifyStatusToRequester(id); }
+
   // ---- Aprobación (D) ----
   /** Aprueba el ticket. El servicio valida que el actor sea superadmin o autorizador de la zona. */
   @Post('tickets/:id/approve')

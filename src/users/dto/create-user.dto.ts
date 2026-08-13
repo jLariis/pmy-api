@@ -35,6 +35,11 @@ export class CreateUserDto {
     @ApiProperty({type: String, required: false})
     avatar?: string;
 
+    @ApiProperty({type: String, required: false})
+    @IsOptional()
+    @IsString()
+    phone?: string;
+
     @ApiProperty({type: () => Subsidiary, required: true})
     subsidiary?: Subsidiary;
     

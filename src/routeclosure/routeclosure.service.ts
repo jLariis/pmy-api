@@ -119,7 +119,14 @@ export class RouteclosureService {
         this.logger.log(`🟢 [RouteClosure] ${noVanEntities.length} registros insertados en shipment_not_in_files.`);
       }
 
-      // 4. Crear registros independientes en la tabla 'Collection'
+      // El ingreso de la ruta (DHL y recolecciones) pertenece al DÍA DE LA RUTA
+      // (salida a ruta = dispatch.createdAt), NO al día en que se cierra. Si una ruta
+      // del 07 se cierra el 08, el ingreso es del 07. Anclamos al día de Hermosillo de
+      // la ruta (07:00Z) para que caiga en el bucket correcto del dashboard/tabla de
+      // ingresos. Fallback: fecha de cierre si faltara.
+      const routeIncomeDate = hermosilloDayStartFromInstant(packageDispatch.createdAt ?? new Date());
+
+      // 4. Crear registros independientes en la tabla 'Collection' + su INGRESO.
       if (trackingNumbers.length > 0) {
         const now = new Date();
         const utcDate = fromZonedTime(now, 'America/Hermosillo');
@@ -134,20 +141,65 @@ export class RouteclosureService {
           });
         });
 
-        await queryRunner.manager.save(Collection, collectionsToInsert);
-        this.logger.log(`🟢 [RouteClosure] Se insertaron ${collectionsToInsert.length} registros en la tabla Collection.`);
+        const savedCollections = await queryRunner.manager.save(Collection, collectionsToInsert);
+        this.logger.log(`🟢 [RouteClosure] Se insertaron ${savedCollections.length} registros en la tabla Collection.`);
+
+        // 4.1 Ingreso por recolección — MISMA REGLA que el flujo directo
+        // (collections.service): sourceType=collection, costo = fedexCostPackage de la
+        // sucursal. Antes las recolecciones del cierre NO generaban ingreso (solo se
+        // insertaba la Collection), por eso no aparecían en finanzas › ingresos. Se ancla
+        // al DÍA DE LA RUTA (routeIncomeDate) igual que el ingreso DHL. Guard por
+        // (trackingNumber, sourceType=collection) para no duplicar si la guía ya tenía
+        // ingreso de recolección.
+        const collectionCost = packageDispatch.subsidiary?.fedexCostPackage ?? 0;
+
+        // Alerta de configuración: si la sucursal tiene costo 0, los ingresos de
+        // recolección se registran en $0 (consistente con el FINANCE_ERROR de DHL/FedEx).
+        if (collectionCost <= 0) {
+          this.logger.error(
+            `❌ FINANCE_ERROR: La sucursal "${packageDispatch.subsidiary?.name ?? packageDispatch.subsidiary?.id}" tiene fedexCostPackage=0; ` +
+            `los ingresos de recolección del cierre se registraron en $0. Revisa la configuración de costo FedEx.`,
+          );
+        }
+
+        const collectionIncomes = [];
+        for (const collection of savedCollections) {
+          const existingIncome = await queryRunner.manager.findOne(Income, {
+            where: {
+              trackingNumber: collection.trackingNumber,
+              sourceType: IncomeSourceType.COLLECTION,
+            },
+          });
+
+          if (existingIncome) {
+            this.logger.warn(`⚠️ [RouteClosure] Ya existe ingreso de recolección para ${collection.trackingNumber}. Omitiendo cobro.`);
+            continue;
+          }
+
+          collectionIncomes.push(queryRunner.manager.create(Income, {
+            trackingNumber: collection.trackingNumber,
+            subsidiary: packageDispatch.subsidiary,
+            shipmentType: ShipmentType.FEDEX,
+            cost: collectionCost,
+            incomeType: IncomeStatus.ENTREGADO,
+            isGrouped: false,
+            sourceType: IncomeSourceType.COLLECTION,
+            collection: { id: collection.id },
+            date: routeIncomeDate, // día de la RUTA, no del cierre
+            createdById: userId ?? null,
+          }));
+        }
+
+        if (collectionIncomes.length > 0) {
+          await queryRunner.manager.save(Income, collectionIncomes);
+          this.logger.log(`🟢 [RouteClosure] Se crearon ${collectionIncomes.length} ingresos de recolección.`);
+        }
       }
 
       // ==========================================
       // 5. PROCESAR PAQUETES DHL (Cobros y Estatus)
       // ==========================================
       this.logger.log('🟡 [RouteClosure] Evaluando paquetes DHL para actualización e ingresos...');
-
-      // El ingreso DHL pertenece al DÍA DE LA RUTA (salida a ruta = dispatch.createdAt),
-      // NO al día en que se cierra. Si una ruta del 07 se cierra el 08, el ingreso es del
-      // 07. Anclamos al día de Hermosillo de la ruta (07:00Z) para que caiga en el bucket
-      // correcto del dashboard/tabla de ingresos. Fallback: fecha de cierre si faltara.
-      const routeIncomeDate = hermosilloDayStartFromInstant(packageDispatch.createdAt ?? new Date());
 
       // `code` = código propio de DHL (OK/NH/BA/RD/CM). `isCharge` = la pieza es un
       // ChargeShipment (carga), NO significa "cobrar". `isDelivered` = de qué lista vino

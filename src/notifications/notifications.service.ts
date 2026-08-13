@@ -302,6 +302,17 @@ export class NotificationsService {
     return this.dispatch.channelHealth();
   }
 
+  /** Envía un WhatsApp puntual con resultado (para acciones con feedback en UI). */
+  sendWhatsapp(phone: string, text: string) {
+    return this.dispatch.sendWhatsapp(phone, text);
+  }
+
+  /** Envía una tarjeta al grupo de WhatsApp de soporte (`SUPPORT_WA_GROUP`, def. "Sistemas PMY"). */
+  sendSupportGroupCard(text: string, imagePath?: string | null) {
+    const group = process.env.SUPPORT_WA_GROUP || 'Sistemas PMY';
+    return this.dispatch.sendGroupCard(group, text, imagePath ?? undefined);
+  }
+
   /**
    * Envía una notificación de prueba al usuario por los 3 canales y reporta el
    * resultado por canal. Bell se persiste como notificación real; email/whatsapp

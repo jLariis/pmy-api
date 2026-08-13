@@ -264,6 +264,41 @@ export class WhatsappGatewayService implements OnModuleInit, OnModuleDestroy {
       .sort((a, b) => a.subject.localeCompare(b.subject));
   }
 
+  private groupJidCache = new Map<string, { jid: string; at: number }>();
+
+  /** Resuelve el JID de un grupo por su nombre (subject), cacheado 5 min. `null` si no existe/desconectado. */
+  async findGroupJid(name: string): Promise<string | null> {
+    if (this.status !== 'connected' || !this.sock || !name) return null;
+    const key = name.trim().toLowerCase();
+    const cached = this.groupJidCache.get(key);
+    if (cached && Date.now() - cached.at < 5 * 60_000) return cached.jid;
+    try {
+      const groups = await this.sock.groupFetchAllParticipating();
+      for (const g of Object.values(groups) as any[]) {
+        if ((g.subject ?? '').trim().toLowerCase() === key) {
+          this.groupJidCache.set(key, { jid: g.id, at: Date.now() });
+          return g.id;
+        }
+      }
+    } catch (e: any) {
+      this.logger.warn(`findGroupJid falló: ${e?.message}`);
+    }
+    return null;
+  }
+
+  /** Envía una imagen (leída de disco) con caption a un contacto/grupo. */
+  async sendImage(to: string, filePath: string, caption?: string) {
+    if (this.status !== 'connected' || !this.sock) {
+      throw new ServiceUnavailableException('WhatsApp no está conectado.');
+    }
+    const jid = to.endsWith('@g.us') || to.endsWith('@s.whatsapp.net')
+      ? to
+      : `${String(to).replace(/\D/g, '')}@s.whatsapp.net`;
+    const buffer = await fs.promises.readFile(filePath);
+    await this.sock.sendMessage(jid, { image: buffer, caption });
+    return { ok: true, to: jid };
+  }
+
   private async clearSession() {
     try { await fs.promises.rm(this.authDir, { recursive: true, force: true }); } catch { /* noop */ }
   }
