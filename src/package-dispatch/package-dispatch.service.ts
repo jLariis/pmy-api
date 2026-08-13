@@ -25,6 +25,7 @@ import { buildDriverReportData } from 'src/documents/data/driver-report.mapper';
 import { EmailLogService, EmailFile } from 'src/email-log/email-log.service';
 import { EmailStatus } from 'src/common/enums/email-status.enum';
 import { EmailLog } from 'src/entities/email-log.entity';
+import { hermosilloDayStartFromInstant } from 'src/common/utils';
 
 /** Módulo con el que se etiquetan bitácora y adjuntos de correo de salidas a ruta. */
 const EMAIL_MODULE = 'package_dispatch';
@@ -165,6 +166,13 @@ export class PackageDispatchService {
         vehicle: dto.vehicle,
         subsidiary: dto.subsidiary,
         kms: dto.kms,
+        is315: dto.is315 ?? false,
+        // Día operativo de la ruta. Si el front manda `routeDate` ('YYYY-MM-DD') se ancla a
+        // las 07:00Z (00:00 Hermosillo, UTC-7) para que el día no se corra por zona horaria al
+        // truncar a DATE. Sin fecha ⇒ inicio de día Hermosillo de hoy.
+        routeDate: dto.routeDate
+          ? new Date(`${dto.routeDate}T07:00:00.000Z`)
+          : hermosilloDayStartFromInstant(new Date()),
         createdBy: userId ? { id: userId } : null,
       });
 
