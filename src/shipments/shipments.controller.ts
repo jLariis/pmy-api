@@ -462,9 +462,10 @@ export class ShipmentsController {
     },
   })
   uploadPaymentFile(
-    @UploadedFile() file: Express.Multer.File
+    @UploadedFile() file: Express.Multer.File,
+    @Body('consNumber') consNumber?: string,
   ) {
-    return this.shipmentsService.processFileCharges(file);
+    return this.shipmentsService.processFileCharges(file, consNumber);
   }
 
   @Post('upload-hv')

@@ -26,6 +26,7 @@ import * as stringSimilarity from 'string-similarity';
 import * as path from 'path';
 import { Charge } from 'src/entities/charge.entity';
 import { ChargeShipment } from 'src/entities/charge-shipment.entity';
+import { resolveCobroTarget } from './cobro-target.util';
 import { ShipmentAndChargeDto } from './dto/shipment-and-charge.dto';
 import { ChargeWithStatusDto } from './dto/charge-with-status.dto';
 import { IncomeSourceType } from 'src/common/enums/income-source-type.enum';
@@ -941,6 +942,7 @@ export class ShipmentsService {
               charge: savedCharge,
               subsidiary: chargeSubsidiary,
               createdById: userId ?? null,
+              consNumber: consNumber || null, // para que el paso "Cobros" haga match por consNumber
             });
 
             savedCS = await queryRunner.manager.save(newCS);
@@ -1091,6 +1093,7 @@ export class ShipmentsService {
             subsidiary: chargeSubsidiary, // antes no se ligaba la sucursal
             charge: savedCharge, // ✅ Asegurar que savedCharge tenga id
             createdById: userId ?? null,
+            consNumber: consNumber || null, // para que el paso "Cobros" haga match por consNumber
           });
 
           console.log("💾 Attempting to save...");
@@ -1170,7 +1173,16 @@ export class ShipmentsService {
   }
 
   /*** Procesar archivos que incluyen los cobros o pagos */
-  async processFileCharges(file: Express.Multer.File){
+  /**
+   * Aplica los cobros (payments) del paso "Cobros" del wizard.
+   *
+   * El archivo trae solo el tracking, así que por cada fila con cobro decidimos a qué
+   * entidad pegarle el payment con {@link resolveCobroTarget}: shipment primero, carga
+   * (charge_shipment) como fallback, acotando por `consNumber` (capturado en el wizard) y
+   * cayendo a match por tracking-solo cuando la carga no guardó consNumber. Nunca se aplica
+   * a ambas (evita doble cobro). Devuelve conteos para el toast del wizard.
+   */
+  async processFileCharges(file: Express.Multer.File, consNumber?: string){
     if (!file) throw new BadRequestException('No file uploaded');
 
     const { buffer, originalname } = file;
@@ -1186,30 +1198,76 @@ export class ShipmentsService {
 
     if(shipmentsWithCharge.length === 0) return 'No se encontraron envios con cobro.'
 
-    for(const { trackingNumber, recipientAddress, payment }of shipmentsWithCharge) {
-      let shipmentToUpdate = await this.shipmentRepository.findOne({
-        where: {
-          trackingNumber,
-          recipientAddress
-        },
-        order: {
-          createdAt: 'DESC'
-        }
-      })
+    const cons = (consNumber ?? '').trim() || undefined;
+    let applied = 0;            // aplicados a shipment
+    let appliedToCharges = 0;   // aplicados a charge_shipment
+    const unmatchedTrackings: string[] = [];
 
-      /*let shipmentToUpdate = await this.shipmentRepository.findOneBy({
-        trackingNumber,
-        recipientAddress
-      })*/
-
-      if(shipmentToUpdate) {
-        shipmentToUpdate.payment = payment;
-        await this.shipmentRepository.save(shipmentToUpdate);
+    for(const { trackingNumber, payment } of shipmentsWithCharge) {
+      // Fila sin guía o cobro sin monto válido (parse falló): no hay nada que aplicar.
+      if (!trackingNumber || !Number.isFinite(payment?.amount)) {
+        if (trackingNumber) unmatchedTrackings.push(trackingNumber);
+        continue;
       }
 
+      // 1-2. Match acotado por consNumber (el más específico). Short-circuit: solo se
+      //      busca la carga si el shipment no apareció.
+      const shipmentByCons = cons
+        ? await this.shipmentRepository.findOne({ where: { trackingNumber, consNumber: cons }, relations: ['payment'], order: { createdAt: 'DESC' } })
+        : null;
+      const chargeByCons = cons && !shipmentByCons
+        ? await this.chargeShipmentRepository.findOne({ where: { trackingNumber, consNumber: cons }, relations: ['payment'], order: { createdAt: 'DESC' } })
+        : null;
+
+      let decision = resolveCobroTarget({ shipmentByCons, chargeByCons });
+
+      // 3-4. Fallback por tracking-solo (guías/cargas sin consNumber).
+      let shipmentByTracking: Shipment | null = null;
+      let chargeByTracking: ChargeShipment | null = null;
+      if (!decision) {
+        shipmentByTracking = await this.shipmentRepository.findOne({ where: { trackingNumber }, relations: ['payment'], order: { createdAt: 'DESC' } });
+        chargeByTracking = !shipmentByTracking
+          ? await this.chargeShipmentRepository.findOne({ where: { trackingNumber }, relations: ['payment'], order: { createdAt: 'DESC' } })
+          : null;
+        decision = resolveCobroTarget({ shipmentByCons, chargeByCons, shipmentByTracking, chargeByTracking });
+      }
+
+      if (!decision) { unmatchedTrackings.push(trackingNumber); continue; }
+
+      if (decision.kind === 'shipment') {
+        const target = decision.source === 'cons' ? shipmentByCons! : shipmentByTracking!;
+        target.payment = this.upsertCobroPayment(target.payment, payment);
+        await this.shipmentRepository.save(target);
+        applied++;
+      } else {
+        const target = decision.source === 'cons' ? chargeByCons! : chargeByTracking!;
+        target.payment = this.upsertCobroPayment(target.payment, payment);
+        await this.chargeShipmentRepository.save(target);
+        appliedToCharges++;
+      }
     }
 
-    return shipmentsWithCharge;
+    return {
+      total: shipmentsWithCharge.length,
+      applied,
+      appliedToCharges,
+      unmatched: unmatchedTrackings.length,
+      unmatchedTrackings,
+    };
+  }
+
+  /**
+   * Upsert del payment sobre el destino: si ya tenía uno, actualiza sus campos conservando
+   * el `id` (no crea filas huérfanas en `payment`); si no, adopta el nuevo (cascade lo guarda).
+   */
+  private upsertCobroPayment(existing: Payment | null | undefined, incoming: Payment): Payment {
+    if (existing) {
+      existing.amount = incoming.amount;
+      existing.type = incoming.type;
+      existing.status = incoming.status ?? existing.status;
+      return existing;
+    }
+    return incoming;
   }
 
   async processHihValueShipments(file: Express.Multer.File){
