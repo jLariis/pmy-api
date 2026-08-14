@@ -162,6 +162,50 @@ no setean `consolidatedId`, así que las cargas no aparecen en el detalle del co
 
 ## Fuera de alcance (addendum)
 
-- Dedup de re-subidas F2 (ya duplicaba Charge/Income/cargas; el conteo del consolidado hereda
-  ese comportamiento preexistente).
 - No se re-liga el `consolidatedId` de las cargas migradas (escenario A).
+
+---
+
+# Addendum 2 — Idempotencia F2 (sin duplicados) (2026-08-14)
+
+## Problema
+
+Ni `addChargeShipments` ni `processFileF2` deduplicaban: re-subir el mismo F2 duplicaba
+`charge_shipment`, la cabecera `Charge`, el conteo del consolidado y —lo más grave— el
+**Income** (ingreso plano por carga → doble facturación).
+
+## Decisiones (acordadas)
+
+1. **Un F2 "load" = (consNumber + sucursal).** Re-subir el mismo consNumber **reutiliza** la
+   `Charge` y **NO** genera otro `Income` (una carga = un cobro plano).
+2. **Llave de duplicado de guía:** `trackingNumber + consNumber + sucursal` (ya existe como
+   `charge_shipment` en ese consolidado ⇒ se omite). Espejo del flujo normal.
+
+## Implementación
+
+- `findOrCreateCharge(manager, {consNumber, subsidiaryId, chargeDate, isHalfTon})` →
+  `{ charge, created }`. Busca por consNumber normalizado + sucursal; reutiliza si existe.
+- `findExistingChargeTrackings(manager, trackings, consNumber, subsidiaryId)` → `Set` de
+  trackings ya existentes como carga en ese consolidado.
+- `bumpChargeCount(manager, charge, count)` — suma a `Charge.numberOfPackages`.
+- **`addChargeShipments`**: dedup contra `Set` + duplicados dentro del archivo; si `newGuias=0`
+  retorna `{duplicated, message}` sin crear nada; si hay nuevas, find-or-create Charge, inserta
+  solo nuevas, bump Charge/Consolidado, e `Income` **solo si la Charge es nueva**.
+- **`processFileF2`**: find-or-create Charge (antes creaba siempre); `dupSet` + `seenF2`
+  (duplicados en archivo) omiten guías ya-carga; `Income` **solo si `chargeCreated`**; bump
+  Charge por (migradas+nuevas) y consolidado por nuevas. Summary agrega `duplicated`.
+- **Frontend**: `summarizeResult(3)` muestra duplicadas y el `message` de re-subida completa.
+
+## Semántica resultante
+
+| Escenario | charge_shipment | Charge | Income | Consolidado |
+|---|---|---|---|---|
+| Primera subida | inserta N | crea | 1 (plano) | crea/liga, +N |
+| Re-subida idéntica | 0 (todas omitidas) | reutiliza | 0 | +0 |
+| Re-subida parcial (M nuevas) | inserta M | reutiliza | 0 | +M |
+
+## Fuera de alcance (addendum 2)
+
+- Facturación por paquete (el modelo es plano por load; no se cambia).
+- Unit/integration test del dedup (lógica embebida en métodos con BD; se verifica manualmente
+  re-subiendo el mismo F2).

@@ -857,18 +857,26 @@ export class ShipmentsService {
 
       if (shipmentsToProcess.length === 0) return { message: 'Archivo vacío.' };
 
-      // 2. Obtener Subsidiaria y Crear Cabecera (Charge)
+      // 2. Obtener Subsidiaria y Cabecera (Charge)
       const chargeSubsidiary = await queryRunner.manager.findOne(Subsidiary, { where: { id: subsidiaryId } });
       if (!chargeSubsidiary) throw new BadRequestException('Subsidiaria no encontrada');
 
-      const newCharge = this.chargeRepository.create({
-        subsidiary: chargeSubsidiary,
-        chargeDate: consDate || new Date(),
-        numberOfPackages: shipmentsToProcess.length,
-        consNumber,
-        isHalfTon,
-      });
-      const savedCharge = await queryRunner.manager.save(newCharge);
+      // Charge (load) find-or-create por consNumber+sucursal: reutiliza en re-subidas para
+      // NO duplicar cabecera ni Income (una carga = un cobro plano). `chargeCreated=false`
+      // ⇒ el load ya se facturó antes.
+      const { charge: savedCharge, created: chargeCreated } = await this.findOrCreateCharge(
+        queryRunner.manager,
+        { consNumber, subsidiaryId, chargeDate: consDate || new Date(), isHalfTon },
+      );
+
+      // Dedup: trackings que YA son carga en este consolidado (consNumber+sucursal) se omiten.
+      const dupSet = await this.findExistingChargeTrackings(
+        queryRunner.manager,
+        shipmentsToProcess.map((d: any) => d.trackingNumber),
+        consNumber, subsidiaryId,
+      );
+      let duplicatedF2 = 0;
+      const seenF2 = new Set<string>(); // duplicados DENTRO del mismo archivo
 
       // Consolidado para las guías NUEVAS (escenario B). Las migradas (escenario A) ya
       // heredan el consolidatedId del shipment original vía `...original`, así que NO se tocan.
@@ -882,6 +890,11 @@ export class ShipmentsService {
       // 3. Procesamiento Atómico Paquete por Paquete
       for (const data of shipmentsToProcess) {
         try {
+          // Ya es carga en este consolidado (re-subida) o repetida en el archivo → omitir.
+          const tnF2 = String(data.trackingNumber || '').trim();
+          if (tnF2 && (dupSet.has(tnF2) || seenF2.has(tnF2))) { duplicatedF2++; continue; }
+          if (tnF2) seenF2.add(tnF2);
+
           // Buscamos si existe en la tabla original de Shipments
           const original = await queryRunner.manager.findOne(Shipment, {
             where: { trackingNumber: data.trackingNumber },
@@ -979,8 +992,9 @@ export class ShipmentsService {
         }
       }
 
-      // 4. Generar Ingreso Global (Income)
-      if (migrated.length > 0 || createdFromScratch.length > 0) {
+      // 4. Generar Ingreso Global (Income) SOLO si la Charge es nueva (primer load de este
+      //    consNumber). En re-subidas la Charge se reutiliza → no se duplica el ingreso.
+      if (chargeCreated && (migrated.length > 0 || createdFromScratch.length > 0)) {
         const newIncome = this.incomeRepository.create({
           subsidiary: chargeSubsidiary,
           shipmentType: ShipmentType.FEDEX,
@@ -995,8 +1009,10 @@ export class ShipmentsService {
         await queryRunner.manager.save(newIncome);
       }
 
-      // Suma solo las guías NUEVAS (escenario B) al consolidado; las migradas ya venían
-      // contadas en su consolidado original.
+      // Suma las cargas realmente agregadas (migradas + nuevas) al conteo de la Charge, y
+      // solo las NUEVAS (escenario B) al consolidado; las migradas ya venían contadas en su
+      // consolidado original.
+      await this.bumpChargeCount(queryRunner.manager, savedCharge, migrated.length + createdFromScratch.length);
       await this.bumpConsolidatedCount(queryRunner.manager, chargeConsolidated, createdFromScratch.length);
 
       // Si todo salió bien, confirmamos cambios
@@ -1008,6 +1024,7 @@ export class ShipmentsService {
           totalProcessed: shipmentsToProcess.length,
           migrated: migrated.length,
           insertedNew: createdFromScratch.length,
+          duplicated: duplicatedF2,
           failed: errors.length
         },
         details: { errors }
@@ -1056,22 +1073,9 @@ export class ShipmentsService {
       // Debug: mostrar primeros 3 shipments
       console.log("Sample shipments:", chargeShipmentsToSave.slice(0, 3));
 
-      console.log("🟢 Step 3: Creating charge");
-      const newCharge = this.chargeRepository.create({
-        subsidiary: { id: subsidiaryId },
-        chargeDate: consDate ? format(consDate, 'yyyy-MM-dd HH:mm:ss') : format(new Date(), 'yyyy-MM-dd HH:mm:ss'),
-        numberOfPackages: chargeShipmentsToSave.length,
-        consNumber,
-        isHalfTon,
-      });
-
-      console.log("💾 Saving charge...");
-      const savedCharge = await this.chargeRepository.save(newCharge);
-      console.log("✅ Charge saved with ID:", savedCharge.id);
-
-      console.log("🟢 Step 4: Finding subsidiary");
-      const chargeSubsidiary = await this.subsidiaryRepository.findOne({ 
-        where: { id: subsidiaryId } 
+      console.log("🟢 Step 3: Finding subsidiary");
+      const chargeSubsidiary = await this.subsidiaryRepository.findOne({
+        where: { id: subsidiaryId }
       });
 
       if (!chargeSubsidiary) {
@@ -1082,15 +1086,52 @@ export class ShipmentsService {
       console.log("✅ Subsidiary found:", chargeSubsidiary.name);
       console.log("💳 Subsidiary charge cost:", chargeSubsidiary.chargeCost);
 
+      // Dedup: omite guías que YA existen como carga en este consolidado (consNumber+sucursal)
+      // y duplicados dentro del mismo archivo. Evita cargas repetidas en re-subidas F2.
+      const dupSet = await this.findExistingChargeTrackings(
+        this.dataSource.manager,
+        chargeShipmentsToSave.map((s: any) => s.trackingNumber),
+        consNumber, subsidiaryId,
+      );
+      const seenInFile = new Set<string>();
+      const newGuias = chargeShipmentsToSave.filter((s: any) => {
+        const tn = String(s.trackingNumber || '').trim();
+        if (!tn || dupSet.has(tn) || seenInFile.has(tn)) return false;
+        seenInFile.add(tn);
+        return true;
+      });
+      const duplicatedCount = chargeShipmentsToSave.length - newGuias.length;
+
+      // Re-subida completa (nada nuevo): no crea Charge/Income/Consolidado.
+      if (newGuias.length === 0) {
+        console.log("⚠️ Todas las guías ya existen en este consolidado; nada que crear.");
+        return {
+          savedCharge: null,
+          savedChargeShipments: [],
+          savedIncome: null,
+          duplicated: duplicatedCount,
+          message: `Todas las guías (${duplicatedCount}) ya existían en este consolidado. No se creó nada.`,
+        };
+      }
+
+      // Find-or-create de la Charge (load por consNumber). Reutiliza si ya existe → NO se
+      // genera otro Income (una carga = un cobro plano, aunque re-subas el archivo).
+      console.log("🟢 Step 4: Find-or-create charge (load por consNumber)");
+      const { charge: savedCharge, created: chargeCreated } = await this.findOrCreateCharge(
+        this.dataSource.manager,
+        { consNumber, subsidiaryId, chargeDate: consDate ? format(consDate, 'yyyy-MM-dd HH:mm:ss') : format(new Date(), 'yyyy-MM-dd HH:mm:ss'), isHalfTon },
+      );
+      console.log("✅ Charge:", savedCharge.id, "| created:", chargeCreated);
+
       // Consolidado: agrupa estas cargas igual que un envío normal, para que aparezcan en
       // el detalle del consolidado (getShipmentsByConsolidatedId ya consulta charge_shipment).
       const chargeConsolidated = await this.findOrCreateChargeConsolidated(this.dataSource.manager, {
         consNumber, subsidiaryId, date: consDate, userId,
       });
 
-      console.log("🟢 Step 5: Processing", chargeShipmentsToSave.length, "shipments");
-      
-      const processPromises = chargeShipmentsToSave.map(async (shipment) => {
+      console.log("🟢 Step 5: Processing", newGuias.length, "new shipments (", duplicatedCount, "duplicadas omitidas )");
+
+      const processPromises = newGuias.map(async (shipment) => {
         try {
           console.log("🔄 Creating charge shipment for:", shipment.trackingNumber);
 
@@ -1149,12 +1190,15 @@ export class ShipmentsService {
       console.log("📊 Successful shipments:", savedChargeShipments.length);
       console.log("❌ Errors:", errors.length);
 
-      // Suma las cargas guardadas al conteo del consolidado.
+      // Suma las cargas guardadas al conteo de la Charge y del consolidado.
+      await this.bumpChargeCount(this.dataSource.manager, savedCharge, savedChargeShipments.length);
       await this.bumpConsolidatedCount(this.dataSource.manager, chargeConsolidated, savedChargeShipments.length);
 
       console.log("🟢 Step 6: Creating income");
 
-      if (savedChargeShipments.length > 0 && chargeSubsidiary) {
+      // Income SOLO si la Charge es nueva (primer load de este consNumber). Si se reutilizó,
+      // la carga ya fue facturada → no se duplica el ingreso.
+      if (chargeCreated && savedChargeShipments.length > 0 && chargeSubsidiary) {
         try {
           // Carga 1.5 ton: usa chargeCostHalfTon si aplica, si no el chargeCost normal.
           const chargeCostToUse = resolveChargeCost(chargeSubsidiary, isHalfTon);
@@ -1180,16 +1224,19 @@ export class ShipmentsService {
           console.log("🔴 Error saving income:", incomeError.message);
           errors.push({ incomeError: incomeError.message });
         }
+      } else if (!chargeCreated) {
+        console.log("♻️ Charge reutilizada (load ya facturado): no se crea Income.");
       } else {
         console.log("⚠️ Skipping income creation - no shipments saved or subsidiary not found");
       }
 
       console.log("🎉 addChargeShipments completed successfully");
-      
+
       return {
         savedCharge,
         savedChargeShipments: savedChargeShipments,
         savedIncome: savedIncome || null,
+        duplicated: duplicatedCount,
         errors: errors.length > 0 ? errors : undefined
       };
 
@@ -1333,6 +1380,67 @@ export class ShipmentsService {
     if (!cons || count <= 0) return;
     cons.numberOfPackages = (cons.numberOfPackages ?? 0) + count;
     await manager.save(Consolidated, cons);
+  }
+
+  /**
+   * Find-or-create de la `Charge` (cabecera de la carga F2) por consNumber normalizado +
+   * sucursal. Una carga F2 = un "load" identificado por (consNumber + sucursal); re-subir el
+   * mismo consNumber REUTILIZA la Charge (no duplica cabecera ni permite doble Income).
+   * Devuelve `created=false` cuando ya existía, para que el llamador NO genere otro Income.
+   */
+  private async findOrCreateCharge(
+    manager: EntityManager,
+    opts: { consNumber: string; subsidiaryId: string; chargeDate: Date | string; isHalfTon: boolean },
+  ): Promise<{ charge: Charge; created: boolean }> {
+    const norm = (opts.consNumber || '').trim().toUpperCase().replace(/\s+/g, ' ');
+    if (norm) {
+      const existing = await manager.createQueryBuilder(Charge, 'ch')
+        .leftJoin('ch.subsidiary', 'sub')
+        .where('TRIM(UPPER(ch.consNumber)) = :norm', { norm })
+        .andWhere('sub.id = :subsidiaryId', { subsidiaryId: opts.subsidiaryId })
+        .orderBy('ch.createdAt', 'DESC')
+        .getOne();
+      if (existing) return { charge: existing, created: false };
+    }
+    const created = manager.create(Charge, {
+      subsidiary: { id: opts.subsidiaryId } as Subsidiary,
+      chargeDate: opts.chargeDate as any,
+      numberOfPackages: 0,
+      consNumber: (opts.consNumber || '').trim(),
+      isHalfTon: opts.isHalfTon,
+    });
+    const saved = await manager.save(Charge, created);
+    return { charge: saved, created: true };
+  }
+
+  /** Suma `count` a `numberOfPackages` de la Charge y persiste. No-op si count <= 0. */
+  private async bumpChargeCount(manager: EntityManager, charge: Charge | null, count: number): Promise<void> {
+    if (!charge || count <= 0) return;
+    charge.numberOfPackages = (charge.numberOfPackages ?? 0) + count;
+    await manager.save(Charge, charge);
+  }
+
+  /**
+   * Trackings del lote que YA existen como `charge_shipment` en este consolidado
+   * (consNumber normalizado + sucursal). Sirve para omitir duplicados en re-subidas F2.
+   */
+  private async findExistingChargeTrackings(
+    manager: EntityManager,
+    trackings: string[],
+    consNumber: string,
+    subsidiaryId: string,
+  ): Promise<Set<string>> {
+    const norm = (consNumber || '').trim().toUpperCase().replace(/\s+/g, ' ');
+    const tns = Array.from(new Set(trackings.map(t => String(t || '').trim()).filter(Boolean)));
+    if (!norm || tns.length === 0) return new Set();
+    const rows = await manager.createQueryBuilder(ChargeShipment, 'cs')
+      .select('cs.trackingNumber', 'trackingNumber')
+      .leftJoin('cs.subsidiary', 'sub')
+      .where('cs.trackingNumber IN (:...tns)', { tns })
+      .andWhere('TRIM(UPPER(cs.consNumber)) = :norm', { norm })
+      .andWhere('sub.id = :subsidiaryId', { subsidiaryId })
+      .getRawMany();
+    return new Set(rows.map(r => String(r.trackingNumber).trim()));
   }
 
   /**
