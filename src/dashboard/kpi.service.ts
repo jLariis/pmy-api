@@ -138,26 +138,33 @@ export class KpiService {
       createdAt: (s.commitDateTime ? new Date(s.commitDateTime) : s.createdAt || now).toISOString(),
     }));
 
-    // --- 3. Sin DEX/67: PENDIENTE o EN_BODEGA cuyo historial NO tiene exceptionCode '67' ---
-    const code67Statuses = [ShipmentStatusType.PENDIENTE, ShipmentStatusType.EN_BODEGA];
-    const [s67, c67] = await Promise.all([
-      this.shipmentRepository.find({ where: { ...subFilter, status: In(code67Statuses) }, relations: ['statusHistory', 'subsidiary'], take: 500 }),
-      this.chargeShipmentRepository.find({ where: { ...subFilter, status: In(code67Statuses) }, relations: ['statusHistory', 'subsidiary'], take: 500 }),
+    // --- 3. Sin escaneo local: PENDIENTE o EN_BODEGA cuyo historial NO tiene el código que
+    // MONITOREA SU sucursal — 67 por default, o 44 si `monitorFedexCode44` (mismo criterio que
+    // MonitoringService / getMissingScanReportMulti). Así las sucursales de 44 ven lo del 44 y
+    // las de 67 lo del 67. ---
+    const scanStatuses = [ShipmentStatusType.PENDIENTE, ShipmentStatusType.EN_BODEGA];
+    const scanCodeOf = (s: any): '67' | '44' => (s.subsidiary?.monitorFedexCode44 === true ? '44' : '67');
+    const [sScan, cScan] = await Promise.all([
+      this.shipmentRepository.find({ where: { ...subFilter, status: In(scanStatuses) }, relations: ['statusHistory', 'subsidiary'], take: 500 }),
+      this.chargeShipmentRepository.find({ where: { ...subFilter, status: In(scanStatuses) }, relations: ['statusHistory', 'subsidiary'], take: 500 }),
     ]);
-    const without67 = [...s67, ...c67].filter((s: any) => !(s.statusHistory || []).some((h: any) => h.exceptionCode === '67'));
-    const withoutDEXPackages = without67.slice(0, LIST_LIMIT).map((s: any) => ({
+    const withoutScan = [...sScan, ...cScan].filter((s: any) => {
+      const code = scanCodeOf(s);
+      return !(s.statusHistory || []).some((h: any) => h.exceptionCode === code);
+    });
+    const withoutDEXPackages = withoutScan.slice(0, LIST_LIMIT).map((s: any) => ({
       id: s.id,
       trackingNumber: s.trackingNumber,
       recipientName: s.recipientName || '—',
       subsidiaryName: s.subsidiary?.name || '—',
       carrier: String(s.shipmentType || '').toUpperCase() === 'DHL' ? 'DHL' : 'FedEx',
-      missingDocument: 'Código 67',
+      missingDocument: `Código ${scanCodeOf(s)}`,
     }));
 
     return {
       stats: {
         pendingYesterday: penShipTotal + penChargeTotal,
-        withoutDEX: without67.length,
+        withoutDEX: withoutScan.length,
         expiringToday: expShipTotal + expChargeTotal,
       },
       pendingPackages,

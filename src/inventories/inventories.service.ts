@@ -1074,113 +1074,88 @@ export class InventoriesService {
   }
 
   /**
-   * Igual que `getInventoryVisibilityReport`, pero MULTI-sucursal (o por zona,
-   * resuelto por el caller a una lista de sucursales) y con el código de
-   * excepción CONFIGURABLE ('67' o '44' — algunas sucursales usan 44 en vez de
-   * 67, ver `Subsidiary.monitorFedexCode44`). No toca el método original: es una
-   * copia deliberada para no arriesgar el reporte "Visibilidad 67" en producción.
-   * Cada fila trae `subsidiaryId`/`subsidiaryName` porque los resultados pueden
-   * venir de varias sucursales a la vez.
+   * Reporte "Sin código de escaneo por sucursal/zona" (el front lo llama "Sin código 44"): lista
+   * los paquetes ACTIVOS (pendiente/en_bodega) de las sucursales indicadas —una lista, o toda una
+   * zona ya resuelta a sucursales por el caller— y, por GUÍA (agregando todas sus copias), calcula
+   * los días desde el último escaneo local del código que MONITOREA CADA sucursal: 44 si
+   * `monitorFedexCode44 = true`, si no 67 (mismo criterio que MonitoringService / getFedex44Visibility).
+   * Espejo de `ShipmentsService.validateCode67BySubsidiary`, pero multi-sucursal y con el código por
+   * sucursal.
+   *
+   * IMPORTANTE (fix): antes se anclaba a `Inventory` en un rango de fechas y salía VACÍO para todas
+   * las sucursales — las que realmente monitorean 44 (Hermosillo / Ruta Extendida) casi no crean
+   * inventarios, así que nunca había uno en rango. Ahora se listan los activos directamente y sin
+   * filtro de fecha: un paquete activo viejo sin su escaneo es justo el más importante de mostrar.
    */
-  async getInventoryVisibilityReportMulti(subsidiaryIds: string[], from: Date, to: Date, targetCode: '67' | '44' = '44') {
-    const start = new Date(from); start.setHours(0, 0, 0, 0);
-    const end = new Date(to); end.setHours(23, 59, 59, 999);
+  async getMissingScanReportMulti(subsidiaryIds: string[]) {
+    const emptySummary = { paquetes: 0, conCodigoHoy: 0, sinCodigo: 0, nunca: 0 };
+    const ids = [...new Set((subsidiaryIds || []).filter(Boolean))];
+    if (ids.length === 0) return { summary: emptySummary, details: [] };
 
-    if (!subsidiaryIds?.length) {
-      return { summary: { inventarios: 0, paquetes: 0, conCodigoHoy: 0, sinCodigo: 0, nunca: 0 }, details: [] };
-    }
-
-    const invs = await this.inventoryRepository.find({
-      where: { subsidiary: { id: In(subsidiaryIds) }, inventoryDate: Between(start, end) },
-      select: ['id', 'type', 'inventoryDate'],
-      relations: ['subsidiary'],
-      order: { inventoryDate: 'ASC' },
+    const subs = await this.subsidiaryRepository.find({
+      where: { id: In(ids) },
+      select: ['id', 'name', 'monitorFedexCode44'],
     });
-    if (invs.length === 0) {
-      return { summary: { inventarios: 0, paquetes: 0, conCodigoHoy: 0, sinCodigo: 0, nunca: 0 }, details: [] };
-    }
-    const invIds = invs.map((i) => i.id);
-    const invMeta = new Map(invs.map((i) => [i.id, { type: String(i.type ?? 'initial'), inventoryDate: i.inventoryDate, subsidiaryId: i.subsidiary?.id, subsidiaryName: i.subsidiary?.name }]));
+    const scanBySub = new Map<string, { name?: string; scanCode: '67' | '44' }>();
+    for (const s of subs) scanBySub.set(s.id, { name: s.name, scanCode: s.monitorFedexCode44 === true ? '44' : '67' });
 
-    const PKG_COLS: [string, string][] = [
-      ['trackingNumber', 'trackingNumber'], ['status', 'status'],
-      ['recipientName', 'recipientName'], ['recipientAddress', 'recipientAddress'],
-      ['recipientCity', 'recipientCity'], ['recipientZip', 'recipientZip'],
-      ['shipmentType', 'shipmentType'], ['fedexUniqueId', 'fedexUniqueId'], ['createdAt', 'createdAt'],
+    const targetStatuses = [ShipmentStatusType.PENDIENTE, ShipmentStatusType.EN_BODEGA];
+    const [shipments, chargeShipments] = await Promise.all([
+      this.shipmentRepository.find({
+        where: { subsidiary: { id: In(ids) }, status: In(targetStatuses) },
+        relations: ['statusHistory', 'subsidiary'],
+      }),
+      this.chargeShipmentRepository.find({
+        where: { subsidiary: { id: In(ids) }, status: In(targetStatuses) },
+        relations: ['statusHistory', 'subsidiary'],
+      }),
+    ]);
+
+    const tagged = [
+      ...shipments.map((s) => ({ s, isCharge: false })),
+      ...chargeShipments.map((s) => ({ s, isCharge: true })),
     ];
-    const buildPkgQuery = (repo: Repository<any>, alias: string, pivot: string, fk: string) => {
-      const qb = repo.createQueryBuilder(alias)
-        .innerJoin(pivot, 'j', `j.${fk} = ${alias}.id`)
-        .where('j.inventoryId IN (:...invIds)', { invIds })
-        .andWhere(`LOWER(${alias}.status) = :enBodega`, { enBodega: ShipmentStatusType.EN_BODEGA })
-        .select(`${alias}.id`, 'id')
-        .addSelect('j.inventoryId', 'inventoryId');
-      for (const [col, as] of PKG_COLS) qb.addSelect(`${alias}.${col}`, as);
-      return qb.getRawMany();
-    };
-    const [shipRows, chargeRows] = await Promise.all([
-      buildPkgQuery(this.shipmentRepository, 's', 'inventory_shipment', 'shipmentId'),
-      buildPkgQuery(this.chargeShipmentRepository, 'cs', 'inventory_charge_shipments', 'chargeShipmentId'),
-    ]);
-
-    const chunk = <T,>(arr: T[], n: number) => { const o: T[][] = []; for (let i = 0; i < arr.length; i += n) o.push(arr.slice(i, i + n)); return o; };
-    const maxCodeBy = async (ids: string[], fkCol: string): Promise<Map<string, Date>> => {
-      const m = new Map<string, Date>();
-      for (const part of chunk([...new Set(ids)], 1000)) {
-        if (part.length === 0) continue;
-        const ph = part.map(() => '?').join(',');
-        const rows: any[] = await this.dataSource.query(
-          `SELECT ${fkCol} AS id, MAX(timestamp) AS m FROM shipment_status WHERE ${fkCol} IN (${ph}) AND exceptionCode = ? GROUP BY ${fkCol}`,
-          [...part, targetCode],
-        );
-        for (const r of rows) if (r.id) m.set(String(r.id), new Date(r.m));
-      }
-      return m;
-    };
-    const [shipCode, chargeCode] = await Promise.all([
-      maxCodeBy(shipRows.map((r) => r.id), 'shipmentId'),
-      maxCodeBy(chargeRows.map((r) => r.id), 'chargeShipmentId'),
-    ]);
 
     const maxDate = (a: Date | null, b: Date | null) => (!a ? b : !b ? a : a > b ? a : b);
     type Agg = {
-      rep: any; isCharge: boolean; maxCode: Date | null; minCreatedAt: Date;
-      inventories: { inventoryId: string; type: string; inventoryDate: Date }[];
-      subsidiaryId?: string; subsidiaryName?: string;
+      rep: any; isCharge: boolean; maxCode: Date | null; codes: Set<string>;
+      historyCount: number; minCreatedAt: Date; subsidiaryId?: string; scanCode: '67' | '44';
     };
     const byGuide = new Map<string, Agg>();
 
-    const ingest = (row: any, isCharge: boolean, maxCodeMap: Map<string, Date>) => {
-      if (!row?.trackingNumber) return;
-      const inv = invMeta.get(row.inventoryId);
-      if (!inv) return;
-      const maxCode = maxCodeMap.get(String(row.id)) ?? null;
-      const createdAt = new Date(row.createdAt);
-      const invRef = { inventoryId: row.inventoryId, type: inv.type, inventoryDate: inv.inventoryDate };
-      // Una guía pertenece a UNA sucursal (la del inventario en que se le encontró);
-      // si aparece en más de un inventario deberían coincidir.
-      const existing = byGuide.get(row.trackingNumber);
+    for (const { s, isCharge } of tagged) {
+      const subId = s.subsidiary?.id;
+      const scanCode: '67' | '44' = (subId && scanBySub.get(subId)?.scanCode) || '67';
+
+      const history = s.statusHistory || [];
+      let maxCode: Date | null = null;
+      const codes = new Set<string>();
+      for (const h of history) {
+        if (h.exceptionCode) codes.add(h.exceptionCode);
+        const t = h.timestamp ? new Date(h.timestamp) : null;
+        if (t && h.exceptionCode === scanCode) maxCode = maxDate(maxCode, t);
+      }
+
+      const createdAt = new Date(s.createdAt);
+      const existing = byGuide.get(s.trackingNumber);
       if (!existing) {
-        byGuide.set(row.trackingNumber, {
-          rep: row, isCharge, maxCode, minCreatedAt: createdAt, inventories: [invRef],
-          subsidiaryId: inv.subsidiaryId, subsidiaryName: inv.subsidiaryName,
-        });
+        byGuide.set(s.trackingNumber, { rep: s, isCharge, maxCode, codes, historyCount: history.length, minCreatedAt: createdAt, subsidiaryId: subId, scanCode });
       } else {
-        if (createdAt > new Date(existing.rep.createdAt)) existing.rep = row;
+        const repNewer = createdAt > new Date(existing.rep.createdAt);
+        existing.rep = repNewer ? s : existing.rep;
         existing.isCharge = existing.isCharge || isCharge;
         existing.maxCode = maxDate(existing.maxCode, maxCode);
+        existing.historyCount += history.length;
         if (createdAt < existing.minCreatedAt) existing.minCreatedAt = createdAt;
-        if (!existing.inventories.some((i) => i.inventoryId === row.inventoryId)) existing.inventories.push(invRef);
+        for (const c of codes) existing.codes.add(c);
       }
-    };
-    shipRows.forEach((r) => ingest(r, false, shipCode));
-    chargeRows.forEach((r) => ingest(r, true, chargeCode));
+    }
 
     const now = new Date();
-    const details = Array.from(byGuide.values()).map(({ rep, isCharge, maxCode, minCreatedAt, inventories, subsidiaryId, subsidiaryName }) => {
+    const details = Array.from(byGuide.values()).map(({ rep, isCharge, maxCode, codes, historyCount, minCreatedAt, subsidiaryId, scanCode }) => {
       const daysSinceLastCode = maxCode ? differenceInCalendarDays(now, maxCode) : null;
       const category = maxCode == null ? 'nunca' : daysSinceLastCode === 0 ? 'hoy' : 'sinCodigo';
-      const invSorted = [...inventories].sort((a, b) => new Date(a.inventoryDate).getTime() - new Date(b.inventoryDate).getTime());
+      const sub = subsidiaryId ? scanBySub.get(subsidiaryId) : undefined;
       return {
         trackingNumber: rep.trackingNumber,
         status: rep.status,
@@ -1190,17 +1165,18 @@ export class InventoriesService {
         recipientZip: rep.recipientZip,
         shipmentType: rep.shipmentType,
         fedexUniqueId: rep.fedexUniqueId,
+        commitDateTime: rep.commitDateTime ?? null,
         isCharge,
         subsidiaryId,
-        subsidiaryName,
+        subsidiaryName: sub?.name ?? rep.subsidiary?.name,
+        scanCode, // '67' | '44' — el código que monitorea la sucursal de esta guía
         createdAt: minCreatedAt.toISOString(),
         lastCodeDate: maxCode ? maxCode.toISOString() : null,
         daysSinceLastCode,
         hasCodeToday: category === 'hoy',
         category, // 'hoy' | 'sinCodigo' | 'nunca'
-        inventories: invSorted.map((i) => ({ type: i.type, inventoryDate: i.inventoryDate, inventoryId: i.inventoryId })),
-        inventoryTypes: invSorted.map((i) => i.type).join(', '),
-        inventoryCount: invSorted.length,
+        statusHistoryCount: historyCount,
+        exceptionCodes: Array.from(codes),
       };
     });
 
@@ -1211,7 +1187,6 @@ export class InventoriesService {
 
     return {
       summary: {
-        inventarios: invs.length,
         paquetes: details.length,
         conCodigoHoy,
         sinCodigo: details.length - conCodigoHoy,

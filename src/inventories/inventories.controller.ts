@@ -44,15 +44,16 @@ export class InventoriesController {
   }
 
   /**
-   * Igual que arriba pero MULTI-sucursal (varias sucursales o toda una zona) y
-   * con el código configurable ('67'/'44'). Body en vez de query porque puede
-   * ir un arreglo largo de sucursales. SubsidiaryScopeGuard no aplica aquí (solo
-   * valida `req.params.subsidiaryId`), así que el scoping se hace a mano: los
-   * roles no-elevados solo pueden pedir sucursales de su `req.user.subsidiaryIds`.
+   * Reporte "Sin código de escaneo por sucursal/zona" (front: "Sin código 44"): MULTI-sucursal
+   * (varias sucursales o toda una zona ya resuelta a sucursales por el front). Lista los paquetes
+   * ACTIVOS y usa el código que monitorea CADA sucursal (44/67 según `monitorFedexCode44`). Body en
+   * vez de query porque puede ir un arreglo largo de sucursales. SubsidiaryScopeGuard no aplica aquí
+   * (solo valida `req.params.subsidiaryId`), así que el scoping se hace a mano: los roles no-elevados
+   * solo pueden pedir sucursales de su `req.user.subsidiaryIds`.
    */
   @Post('visibility-report-multi')
   getInventoryVisibilityReportMulti(
-    @Body() body: { subsidiaryIds: string[]; from?: string; to?: string; code?: '67' | '44' },
+    @Body() body: { subsidiaryIds: string[] },
     @Req() req: any,
   ) {
     const requested = [...new Set((body?.subsidiaryIds || []).filter(Boolean))];
@@ -67,12 +68,7 @@ export class InventoriesController {
       }
     }
 
-    const f = body?.from ? new Date(body.from) : new Date();
-    const t = body?.to ? new Date(body.to) : new Date();
-    if (isNaN(f.getTime()) || isNaN(t.getTime())) {
-      throw new BadRequestException('Fechas inválidas (from/to).');
-    }
-    return this.inventoriesService.getInventoryVisibilityReportMulti(requested, f, t, body?.code || '44');
+    return this.inventoriesService.getMissingScanReportMulti(requested);
   }
 
   @Get('ld-report/:subsidiaryId')
