@@ -123,3 +123,45 @@ Setear `consolidatedId` cuando el flujo lo tenga disponible. Cambio aditivo, sin
 - Cambios en cómo route-closure / KPIs consumen `payment` de cargas (ya leen `chargeShipment.payment`).
 - Migración retroactiva de `consNumber` en cargas históricas (el fallback por tracking las cubre).
 - UI nueva; solo se reusa el toast existente.
+
+---
+
+# Addendum — Consolidado en cargas F2 (2026-08-14)
+
+## Problema
+
+`getShipmentsByConsolidatedId` ya está diseñado para mostrar cargas: consulta
+`charge_shipment WHERE consolidatedId = ?` (`consolidated.service.ts:590`). Pero los flujos F2
+no setean `consolidatedId`, así que las cargas no aparecen en el detalle del consolidado:
+
+- **`addChargeShipments`** (F2 "solo sin migrar"): crea `Charge` + `Income`, nunca `Consolidated`.
+- **`processFileF2` escenario B** (guía nueva que no existía en shipments): tampoco.
+- **`processFileF2` escenario A** (migración): la carga hereda `consolidatedId` del shipment
+  original vía `...original` → ya queda ligada. Se deja intacta.
+
+## Decisiones (acordadas)
+
+1. **Alcance:** `addChargeShipments` + escenario B de `processFileF2` (guías nuevas). Helper compartido.
+2. **Comportamiento:** find-or-create por `consNumber` (normalizado, scoped a sucursal + FEDEX).
+   Si el consolidado ya existe (los envíos se subieron primero), las cargas se **unen** a él.
+
+## Implementación
+
+- `findOrCreateChargeConsolidated(manager, { consNumber, subsidiaryId, date, userId })`:
+  normaliza `consNumber` (trim+upper+colapsa espacios, espejo de `findByConsNumberScoped`),
+  busca acotado a sucursal+carrier FEDEX, y crea si no existe (`isCompleted=false`,
+  `type=ORDINARIA`, `numberOfPackages=0`). Devuelve `null` si no hay `consNumber`.
+  Recibe el `EntityManager` para correr dentro de la transacción de `processFileF2` o con el
+  manager por defecto en `addChargeShipments`.
+- `bumpConsolidatedCount(manager, cons, count)`: suma al `numberOfPackages` al final.
+- **`addChargeShipments`**: find-or-create upfront (siempre hay ≥1 carga), `consolidatedId` en
+  cada carga, bump por `savedChargeShipments.length`.
+- **`processFileF2`**: creación **lazy** (solo en la primera guía nueva, para no dejar
+  consolidados vacíos cuando todo fue migración), `consolidatedId` en el create del escenario B,
+  bump por `createdFromScratch.length` antes del commit.
+
+## Fuera de alcance (addendum)
+
+- Dedup de re-subidas F2 (ya duplicaba Charge/Income/cargas; el conteo del consolidado hereda
+  ese comportamiento preexistente).
+- No se re-liga el `consolidatedId` de las cargas migradas (escenario A).

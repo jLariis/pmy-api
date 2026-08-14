@@ -870,6 +870,12 @@ export class ShipmentsService {
       });
       const savedCharge = await queryRunner.manager.save(newCharge);
 
+      // Consolidado para las guías NUEVAS (escenario B). Las migradas (escenario A) ya
+      // heredan el consolidatedId del shipment original vía `...original`, así que NO se tocan.
+      // Se crea LAZY (solo si aparece al menos una guía nueva) para no dejar consolidados
+      // vacíos cuando todo el archivo fueron migraciones.
+      let chargeConsolidated: Consolidated | null = null;
+
       // Carga 1.5 ton: usa chargeCostHalfTon si aplica, si no el chargeCost normal.
       const chargeCostToUse = resolveChargeCost(chargeSubsidiary, isHalfTon);
 
@@ -929,6 +935,13 @@ export class ShipmentsService {
               csCommitDateTime.setHours(18, 0, 0, 0);
             }
 
+            // Lazy: crea/reutiliza el consolidado en la primera guía nueva del archivo.
+            if (!chargeConsolidated) {
+              chargeConsolidated = await this.findOrCreateChargeConsolidated(queryRunner.manager, {
+                consNumber, subsidiaryId, date: consDate, userId,
+              });
+            }
+
             const newCS = this.chargeShipmentRepository.create({
               trackingNumber: data.trackingNumber,
               recipientName: data.recipientName || 'N/A',
@@ -943,6 +956,7 @@ export class ShipmentsService {
               subsidiary: chargeSubsidiary,
               createdById: userId ?? null,
               consNumber: consNumber || null, // para que el paso "Cobros" haga match por consNumber
+              consolidatedId: chargeConsolidated?.id ?? null, // liga la guía nueva al consolidado
             });
 
             savedCS = await queryRunner.manager.save(newCS);
@@ -980,6 +994,10 @@ export class ShipmentsService {
         });
         await queryRunner.manager.save(newIncome);
       }
+
+      // Suma solo las guías NUEVAS (escenario B) al consolidado; las migradas ya venían
+      // contadas en su consolidado original.
+      await this.bumpConsolidatedCount(queryRunner.manager, chargeConsolidated, createdFromScratch.length);
 
       // Si todo salió bien, confirmamos cambios
       await queryRunner.commitTransaction();
@@ -1064,6 +1082,12 @@ export class ShipmentsService {
       console.log("✅ Subsidiary found:", chargeSubsidiary.name);
       console.log("💳 Subsidiary charge cost:", chargeSubsidiary.chargeCost);
 
+      // Consolidado: agrupa estas cargas igual que un envío normal, para que aparezcan en
+      // el detalle del consolidado (getShipmentsByConsolidatedId ya consulta charge_shipment).
+      const chargeConsolidated = await this.findOrCreateChargeConsolidated(this.dataSource.manager, {
+        consNumber, subsidiaryId, date: consDate, userId,
+      });
+
       console.log("🟢 Step 5: Processing", chargeShipmentsToSave.length, "shipments");
       
       const processPromises = chargeShipmentsToSave.map(async (shipment) => {
@@ -1094,6 +1118,7 @@ export class ShipmentsService {
             charge: savedCharge, // ✅ Asegurar que savedCharge tenga id
             createdById: userId ?? null,
             consNumber: consNumber || null, // para que el paso "Cobros" haga match por consNumber
+            consolidatedId: chargeConsolidated?.id ?? null, // liga la carga al consolidado
           });
 
           console.log("💾 Attempting to save...");
@@ -1123,6 +1148,9 @@ export class ShipmentsService {
 
       console.log("📊 Successful shipments:", savedChargeShipments.length);
       console.log("❌ Errors:", errors.length);
+
+      // Suma las cargas guardadas al conteo del consolidado.
+      await this.bumpConsolidatedCount(this.dataSource.manager, chargeConsolidated, savedChargeShipments.length);
 
       console.log("🟢 Step 6: Creating income");
 
@@ -1254,6 +1282,57 @@ export class ShipmentsService {
       unmatched: unmatchedTrackings.length,
       unmatchedTrackings,
     };
+  }
+
+  /**
+   * Find-or-create del `Consolidated` para agrupar cargas (charge_shipment) subidas por F2.
+   *
+   * Espejo del flujo normal de envíos: normaliza el consNumber (trim + mayúsculas + colapsa
+   * espacios) y lo busca acotado a sucursal + carrier FEDEX; si ya existe (p.ej. los envíos
+   * se subieron primero con ese mismo consNumber), las cargas se UNEN a ese consolidado en vez
+   * de duplicarlo; si no, lo crea. Devuelve `null` cuando no hay consNumber (no se puede agrupar).
+   *
+   * Recibe el `EntityManager` para poder correr dentro de la transacción del llamador
+   * (processFileF2) o con el manager por defecto (addChargeShipments).
+   */
+  private async findOrCreateChargeConsolidated(
+    manager: EntityManager,
+    opts: { consNumber?: string; subsidiaryId: string; date?: Date; userId?: string },
+  ): Promise<Consolidated | null> {
+    const norm = (opts.consNumber || '').trim().toUpperCase().replace(/\s+/g, ' ');
+    if (!norm) return null; // sin consNumber no hay forma de agrupar en un consolidado
+
+    const existing = await manager.createQueryBuilder(Consolidated, 'c')
+      .leftJoin('c.subsidiary', 'sub')
+      .where('TRIM(UPPER(c.consNumber)) = :norm', { norm })
+      .andWhere('sub.id = :subsidiaryId', { subsidiaryId: opts.subsidiaryId })
+      .andWhere('c.carrier = :carrier', { carrier: ShipmentType.FEDEX })
+      .orderBy('c.createdAt', 'DESC')
+      .getOne();
+    if (existing) return existing;
+
+    const created = manager.create(Consolidated, {
+      date: opts.date ?? new Date(),
+      type: ConsolidatedType.ORDINARIA,
+      numberOfPackages: 0,
+      subsidiary: { id: opts.subsidiaryId } as Subsidiary,
+      consNumber: (opts.consNumber || '').trim(),
+      isCompleted: false,
+      efficiency: 0,
+      carrier: ShipmentType.FEDEX,
+      createdById: opts.userId ?? null,
+    });
+    return manager.save(Consolidated, created);
+  }
+
+  /**
+   * Suma `count` a `numberOfPackages` del consolidado y lo persiste. No-op si no hay
+   * consolidado o si no se agregó nada.
+   */
+  private async bumpConsolidatedCount(manager: EntityManager, cons: Consolidated | null, count: number): Promise<void> {
+    if (!cons || count <= 0) return;
+    cons.numberOfPackages = (cons.numberOfPackages ?? 0) + count;
+    await manager.save(Consolidated, cons);
   }
 
   /**
