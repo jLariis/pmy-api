@@ -170,11 +170,11 @@ export class TrackingCompareService {
   }
 
   private async compareMany(shipments: Shipment[]): Promise<CompareResult[]> {
-    const out: CompareResult[] = [];
-    for (const s of shipments) {
-      out.push(await this.compareShipment(s));
-    }
-    return out;
+    // Paralelizado con concurrencia controlada: una ruta/consolidado con muchas guías
+    // consultaba FedEx en serie (lentísimo, con riesgo de timeout del request). Aquí
+    // corren hasta 6 comparaciones a la vez, preservando el orden de entrada.
+    const limit = createLimit(6);
+    return Promise.all(shipments.map((s) => limit(() => this.compareShipment(s))));
   }
 
   private toDto(e: NormalizedEvent): NormalizedEventDto {
