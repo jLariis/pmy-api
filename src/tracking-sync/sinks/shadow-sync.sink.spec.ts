@@ -5,6 +5,7 @@ import { ShipmentStatusType } from 'src/common/enums/shipment-status-type.enum';
 function ctx(proposed: ShipmentStatusType, current: ShipmentStatusType, newEventKeys: string[]): SyncContext {
   return {
     shipment: { id: 's1', trackingNumber: 'TN', status: current } as any,
+    kind: 'shipment',
     normalized: { trackingNumber: 'TN', events: [], latest: null, commitDateTime: null, validation: { ok: true, issues: ['x'] } },
     reconcile: {
       newEvents: newEventKeys.map((k) => ({ eventKey: k } as any)),

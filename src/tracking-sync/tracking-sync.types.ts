@@ -1,5 +1,16 @@
 import { ShipmentStatusType } from 'src/common/enums/shipment-status-type.enum';
 import { Shipment } from 'src/entities/shipment.entity';
+import { ChargeShipment } from 'src/entities/charge-shipment.entity';
+
+/** Algo rastreable: envío normal (Shipment) o carga/F2 (ChargeShipment). */
+export type Trackable = Shipment | ChargeShipment;
+/** Discriminador: 'shipment' = normal; 'charge' = F2/carga. */
+export type TrackableKind = 'shipment' | 'charge';
+/** Entidad rastreable + su tipo, para el motor genérico. */
+export interface TrackableItem {
+  kind: TrackableKind;
+  entity: Trackable;
+}
 
 /** Referencia mínima para consultar un carrier. */
 export interface TrackingRef {
@@ -60,7 +71,10 @@ export interface DeferredEffect {
 
 /** Estado mutable que atraviesa el pipeline de reglas. */
 export interface SyncContext {
-  shipment: Shipment;
+  /** Entidad rastreable (Shipment normal o ChargeShipment/F2). */
+  shipment: Trackable;
+  /** Tipo del rastreable, para persistencia y reglas específicas (p.ej. F2 no cobra). */
+  kind: TrackableKind;
   normalized: NormalizedTracking;
   reconcile: ReconcileResult;
   proposedStatus: ShipmentStatusType | null;

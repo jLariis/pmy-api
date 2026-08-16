@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { Shipment } from 'src/entities/shipment.entity';
+import { ChargeShipment } from 'src/entities/charge-shipment.entity';
 import { ShipmentStatus } from 'src/entities/shipment-status.entity';
 import { TrackingSyncRun } from 'src/entities/tracking-sync-run.entity';
 import { TrackingSyncObservation } from 'src/entities/tracking-sync-observation.entity';
@@ -32,7 +33,7 @@ import { SYNC_RULES } from './tracking-sync.types';
  */
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Shipment, ShipmentStatus, PackageDispatchHistory, TrackingSyncRun, TrackingSyncObservation]),
+    TypeOrmModule.forFeature([Shipment, ChargeShipment, ShipmentStatus, PackageDispatchHistory, TrackingSyncRun, TrackingSyncObservation]),
     ShipmentsModule, // para ShipmentsService.getShipmentsToValidate()
     AuditModule, // para AuditService (registro de correcciones manuales)
   ],

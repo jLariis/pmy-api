@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { DataSource } from 'typeorm';
 import { Shipment } from 'src/entities/shipment.entity';
+import { ChargeShipment } from 'src/entities/charge-shipment.entity';
 import { ShipmentStatus } from 'src/entities/shipment-status.entity';
 import { AuditService } from 'src/audit/audit.service';
 import { AuditModule as AuditModuleEnum, AuditAction, AuditResult, AuditSeverity } from 'src/common/enums/audit.enum';
@@ -30,6 +31,7 @@ export class PersistentSyncSink {
 
   async applyPlan(ctx: SyncContext, actor: ApplyActor): Promise<ApplyOutcome> {
     const shipment = ctx.shipment;
+    const isCharge = ctx.kind === 'charge';
     const fromStatus = shipment.status;
     const toStatus = ctx.proposedStatus;
 
@@ -39,8 +41,9 @@ export class PersistentSyncSink {
 
       await this.dataSource.transaction(async (m) => {
         // Recalcula las shadowKeys conocidas DENTRO de la TX para una escritura idempotente segura.
+        // El FK del historial cambia según el tipo: shipmentId (normal) vs chargeShipmentId (F2).
         const rows = await m.find(ShipmentStatus, {
-          where: { shipment: { id: shipment.id } },
+          where: isCharge ? { chargeShipment: { id: shipment.id } } : { shipment: { id: shipment.id } },
           select: ['timestamp', 'exceptionCode', 'status'],
         });
         const known = new Set(
@@ -57,7 +60,7 @@ export class PersistentSyncSink {
             exceptionCode: e.exceptionCode ?? '',
             timestamp: e.occurredAt,
             notes: e.description ?? 'FedEx (panel)',
-            shipment,
+            ...(isCharge ? { chargeShipment: shipment as any } : { shipment: shipment as any }),
           });
           await m.save(ShipmentStatus, row);
           inserted++;
@@ -65,7 +68,7 @@ export class PersistentSyncSink {
 
         if (toStatus && toStatus !== fromStatus) {
           shipment.status = toStatus;
-          await m.save(Shipment, shipment);
+          await m.save(isCharge ? ChargeShipment : Shipment, shipment as any);
           statusChanged = true;
         }
       });
@@ -86,7 +89,7 @@ export class PersistentSyncSink {
           beforeState: { status: fromStatus },
           afterState: { status: toStatus ?? fromStatus },
           changes: { status: { from: fromStatus, to: toStatus ?? fromStatus } },
-          metadata: { trackingNumber: shipment.trackingNumber, insertedEvents: inserted },
+          metadata: { trackingNumber: shipment.trackingNumber, insertedEvents: inserted, kind: ctx.kind },
         });
       }
 

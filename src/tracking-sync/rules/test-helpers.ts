@@ -10,6 +10,7 @@ export function makeCtx(overrides: {
 }): SyncContext {
   return {
     shipment: { id: 's1', trackingNumber: 'TN', status: overrides.current, subsidiary: overrides.subsidiary } as any,
+    kind: 'shipment',
     normalized: {
       trackingNumber: 'TN',
       events: overrides.events ?? [],

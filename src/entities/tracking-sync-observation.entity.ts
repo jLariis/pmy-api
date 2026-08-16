@@ -15,6 +15,10 @@ export class TrackingSyncObservation {
   @Column({ type: 'char', length: 36 })
   shipmentId: string;
 
+  /** 'shipment' = normal; 'charge' = F2/carga. */
+  @Column({ type: 'varchar', length: 16, nullable: true })
+  kind: string | null;
+
   @Index()
   @Column({ type: 'varchar', length: 255 })
   trackingNumber: string;

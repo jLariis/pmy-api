@@ -33,11 +33,11 @@ describe('TrackingSyncOrchestrator', () => {
     d.reconciler.reconcile.mockReturnValue({ newEvents: [{ eventKey: 'k1' }], proposedStatus: ShipmentStatusType.EN_RUTA, currentStatus: ShipmentStatusType.EN_RUTA, transition: null });
 
     const orch = new TrackingSyncOrchestrator(d.runRepo as any, d.source as any, d.normalizer as any, d.reconciler as any, d.pipeline as any, d.sink as any, d.loader as any);
-    const shipments = [
-      { id: 's1', trackingNumber: 'TN1', status: ShipmentStatusType.EN_RUTA } as any,
-      { id: 's2', trackingNumber: 'TN2', status: ShipmentStatusType.PENDIENTE } as any,
+    const items = [
+      { kind: 'shipment' as const, entity: { id: 's1', trackingNumber: 'TN1', status: ShipmentStatusType.EN_RUTA } as any },
+      { kind: 'shipment' as const, entity: { id: 's2', trackingNumber: 'TN2', status: ShipmentStatusType.PENDIENTE } as any },
     ];
-    const res = await orch.runShadow(shipments);
+    const res = await orch.runShadow(items);
 
     expect(res.ok).toBe(1);
     expect(res.noData).toBe(1);
@@ -50,7 +50,7 @@ describe('TrackingSyncOrchestrator', () => {
     const d = deps();
     d.source.fetch.mockRejectedValue(Object.assign(new Error('ENOTFOUND'), { code: 'ENOTFOUND' }));
     const orch = new TrackingSyncOrchestrator(d.runRepo as any, d.source as any, d.normalizer as any, d.reconciler as any, d.pipeline as any, d.sink as any, d.loader as any);
-    const res = await orch.runShadow([{ id: 's1', trackingNumber: 'TN1', status: ShipmentStatusType.EN_RUTA } as any]);
+    const res = await orch.runShadow([{ kind: 'shipment', entity: { id: 's1', trackingNumber: 'TN1', status: ShipmentStatusType.EN_RUTA } as any }]);
     expect(res.aborted).toBe(true);
     expect(res.ok).toBe(0);
   });

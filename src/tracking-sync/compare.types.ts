@@ -11,6 +11,8 @@ export interface NormalizedEventDto {
 
 export interface CompareResult {
   shipmentId: string;
+  /** 'shipment' = normal; 'charge' = F2/carga. */
+  kind: 'shipment' | 'charge';
   trackingNumber: string;
   ourStatus: ShipmentStatusType;
   ourLastEventAt: string | null;

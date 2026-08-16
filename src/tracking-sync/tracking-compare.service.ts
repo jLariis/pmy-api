@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Shipment } from 'src/entities/shipment.entity';
+import { ChargeShipment } from 'src/entities/charge-shipment.entity';
 import { ShipmentStatus } from 'src/entities/shipment-status.entity';
 import { PackageDispatchHistory } from 'src/entities/package-dispatch-history.entity';
 import { ShipmentStatusType } from 'src/common/enums/shipment-status-type.enum';
@@ -12,13 +13,18 @@ import { SyncRulesPipeline } from './sync-rules.pipeline';
 import { PersistentSyncSink, ApplyActor } from './sinks/persistent-sync.sink';
 import { createLimit } from './concurrency.util';
 import { buildShadowKey } from './event-key.util';
-import { NormalizedEvent, SyncContext } from './tracking-sync.types';
+import { NormalizedEvent, SyncContext, Trackable, TrackableKind } from './tracking-sync.types';
 import { ApplyOutcome, CompareResult, NormalizedEventDto } from './compare.types';
+
+interface CompareItem {
+  entity: Trackable;
+  kind: TrackableKind;
+}
 
 /**
  * Servicio READ-ONLY de comparación en vivo: contrasta nuestro estado almacenado
- * contra el último estado real de FedEx. No escribe nada (salvo `applyMany`, que
- * delega la escritura al PersistentSyncSink).
+ * contra el último estado real de FedEx. Soporta envíos normales (Shipment) y F2
+ * (ChargeShipment). No escribe nada (salvo `applyMany`, que delega al PersistentSyncSink).
  */
 @Injectable()
 export class TrackingCompareService {
@@ -26,6 +32,7 @@ export class TrackingCompareService {
 
   constructor(
     @InjectRepository(Shipment) private readonly shipmentRepo: Repository<Shipment>,
+    @InjectRepository(ChargeShipment) private readonly chargeRepo: Repository<ChargeShipment>,
     @InjectRepository(ShipmentStatus) private readonly statusRepo: Repository<ShipmentStatus>,
     @InjectRepository(PackageDispatchHistory) private readonly dispatchHistoryRepo: Repository<PackageDispatchHistory>,
     private readonly source: FedexTrackingSource,
@@ -36,59 +43,76 @@ export class TrackingCompareService {
   ) {}
 
   async compareByTracking(trackingNumber: string): Promise<CompareResult> {
-    const shipment = await this.shipmentRepo.findOne({
+    const ship = await this.shipmentRepo.findOne({
       where: { trackingNumber },
       relations: ['subsidiary'],
       order: { createdAt: 'DESC' },
     });
-    if (!shipment) {
-      return this.emptyResult(trackingNumber, null, 'Guía no encontrada en el sistema');
-    }
-    return this.compareShipment(shipment);
+    if (ship) return this.compareTrackable(ship, 'shipment');
+
+    const charge = await this.chargeRepo.findOne({
+      where: { trackingNumber },
+      relations: ['subsidiary'],
+      order: { createdAt: 'DESC' },
+    });
+    if (charge) return this.compareTrackable(charge, 'charge');
+
+    return this.emptyResult(trackingNumber, null, 'shipment', 'Guía no encontrada en el sistema');
   }
 
   async compareByRoute(routeId: string): Promise<CompareResult[]> {
-    // Pertenencia HISTÓRICA: se lee de package_dispatch_history, no del FK vivo
-    // shipment.routeId. Un paquete pudo reasignarse a otra ruta después; aún así
-    // debe aparecer en la salida a ruta donde estuvo. (F2/chargeShipment fuera de alcance.)
+    // Pertenencia HISTÓRICA (package_dispatch_history), no el FK vivo: un paquete pudo
+    // reasignarse a otra ruta después. Incluye normales (shipment) Y F2 (chargeShipment).
     const history = await this.dispatchHistoryRepo.find({
       where: { dispatch: { id: routeId } },
-      relations: ['shipment', 'shipment.subsidiary'],
+      relations: ['shipment', 'shipment.subsidiary', 'chargeShipment', 'chargeShipment.subsidiary'],
     });
-    const byId = new Map<string, Shipment>();
+    const items: CompareItem[] = [];
+    const seen = new Set<string>();
     for (const h of history) {
-      if (h.shipment && !byId.has(h.shipment.id)) byId.set(h.shipment.id, h.shipment);
+      if (h.shipment && !seen.has(`s:${h.shipment.id}`)) {
+        seen.add(`s:${h.shipment.id}`);
+        items.push({ entity: h.shipment, kind: 'shipment' });
+      }
+      if (h.chargeShipment && !seen.has(`c:${h.chargeShipment.id}`)) {
+        seen.add(`c:${h.chargeShipment.id}`);
+        items.push({ entity: h.chargeShipment, kind: 'charge' });
+      }
     }
-    return this.compareMany([...byId.values()]);
+    return this.compareManyItems(items);
   }
 
   async compareByConsolidated(consolidatedId: string): Promise<CompareResult[]> {
-    const shipments = await this.shipmentRepo.find({
-      where: { consolidatedId },
-      relations: ['subsidiary'],
-    });
-    return this.compareMany(shipments);
+    const [ships, charges] = await Promise.all([
+      this.shipmentRepo.find({ where: { consolidatedId }, relations: ['subsidiary'] }),
+      this.chargeRepo.find({ where: { consolidatedId }, relations: ['subsidiary'] }),
+    ]);
+    const items: CompareItem[] = [
+      ...ships.map((e) => ({ entity: e as Trackable, kind: 'shipment' as TrackableKind })),
+      ...charges.map((e) => ({ entity: e as Trackable, kind: 'charge' as TrackableKind })),
+    ];
+    return this.compareManyItems(items);
   }
 
   async applyMany(shipmentIds: string[], actor: ApplyActor): Promise<ApplyOutcome[]> {
     const ids = [...new Set((shipmentIds || []).filter(Boolean))];
-    const limit = createLimit(6); // concurrencia controlada hacia FedEx (sin tope de selección)
+    const limit = createLimit(6);
     return Promise.all(
       ids.map((id) =>
         limit(async () => {
-          const shipment = await this.shipmentRepo.findOne({ where: { id }, relations: ['subsidiary'] });
-          if (!shipment) {
+          const resolved = await this.resolveById(id);
+          if (!resolved) {
             return {
               shipmentId: id, trackingNumber: '', applied: false,
               fromStatus: ShipmentStatusType.DESCONOCIDO, toStatus: null, insertedEvents: 0,
-              skippedReason: 'Shipment no encontrado',
+              skippedReason: 'Guía no encontrada',
             };
           }
-          const built = await this.buildContext(shipment);
+          const built = await this.buildContext(resolved.entity, resolved.kind);
           if (!built) {
             return {
-              shipmentId: id, trackingNumber: shipment.trackingNumber, applied: false,
-              fromStatus: shipment.status, toStatus: null, insertedEvents: 0,
+              shipmentId: id, trackingNumber: resolved.entity.trackingNumber, applied: false,
+              fromStatus: resolved.entity.status, toStatus: null, insertedEvents: 0,
               skippedReason: 'Sin datos FedEx',
             };
           }
@@ -98,23 +122,24 @@ export class TrackingCompareService {
     );
   }
 
-  /** Núcleo reutilizable: compara un shipment ya cargado. */
-  async compareShipment(shipment: Shipment): Promise<CompareResult> {
+  /** Compara un rastreable ya cargado (normal o F2). */
+  async compareTrackable(entity: Trackable, kind: TrackableKind): Promise<CompareResult> {
     try {
-      const built = await this.buildContext(shipment);
+      const built = await this.buildContext(entity, kind);
       if (!built) {
-        return this.emptyResult(shipment.trackingNumber, shipment, 'Sin datos en FedEx');
+        return this.emptyResult(entity.trackingNumber, entity, kind, 'Sin datos en FedEx');
       }
 
       const { ctx, ourLastEventAt } = built;
       const fedexLastEventAt = ctx.normalized.latest ? ctx.normalized.latest.occurredAt.toISOString() : null;
-      const diverges = ctx.proposedStatus != null && ctx.proposedStatus !== shipment.status;
+      const diverges = ctx.proposedStatus != null && ctx.proposedStatus !== entity.status;
       const isStale = !!fedexLastEventAt && (ourLastEventAt == null || fedexLastEventAt > ourLastEventAt);
 
       return {
-        shipmentId: shipment.id,
-        trackingNumber: shipment.trackingNumber,
-        ourStatus: shipment.status,
+        shipmentId: entity.id,
+        kind,
+        trackingNumber: entity.trackingNumber,
+        ourStatus: entity.status,
         ourLastEventAt,
         fedexStatus: ctx.proposedStatus,
         fedexLastEventAt,
@@ -125,27 +150,27 @@ export class TrackingCompareService {
         issues: ctx.normalized.validation.issues,
       };
     } catch (err: any) {
-      this.logger.warn(`compareShipment ${shipment.trackingNumber}: ${err?.message}`);
-      return this.emptyResult(shipment.trackingNumber, shipment, err?.message ?? 'Error consultando FedEx');
+      this.logger.warn(`compareTrackable ${entity.trackingNumber}: ${err?.message}`);
+      return this.emptyResult(entity.trackingNumber, entity, kind, err?.message ?? 'Error consultando FedEx');
     }
   }
 
   /**
    * Consulta FedEx, normaliza, reconcilia contra nuestro historial y corre las reglas.
-   * Devuelve el contexto listo (para comparar o aplicar) + la fecha de nuestro último
-   * evento. `null` si FedEx no devolvió datos.
+   * Devuelve el contexto listo + la fecha de nuestro último evento. `null` si FedEx no dio datos.
    */
   private async buildContext(
-    shipment: Shipment,
-  ): Promise<{ ctx: SyncContext & { normalized: any; reconcile: any }; ourLastEventAt: string | null } | null> {
+    entity: Trackable,
+    kind: TrackableKind,
+  ): Promise<{ ctx: SyncContext; ourLastEventAt: string | null } | null> {
     const [raw] = await this.source.fetch([
-      { trackingNumber: shipment.trackingNumber, fedexUniqueId: shipment.fedexUniqueId, carrierCode: shipment.carrierCode },
+      { trackingNumber: entity.trackingNumber, fedexUniqueId: entity.fedexUniqueId, carrierCode: entity.carrierCode },
     ]);
     if (!raw || raw.trackResults.length === 0) return null;
 
     const normalized = this.normalizer.normalize(raw);
     const rows = await this.statusRepo.find({
-      where: { shipment: { id: shipment.id } },
+      where: kind === 'charge' ? { chargeShipment: { id: entity.id } } : { shipment: { id: entity.id } },
       select: ['timestamp', 'exceptionCode', 'status'],
     });
     const knownKeys = new Set(
@@ -156,25 +181,36 @@ export class TrackingCompareService {
       : null;
 
     const reconcile = this.reconciler.reconcile(
-      normalized, knownKeys, shipment.status, (e: NormalizedEvent) => e.shadowKey,
+      normalized, knownKeys, entity.status, (e: NormalizedEvent) => e.shadowKey,
     );
 
     const ctx: SyncContext = {
-      shipment, normalized, reconcile,
+      shipment: entity,
+      kind,
+      normalized,
+      reconcile,
       proposedStatus: reconcile.proposedStatus,
-      vetoedEventKeys: new Set<string>(), deferredEffects: [], notes: [],
+      vetoedEventKeys: new Set<string>(),
+      deferredEffects: [],
+      notes: [],
     };
     await this.pipeline.run(ctx);
 
     return { ctx, ourLastEventAt };
   }
 
-  private async compareMany(shipments: Shipment[]): Promise<CompareResult[]> {
-    // Paralelizado con concurrencia controlada: una ruta/consolidado con muchas guías
-    // consultaba FedEx en serie (lentísimo, con riesgo de timeout del request). Aquí
-    // corren hasta 6 comparaciones a la vez, preservando el orden de entrada.
+  /** Resuelve un id a su entidad + tipo (busca en shipment y luego en charge_shipment). */
+  private async resolveById(id: string): Promise<CompareItem | null> {
+    const ship = await this.shipmentRepo.findOne({ where: { id }, relations: ['subsidiary'] });
+    if (ship) return { entity: ship, kind: 'shipment' };
+    const charge = await this.chargeRepo.findOne({ where: { id }, relations: ['subsidiary'] });
+    if (charge) return { entity: charge, kind: 'charge' };
+    return null;
+  }
+
+  private async compareManyItems(items: CompareItem[]): Promise<CompareResult[]> {
     const limit = createLimit(6);
-    return Promise.all(shipments.map((s) => limit(() => this.compareShipment(s))));
+    return Promise.all(items.map((it) => limit(() => this.compareTrackable(it.entity, it.kind))));
   }
 
   private toDto(e: NormalizedEvent): NormalizedEventDto {
@@ -188,11 +224,17 @@ export class TrackingCompareService {
     };
   }
 
-  private emptyResult(trackingNumber: string, shipment: Shipment | null, error: string): CompareResult {
+  private emptyResult(
+    trackingNumber: string,
+    entity: Trackable | null,
+    kind: TrackableKind,
+    error: string,
+  ): CompareResult {
     return {
-      shipmentId: shipment?.id ?? '',
+      shipmentId: entity?.id ?? '',
+      kind,
       trackingNumber,
-      ourStatus: shipment?.status ?? ShipmentStatusType.DESCONOCIDO,
+      ourStatus: entity?.status ?? ShipmentStatusType.DESCONOCIDO,
       ourLastEventAt: null,
       fedexStatus: null,
       fedexLastEventAt: null,

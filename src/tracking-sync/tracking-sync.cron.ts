@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { ShipmentsService } from 'src/shipments/shipments.service';
 import { TrackingSyncOrchestrator } from './tracking-sync.orchestrator';
+import { TrackableItem } from './tracking-sync.types';
 
 /**
  * Corre en SHADOW cada hora al minuto :15 (desfasado del cron legacy en :00 para no
@@ -25,13 +26,20 @@ export class TrackingSyncCron {
     }
     this.isRunning = true;
     try {
-      const shipments = await this.shipmentsService.getShipmentsToValidate();
-      if (!shipments.length) {
+      const [shipments, charges] = await Promise.all([
+        this.shipmentsService.getShipmentsToValidate(),
+        this.shipmentsService.getSimpleChargeShipments(),
+      ]);
+      const items: TrackableItem[] = [
+        ...shipments.map((entity) => ({ kind: 'shipment' as const, entity })),
+        ...charges.map((entity) => ({ kind: 'charge' as const, entity })),
+      ];
+      if (!items.length) {
         this.logger.log('📪 [shadow] no hay guías para observar.');
         return;
       }
-      this.logger.log(`🌓 [shadow] observando ${shipments.length} guías FedEx...`);
-      await this.orchestrator.runShadow(shipments);
+      this.logger.log(`🌓 [shadow] observando ${shipments.length} normales + ${charges.length} F2...`);
+      await this.orchestrator.runShadow(items);
     } catch (err: any) {
       this.logger.error(`❌ [shadow] error: ${err?.message}`);
     } finally {

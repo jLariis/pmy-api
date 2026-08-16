@@ -22,6 +22,7 @@ export class ShadowSyncSink implements SyncSink {
     const row = {
       runId,
       shipmentId: ctx.shipment.id,
+      kind: ctx.kind,
       trackingNumber: ctx.shipment.trackingNumber,
       proposedStatus: ctx.proposedStatus ?? null,
       legacyCurrentStatus: ctx.shipment.status ?? null,

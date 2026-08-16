@@ -19,9 +19,10 @@ function fakeDataSource(manager: any) {
   } as any;
 }
 
-function ctxWith(newEvents: any[], proposed: ShipmentStatusType, current: ShipmentStatusType): SyncContext {
+function ctxWith(newEvents: any[], proposed: ShipmentStatusType, current: ShipmentStatusType, kind: 'shipment' | 'charge' = 'shipment'): SyncContext {
   return {
     shipment: { id: 's1', trackingNumber: 'TN1', status: current } as any,
+    kind,
     normalized: { trackingNumber: 'TN1', events: [], latest: null, commitDateTime: null, validation: { ok: true, issues: [] } },
     reconcile: { newEvents, proposedStatus: proposed, currentStatus: current, transition: null },
     proposedStatus: proposed,
@@ -63,5 +64,23 @@ describe('PersistentSyncSink.applyPlan', () => {
 
     expect(out.insertedEvents).toBe(0);
     expect(out.applied).toBe(false); // nothing changed (same status, no new events)
+  });
+
+  it('for F2 (kind=charge) writes ShipmentStatus with chargeShipment and reads charge history', async () => {
+    const manager = fakeManager([]);
+    const audit = { log: jest.fn() } as any;
+    const sink = new PersistentSyncSink(fakeDataSource(manager), audit);
+
+    const ctx = ctxWith([ev(3000, ShipmentStatusType.ENTREGADO, null)], ShipmentStatusType.ENTREGADO, ShipmentStatusType.EN_RUTA, 'charge');
+    const out = await sink.applyPlan(ctx, { role: 'superadmin' });
+
+    expect(out.applied).toBe(true);
+    expect(out.insertedEvents).toBe(1);
+    // La lectura de historial se hizo por chargeShipment (no shipment).
+    expect(manager.find.mock.calls[0][1].where).toEqual({ chargeShipment: { id: 's1' } });
+    // El ShipmentStatus creado lleva chargeShipment, no shipment.
+    const createdStatus = manager.create.mock.calls.find((c: any) => c[1]?.timestamp)?.[1];
+    expect(createdStatus.chargeShipment).toBeDefined();
+    expect(createdStatus.shipment).toBeUndefined();
   });
 });

@@ -1,7 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { Shipment } from 'src/entities/shipment.entity';
 import { TrackingSyncRun } from 'src/entities/tracking-sync-run.entity';
 import { TrackingNormalizer } from './tracking-normalizer';
 import { EventReconciler } from './event-reconciler';
@@ -10,7 +9,7 @@ import { ExistingEventLoader } from './existing-event-loader';
 import { FedexTrackingSource } from './sources/fedex-tracking.source';
 import { ShadowSyncSink } from './sinks/shadow-sync.sink';
 import { createLimit } from './concurrency.util';
-import { NormalizedEvent, RawTrackingResult, SyncContext } from './tracking-sync.types';
+import { NormalizedEvent, RawTrackingResult, SyncContext, Trackable, TrackableItem } from './tracking-sync.types';
 
 /**
  * Conduce el pipeline sobre muchas guías: batching, concurrencia controlada, circuit
@@ -32,30 +31,33 @@ export class TrackingSyncOrchestrator {
     private readonly loader: ExistingEventLoader,
   ) {}
 
-  async runShadow(shipments: Shipment[]) {
+  /** Acepta rastreables (normales y/o F2). Agrupa por (kind, trackingNumber). */
+  async runShadow(items: TrackableItem[]) {
     const run = await this.runRepo.save(
-      this.runRepo.create({ startedAt: new Date(), mode: 'shadow', total: shipments.length }),
+      this.runRepo.create({ startedAt: new Date(), mode: 'shadow', total: items.length }),
     );
 
-    const byTracking = new Map<string, Shipment[]>();
-    for (const s of shipments) {
-      const arr = byTracking.get(s.trackingNumber) ?? [];
-      arr.push(s);
-      byTracking.set(s.trackingNumber, arr);
+    // Clave por tipo+guía: un normal y un F2 con la misma guía se procesan por separado.
+    const byKey = new Map<string, TrackableItem[]>();
+    for (const it of items) {
+      const key = `${it.kind}::${it.entity.trackingNumber}`;
+      const arr = byKey.get(key) ?? [];
+      arr.push(it);
+      byKey.set(key, arr);
     }
-    const trackingNumbers = [...byTracking.keys()];
+    const keys = [...byKey.keys()];
 
     const limit = createLimit(TrackingSyncOrchestrator.CONCURRENCY);
     let ok = 0, noData = 0, failed = 0, matches = 0, diverges = 0;
     let aborted = false;
 
-    for (let i = 0; i < trackingNumbers.length; i += TrackingSyncOrchestrator.BATCH) {
+    for (let i = 0; i < keys.length; i += TrackingSyncOrchestrator.BATCH) {
       if (aborted) break;
-      const batch = trackingNumbers.slice(i, i + TrackingSyncOrchestrator.BATCH);
+      const batch = keys.slice(i, i + TrackingSyncOrchestrator.BATCH);
 
       let raws: RawTrackingResult[];
       try {
-        raws = await this.source.fetch(batch.map((tn) => this.refFor(byTracking.get(tn)![0])));
+        raws = await this.source.fetch(batch.map((k) => this.refFor(byKey.get(k)![0].entity)));
       } catch (err: any) {
         this.logger.error(`Fallo de fetch en lote: ${err?.message}`);
         if (ok === 0 && this.isConnectivity(err)) {
@@ -68,23 +70,23 @@ export class TrackingSyncOrchestrator {
       const rawByTn = new Map(raws.map((r) => [r.trackingNumber, r]));
 
       await Promise.all(
-        batch.map((tn) =>
+        batch.map((key) =>
           limit(async () => {
-            const raw = rawByTn.get(tn);
-            const group = byTracking.get(tn)!;
+            const item = byKey.get(key)![0];
+            const raw = rawByTn.get(item.entity.trackingNumber);
             if (!raw || raw.trackResults.length === 0) { noData++; return; }
             try {
               const normalized = this.normalizer.normalize(raw);
               if (!normalized.latest) { noData++; return; }
 
-              const shipment = group[0];
-              const knownKeys = await this.loader.load(shipment.id);
+              const entity = item.entity;
+              const knownKeys = await this.loader.load(entity.id, item.kind);
               const reconcile = this.reconciler.reconcile(
-                normalized, knownKeys, shipment.status, (e: NormalizedEvent) => e.shadowKey,
+                normalized, knownKeys, entity.status, (e: NormalizedEvent) => e.shadowKey,
               );
 
               const ctx: SyncContext = {
-                shipment, normalized, reconcile,
+                shipment: entity, kind: item.kind, normalized, reconcile,
                 proposedStatus: reconcile.proposedStatus,
                 vetoedEventKeys: new Set<string>(), deferredEffects: [], notes: [],
               };
@@ -94,7 +96,7 @@ export class TrackingSyncOrchestrator {
               ok++;
             } catch (err: any) {
               failed++;
-              this.logger.warn(`[${tn}] shadow falló: ${err?.message}`);
+              this.logger.warn(`[${item.entity.trackingNumber}] shadow falló: ${err?.message}`);
             }
           }),
         ),
@@ -110,8 +112,8 @@ export class TrackingSyncOrchestrator {
     return { runId: run.id, ok, noData, failed, aborted };
   }
 
-  private refFor(s: Shipment) {
-    return { trackingNumber: s.trackingNumber, fedexUniqueId: s.fedexUniqueId, carrierCode: s.carrierCode };
+  private refFor(e: Trackable) {
+    return { trackingNumber: e.trackingNumber, fedexUniqueId: e.fedexUniqueId, carrierCode: e.carrierCode };
   }
 
   private isConnectivity(err: any): boolean {
