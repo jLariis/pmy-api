@@ -50,6 +50,7 @@ import { GeocodeModule } from './geocode/geocode.module';
 import { ServerStatsModule } from './server-stats/server-stats.module';
 import { SupportModule } from './support/support.module';
 import { DocumentsModule } from './documents/documents.module';
+import { TrackingSyncModule } from './tracking-sync/tracking-sync.module';
 
 @Module({
   imports: [
@@ -121,6 +122,7 @@ import { DocumentsModule } from './documents/documents.module';
     DocumentsModule,
     ReturningModule,
     FedexStatusModule,
+    TrackingSyncModule,
   ],
   controllers: [AppController],
   providers: [
