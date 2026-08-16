@@ -4,6 +4,7 @@ import { Shipment } from 'src/entities/shipment.entity';
 import { ShipmentStatus } from 'src/entities/shipment-status.entity';
 import { TrackingSyncRun } from 'src/entities/tracking-sync-run.entity';
 import { TrackingSyncObservation } from 'src/entities/tracking-sync-observation.entity';
+import { PackageDispatchHistory } from 'src/entities/package-dispatch-history.entity';
 import { FedexService } from 'src/shipments/fedex.service';
 import { ShipmentsModule } from 'src/shipments/shipments.module';
 import { AuditModule } from 'src/audit/audit.module';
@@ -31,7 +32,7 @@ import { SYNC_RULES } from './tracking-sync.types';
  */
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Shipment, ShipmentStatus, TrackingSyncRun, TrackingSyncObservation]),
+    TypeOrmModule.forFeature([Shipment, ShipmentStatus, PackageDispatchHistory, TrackingSyncRun, TrackingSyncObservation]),
     ShipmentsModule, // para ShipmentsService.getShipmentsToValidate()
     AuditModule, // para AuditService (registro de correcciones manuales)
   ],

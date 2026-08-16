@@ -3,6 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Shipment } from 'src/entities/shipment.entity';
 import { ShipmentStatus } from 'src/entities/shipment-status.entity';
+import { PackageDispatchHistory } from 'src/entities/package-dispatch-history.entity';
 import { ShipmentStatusType } from 'src/common/enums/shipment-status-type.enum';
 import { FedexTrackingSource } from './sources/fedex-tracking.source';
 import { TrackingNormalizer } from './tracking-normalizer';
@@ -26,6 +27,7 @@ export class TrackingCompareService {
   constructor(
     @InjectRepository(Shipment) private readonly shipmentRepo: Repository<Shipment>,
     @InjectRepository(ShipmentStatus) private readonly statusRepo: Repository<ShipmentStatus>,
+    @InjectRepository(PackageDispatchHistory) private readonly dispatchHistoryRepo: Repository<PackageDispatchHistory>,
     private readonly source: FedexTrackingSource,
     private readonly normalizer: TrackingNormalizer,
     private readonly reconciler: EventReconciler,
@@ -46,11 +48,18 @@ export class TrackingCompareService {
   }
 
   async compareByRoute(routeId: string): Promise<CompareResult[]> {
-    const shipments = await this.shipmentRepo.find({
-      where: { packageDispatch: { id: routeId } },
-      relations: ['subsidiary'],
+    // Pertenencia HISTÓRICA: se lee de package_dispatch_history, no del FK vivo
+    // shipment.routeId. Un paquete pudo reasignarse a otra ruta después; aún así
+    // debe aparecer en la salida a ruta donde estuvo. (F2/chargeShipment fuera de alcance.)
+    const history = await this.dispatchHistoryRepo.find({
+      where: { dispatch: { id: routeId } },
+      relations: ['shipment', 'shipment.subsidiary'],
     });
-    return this.compareMany(shipments);
+    const byId = new Map<string, Shipment>();
+    for (const h of history) {
+      if (h.shipment && !byId.has(h.shipment.id)) byId.set(h.shipment.id, h.shipment);
+    }
+    return this.compareMany([...byId.values()]);
   }
 
   async compareByConsolidated(consolidatedId: string): Promise<CompareResult[]> {

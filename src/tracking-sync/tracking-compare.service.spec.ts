@@ -24,7 +24,8 @@ function makeService(over: {
   } as any;
   const pipeline = { run: jest.fn().mockImplementation(async (_ctx: any) => { /* no-op */ }) } as any;
   const sink = { applyPlan: jest.fn() } as any;
-  return new TrackingCompareService(shipmentRepo, statusRepo, source, normalizer, reconciler, pipeline, sink);
+  const historyRepo = { find: jest.fn().mockResolvedValue([]) } as any;
+  return new TrackingCompareService(shipmentRepo, statusRepo, historyRepo, source, normalizer, reconciler, pipeline, sink);
 }
 
 describe('TrackingCompareService.compareByTracking', () => {
@@ -60,28 +61,35 @@ describe('TrackingCompareService.compareByTracking', () => {
 });
 
 describe('TrackingCompareService batch loaders', () => {
-  function svcWithShipments(shipments: any[]) {
+  function svcWithShipments(shipments: any[], historyRows?: any[]) {
     const shipmentRepo = {
       find: jest.fn().mockResolvedValue(shipments),
       findOne: jest.fn(),
     } as any;
     const statusRepo = { find: jest.fn().mockResolvedValue([]) } as any;
+    const historyRepo = { find: jest.fn().mockResolvedValue(historyRows ?? []) } as any;
     const source = { fetch: jest.fn().mockResolvedValue(shipments.map((s) => ({ trackingNumber: s.trackingNumber, trackResults: [] }))) } as any;
     const normalizer = { normalize: jest.fn().mockReturnValue({ events: [], latest: null, validation: { ok: false, issues: [] } }) } as any;
     const reconciler = { reconcile: jest.fn().mockReturnValue({ newEvents: [], proposedStatus: null, currentStatus: null, transition: null }) } as any;
     const pipeline = { run: jest.fn().mockResolvedValue(undefined) } as any;
     const sink = { applyPlan: jest.fn() } as any;
-    return { svc: new TrackingCompareService(shipmentRepo, statusRepo, source, normalizer, reconciler, pipeline, sink), shipmentRepo };
+    return { svc: new TrackingCompareService(shipmentRepo, statusRepo, historyRepo, source, normalizer, reconciler, pipeline, sink), shipmentRepo, historyRepo };
   }
 
-  it('compareByRoute loads shipments by routeId and returns one result each', async () => {
-    const { svc, shipmentRepo } = svcWithShipments([
-      { id: 's1', trackingNumber: 'TN1', status: 'en_ruta' },
-      { id: 's2', trackingNumber: 'TN2', status: 'en_ruta' },
-    ]);
+  it('compareByRoute loads shipments from package_dispatch_history (not the live FK) and dedupes', async () => {
+    const s1 = { id: 's1', trackingNumber: 'TN1', status: 'en_ruta' };
+    const s2 = { id: 's2', trackingNumber: 'TN2', status: 'en_ruta' };
+    // Historia: s1 dos veces (dedupe), s2 una vez, y una fila F2 (chargeShipment) que se ignora.
+    const historyRows = [
+      { shipment: s1, chargeShipment: null },
+      { shipment: s1, chargeShipment: null },
+      { shipment: s2, chargeShipment: null },
+      { shipment: null, chargeShipment: { id: 'c9' } },
+    ];
+    const { svc, historyRepo } = svcWithShipments([], historyRows);
     const results = await svc.compareByRoute('route-1');
-    expect(results).toHaveLength(2);
-    expect(shipmentRepo.find).toHaveBeenCalledWith(expect.objectContaining({ where: { packageDispatch: { id: 'route-1' } } }));
+    expect(results).toHaveLength(2); // s1 y s2, sin duplicar, sin la F2
+    expect(historyRepo.find).toHaveBeenCalledWith(expect.objectContaining({ where: { dispatch: { id: 'route-1' } } }));
   });
 
   it('compareByConsolidated loads shipments by consolidatedId', async () => {
@@ -102,8 +110,9 @@ describe('TrackingCompareService.applyMany', () => {
     const reconciler = { reconcile: jest.fn().mockReturnValue({ newEvents: [], proposedStatus: 'entregado', currentStatus: 'en_ruta', transition: null }) } as any;
     const pipeline = { run: jest.fn().mockResolvedValue(undefined) } as any;
     const sink = { applyPlan: jest.fn().mockResolvedValue({ shipmentId: 's1', trackingNumber: 'TN1', applied: true, fromStatus: 'en_ruta', toStatus: 'entregado', insertedEvents: 0 }) } as any;
+    const historyRepo = { find: jest.fn().mockResolvedValue([]) } as any;
 
-    const svc = new TrackingCompareService(shipmentRepo, statusRepo, source, normalizer, reconciler, pipeline, sink);
+    const svc = new TrackingCompareService(shipmentRepo, statusRepo, historyRepo, source, normalizer, reconciler, pipeline, sink);
     const out = await svc.applyMany(['s1'], { role: 'superadmin' });
     expect(out).toHaveLength(1);
     expect(sink.applyPlan).toHaveBeenCalledTimes(1);
