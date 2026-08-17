@@ -169,6 +169,17 @@ export class Subsidiary {
   forceFedexStatusOverride: boolean;
 
   /**
+   * Tracking: sucursal que opera DESDE la bodega de FedEx. FedEx puede registrar
+   * eventos (DEX 07/08, cambio de fecha, etc.) ANTES de que el paquete exista en
+   * el sistema (antes de `createdAt`). Si está activo, esos eventos pre-registro
+   * del MISMO DÍA calendario (zona Hermosillo) SÍ entran al pipeline de
+   * historial/ingresos. NO relaja el Time Shield del estatus operativo.
+   * Se siembra en true SOLO para Hermosillo y Cabo San Lucas (migración 052).
+   */
+  @Column({ default: false })
+  allowSameDayPreRegistrationFedexEvents: boolean;
+
+  /**
    * Salidas a ruta: si está activo, los paquetes se ORDENAN por código postal
    * (recipientZip) en el escaneo, PDF y Excel. Si está en false, se conserva el
    * orden en que se escanearon.

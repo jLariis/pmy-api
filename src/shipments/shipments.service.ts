@@ -12,6 +12,7 @@ import { scanEventsFilter } from 'src/utils/scan-events-filter';
 import { ParsedShipmentDto } from './dto/parsed-shipment.dto';
 import { mapFedexStatusToLocalStatus } from 'src/utils/fedex.utils';
 import { mapWhereParcelStatusToLocal } from 'src/utils/dhl.utils';
+import { toHermosilloDateString } from 'src/common/utils';
 import type { NormalizedTrackingResult } from 'src/tracking/where-parcel-dhl.service';
 import { addDays, differenceInCalendarDays, differenceInDays, endOfToday, format, isSameDay, parse, parseISO, startOfToday } from 'date-fns';
 import { ShipmentType } from 'src/common/enums/shipment-type.enum';
@@ -8166,6 +8167,7 @@ export class ShipmentsService {
         }
       };
 
+
       /** Divide un arreglo en lotes de tamaño fijo (para procesar en oleadas). */
       private chunkArray<T>(arr: T[], size: number): T[][] {
         const out: T[][] = [];
@@ -8387,11 +8389,35 @@ export class ShipmentsService {
                     return `${t}_${c}`;
                 }));
 
+                // ── BLINDAJE PRE-REGISTRO (mismo día) ──────────────────────────
+                // Config POR SUCURSAL en BD (editable desde el módulo de Configuración):
+                // subsidiary.allowSameDayPreRegistrationFedexEvents. Sucursales que operan
+                // desde bodega FedEx (Hermosillo/Cabos, sembradas en la migración 052)
+                // pueden tener eventos ANTERIORES a createdAt.
+                const allowPreReg = !!sub?.allowSameDayPreRegistrationFedexEvents;
+                const createdAtTime = mainShipment.createdAt ? new Date(mainShipment.createdAt).getTime() : null;
+                const createdAtDay = mainShipment.createdAt ? toHermosilloDateString(mainShipment.createdAt) : null;
+
                 const newEvents = scanEvents.filter(e => {
                     const t = new Date(e.date).getTime();
                     const c = (e.exceptionCode || '').trim();
                     const signature = `${t}_${c}`;
-                    return !processedSignatures.has(signature);
+                    // 1) Deduplicación existente (huella digital): no reprocesar lo ya registrado.
+                    if (processedSignatures.has(signature)) return false;
+
+                    // 2) Candado PRE-REGISTRO: un evento ANTERIOR a createdAt ocurrió antes de
+                    //    que el paquete existiera en nuestro sistema → puede pertenecer a una
+                    //    operación anterior / guía reutilizada (CASO 3/4). Por defecto NO entra
+                    //    al pipeline. EXCEPCIÓN CONTROLADA: sucursales de bodega-FedEx SÍ lo
+                    //    procesan si ocurrió el MISMO DÍA calendario (zona Hermosillo) que
+                    //    createdAt. Esto NO toca el Time Shield del estatus (§5).
+                    if (createdAtTime !== null && t < createdAtTime) {
+                        const sameDay = createdAtDay !== null &&
+                            toHermosilloDateString(new Date(e.date)) === createdAtDay;
+                        if (!(allowPreReg && sameDay)) return false;
+                    }
+
+                    return true;
                 });
 
                 // Orden cronológico para el procesamiento de Incomes e historial
@@ -8406,10 +8432,28 @@ export class ShipmentsService {
 
                 let current08Count = existing08Count;
                 const paidWeeks = new Set<string>();
+                // ¿Algún evento nuevo es "cambio de fecha solicitada" (FedEx 17/84)?
+                // Si sí, más abajo sincronizamos commitDateTime con la nueva fecha de FedEx.
+                let sawDateChange = false;
+                // Pre-registro (Hermosillo): DEX "resuelto" (rechazado/cliente no disponible/
+                // dirección incorrecta/cambio de fecha/no entregado/devuelto) MÁS RECIENTE que
+                // ocurrió el mismo día ANTES del registro del paquete. Se refleja como estatus
+                // actual para que el cierre de ruta y las devoluciones (que leen shipment.status)
+                // lo vean resuelto. Solo aplica una vez (mientras el DEX sea evento nuevo).
+                const PREREG_RESOLVED_STATUSES = [
+                    ShipmentStatusType.RECHAZADO,
+                    ShipmentStatusType.CLIENTE_NO_DISPONIBLE,
+                    ShipmentStatusType.DIRECCION_INCORRECTA,
+                    ShipmentStatusType.CAMBIO_FECHA_SOLICITADO,
+                    ShipmentStatusType.NO_ENTREGADO,
+                    ShipmentStatusType.DEVUELTO_A_FEDEX,
+                ];
+                let preRegResolvedStatus: any = null;
+                let preRegResolvedTime = 0;
 
                 // 🛡️ Pre-validación: Verificamos si en algún punto FedEx tomó el control, PERO ignoramos eventos viejos
                 const hasODInHistory = subConfig.trackExternalDelivery && (
-                    scanEvents.some(e => e.eventType === 'OD' && new Date(e.date).getTime() > lastOpTime) || 
+                    scanEvents.some(e => e.eventType === 'OD' && new Date(e.date).getTime() > lastOpTime) ||
                     lsdHeader?.code === 'OD'
                 );
 
@@ -8417,8 +8461,21 @@ export class ShipmentsService {
                     const eventDate = new Date(event.date);
                     const dCode = event.derivedStatusCode || '';
                     const eCode = (event.exceptionCode || '').trim();
-                    
+
                     let eventStatus: any = mapFedexStatusToLocalStatus(dCode, eCode);
+
+                    // Detecta el DEX de cambio de fecha ANTES de cualquier override (OD/anti-cobro).
+                    if (eventStatus === ShipmentStatusType.CAMBIO_FECHA_SOLICITADO) sawDateChange = true;
+
+                    // Captura el DEX resuelto pre-registro más reciente (mismo día, previo a
+                    // createdAt). Este loop solo itera newEvents, que para sucursales habilitadas
+                    // ya garantizó "mismo día" en el filtro de arriba.
+                    if (allowPreReg && createdAtTime !== null && eventDate.getTime() < createdAtTime &&
+                        PREREG_RESOLVED_STATUSES.includes(eventStatus) &&
+                        eventDate.getTime() >= preRegResolvedTime) {
+                        preRegResolvedTime = eventDate.getTime();
+                        preRegResolvedStatus = eventStatus;
+                    }
 
                     // 🛡️ BLINDAJE ANTI-COBROS FALSOS
                     if (hasODInHistory && (event.eventType === 'DL' || dCode === 'DL' || eCode === '005')) {
@@ -8426,7 +8483,7 @@ export class ShipmentsService {
                     } else if (eCode === '005') {
                         eventStatus = ShipmentStatusType.ENTREGADO_POR_FEDEX;
                     }
-                    
+
                     if (!Object.values(ShipmentStatusType).includes(eventStatus)) eventStatus = ShipmentStatusType.DESCONOCIDO;
 
                     if (event.eventType === 'OD' || dCode === 'OD') {
@@ -8574,6 +8631,19 @@ export class ShipmentsService {
                     }
                 }
 
+                // 6.5 PRE-REGISTRO (Hermosillo): reflejar el DEX resuelto del mismo día.
+                // Si NADA más reciente cambió el estatus (sigue igual al de la DB y es
+                // operativo: pendiente/en_bodega/en_ruta) y hubo un DEX resuelto pre-registro
+                // del mismo día, ése es el estatus REAL (FedEx ya tiene el paquete). Así el
+                // cierre de ruta y las devoluciones —que leen shipment.status— lo ven resuelto.
+                // Es one-time: solo mientras el DEX sea evento nuevo (luego cae en processedSignatures).
+                if (preRegResolvedStatus &&
+                    finalStatus === mainShipment.status &&
+                    OPERATIONAL_STATUSES.includes(finalStatus as any)) {
+                    this.logger.log(`🏬 [${tn}] Pre-registro: ${finalStatus} → ${preRegResolvedStatus} (DEX del mismo día previo a la ruta)`);
+                    finalStatus = preRegResolvedStatus;
+                }
+
                 // =================================================================================
                 // 🛡️ SECCIÓN 6: CANDADOS DE INTEGRIDAD (PROTECCIÓN EXCLUSIVA DE TERMINALES)
                 // =================================================================================
@@ -8607,6 +8677,24 @@ export class ShipmentsService {
                     const newCarrierCode = trackResult.trackingNumberInfo?.carrierCode;
                     const newReceivedBy = trackResult.deliveryDetails?.receivedByName;
 
+                    // ── CAMBIO DE FECHA SOLICITADA → sincroniza commitDateTime ──────
+                    // Si FedEx reportó un DEX de cambio de fecha (17/84), tomamos la
+                    // NUEVA fecha compromiso de FedEx (misma prioridad que el resto del
+                    // sistema: dateAndTimes → ventana estimada → ventana estándar) y la
+                    // reflejamos en commitDateTime. Solo si es una fecha válida.
+                    let newCommitDateTime: Date | null = null;
+                    if (sawDateChange) {
+                        const rawCommit =
+                            trackResult.dateAndTimes?.find((d: any) =>
+                                ['ESTIMATED_DELIVERY', 'COMMIT', 'APPOINTMENT_DELIVERY'].includes(d?.type))?.dateTime ||
+                            trackResult.estimatedDeliveryTimeWindow?.window?.ends ||
+                            trackResult.standardTransitTimeWindow?.window?.ends;
+                        if (rawCommit) {
+                            const d = new Date(rawCommit);
+                            if (!isNaN(d.getTime())) newCommitDateTime = d;
+                        }
+                    }
+
                     for (const ship of shipmentList) {
                         let hasChanges = false;
 
@@ -8626,6 +8714,13 @@ export class ShipmentsService {
                         }
                         if (newReceivedBy && ship.receivedByName !== newReceivedBy) {
                             ship.receivedByName = newReceivedBy;
+                            hasChanges = true;
+                        }
+                        // Cambio de fecha solicitada: actualiza commitDateTime si difiere.
+                        if (newCommitDateTime && (!ship.commitDateTime ||
+                            new Date(ship.commitDateTime).getTime() !== newCommitDateTime.getTime())) {
+                            this.logger.log(`🗓️ [${tn}] commitDateTime ${ship.commitDateTime ? new Date(ship.commitDateTime).toISOString() : 'null'} → ${newCommitDateTime.toISOString()} (cambio de fecha FedEx)`);
+                            ship.commitDateTime = newCommitDateTime;
                             hasChanges = true;
                         }
 
@@ -8816,11 +8911,30 @@ export class ShipmentsService {
                     return `${t}_${c}`;
                 }));
 
+                // ── BLINDAJE PRE-REGISTRO (mismo día) ──────────────────────────
+                // Espejo exacto del flujo Master. Config por sucursal en BD:
+                // subsidiary.allowSameDayPreRegistrationFedexEvents.
+                const allowPreReg = !!(mainCharge.subsidiary as any)?.allowSameDayPreRegistrationFedexEvents;
+                const createdAtTime = mainCharge.createdAt ? new Date(mainCharge.createdAt).getTime() : null;
+                const createdAtDay = mainCharge.createdAt ? toHermosilloDateString(mainCharge.createdAt) : null;
+
                 const newEvents = scanEvents.filter((e: any) => {
                     const t = new Date(e.date).getTime();
                     const c = (e.exceptionCode || '').trim();
                     const signature = `${t}_${c}`;
-                    return !processedSignatures.has(signature);
+                    // 1) Deduplicación existente (huella digital): no reprocesar lo ya registrado.
+                    if (processedSignatures.has(signature)) return false;
+
+                    // 2) Candado PRE-REGISTRO: evento anterior a createdAt → por defecto NO
+                    //    entra (CASO 3/4). Excepción controlada: bodega-FedEx + mismo día
+                    //    calendario (zona Hermosillo). NO toca el Time Shield del estatus.
+                    if (createdAtTime !== null && t < createdAtTime) {
+                        const sameDay = createdAtDay !== null &&
+                            toHermosilloDateString(new Date(e.date)) === createdAtDay;
+                        if (!(allowPreReg && sameDay)) return false;
+                    }
+
+                    return true;
                 });
 
                 // Orden cronológico para procesar historia (y posibles ingresos)
@@ -8833,16 +8947,22 @@ export class ShipmentsService {
                 // Este flujo solo actualiza historial y estatus; el ingreso de cargas se eliminó.
 
                 const hasODInHistory = subConfig.trackExternalDelivery && (
-                    scanEvents.some((e: any) => e.eventType === 'OD' && new Date(e.date).getTime() > lastOpTime) || 
+                    scanEvents.some((e: any) => e.eventType === 'OD' && new Date(e.date).getTime() > lastOpTime) ||
                     lsdHeader?.code === 'OD'
                 );
+
+                // ¿Algún evento nuevo es "cambio de fecha solicitada" (FedEx 17/84)?
+                let sawDateChange = false;
 
                 for (const event of newEvents) {
                     const eventDate = new Date(event.date);
                     const dCode = event.derivedStatusCode || '';
                     const eCode = (event.exceptionCode || '').trim();
-                    
+
                     let eventStatus: any = mapFedexStatusToLocalStatus(dCode, eCode);
+
+                    // Detecta el DEX de cambio de fecha ANTES de cualquier override (OD/anti-cobro).
+                    if (eventStatus === ShipmentStatusType.CAMBIO_FECHA_SOLICITADO) sawDateChange = true;
 
                     // 🛡️ BLINDAJE ANTI-COBROS FALSOS
                     if (hasODInHistory && (event.eventType === 'DL' || dCode === 'DL' || eCode === '005')) {
@@ -8952,6 +9072,21 @@ export class ShipmentsService {
                     const newCarrierCode = trackResult.trackingNumberInfo?.carrierCode;
                     const newReceivedBy = trackResult.deliveryDetails?.receivedByName;
 
+                    // ── CAMBIO DE FECHA SOLICITADA → sincroniza commitDateTime ──────
+                    // Misma prioridad de fuentes que el resto del sistema.
+                    let newCommitDateTime: Date | null = null;
+                    if (sawDateChange) {
+                        const rawCommit =
+                            trackResult.dateAndTimes?.find((d: any) =>
+                                ['ESTIMATED_DELIVERY', 'COMMIT', 'APPOINTMENT_DELIVERY'].includes(d?.type))?.dateTime ||
+                            trackResult.estimatedDeliveryTimeWindow?.window?.ends ||
+                            trackResult.standardTransitTimeWindow?.window?.ends;
+                        if (rawCommit) {
+                            const d = new Date(rawCommit);
+                            if (!isNaN(d.getTime())) newCommitDateTime = d;
+                        }
+                    }
+
                     for (const charge of chargeList) {
                         let hasChanges = false;
 
@@ -8970,6 +9105,13 @@ export class ShipmentsService {
                         }
                         if (newReceivedBy && (charge as any).receivedByName !== newReceivedBy) {
                             (charge as any).receivedByName = newReceivedBy;
+                            hasChanges = true;
+                        }
+                        // Cambio de fecha solicitada: actualiza commitDateTime si difiere.
+                        if (newCommitDateTime && (!(charge as any).commitDateTime ||
+                            new Date((charge as any).commitDateTime).getTime() !== newCommitDateTime.getTime())) {
+                            this.logger.log(`🗓️ [C2 - ${tn}] commitDateTime → ${newCommitDateTime.toISOString()} (cambio de fecha FedEx)`);
+                            (charge as any).commitDateTime = newCommitDateTime;
                             hasChanges = true;
                         }
 

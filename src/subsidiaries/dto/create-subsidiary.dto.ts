@@ -81,6 +81,7 @@ export class CreateSubsidiaryDto {
   @IsBoolean() @IsOptional() monitorFedexCode44?: boolean;
   @IsBoolean() @IsOptional() trackFedexExternalDelivery?: boolean;
   @IsBoolean() @IsOptional() forceFedexStatusOverride?: boolean;
+  @IsBoolean() @IsOptional() allowSameDayPreRegistrationFedexEvents?: boolean;
   @IsBoolean() @IsOptional() sortDispatchByPostalCode?: boolean;
   @IsBoolean() @IsOptional() validateDispatchByList?: boolean;
 
