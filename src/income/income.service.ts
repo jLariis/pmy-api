@@ -167,36 +167,46 @@ export class IncomeService {
       async getIncome(subsidiaryId: string, fromDate: Date, toDate: Date) {
         this.logger.log(`📊 Iniciando getIncome optimizado para sucursal=${subsidiaryId}`);
 
-        // 1. Definir rangos (Hermosillo Offset)
-        const startCurrentUTC = dayjs(fromDate).startOf('day').add(7, 'hour');
-        const endCurrentUTC = dayjs(toDate).endOf('day').add(7, 'hour');
-        
-        // El inicio real de nuestra búsqueda es hace 7 días desde la fecha inicial
-        const startLastWeekUTC = startCurrentUTC.subtract(7, 'day');
+        // 1. Definir rangos por DÍA LOCAL de Hermosillo (UTC-7).
+        //    OJO: el `income.date` NO es homogéneo entre orígenes:
+        //      - `charge`: se guarda como el día operativo a MEDIANOCHE LOCAL (00:00Z),
+        //        NO es un instante UTC real.
+        //      - `shipment`/`collection`: es un instante UTC real del evento.
+        //    Por eso la clasificación current/semana-pasada debe usar el MISMO criterio
+        //    por sourceType que `formatIncomesNew` (si no, una carga fechada el primer
+        //    día del rango caía en la franja 00:00–07:00 y se iba a "semana pasada",
+        //    desapareciendo de la tabla).
+        const toLocalInstant = (i: Income) =>
+            i.sourceType === 'charge' ? dayjs(i.date) : dayjs(i.date).subtract(7, 'hour');
 
-        // 2. UNA SOLA CONSULTA a la BD
+        const startCurrentLocal = dayjs(fromDate).startOf('day');
+        const endCurrentLocal = dayjs(toDate).endOf('day');
+        const startLastWeekLocal = startCurrentLocal.subtract(7, 'day');
+        const endLastWeekLocal = endCurrentLocal.subtract(7, 'day');
+
+        // 2. UNA SOLA CONSULTA a la BD. Los límites SQL son GENEROSOS para no perder filas
+        //    en frontera: límite inferior = medianoche local del primer día (semana pasada)
+        //    expresada en UTC (== 00:00Z para cargas); límite superior con +7h de holgura
+        //    para envíos cercanos a la medianoche local del último día.
         // Quitamos 'statusHistory' para ganar velocidad.
         const allIncomes = await this.incomeRepository.createQueryBuilder('income')
             .leftJoinAndSelect('income.shipment', 'shipment')
             .where('income.subsidiaryId = :subsidiaryId', { subsidiaryId })
-            .andWhere('income.date BETWEEN :start AND :end', { 
-                start: startLastWeekUTC.toDate(), 
-                end: endCurrentUTC.toDate() 
+            .andWhere('income.date BETWEEN :start AND :end', {
+                start: startLastWeekLocal.toDate(),
+                end: endCurrentLocal.add(7, 'hour').toDate()
             })
             .orderBy('income.date', 'ASC')
             .getMany();
 
-        // 3. Separar los datos en memoria
-        // Datos actuales: desde startCurrentUTC en adelante
-        const currentIncomes = allIncomes.filter(i => 
-            dayjs(i.date).isAfter(startCurrentUTC.subtract(1, 'second'))
-        );
+        // 3. Separar los datos en memoria por DÍA LOCAL (mismo criterio que el agrupado).
+        const inLocalRange = (i: Income, start: dayjs.Dayjs, end: dayjs.Dayjs) => {
+            const t = toLocalInstant(i);
+            return (t.isSame(start) || t.isAfter(start)) && (t.isSame(end) || t.isBefore(end));
+        };
 
-        // Datos semana pasada: entre startLastWeek y el inicio de esta semana
-        const lastWeekIncomes = allIncomes.filter(i => 
-            dayjs(i.date).isBefore(startCurrentUTC) && 
-            dayjs(i.date).isAfter(startLastWeekUTC.subtract(1, 'second'))
-        );
+        const currentIncomes = allIncomes.filter(i => inLocalRange(i, startCurrentLocal, endCurrentLocal));
+        const lastWeekIncomes = allIncomes.filter(i => inLocalRange(i, startLastWeekLocal, endLastWeekLocal));
 
         // 4. Formatear con las reglas de ingreso de la sucursal (regla única).
         const ctx = await this.getCountContext(subsidiaryId);
