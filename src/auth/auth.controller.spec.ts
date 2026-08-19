@@ -1,97 +1,59 @@
-import { JwtModule, JwtService } from '@nestjs/jwt'
+import { Logger } from '@nestjs/common'
 import { Test, TestingModule } from '@nestjs/testing'
-import { getRepositoryToken } from '@nestjs/typeorm'
-import { User } from 'src/entities'
-import { UsersService } from '../users/users.service'
-import { Repository } from 'typeorm'
 import { AuthController } from './auth.controller'
 import { AuthService } from './auth.service'
 import { LocalStrategy } from './strategies/local.strategy'
 import { BusinessException } from '../common/business.exception'
-import spyOn = jest.spyOn;
 
+// Los tests originales fallaban por DI sin proveer (AuthService arrastra ~9
+// dependencias) y validaban comportamiento obsoleto (JWT hardcodeado,
+// usersService.findOne). Se reescriben mockeando AuthService directamente y
+// ejercitando el LocalStrategy real contra ese mock (comportamiento actual).
 describe('AuthController', () => {
-    let controller: AuthController;
-    let authService: AuthService;
-    let usersService: UsersService;
-    let localStrategy: LocalStrategy;
-    const access_token = "sdfsdkfsdfw3ll3wl";
+  let controller: AuthController
+  let authService: { login: jest.Mock; validateUser: jest.Mock }
+  let localStrategy: LocalStrategy
 
-    beforeEach(async () => {
-        const module: TestingModule = await Test.createTestingModule({
-            imports: [JwtModule.register({
-                secret: 'secretKey',
-                signOptions: {
-                    expiresIn: '1h',
-                },
-            })],
-            providers: [
-                AuthService,
-                LocalStrategy,
-                JwtService,
-                UsersService,
-                {
-                    provide: getRepositoryToken(User),
-                    useClass: Repository,
-                },
-            ],
-            controllers: [AuthController],
-        }).compile()
+  beforeEach(async () => {
+    authService = { login: jest.fn(), validateUser: jest.fn() }
 
-        controller = module.get<AuthController>(AuthController);
-        authService = module.get<AuthService>(AuthService);
-        usersService = module.get<UsersService>(UsersService);
-        localStrategy = module.get<LocalStrategy>(LocalStrategy);
-    })
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        { provide: AuthService, useValue: authService },
+        { provide: Logger, useValue: { log: jest.fn(), error: jest.fn() } },
+        LocalStrategy,
+      ],
+      controllers: [AuthController],
+    }).compile()
 
-    it('should be defined', () => {
-        expect(controller).toBeDefined();
-    })
+    controller = module.get<AuthController>(AuthController)
+    localStrategy = module.get<LocalStrategy>(LocalStrategy)
+  })
 
-    it('should be able to login', async () => {
+  it('should be defined', () => {
+    expect(controller).toBeDefined()
+  })
 
+  it('login delega en authService.login con req.user', async () => {
+    const session = { access_token: 'signed.jwt.token', user: { id: '2', email: 'maria@x.com' } }
+    authService.login.mockResolvedValue(session)
 
+    const result = await controller.login({ user: { id: '2' }, body: {} } as any)
 
-        const userMock = {
-            username: 'maria',
-            password: 'guess',
-        };
+    expect(authService.login).toHaveBeenCalledWith({ id: '2' })
+    expect(result).toBe(session)
+  })
 
-        authService.login = jest.fn().mockReturnValue({ access_token: access_token })
-        usersService.findOne = jest.fn().mockReturnValue({
-            userId: 2,
-            username: 'maria',
-            password: 'guess',
-        });
+  it('LocalStrategy.validate devuelve el usuario cuando es válido', async () => {
+    const user = { id: '2', email: 'maria@x.com' }
+    authService.validateUser.mockResolvedValue(user)
 
-        spyOn(authService, 'login');
-        spyOn(usersService, 'findOne');
+    await expect(localStrategy.validate('maria@x.com', 'guess')).resolves.toBe(user)
+  })
 
-        let userFound = usersService.findOne(userMock.username);
-        let accessToken = authService.login(userFound);
+  it('LocalStrategy.validate lanza BusinessException cuando el usuario no es válido', async () => {
+    authService.validateUser.mockResolvedValue(null)
 
-        expect(accessToken).toEqual({ access_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VybmFtZSI6ImpvaG4iLCJpYXQiOjE2NzUyNjcxMTYsImV4cCI6MTY3NTI2NzE3Nn0.lpnkVVyD_luyP7mXdVtNSSWOXP5K6IzDgvI2nSAmG2E" })
-    })
-
-    it('should validate if the user is valid', async () => {
-
-        const user = {
-            username: 'maria',
-            password: 'guess',
-        };
-
-        let userIsValid = await localStrategy.validate(user.username, user.password);
-
-        expect(userIsValid).toStrictEqual({ 'userId': 2, 'username': 'maria' });
-    })
-
-    it('should validate if the user is not valid and throw business exception', async () => {
-
-        await expect(async () => {
-                await localStrategy.validate('', '');
-            },
-        ).rejects.toThrowError(BusinessException);
-    })
+    await expect(localStrategy.validate('', '')).rejects.toThrow(BusinessException)
+  })
 })
-
-

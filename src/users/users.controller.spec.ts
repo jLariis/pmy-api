@@ -8,7 +8,9 @@ describe('UsersController', () => {
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
       controllers: [UsersController],
-      providers: [UsersService],
+      // Mockeamos el servicio inyectado (evita resolver los repos TypeORM del
+      // UsersService real). Suficiente para el smoke test `should be defined`.
+      providers: [{ provide: UsersService, useValue: {} }],
     }).compile();
 
     controller = module.get<UsersController>(UsersController);

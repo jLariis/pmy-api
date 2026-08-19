@@ -8,7 +8,9 @@ describe('PickUpController', () => {
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
       controllers: [PickUpController],
-      providers: [PickUpService],
+      // Mockeamos el servicio inyectado (evita resolver los repos TypeORM del
+      // PickUpService real). Suficiente para el smoke test `should be defined`.
+      providers: [{ provide: PickUpService, useValue: {} }],
     }).compile();
 
     controller = module.get<PickUpController>(PickUpController);

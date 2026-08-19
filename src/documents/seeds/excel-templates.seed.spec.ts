@@ -363,7 +363,9 @@ describe('seedExcelTemplates', () => {
     expect(dataRow.getCell(1).value).toBe(1);
     expect(dataRow.getCell(2).value).toBe('T1');
     expect(dataRow.getCell(3).value).toBe('Ana');
-    expect(dataRow.getCell(6).value).toBe(500);
+    // La celda "Cobro" ahora se formatea vía formatPaymentDisplay (fuente única
+    // compartida con el PDF): monto sin tipo -> "$500.00"; sin cobro -> "N/A".
+    expect(dataRow.getCell(6).value).toBe('$500.00');
     expect(ws.getRow(headerRowNum + 2).getCell(6).value).toBe('N/A');
   });
 

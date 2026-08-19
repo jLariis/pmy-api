@@ -8,7 +8,9 @@ describe('RouteclosureController', () => {
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
       controllers: [RouteclosureController],
-      providers: [RouteclosureService],
+      // Mockeamos el servicio inyectado (evita resolver los repos TypeORM del
+      // RouteclosureService real). Suficiente para el smoke test `should be defined`.
+      providers: [{ provide: RouteclosureService, useValue: {} }],
     }).compile();
 
     controller = module.get<RouteclosureController>(RouteclosureController);
