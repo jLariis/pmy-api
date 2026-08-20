@@ -8,9 +8,10 @@ import { MailService } from 'src/mail/mail.service';
 import { Income } from 'src/entities/income.entity';
 import { FedexService } from 'src/shipments/fedex.service';
 import { DocumentsModule } from 'src/documents/documents.module';
+import { TrackingSyncModule } from 'src/tracking-sync/tracking-sync.module';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([RouteClosure, PackageDispatch, Income]), DocumentsModule],
+  imports: [TypeOrmModule.forFeature([RouteClosure, PackageDispatch, Income]), DocumentsModule, TrackingSyncModule],
   controllers: [RouteclosureController],
   providers: [RouteclosureService, MailService, FedexService],
 })

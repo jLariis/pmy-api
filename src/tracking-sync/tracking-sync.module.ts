@@ -60,5 +60,8 @@ import { SYNC_RULES } from './tracking-sync.types';
       inject: [TerminalLockRule, ExternalDeliveryRule, IncomeRule, NotificationRule],
     },
   ],
+  // Exportado para que el cierre a ruta reconcile/persista el estatus FedEx al abrir
+  // (RouteclosureService.reconcileRouteWithFedex).
+  exports: [TrackingCompareService],
 })
 export class TrackingSyncModule {}

@@ -8241,6 +8241,15 @@ export class ShipmentsService {
         return { map, networkErrors };
       }
 
+      // TODO(estatus-preexistente-mismo-día): revisar la PRECEDENCIA del último estatus.
+      // La reconciliación del cierre a ruta (RouteclosureService.reconcileRouteWithFedex →
+      // TrackingCompareService.applyByRoute) demostró que decidir por el EVENTO real de FedEx
+      // (occurredAt + selección de generación + candado de terminal) es más confiable que la
+      // lógica de precedencia por timestamp de escritura de este método (un EN_RUTA interno
+      // recién puesto puede "ganarle" a un evento FedEx real del mismo día a hora anterior).
+      // Evaluar migrar este método al pipeline de tracking-sync o, como mínimo, alinear su
+      // criterio de "evento más nuevo" al de FedexStatusResolver/EventReconciler.
+      // (Aplica igual a processChargeFedexUpdate, más abajo.)
       async processMasterFedexUpdate(shipmentsToUpdate: Shipment[]) {
         this.logger.log(`💎 Master Update (Titanium - Shield & Income Edition): Procesando ${shipmentsToUpdate.length} guías...`);
 
@@ -8769,6 +8778,10 @@ export class ShipmentsService {
         };
       }
 
+      // TODO(estatus-preexistente-mismo-día): mismo pendiente que processMasterFedexUpdate
+      // (ver comentario arriba). Este método actualiza los F2/charge a FedEx; revisar su
+      // criterio de precedencia del último estatus contra el de tracking-sync (applyByRoute
+      // ya reconcilia F2 correctamente al abrir el cierre a ruta).
       async processChargeFedexUpdate(chargeShipmentsToUpdate: ChargeShipment[]) {
         this.logger.log(`💎 Charge Update (Titanium - Shield Edition): Procesando ${chargeShipmentsToUpdate.length} cargas...`);
 

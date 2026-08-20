@@ -113,6 +113,50 @@ describe('TrackingCompareService batch loaders', () => {
   });
 });
 
+describe('TrackingCompareService.applyByRoute', () => {
+  function svcForRoute(historyRows: any[]) {
+    const shipmentRepo = { findOne: jest.fn(), find: jest.fn() } as any;
+    const chargeRepo = { findOne: jest.fn().mockResolvedValue(null), find: jest.fn() } as any;
+    const statusRepo = { find: jest.fn().mockResolvedValue([]) } as any;
+    const historyRepo = { find: jest.fn().mockResolvedValue(historyRows) } as any;
+    // FedEx devuelve datos → buildContext procede y se llama al sink.
+    const source = { fetch: jest.fn(async (items: any[]) => items.map((i) => ({ trackingNumber: i.trackingNumber, trackResults: [{}] }))) } as any;
+    const normalizer = { normalize: jest.fn().mockReturnValue({ events: [], latest: { status: 'entregado' }, validation: { ok: true, issues: [] } }) } as any;
+    const reconciler = { reconcile: jest.fn().mockReturnValue({ newEvents: [], proposedStatus: 'entregado', currentStatus: 'en_ruta', transition: null }) } as any;
+    const pipeline = { run: jest.fn().mockResolvedValue(undefined) } as any;
+    const sink = {
+      applyPlan: jest.fn(async (ctx: any) => ({
+        shipmentId: ctx.shipment.id, trackingNumber: ctx.shipment.trackingNumber, applied: true,
+        fromStatus: ctx.shipment.status, toStatus: ctx.proposedStatus, insertedEvents: 0,
+      })),
+    } as any;
+    return { svc: new TrackingCompareService(shipmentRepo, chargeRepo, statusRepo, historyRepo, source, normalizer, reconciler, pipeline, sink), sink };
+  }
+
+  const s1 = { id: 's1', trackingNumber: 'TN1', status: 'en_ruta' };
+  const f2 = { id: 'c9', trackingNumber: 'TN9', status: 'en_ruta' };
+  const historyRows = [
+    { shipment: s1, chargeShipment: null },
+    { shipment: null, chargeShipment: f2 },
+  ];
+
+  it('sin filtro: persiste shipments Y F2 de la ruta (uno por paquete)', async () => {
+    const { svc, sink } = svcForRoute(historyRows);
+    const out = await svc.applyByRoute('route-1', { role: 'operador' });
+    expect(sink.applyPlan).toHaveBeenCalledTimes(2);
+    expect(out.map((o) => o.shipmentId).sort()).toEqual(['c9', 's1']);
+    expect(out.every((o) => o.applied)).toBe(true);
+  });
+
+  it('kinds=[charge] (ruta 31.5): SOLO persiste los F2, no toca los shipments', async () => {
+    const { svc, sink } = svcForRoute(historyRows);
+    const out = await svc.applyByRoute('route-1', { role: 'operador' }, { kinds: ['charge'] });
+    expect(sink.applyPlan).toHaveBeenCalledTimes(1);
+    expect(out).toHaveLength(1);
+    expect(out[0].shipmentId).toBe('c9');
+  });
+});
+
 describe('TrackingCompareService.applyMany', () => {
   it('builds a context per shipment and delegates to the persistent sink', async () => {
     const shipment = { id: 's1', trackingNumber: 'TN1', status: 'en_ruta' };

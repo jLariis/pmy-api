@@ -38,6 +38,21 @@ export class RouteclosureController {
     return this.routeclosureService.validateTrackingNumbersForClosure(validateTrackingForClosure);
   }
 
+  // Se llama AL ABRIR el cierre a ruta: reconcilia y persiste el último estatus FedEx de
+  // todas las guías (shipments + F2), para que los buckets del cierre reflejen la realidad
+  // y el `en_ruta` interno no le gane al estatus real del mismo día.
+  @Post('reconcile/:packageDispatchId')
+  reconcileRouteWithFedex(
+    @Param('packageDispatchId') packageDispatchId: string,
+    @Req() req: any,
+  ) {
+    return this.routeclosureService.reconcileRouteWithFedex(packageDispatchId, {
+      userId: req.user?.userId,
+      userName: req.user?.name ?? req.user?.userName,
+      role: req.user?.role,
+    });
+  }
+
   @NoAudit() // Validación por escaneo durante el cierre: ruido, no auditable.
   @Post('validateNoVanTrackings')
   validateNoVanTrackings(

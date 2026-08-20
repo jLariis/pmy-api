@@ -6,6 +6,7 @@ import { PackageDispatch } from 'src/entities/package-dispatch.entity';
 import { MailService } from 'src/mail/mail.service';
 import { FedexService } from 'src/shipments/fedex.service';
 import { TemplateService } from 'src/documents/template.service';
+import { TrackingCompareService } from 'src/tracking-sync/tracking-compare.service';
 import { RouteclosureService } from './routeclosure.service';
 
 // Repositorio TypeORM mockeado (solo lo que el servicio pudiera invocar).
@@ -32,6 +33,7 @@ describe('RouteclosureService', () => {
         { provide: FedexService, useValue: {} },
         { provide: DataSource, useValue: { createQueryRunner: jest.fn() } },
         { provide: TemplateService, useValue: { render: jest.fn() } },
+        { provide: TrackingCompareService, useValue: { applyByRoute: jest.fn() } },
       ],
     }).compile();
 

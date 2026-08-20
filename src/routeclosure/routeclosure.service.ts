@@ -21,6 +21,9 @@ import { FedexService } from 'src/shipments/fedex.service';
 import { TemplateService } from 'src/documents/template.service';
 import { buildRouteClosureData, RouteClosureInput, RouteClosurePackage, RouteClosureNoVanPackage } from 'src/documents/data/route-closure.mapper';
 import { noVanIncomeDecision, NoVanFedexOutcome } from './novan-income.util';
+import { TrackingCompareService } from 'src/tracking-sync/tracking-compare.service';
+import { ApplyActor } from 'src/tracking-sync/sinks/persistent-sync.sink';
+import { TrackableKind } from 'src/tracking-sync/tracking-sync.types';
 
 @Injectable()
 export class RouteclosureService {
@@ -35,7 +38,44 @@ export class RouteclosureService {
     private readonly fedexService: FedexService,
     private readonly dataSource: DataSource,
     private readonly templateService: TemplateService,
+    private readonly trackingCompare: TrackingCompareService,
   ) {}
+
+  /**
+   * AL ABRIR el cierre a ruta: reconcilia contra FedEx el último estatus de TODAS las guías
+   * de la salida (shipments normales Y F2/charge), y PERSISTE el estatus correcto (historial
+   * + status) vía tracking-sync (selección de generación + candado de terminal + idempotente
+   * + auditado). Así el `EN_RUTA` interno recién puesto ya no le gana al estatus real de FedEx
+   * del mismo día (bug histórico del cierre).
+   *
+   * Regla 31.5: si la ruta es `is315` (todo F2), NO se revalidan los shipments normales, solo
+   * los F2. Nunca lanza por FedEx (cada guía resuelve su outcome), para no romper la apertura.
+   */
+  async reconcileRouteWithFedex(packageDispatchId: string, actor: ApplyActor) {
+    const dispatch = await this.packageDispatchRepository.findOne({ where: { id: packageDispatchId } });
+    if (!dispatch) {
+      throw new BadRequestException(`El despacho con ID ${packageDispatchId} no existe.`);
+    }
+
+    const kinds: TrackableKind[] = dispatch.is315 ? ['charge'] : ['shipment', 'charge'];
+    this.logger.log(
+      `🔄 [RouteClosure] Reconciliando ruta ${packageDispatchId} con FedEx (is315=${!!dispatch.is315}, kinds=${kinds.join(',')})...`,
+    );
+
+    const outcomes = await this.trackingCompare.applyByRoute(packageDispatchId, actor, { kinds });
+    const updated = outcomes.filter((o) => o.applied).length;
+    this.logger.log(
+      `✅ [RouteClosure] Reconciliación de ruta ${packageDispatchId}: ${updated}/${outcomes.length} guías actualizadas.`,
+    );
+
+    return {
+      packageDispatchId,
+      is315: !!dispatch.is315,
+      total: outcomes.length,
+      updated,
+      outcomes,
+    };
+  }
 
   async create(createRouteclosureDto: CreateRouteclosureDto, userId?: string) {
     const queryRunner = this.dataSource.createQueryRunner();
@@ -223,48 +263,56 @@ export class RouteclosureService {
         // al DÍA DE LA RUTA (routeIncomeDate) igual que el ingreso DHL. Guard por
         // (trackingNumber, sourceType=collection) para no duplicar si la guía ya tenía
         // ingreso de recolección.
-        const collectionCost = packageDispatch.subsidiary?.fedexCostPackage ?? 0;
+        //
+        // REGLA 31.5: si la ruta es `is315`, las recolecciones se SIGUEN registrando
+        // (arriba) pero NO generan ingreso — espejo del criterio de los No VAN, donde la
+        // ruta 31.5 tampoco cobra. Fuera de 31.5 el cobro es el de siempre.
+        if (packageDispatch.is315) {
+          this.logger.log('🟡 [RouteClosure] Ruta 31.5: las recolecciones NO generan ingreso.');
+        } else {
+          const collectionCost = packageDispatch.subsidiary?.fedexCostPackage ?? 0;
 
-        // Alerta de configuración: si la sucursal tiene costo 0, los ingresos de
-        // recolección se registran en $0 (consistente con el FINANCE_ERROR de DHL/FedEx).
-        if (collectionCost <= 0) {
-          this.logger.error(
-            `❌ FINANCE_ERROR: La sucursal "${packageDispatch.subsidiary?.name ?? packageDispatch.subsidiary?.id}" tiene fedexCostPackage=0; ` +
-            `los ingresos de recolección del cierre se registraron en $0. Revisa la configuración de costo FedEx.`,
-          );
-        }
-
-        const collectionIncomes = [];
-        for (const collection of savedCollections) {
-          const existingIncome = await queryRunner.manager.findOne(Income, {
-            where: {
-              trackingNumber: collection.trackingNumber,
-              sourceType: IncomeSourceType.COLLECTION,
-            },
-          });
-
-          if (existingIncome) {
-            this.logger.warn(`⚠️ [RouteClosure] Ya existe ingreso de recolección para ${collection.trackingNumber}. Omitiendo cobro.`);
-            continue;
+          // Alerta de configuración: si la sucursal tiene costo 0, los ingresos de
+          // recolección se registran en $0 (consistente con el FINANCE_ERROR de DHL/FedEx).
+          if (collectionCost <= 0) {
+            this.logger.error(
+              `❌ FINANCE_ERROR: La sucursal "${packageDispatch.subsidiary?.name ?? packageDispatch.subsidiary?.id}" tiene fedexCostPackage=0; ` +
+              `los ingresos de recolección del cierre se registraron en $0. Revisa la configuración de costo FedEx.`,
+            );
           }
 
-          collectionIncomes.push(queryRunner.manager.create(Income, {
-            trackingNumber: collection.trackingNumber,
-            subsidiary: packageDispatch.subsidiary,
-            shipmentType: ShipmentType.FEDEX,
-            cost: collectionCost,
-            incomeType: IncomeStatus.ENTREGADO,
-            isGrouped: false,
-            sourceType: IncomeSourceType.COLLECTION,
-            collection: { id: collection.id },
-            date: routeIncomeDate, // día de la RUTA, no del cierre
-            createdById: userId ?? null,
-          }));
-        }
+          const collectionIncomes = [];
+          for (const collection of savedCollections) {
+            const existingIncome = await queryRunner.manager.findOne(Income, {
+              where: {
+                trackingNumber: collection.trackingNumber,
+                sourceType: IncomeSourceType.COLLECTION,
+              },
+            });
 
-        if (collectionIncomes.length > 0) {
-          await queryRunner.manager.save(Income, collectionIncomes);
-          this.logger.log(`🟢 [RouteClosure] Se crearon ${collectionIncomes.length} ingresos de recolección.`);
+            if (existingIncome) {
+              this.logger.warn(`⚠️ [RouteClosure] Ya existe ingreso de recolección para ${collection.trackingNumber}. Omitiendo cobro.`);
+              continue;
+            }
+
+            collectionIncomes.push(queryRunner.manager.create(Income, {
+              trackingNumber: collection.trackingNumber,
+              subsidiary: packageDispatch.subsidiary,
+              shipmentType: ShipmentType.FEDEX,
+              cost: collectionCost,
+              incomeType: IncomeStatus.ENTREGADO,
+              isGrouped: false,
+              sourceType: IncomeSourceType.COLLECTION,
+              collection: { id: collection.id },
+              date: routeIncomeDate, // día de la RUTA, no del cierre
+              createdById: userId ?? null,
+            }));
+          }
+
+          if (collectionIncomes.length > 0) {
+            await queryRunner.manager.save(Income, collectionIncomes);
+            this.logger.log(`🟢 [RouteClosure] Se crearon ${collectionIncomes.length} ingresos de recolección.`);
+          }
         }
       }
 

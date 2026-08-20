@@ -61,8 +61,70 @@ export class TrackingCompareService {
   }
 
   async compareByRoute(routeId: string): Promise<CompareResult[]> {
-    // Pertenencia HISTÓRICA (package_dispatch_history), no el FK vivo: un paquete pudo
-    // reasignarse a otra ruta después. Incluye normales (shipment) Y F2 (chargeShipment).
+    return this.compareManyItems(await this.gatherRouteItems(routeId));
+  }
+
+  /**
+   * Reconcilia y PERSISTE (status-only) todas las guías de una salida a ruta contra FedEx.
+   * Es el "compareByRoute + applyMany" en UNA sola pasada (una llamada FedEx por paquete),
+   * pensado para correr AL ABRIR el cierre a ruta: deja el estatus almacenado alineado con
+   * el último estatus real de FedEx antes de clasificar buckets, así el `en_ruta` interno
+   * recién puesto ya no puede "ganarle" al estatus real del mismo día.
+   *
+   * `opts.kinds` limita qué tipos se tocan: en rutas 31.5 (todo F2) se pasa `['charge']`
+   * para NO revalidar los shipments normales. Nunca lanza: cada paquete resuelve su propio
+   * outcome (skipped si FedEx no dio datos), para que abrir el cierre no se rompa si FedEx falla.
+   */
+  async applyByRoute(
+    routeId: string,
+    actor: ApplyActor,
+    opts: { kinds?: TrackableKind[] } = {},
+  ): Promise<ApplyOutcome[]> {
+    let items = await this.gatherRouteItems(routeId);
+    if (opts.kinds?.length) {
+      const allowed = new Set(opts.kinds);
+      items = items.filter((it) => allowed.has(it.kind));
+    }
+    const limit = createLimit(6);
+    return Promise.all(
+      items.map((it) =>
+        limit(async () => {
+          try {
+            const built = await this.buildContext(it.entity, it.kind);
+            if (!built) {
+              return {
+                shipmentId: it.entity.id,
+                trackingNumber: it.entity.trackingNumber,
+                applied: false,
+                fromStatus: it.entity.status,
+                toStatus: null,
+                insertedEvents: 0,
+                skippedReason: 'Sin datos FedEx',
+              } as ApplyOutcome;
+            }
+            return this.persistentSink.applyPlan(built.ctx, actor);
+          } catch (err: any) {
+            return {
+              shipmentId: it.entity.id,
+              trackingNumber: it.entity.trackingNumber,
+              applied: false,
+              fromStatus: it.entity.status,
+              toStatus: null,
+              insertedEvents: 0,
+              error: err?.message ?? 'Error reconciliando',
+            } as ApplyOutcome;
+          }
+        }),
+      ),
+    );
+  }
+
+  /**
+   * Reúne los rastreables (normales + F2) de una ruta por pertenencia HISTÓRICA
+   * (package_dispatch_history), no el FK vivo: un paquete pudo reasignarse a otra ruta
+   * después. Dedup por (tipo, id).
+   */
+  private async gatherRouteItems(routeId: string): Promise<CompareItem[]> {
     const history = await this.dispatchHistoryRepo.find({
       where: { dispatch: { id: routeId } },
       relations: ['shipment', 'shipment.subsidiary', 'chargeShipment', 'chargeShipment.subsidiary'],
@@ -79,7 +141,7 @@ export class TrackingCompareService {
         items.push({ entity: h.chargeShipment, kind: 'charge' });
       }
     }
-    return this.compareManyItems(items);
+    return items;
   }
 
   async compareByConsolidated(consolidatedId: string): Promise<CompareResult[]> {
