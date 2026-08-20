@@ -1,4 +1,5 @@
 import { KpiService } from './kpi.service';
+import { ShipmentStatusType } from 'src/common/enums/shipment-status-type.enum';
 
 /**
  * Welcome dashboard — sección "Sin escaneo local" debe usar el código que MONITOREA cada sucursal:
@@ -47,5 +48,23 @@ describe('KpiService.getWelcomeDashboard — código de escaneo por sucursal', (
     expect(stats.withoutDEX).toBe(1);
     expect(withoutDEXPackages[0].trackingNumber).toBe('solo67');
     expect(withoutDEXPackages[0].missingDocument).toBe('Código 44');
+  });
+
+  it('consulta "sin escaneo" incluye TODOS los estatus activos (no solo PENDIENTE/EN_BODEGA)', async () => {
+    // Regresión: sucursales como Caborca/Santa Ana/Sonoyta/Puerto Peñasco subcontaban
+    // porque el filtro se acotaba a [PENDIENTE, EN_BODEGA]. Debe abarcar el set activo.
+    const svc = svcWith([]);
+    await svc.getWelcomeDashboard('sub-1');
+    const call = svc.shipmentRepository.find.mock.calls[0][0];
+    const statuses: any[] = call.where.status?._value ?? [];
+    expect(statuses).toEqual(expect.arrayContaining([
+      ShipmentStatusType.PENDIENTE,
+      ShipmentStatusType.EN_BODEGA,
+      ShipmentStatusType.EN_RUTA,
+      ShipmentStatusType.EN_TRANSITO,
+      ShipmentStatusType.RECIBIDO_EN_BODEGA,
+      ShipmentStatusType.RECOLECCION,
+      ShipmentStatusType.DESCONOCIDO,
+    ]));
   });
 });

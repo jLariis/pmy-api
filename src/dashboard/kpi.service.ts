@@ -61,7 +61,7 @@ export class KpiService {
   // ===================== Welcome Dashboard (resumen de inicio) =====================
 
   /** Estatus "activos" (no entregados/devueltos) para vencimientos y pendientes. */
-  private readonly WELCOME_ACTIVE_STATUSES = [
+  private static readonly WELCOME_ACTIVE_STATUSES = [
     ShipmentStatusType.PENDIENTE,
     ShipmentStatusType.EN_RUTA,
     ShipmentStatusType.EN_BODEGA,
@@ -101,7 +101,7 @@ export class KpiService {
     const subFilter: any = subsidiaryId ? { subsidiary: { id: subsidiaryId } } : {};
 
     // --- 1. Vencen hoy: commitDateTime dentro de HOY + activos ---
-    const expWhere: any = { ...subFilter, status: In(this.WELCOME_ACTIVE_STATUSES), commitDateTime: Between(todayStart, todayEnd) };
+    const expWhere: any = { ...subFilter, status: In(KpiService.WELCOME_ACTIVE_STATUSES), commitDateTime: Between(todayStart, todayEnd) };
     const [expShipments, expShipTotal] = await this.shipmentRepository.findAndCount({
       where: expWhere, relations: ['subsidiary'], order: { commitDateTime: 'ASC' }, take: LIST_LIMIT,
     });
@@ -122,7 +122,7 @@ export class KpiService {
 
     // --- 2. Pendientes de días anteriores: commit < hoy + activos (últimos 60 días) ---
     const overdueFrom = new Date(todayStart.getTime() - 60 * 24 * 3600 * 1000);
-    const penWhere: any = { ...subFilter, status: In(this.WELCOME_ACTIVE_STATUSES), commitDateTime: Between(overdueFrom, new Date(todayStart.getTime() - 1)) };
+    const penWhere: any = { ...subFilter, status: In(KpiService.WELCOME_ACTIVE_STATUSES), commitDateTime: Between(overdueFrom, new Date(todayStart.getTime() - 1)) };
     const [penShipments, penShipTotal] = await this.shipmentRepository.findAndCount({
       where: penWhere, relations: ['subsidiary'], order: { commitDateTime: 'DESC' }, take: LIST_LIMIT,
     });
@@ -138,11 +138,16 @@ export class KpiService {
       createdAt: (s.commitDateTime ? new Date(s.commitDateTime) : s.createdAt || now).toISOString(),
     }));
 
-    // --- 3. Sin escaneo local: PENDIENTE o EN_BODEGA cuyo historial NO tiene el código que
+    // --- 3. Sin escaneo local: paquetes ACTIVOS cuyo historial NO tiene el código que
     // MONITOREA SU sucursal — 67 por default, o 44 si `monitorFedexCode44` (mismo criterio que
     // MonitoringService / getMissingScanReportMulti). Así las sucursales de 44 ven lo del 44 y
-    // las de 67 lo del 67. ---
-    const scanStatuses = [ShipmentStatusType.PENDIENTE, ShipmentStatusType.EN_BODEGA];
+    // las de 67 lo del 67.
+    //
+    // Antes se acotaba a [PENDIENTE, EN_BODEGA], lo que SUBCONTABA: sucursales como
+    // Caborca/Santa Ana/Sonoyta/Puerto Peñasco tienen guías sin escaneo en otros estatus
+    // activos (EN_RUTA, EN_TRANSITO, RECIBIDO_EN_BODEGA, RECOLECCION, DESCONOCIDO) y no
+    // aparecían. Ahora se usa el mismo set activo que las secciones 1 y 2. ---
+    const scanStatuses = KpiService.WELCOME_ACTIVE_STATUSES;
     const scanCodeOf = (s: any): '67' | '44' => (s.subsidiary?.monitorFedexCode44 === true ? '44' : '67');
     const [sScan, cScan] = await Promise.all([
       this.shipmentRepository.find({ where: { ...subFilter, status: In(scanStatuses) }, relations: ['statusHistory', 'subsidiary'], take: 500 }),

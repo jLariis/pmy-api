@@ -10,7 +10,7 @@
     {
       "name": "frontend",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["--prefix", "../app-pmy", "exec", "--", "next", "dev", "-H", "0.0.0.0"],
+      "runtimeArgs": ["--prefix", "../app-pmy", "run", "dev:lean"],
       "port": 4000,
       "autoPort": true
     }

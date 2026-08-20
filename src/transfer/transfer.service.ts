@@ -52,8 +52,17 @@ export class TransferService {
       createTransferDto.totalAmount = baseAmount + extraAmount + secondAboardAmount;
 
       // 4. Save Transfer
+      // `vehicleId`/`driverIds` NO son columnas de la entidad: el vehículo es una relación
+      // ManyToOne (FK vehicleId vía JoinColumn) y `drivers` es ManyToMany (tabla puente
+      // transfer_drivers). Esparcir el DTO no los persiste, por eso se cableaban en null.
+      // Aquí se setean explícitamente para que se guarden. También se registra el `amount`
+      // base (antes quedaba en 0; el cobro real vive en `totalAmount`).
+      const { vehicleId, driverIds, ...transferRest } = createTransferDto;
       const transfer = queryRunner.manager.create(Transfer, {
-        ...createTransferDto,
+        ...transferRest,
+        amount: baseAmount,
+        vehicle: vehicleId ? ({ id: vehicleId } as any) : null,
+        drivers: driverIds && driverIds.length > 0 ? driverIds.map((id) => ({ id }) as any) : null,
         createdById: userId,
       });
 
@@ -92,7 +101,7 @@ export class TransferService {
 
   async findAll(): Promise<Transfer[]> {
     return await this.transferRepository.find({
-      relations: ['origin', 'destination', 'vehicle', 'drivers'],
+      relations: ['origin', 'destination', 'vehicle', 'drivers', 'createdBy'],
       order: {
         createdAt: 'DESC',
       },
@@ -102,7 +111,7 @@ export class TransferService {
   async findBySubsidiary(subsidiaryId: string): Promise<Transfer[]> {
     return await this.transferRepository.find({
       where: { origin: { id: subsidiaryId } },
-      relations: ['origin', 'destination', 'vehicle', 'drivers'],
+      relations: ['origin', 'destination', 'vehicle', 'drivers', 'createdBy'],
       order: {
         createdAt: 'DESC',
       },
