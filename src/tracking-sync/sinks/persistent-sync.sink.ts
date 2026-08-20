@@ -93,6 +93,7 @@ export class PersistentSyncSink {
         });
       }
 
+      const latest = ctx.normalized?.latest ?? null;
       return {
         shipmentId: shipment.id,
         trackingNumber: shipment.trackingNumber,
@@ -100,6 +101,9 @@ export class PersistentSyncSink {
         fromStatus,
         toStatus: toStatus ?? fromStatus,
         insertedEvents: inserted,
+        kind: ctx.kind,
+        exceptionCode: latest?.exceptionCode ?? null,
+        eventAt: latest?.occurredAt ? new Date(latest.occurredAt).toISOString() : null,
       };
     } catch (err: any) {
       this.logger.error(`applyPlan ${shipment.trackingNumber}: ${err?.message}`);

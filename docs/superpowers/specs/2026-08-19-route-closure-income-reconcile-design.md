@@ -1,7 +1,7 @@
 # Reconciliación de ingresos en el cierre a ruta
 
 Fecha: 2026-08-19
-Estado: aprobado (pendiente de plan de implementación)
+Estado: IMPLEMENTADO (commit inline; ver `income-reconcile.util.ts` + `RouteclosureService.reconcileRouteIncome`)
 
 ## Contexto y problema
 

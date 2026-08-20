@@ -99,6 +99,7 @@ export class TrackingCompareService {
                 fromStatus: it.entity.status,
                 toStatus: null,
                 insertedEvents: 0,
+                kind: it.kind,
                 skippedReason: 'Sin datos FedEx',
               } as ApplyOutcome;
             }
@@ -111,6 +112,7 @@ export class TrackingCompareService {
               fromStatus: it.entity.status,
               toStatus: null,
               insertedEvents: 0,
+              kind: it.kind,
               error: err?.message ?? 'Error reconciliando',
             } as ApplyOutcome;
           }

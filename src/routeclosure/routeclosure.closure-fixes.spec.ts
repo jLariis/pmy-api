@@ -8,6 +8,7 @@ import { IncomeSourceType } from 'src/common/enums/income-source-type.enum';
 import { IncomeStatus } from 'src/common/enums/income-status.enum';
 import { PackageDispatchService } from 'src/package-dispatch/package-dispatch.service';
 import { PackageDispatch, Shipment } from 'src/entities';
+import { ShipmentStatusType } from 'src/common/enums/shipment-status-type.enum';
 
 /**
  * Verificación de las correcciones del CIERRE A RUTA (route-closure).
@@ -188,19 +189,31 @@ describe('RouteclosureService.create — (1) No VAN → FedEx → ingreso', () =
 //     (mata el bug de "en_ruta interno gana al estatus real del mismo día").
 // ===========================================================================
 describe('RouteclosureService.reconcileRouteWithFedex — (3) revalidación FedEx al abrir', () => {
-  function makeService(packageDispatch: any) {
-    const applyByRoute = jest.fn().mockResolvedValue([
-      { shipmentId: 's1', trackingNumber: 'TN1', applied: true, fromStatus: 'en_ruta', toStatus: 'entregado', insertedEvents: 1 },
-    ]);
+  const subsidiary = { id: 'S1', name: 'Test', fedexCostPackage: 45 };
+
+  function makeService(packageDispatch: any, opts: { outcomes?: any[]; existingByTracking?: Record<string, any[]> } = {}) {
+    const outcomes = opts.outcomes ?? [
+      { shipmentId: 's1', trackingNumber: 'TN1', applied: true, fromStatus: 'en_ruta', toStatus: ShipmentStatusType.ENTREGADO, insertedEvents: 1, kind: 'shipment', exceptionCode: null, eventAt: '2026-08-12T20:00:00Z' },
+    ];
+    const applyByRoute = jest.fn().mockResolvedValue(outcomes);
+    const savedIncomes: any[] = [];
+    const updatedIncomes: any[] = [];
+    const incomeRepo = {
+      find: jest.fn(async ({ where }: any) => opts.existingByTracking?.[where.trackingNumber] ?? []),
+      create: jest.fn((data: any) => data),
+      save: jest.fn(async (data: any) => { savedIncomes.push(data); return data; }),
+      update: jest.fn(async (id: string, patch: any) => { updatedIncomes.push({ id, patch }); }),
+    };
     const svc = Object.create(RouteclosureService.prototype) as any;
     svc.logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
     svc.trackingCompare = { applyByRoute };
     svc.packageDispatchRepository = { findOne: jest.fn().mockResolvedValue(packageDispatch) };
-    return { svc, applyByRoute };
+    svc.dataSource = { getRepository: () => incomeRepo };
+    return { svc, applyByRoute, incomeRepo, savedIncomes, updatedIncomes };
   }
 
   it('ruta NORMAL: reconcilia shipments Y F2 (ambos kinds)', async () => {
-    const { svc, applyByRoute } = makeService({ id: 'PD-1', is315: false });
+    const { svc, applyByRoute } = makeService({ id: 'PD-1', is315: false, subsidiary });
     const res = await svc.reconcileRouteWithFedex('PD-1', { userId: 'U1', role: 'operador' });
 
     expect(applyByRoute).toHaveBeenCalledTimes(1);
@@ -211,12 +224,66 @@ describe('RouteclosureService.reconcileRouteWithFedex — (3) revalidación FedE
     expect(res.updated).toBe(1);
   });
 
-  it('ruta 31.5 (is315): SOLO reconcilia los F2 (no busca actualizar los shipments)', async () => {
-    const { svc, applyByRoute } = makeService({ id: 'PD-1', is315: true });
-    await svc.reconcileRouteWithFedex('PD-1', { userId: 'U1', role: 'operador' });
+  it('ruta 31.5 (is315): SOLO reconcilia los F2 y NO toca ingresos', async () => {
+    const { svc, applyByRoute, savedIncomes, updatedIncomes } = makeService({ id: 'PD-1', is315: true, subsidiary });
+    const res = await svc.reconcileRouteWithFedex('PD-1', { userId: 'U1', role: 'operador' });
 
     const [, , opts] = applyByRoute.mock.calls[0];
     expect(opts.kinds).toEqual(['charge']);
+    expect(savedIncomes).toHaveLength(0);
+    expect(updatedIncomes).toHaveLength(0);
+    expect(res.incomeCreated).toBe(0);
+  });
+
+  it('backfill: shipment ENTREGADO sin ingreso previo → crea Income SHIPMENT con costo de sucursal', async () => {
+    const { svc, savedIncomes } = makeService({ id: 'PD-1', is315: false, subsidiary });
+    const res = await svc.reconcileRouteWithFedex('PD-1', { userId: 'U1' });
+
+    expect(savedIncomes).toHaveLength(1);
+    expect(savedIncomes[0].incomeType).toBe(IncomeStatus.ENTREGADO);
+    expect(savedIncomes[0].sourceType).toBe(IncomeSourceType.SHIPMENT);
+    expect(Number(savedIncomes[0].cost)).toBe(45);
+    expect(res.incomeCreated).toBe(1);
+  });
+
+  it('supersede: existía DEX del MISMO día y ahora está ENTREGADO → actualiza esa fila a ENTREGADO', async () => {
+    const { svc, updatedIncomes, savedIncomes } = makeService(
+      { id: 'PD-1', is315: false, subsidiary },
+      { existingByTracking: { TN1: [{ id: 'INC-DEX', incomeType: IncomeStatus.NO_ENTREGADO, date: new Date('2026-08-12T18:00:00Z') }] } },
+    );
+    const res = await svc.reconcileRouteWithFedex('PD-1', { userId: 'U1' });
+
+    expect(savedIncomes).toHaveLength(0);
+    expect(updatedIncomes).toHaveLength(1);
+    expect(updatedIncomes[0].id).toBe('INC-DEX');
+    expect(updatedIncomes[0].patch.incomeType).toBe(IncomeStatus.ENTREGADO);
+    expect(updatedIncomes[0].patch.nonDeliveryStatus).toBeNull();
+    expect(res.incomeSuperseded).toBe(1);
+  });
+
+  it('cross-day: DEX de OTRO día + ENTREGADO hoy → conserva el DEX y crea el ENTREGADO', async () => {
+    const outcomes = [
+      { shipmentId: 's1', trackingNumber: 'TN1', applied: true, fromStatus: 'en_ruta', toStatus: ShipmentStatusType.ENTREGADO, insertedEvents: 1, kind: 'shipment', exceptionCode: null, eventAt: '2026-08-13T20:00:00Z' },
+    ];
+    const { svc, savedIncomes, updatedIncomes } = makeService(
+      { id: 'PD-1', is315: false, subsidiary },
+      { outcomes, existingByTracking: { TN1: [{ id: 'INC-DEX', incomeType: IncomeStatus.NO_ENTREGADO, date: new Date('2026-08-12T18:00:00Z') }] } },
+    );
+    await svc.reconcileRouteWithFedex('PD-1', { userId: 'U1' });
+
+    expect(updatedIncomes).toHaveLength(0); // el DEX se conserva
+    expect(savedIncomes).toHaveLength(1);
+    expect(savedIncomes[0].incomeType).toBe(IncomeStatus.ENTREGADO);
+  });
+
+  it('skip charge: un outcome kind=charge NO genera ni toca ingresos', async () => {
+    const outcomes = [
+      { shipmentId: 'c9', trackingNumber: 'TN9', applied: true, fromStatus: 'en_ruta', toStatus: ShipmentStatusType.ENTREGADO, insertedEvents: 1, kind: 'charge', exceptionCode: null, eventAt: '2026-08-12T20:00:00Z' },
+    ];
+    const { svc, savedIncomes } = makeService({ id: 'PD-1', is315: false, subsidiary }, { outcomes });
+    await svc.reconcileRouteWithFedex('PD-1', { userId: 'U1' });
+
+    expect(savedIncomes).toHaveLength(0);
   });
 
   it('despacho inexistente → BadRequestException', async () => {

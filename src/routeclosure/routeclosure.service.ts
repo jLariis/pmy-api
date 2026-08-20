@@ -13,7 +13,7 @@ import { ShipmentStatus, Collection, Shipment, Income, ChargeShipment, ShipmentN
 import { DispatchStatus } from 'src/common/enums/dispatch-enum';
 import { MailService } from 'src/mail/mail.service';
 import { fromZonedTime } from 'date-fns-tz';
-import { hermosilloDayStartFromInstant } from 'src/common/utils';
+import { hermosilloDayStartFromInstant, toHermosilloDateString } from 'src/common/utils';
 import { ShipmentType } from 'src/common/enums/shipment-type.enum';
 import { IncomeStatus } from 'src/common/enums/income-status.enum';
 import { IncomeSourceType } from 'src/common/enums/income-source-type.enum';
@@ -24,6 +24,8 @@ import { noVanIncomeDecision, NoVanFedexOutcome } from './novan-income.util';
 import { TrackingCompareService } from 'src/tracking-sync/tracking-compare.service';
 import { ApplyActor } from 'src/tracking-sync/sinks/persistent-sync.sink';
 import { TrackableKind } from 'src/tracking-sync/tracking-sync.types';
+import { ApplyOutcome } from 'src/tracking-sync/compare.types';
+import { reconcileShipmentIncomeAction, ExistingShipmentIncome } from './income-reconcile.util';
 
 @Injectable()
 export class RouteclosureService {
@@ -52,7 +54,10 @@ export class RouteclosureService {
    * los F2. Nunca lanza por FedEx (cada guía resuelve su outcome), para no romper la apertura.
    */
   async reconcileRouteWithFedex(packageDispatchId: string, actor: ApplyActor) {
-    const dispatch = await this.packageDispatchRepository.findOne({ where: { id: packageDispatchId } });
+    const dispatch = await this.packageDispatchRepository.findOne({
+      where: { id: packageDispatchId },
+      relations: ['subsidiary'],
+    });
     if (!dispatch) {
       throw new BadRequestException(`El despacho con ID ${packageDispatchId} no existe.`);
     }
@@ -68,13 +73,132 @@ export class RouteclosureService {
       `✅ [RouteClosure] Reconciliación de ruta ${packageDispatchId}: ${updated}/${outcomes.length} guías actualizadas.`,
     );
 
+    // Reconciliación de INGRESOS (solo shipments; is315 no toca nada; ENTREGADO > DEX mismo día).
+    const income = await this.reconcileRouteIncome(dispatch, outcomes, actor.userId);
+
     return {
       packageDispatchId,
       is315: !!dispatch.is315,
       total: outcomes.length,
       updated,
+      incomeCreated: income.incomeCreated,
+      incomeSuperseded: income.incomeSuperseded,
       outcomes,
     };
+  }
+
+  /**
+   * Estatus "no entregado" que SÍ cobran (espejo de generateIncomes en shipments.service):
+   * el resto de desenlaces no-entregados (03, 17, 84, operativos, etc.) no generan ingreso aquí.
+   */
+  private static readonly CHARGEABLE_NON_DELIVERY: ShipmentStatusType[] = [
+    ShipmentStatusType.RECHAZADO,
+    ShipmentStatusType.CLIENTE_NO_DISPONIBLE,
+    ShipmentStatusType.DEVUELTO_A_FEDEX,
+    ShipmentStatusType.NO_ENTREGADO,
+  ];
+
+  /** Deriva el outcome FedEx (para noVanIncomeDecision) desde el estatus reconciliado. */
+  private buildOutcomeForIncome(o: ApplyOutcome): NoVanFedexOutcome {
+    const status = o.toStatus;
+    const delivered = status === ShipmentStatusType.ENTREGADO;
+    const isChargeableDex =
+      !delivered && !!status && RouteclosureService.CHARGEABLE_NON_DELIVERY.includes(status);
+    return {
+      trackingNumber: o.trackingNumber,
+      delivered,
+      dexCode: isChargeableDex ? (o.exceptionCode || null) : null,
+      resolved: !!status,
+    };
+  }
+
+  /**
+   * Reconcilia los INGRESOS de la ruta tras persistir estatus. Solo shipments (los charge/F2 no
+   * cobran); `is315` no toca nada. Backfill de faltantes + precedencia ENTREGADO>DEX del mismo
+   * día (actualiza la fila DEX en su lugar). Idempotente. Nunca lanza por guía.
+   */
+  private async reconcileRouteIncome(
+    dispatch: PackageDispatch,
+    outcomes: ApplyOutcome[],
+    userId?: string,
+  ): Promise<{ incomeCreated: number; incomeSuperseded: number }> {
+    if (dispatch.is315) {
+      this.logger.log('🟡 [RouteClosure] Ruta 31.5: no se reconcilian ingresos.');
+      return { incomeCreated: 0, incomeSuperseded: 0 };
+    }
+
+    const shipmentOutcomes = outcomes.filter((o) => o.kind !== 'charge');
+    const cost = dispatch.subsidiary?.fedexCostPackage ?? 0;
+    const incomeRepo = this.dataSource.getRepository(Income);
+    let incomeCreated = 0;
+    let incomeSuperseded = 0;
+
+    for (const o of shipmentOutcomes) {
+      try {
+        const decision = noVanIncomeDecision(this.buildOutcomeForIncome(o));
+        if (!decision) continue;
+
+        const instant = o.eventAt
+          ? new Date(o.eventAt)
+          : (dispatch.routeDate ?? dispatch.createdAt ?? new Date());
+        const deliveryDay = toHermosilloDateString(instant);
+        const incomeDate = hermosilloDayStartFromInstant(instant);
+
+        const existingRows = await incomeRepo.find({
+          where: { trackingNumber: o.trackingNumber, sourceType: IncomeSourceType.SHIPMENT },
+        });
+        const existing: ExistingShipmentIncome = {
+          entregado: existingRows.some((r) => r.incomeType === IncomeStatus.ENTREGADO),
+          dex: (() => {
+            const dexRow = existingRows.find((r) => r.incomeType === IncomeStatus.NO_ENTREGADO);
+            return dexRow ? { id: dexRow.id, day: toHermosilloDateString(dexRow.date) } : undefined;
+          })(),
+        };
+
+        const action = reconcileShipmentIncomeAction({ decision, deliveryDay, existing });
+        if (action.type === 'none') continue;
+
+        if (cost <= 0) {
+          this.logger.error(
+            `❌ FINANCE_ERROR: La sucursal "${dispatch.subsidiary?.name ?? dispatch.subsidiary?.id}" tiene fedexCostPackage=0; ` +
+            `el ingreso de la guía ${o.trackingNumber} se registró en $0. Revisa la configuración de costo FedEx.`,
+          );
+        }
+
+        if (action.type === 'create') {
+          await incomeRepo.save(
+            incomeRepo.create({
+              trackingNumber: o.trackingNumber,
+              subsidiary: dispatch.subsidiary,
+              shipmentType: ShipmentType.FEDEX,
+              cost,
+              incomeType: action.incomeType,
+              nonDeliveryStatus: action.nonDeliveryStatus,
+              isGrouped: false,
+              sourceType: IncomeSourceType.SHIPMENT,
+              shipment: { id: o.shipmentId } as Shipment,
+              date: incomeDate,
+              createdById: userId ?? null,
+            }),
+          );
+          incomeCreated++;
+        } else if (action.type === 'supersede') {
+          await incomeRepo.update(action.incomeId, {
+            incomeType: IncomeStatus.ENTREGADO,
+            nonDeliveryStatus: null,
+            date: incomeDate,
+          });
+          incomeSuperseded++;
+        }
+      } catch (err: any) {
+        this.logger.warn(`⚠️ [RouteClosure] No se pudo reconciliar el ingreso de ${o.trackingNumber}: ${err?.message}`);
+      }
+    }
+
+    this.logger.log(
+      `💰 [RouteClosure] Ingresos reconciliados en ${dispatch.id}: ${incomeCreated} creados, ${incomeSuperseded} reemplazados.`,
+    );
+    return { incomeCreated, incomeSuperseded };
   }
 
   async create(createRouteclosureDto: CreateRouteclosureDto, userId?: string) {
