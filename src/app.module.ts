@@ -42,6 +42,7 @@ import { NotificationsModule } from './notifications/notifications.module';
 import { RbacModule } from './rbac/rbac.module';
 import { CompanySettingsModule } from './company-settings/company-settings.module';
 import { ChargeRulesModule } from './charge-rules/charge-rules.module';
+import { HolidaysModule } from './holidays/holidays.module';
 import { WhatsappSettingsModule } from './whatsapp-settings/whatsapp-settings.module';
 import { WhatsappGatewayModule } from './whatsapp-gateway/whatsapp-gateway.module';
 import { WhatsappTemplatesModule } from './whatsapp-templates/whatsapp-templates.module';
@@ -111,6 +112,7 @@ import { TrackingSyncModule } from './tracking-sync/tracking-sync.module';
     RbacModule,
     CompanySettingsModule,
     ChargeRulesModule,
+    HolidaysModule,
     WhatsappSettingsModule,
     WhatsappGatewayModule,
     WhatsappTemplatesModule,

@@ -2,6 +2,7 @@ import { BadRequestException, forwardRef, HttpStatus, Inject, Injectable, Intern
 import { InjectRepository } from '@nestjs/typeorm';
 import { resolveChargeCost } from './charge-cost';
 import { isSundayOrMexHoliday } from './sunday-holiday.util';
+import { HolidaysService } from 'src/holidays/holidays.service';
 import { Between, Brackets, EntityManager, In, Repository } from 'typeorm';
 import { Shipment } from 'src/entities/shipment.entity';
 import { ShipmentStatusType, TERMINAL_SHIPMENT_STATUSES } from 'src/common/enums/shipment-status-type.enum';
@@ -108,6 +109,7 @@ export class ShipmentsService {
     private readonly mailService: MailService,
     private dataSource: DataSource,
     private readonly templateService: TemplateService,
+    private readonly holidaysService: HolidaysService,
   ) { }
 
   async appendLogToFile(message: string) {
@@ -888,7 +890,9 @@ export class ShipmentsService {
 
       // Carga 1.5 ton: usa chargeCostHalfTon si aplica, si no el chargeCost normal.
       // Sobreprecio si la carga se trabaja en domingo/festivo (fecha del consolidado).
-      const chargeIsSundayHoliday = isSundayOrMexHoliday(consDate || new Date());
+      // Festivos = lista fija Art. 74 (código) + los adicionales del usuario (tabla holiday).
+      const extraHolidays = await this.holidaysService.getHolidayInputs();
+      const chargeIsSundayHoliday = isSundayOrMexHoliday(consDate || new Date(), extraHolidays);
       const chargeCostToUse = resolveChargeCost(chargeSubsidiary, isHalfTon, chargeIsSundayHoliday);
 
       // 3. Procesamiento Atómico Paquete por Paquete
@@ -1206,10 +1210,12 @@ export class ShipmentsService {
         try {
           // Carga 1.5 ton: usa chargeCostHalfTon si aplica, si no el chargeCost normal.
           // Sobreprecio si la carga se trabaja en domingo/festivo (fecha del consolidado).
+          // Festivos = lista fija Art. 74 (código) + los adicionales del usuario (tabla holiday).
+          const extraHolidays = await this.holidaysService.getHolidayInputs();
           const chargeCostToUse = resolveChargeCost(
             chargeSubsidiary,
             isHalfTon,
-            isSundayOrMexHoliday(consDate || new Date()),
+            isSundayOrMexHoliday(consDate || new Date(), extraHolidays),
           );
 
           console.log("💵 Creating income with cost:", chargeCostToUse, "| isHalfTon:", isHalfTon);

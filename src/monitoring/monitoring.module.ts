@@ -21,6 +21,7 @@ import { DhlService } from 'src/shipments/dhl.service';
 import { GeocodeModule } from 'src/geocode/geocode.module';
 import { DocumentsModule } from 'src/documents/documents.module';
 import { EmailLogModule } from 'src/email-log/email-log.module';
+import { HolidaysModule } from 'src/holidays/holidays.module';
 
 
 @Module({
@@ -29,6 +30,7 @@ import { EmailLogModule } from 'src/email-log/email-log.module';
     GeocodeModule,
     DocumentsModule,
     EmailLogModule,
+    HolidaysModule,
   ],
   controllers: [MonitoringController],
   providers: [

@@ -56,3 +56,4 @@ export * from './template-variable-def.entity';
 export * from './template-render-log.entity';
 export * from './email-log.entity';
 export * from './email-attachment.entity';
+export * from './holiday.entity';

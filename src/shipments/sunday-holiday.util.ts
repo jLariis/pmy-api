@@ -23,7 +23,21 @@ const TZ = 'America/Hermosillo';
 /** Feriados de fecha fija, como 'MM-dd'. */
 const FIXED_HOLIDAYS = new Set(['01-01', '05-01', '09-16', '12-25']);
 
-export function isSundayOrMexHoliday(input: string | Date): boolean {
+/**
+ * Día festivo ADICIONAL capturado por el usuario (tabla `holiday`, global).
+ *  - `date`      = 'YYYY-MM-DD'.
+ *  - `recurring` = true → coincide cada año por mes-día; false/omitido → solo esa fecha exacta.
+ */
+export interface ExtraHoliday {
+  date: string;
+  recurring?: boolean;
+}
+
+/**
+ * ¿La fecha es domingo, feriado fijo (Art. 74 LFT) o uno de los festivos ADICIONALES
+ * que capturó el usuario? Los `extra` complementan la lista fija (no la reemplazan).
+ */
+export function isSundayOrMexHoliday(input: string | Date, extra: ExtraHoliday[] = []): boolean {
   const d = input instanceof Date ? input : new Date(input);
   if (isNaN(d.getTime())) return false;
 
@@ -43,6 +57,17 @@ export function isSundayOrMexHoliday(input: string | Date): boolean {
     if (month === 2 && nth === 1) return true; // Constitución
     if (month === 3 && nth === 3) return true; // Benito Juárez
     if (month === 11 && nth === 3) return true; // Revolución
+  }
+
+  // Festivos adicionales del usuario.
+  for (const h of extra) {
+    const hymd = String(h?.date ?? '').slice(0, 10);
+    if (hymd.length !== 10) continue;
+    if (h?.recurring) {
+      if (hymd.slice(5) === md) return true; // mismo mes-día, cualquier año
+    } else if (hymd === ymd) {
+      return true; // fecha exacta
+    }
   }
 
   return false;

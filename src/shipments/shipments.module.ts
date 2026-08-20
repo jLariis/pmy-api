@@ -15,10 +15,11 @@ import { Unloading } from 'src/entities/unloading.entity';
 import { DhlService } from './dhl.service';
 import { WhereParcelDhlService } from 'src/tracking/where-parcel-dhl.service';
 import { DocumentsModule } from 'src/documents/documents.module';
+import { HolidaysModule } from 'src/holidays/holidays.module';
 
 @Module({
   controllers: [ShipmentsController],
-  imports: [TypeOrmModule.forFeature([Shipment, ShipmentStatus,Subsidiary, Income, Charge, ChargeShipment, Consolidated, ForPickUp, PackageDispatch, Consolidated, Unloading]), TrackingModule, DocumentsModule],
+  imports: [TypeOrmModule.forFeature([Shipment, ShipmentStatus,Subsidiary, Income, Charge, ChargeShipment, Consolidated, ForPickUp, PackageDispatch, Consolidated, Unloading]), TrackingModule, DocumentsModule, HolidaysModule],
   providers: [ShipmentsService, FedexService, DhlService, SubsidiariesService, ConsolidatedService, MailService, WhereParcelDhlService],
   exports: [ShipmentsService],
 })

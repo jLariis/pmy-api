@@ -16,9 +16,10 @@ import { PackageDispatchHistory } from 'src/entities/package-dispatch-history.en
 import { DhlService } from 'src/shipments/dhl.service';
 import { DocumentsModule } from 'src/documents/documents.module';
 import { EmailLogModule } from 'src/email-log/email-log.module';
+import { HolidaysModule } from 'src/holidays/holidays.module';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([PackageDispatch, Shipment, ChargeShipment, Subsidiary, Consolidated, Devolution, Income, Charge, ShipmentStatus, ForPickUp, Unloading, PackageDispatchHistory]), DocumentsModule, EmailLogModule], // Add your entities here
+  imports: [TypeOrmModule.forFeature([PackageDispatch, Shipment, ChargeShipment, Subsidiary, Consolidated, Devolution, Income, Charge, ShipmentStatus, ForPickUp, Unloading, PackageDispatchHistory]), DocumentsModule, EmailLogModule, HolidaysModule], // Add your entities here
   controllers: [PackageDispatchController],
   providers: [PackageDispatchService, MailService, FedexService, ShipmentsService, DhlService, SubsidiariesService, ConsolidatedService],
 })

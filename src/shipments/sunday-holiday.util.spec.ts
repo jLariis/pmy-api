@@ -46,4 +46,30 @@ describe('isSundayOrMexHoliday', () => {
   it('acepta string ISO', () => {
     expect(isSundayOrMexHoliday('2026-05-01T12:00:00.000Z')).toBe(true);
   });
+
+  describe('festivos adicionales del usuario', () => {
+    it('festivo extra de FECHA EXACTA cuenta solo ese día', () => {
+      const extra = [{ date: '2026-08-25', recurring: false }];
+      expect(isSundayOrMexHoliday(at('2026-08-25'), extra)).toBe(true); // martes normal, pero festivo extra
+      expect(isSundayOrMexHoliday(at('2026-08-26'), extra)).toBe(false);
+      expect(isSundayOrMexHoliday(at('2027-08-25'), extra)).toBe(false); // otro año: no aplica (no recurrente)
+    });
+
+    it('festivo extra RECURRENTE cuenta el mismo mes-día cada año', () => {
+      const extra = [{ date: '2026-06-10', recurring: true }];
+      expect(isSundayOrMexHoliday(at('2026-06-10'), extra)).toBe(true);
+      expect(isSundayOrMexHoliday(at('2027-06-10'), extra)).toBe(true); // otro año: sí aplica
+      expect(isSundayOrMexHoliday(at('2026-06-11'), extra)).toBe(false);
+    });
+
+    it('los extra COMPLEMENTAN la lista fija (no la rompen)', () => {
+      const extra = [{ date: '2026-08-25', recurring: false }];
+      expect(isSundayOrMexHoliday(at('2026-01-01'), extra)).toBe(true); // fijo sigue contando
+      expect(isSundayOrMexHoliday(at('2026-08-16'), extra)).toBe(true); // domingo sigue contando
+    });
+
+    it('sin extra se comporta igual que antes', () => {
+      expect(isSundayOrMexHoliday(at('2026-08-25'))).toBe(false);
+    });
+  });
 });
