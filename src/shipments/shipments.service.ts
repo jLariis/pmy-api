@@ -1,6 +1,7 @@
 import { BadRequestException, forwardRef, HttpStatus, Inject, Injectable, InternalServerErrorException, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { resolveChargeCost } from './charge-cost';
+import { isSundayOrMexHoliday } from './sunday-holiday.util';
 import { Between, Brackets, EntityManager, In, Repository } from 'typeorm';
 import { Shipment } from 'src/entities/shipment.entity';
 import { ShipmentStatusType, TERMINAL_SHIPMENT_STATUSES } from 'src/common/enums/shipment-status-type.enum';
@@ -886,7 +887,9 @@ export class ShipmentsService {
       let chargeConsolidated: Consolidated | null = null;
 
       // Carga 1.5 ton: usa chargeCostHalfTon si aplica, si no el chargeCost normal.
-      const chargeCostToUse = resolveChargeCost(chargeSubsidiary, isHalfTon);
+      // Sobreprecio si la carga se trabaja en domingo/festivo (fecha del consolidado).
+      const chargeIsSundayHoliday = isSundayOrMexHoliday(consDate || new Date());
+      const chargeCostToUse = resolveChargeCost(chargeSubsidiary, isHalfTon, chargeIsSundayHoliday);
 
       // 3. Procesamiento Atómico Paquete por Paquete
       for (const data of shipmentsToProcess) {
@@ -1202,7 +1205,12 @@ export class ShipmentsService {
       if (chargeCreated && savedChargeShipments.length > 0 && chargeSubsidiary) {
         try {
           // Carga 1.5 ton: usa chargeCostHalfTon si aplica, si no el chargeCost normal.
-          const chargeCostToUse = resolveChargeCost(chargeSubsidiary, isHalfTon);
+          // Sobreprecio si la carga se trabaja en domingo/festivo (fecha del consolidado).
+          const chargeCostToUse = resolveChargeCost(
+            chargeSubsidiary,
+            isHalfTon,
+            isSundayOrMexHoliday(consDate || new Date()),
+          );
 
           console.log("💵 Creating income with cost:", chargeCostToUse, "| isHalfTon:", isHalfTon);
 

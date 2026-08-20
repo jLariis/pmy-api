@@ -82,7 +82,7 @@ export class Subsidiary {
   chargeCost: number;
 
   // Costo de carga de 1.5 toneladas. 0 = no aplica para esta sucursal.
-  // Se siembra en 3900 solo para Hermosillo (migración 1786000000045).
+  // Se siembra en 4228 solo para Hermosillo (migración 1786000000045 / ...053).
   @Column({
     type: 'decimal',
     precision: 10,
@@ -90,6 +90,26 @@ export class Subsidiary {
     default: 0.00,
   })
   chargeCostHalfTon: number;
+
+  // Sobreprecio de carga F2 normal en domingo/festivo. 0 = no aplica (usa chargeCost).
+  // Se siembra en 6660 para Hermosillo (migración 1786000000053).
+  @Column({
+    type: 'decimal',
+    precision: 10,
+    scale: 2,
+    default: 0.00,
+  })
+  chargeCostSundayHoliday: number;
+
+  // Sobreprecio de carga 1.5 ton en domingo/festivo. 0 = no aplica (usa chargeCostHalfTon).
+  // Se siembra en 6004 para Hermosillo (migración 1786000000053).
+  @Column({
+    type: 'decimal',
+    precision: 10,
+    scale: 2,
+    default: 0.00,
+  })
+  chargeCostHalfTonSundayHoliday: number;
 
   @Column({
     type: 'decimal',

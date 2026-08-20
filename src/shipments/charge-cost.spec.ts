@@ -22,4 +22,35 @@ describe('resolveChargeCost (carga 1.5 toneladas)', () => {
     expect(resolveChargeCost({ chargeCost: null, chargeCostHalfTon: null }, true)).toBe(0);
     expect(resolveChargeCost({}, false)).toBe(0);
   });
+
+  describe('sobreprecio domingo/festivo', () => {
+    const hmo = {
+      chargeCost: 4440,
+      chargeCostHalfTon: 4228,
+      chargeCostSundayHoliday: 6660,
+      chargeCostHalfTonSundayHoliday: 6004,
+    };
+
+    it('carga normal (F2) en domingo/festivo usa chargeCostSundayHoliday', () => {
+      expect(resolveChargeCost(hmo, false, true)).toBe(6660);
+    });
+
+    it('carga 1.5 ton en domingo/festivo usa chargeCostHalfTonSundayHoliday', () => {
+      expect(resolveChargeCost(hmo, true, true)).toBe(6004);
+    });
+
+    it('en día normal (no domingo/festivo) usa la base aunque haya sobreprecio', () => {
+      expect(resolveChargeCost(hmo, false, false)).toBe(4440);
+      expect(resolveChargeCost(hmo, true, false)).toBe(4228);
+    });
+
+    it('sin sobreprecio configurado (0), domingo/festivo cae a la base', () => {
+      expect(resolveChargeCost({ chargeCost: 1200, chargeCostHalfTon: 3900 }, false, true)).toBe(1200);
+      expect(resolveChargeCost({ chargeCost: 1200, chargeCostHalfTon: 3900 }, true, true)).toBe(3900);
+    });
+
+    it('maneja el sobreprecio como string (decimal de MySQL)', () => {
+      expect(resolveChargeCost({ chargeCost: '4440.00', chargeCostSundayHoliday: '6660.00' }, false, true)).toBe(6660);
+    });
+  });
 });

@@ -51,6 +51,15 @@ export class CreateSubsidiaryDto {
   chargeCost?: number;
 
   @IsOptional()
+  chargeCostHalfTon?: number;
+
+  @IsOptional()
+  chargeCostSundayHoliday?: number;
+
+  @IsOptional()
+  chargeCostHalfTonSundayHoliday?: number;
+
+  @IsOptional()
   tycoAmount?: number;
 
   @IsOptional()
