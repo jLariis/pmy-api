@@ -53,6 +53,7 @@ import { SupportModule } from './support/support.module';
 import { DocumentsModule } from './documents/documents.module';
 import { TrackingSyncModule } from './tracking-sync/tracking-sync.module';
 import { ImportFilesModule } from './import-files/import-files.module';
+import { ApprovalsModule } from './approvals/approvals.module';
 
 @Module({
   imports: [
@@ -127,6 +128,7 @@ import { ImportFilesModule } from './import-files/import-files.module';
     FedexStatusModule,
     TrackingSyncModule,
     ImportFilesModule,
+    ApprovalsModule,
   ],
   controllers: [AppController],
   providers: [
