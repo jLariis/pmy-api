@@ -53,6 +53,10 @@ export class Consolidated {
   @Column({ nullable: true })
   createdById: string;
 
+  /** Baja lógica (borrado con aprobación). false ⇒ oculto en vistas operativas. */
+  @Column({ default: true })
+  active: boolean;
+
   @BeforeInsert()
   setDefaults() {
     this.createdAt = new Date(); // Fecha en UTC

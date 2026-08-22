@@ -254,6 +254,14 @@ export class Subsidiary {
   @Column({ default: false })
   allowRouteClosureWithOtherStatus: boolean;
 
+  /**
+   * Encargado/Supervisor que autoriza los borrados (consolidado / salida a ruta)
+   * de esta sucursal. Es un usuario registrado, configurable en Configuración.
+   * Si es null, el aprobador cae al primer superadmin activo (Admin Principal).
+   */
+  @Column({ nullable: true })
+  supervisorUserId: string | null;
+
   @BeforeInsert()
   setCreatedAt() {
     this.createdAt = new Date(); // Fecha en UTC

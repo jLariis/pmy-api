@@ -96,7 +96,11 @@ export class ChargeShipment {
       @Index()
       @Column({ nullable: true, default: null })
       consolidatedId: string;
-    
+
+      /** Baja lógica en cascada al dar de baja su consolidado. */
+      @Column({ default: true })
+      active: boolean;
+
       @Column({ nullable: true, default: false})
       isHighValue: boolean;
     
