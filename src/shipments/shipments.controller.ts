@@ -19,6 +19,7 @@ import { BusinessException } from 'src/common/business.exception';
 import { NoAudit } from 'src/audit/audit.decorator';
 import { WhereParcelDhlService } from 'src/tracking/where-parcel-dhl.service';
 import { runDhlTrackingCycle, runDhlWebhookRegistrationCycle } from 'src/tracking/dhl-tracking-cycle';
+import { ImportFilesService } from 'src/import-files/import-files.service';
 
 @ApiTags('shipments')
 @ApiBearerAuth()
@@ -29,7 +30,8 @@ export class ShipmentsController {
   constructor(
     private readonly shipmentsService: ShipmentsService,
     private readonly fedexService: FedexService,
-    private readonly whereParcelService: WhereParcelDhlService
+    private readonly whereParcelService: WhereParcelDhlService,
+    private readonly importFiles: ImportFilesService,
   ) {}
 
   /**
@@ -330,6 +332,16 @@ export class ShipmentsController {
       );
 
       this.logger.log(`${tag} OK en ${((Date.now() - t0) / 1000).toFixed(1)}s → guardadas=${result?.saved ?? '?'} dup=${result?.duplicated ?? 0} err=${result?.failed ?? 0}`);
+
+      try {
+        await this.importFiles.persist(
+          { originalname: file.originalname, buffer: file.buffer, mimetype: file.mimetype },
+          { kind: 'master', subsidiaryId: dto.subsidiaryId, consNumber: dto.consNumber || '', rowCount: result?.saved ?? null, uploadedById: req?.user?.userId, uploadedByName: req?.user?.name },
+        );
+      } catch (e) {
+        this.logger.warn(`[upload] no se pudo guardar import_file: ${(e as any)?.message}`);
+      }
+
       return res.status(HttpStatus.OK).json(result);
 
   } catch (error) {
@@ -400,7 +412,7 @@ export class ShipmentsController {
       },
     },
   })
-  uploadChargeFile(
+  async uploadChargeFile(
     @UploadedFile() file: Express.Multer.File,
     @Body('subsidiaryId') subsidiaryId: string,
     @Body('consNumber') consNumber: string,
@@ -433,13 +445,20 @@ export class ShipmentsController {
       dateForCons = new Date(consDate);
     }
 
-    if(shouldNotRemove) {
-      console.log('🔍 Calling addChargeShipments');
-      return this.shipmentsService.addChargeShipments(file, subsidiaryId, consNumber, dateForCons, req?.user?.userId, halfTon);
+    const result = shouldNotRemove
+      ? await this.shipmentsService.addChargeShipments(file, subsidiaryId, consNumber, dateForCons, req?.user?.userId, halfTon)
+      : await this.shipmentsService.processFileF2(file, subsidiaryId, consNumber, dateForCons, req?.user?.userId, halfTon);
+
+    try {
+      await this.importFiles.persist(
+        { originalname: file.originalname, buffer: file.buffer, mimetype: file.mimetype },
+        { kind: 'f2', subsidiaryId, consNumber, rowCount: (result as any)?.saved ?? null, uploadedById: req?.user?.userId, uploadedByName: req?.user?.name },
+      );
+    } catch (e) {
+      this.logger.warn(`[upload-charge] no se pudo guardar import_file: ${(e as any)?.message}`);
     }
 
-    console.log('🔍 Calling processFileF2');
-    return this.shipmentsService.processFileF2(file, subsidiaryId, consNumber, dateForCons, req?.user?.userId, halfTon);
+    return result;
   }
 
   @Post('upload-payment')
@@ -461,11 +480,21 @@ export class ShipmentsController {
       },
     },
   })
-  uploadPaymentFile(
+  async uploadPaymentFile(
     @UploadedFile() file: Express.Multer.File,
     @Body('consNumber') consNumber?: string,
+    @Req() req?: any,
   ) {
-    return this.shipmentsService.processFileCharges(file, consNumber);
+    const result = await this.shipmentsService.processFileCharges(file, consNumber);
+    try {
+      await this.importFiles.persist(
+        { originalname: file.originalname, buffer: file.buffer, mimetype: file.mimetype },
+        { kind: 'payment', subsidiaryId: null, consNumber: consNumber ?? null, rowCount: (result as any)?.saved ?? null, uploadedById: req?.user?.userId, uploadedByName: req?.user?.name },
+      );
+    } catch (e) {
+      this.logger.warn(`[upload-payment] no se pudo guardar import_file: ${(e as any)?.message}`);
+    }
+    return result;
   }
 
   @Post('upload-hv')
@@ -487,10 +516,22 @@ export class ShipmentsController {
       },
     },
   })
-  uploadHighValueShipment(
-    @UploadedFile() file: Express.Multer.File
+  async uploadHighValueShipment(
+    @UploadedFile() file: Express.Multer.File,
+    @Body('subsidiaryId') subsidiaryId?: string,
+    @Body('consNumber') consNumber?: string,
+    @Req() req?: any,
   ) {
-    return this.shipmentsService.processHihValueShipments(file);
+    const result = await this.shipmentsService.processHihValueShipments(file);
+    try {
+      await this.importFiles.persist(
+        { originalname: file.originalname, buffer: file.buffer, mimetype: file.mimetype },
+        { kind: 'high_value', subsidiaryId: subsidiaryId ?? null, consNumber: consNumber ?? null, rowCount: (result as any)?.saved ?? null, uploadedById: req?.user?.userId, uploadedByName: req?.user?.name },
+      );
+    } catch (e) {
+      this.logger.warn(`[upload-hv] no se pudo guardar import_file: ${(e as any)?.message}`);
+    }
+    return result;
   }
 
   @Post('upload-dhl')
