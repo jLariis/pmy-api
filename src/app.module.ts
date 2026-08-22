@@ -52,6 +52,7 @@ import { ServerStatsModule } from './server-stats/server-stats.module';
 import { SupportModule } from './support/support.module';
 import { DocumentsModule } from './documents/documents.module';
 import { TrackingSyncModule } from './tracking-sync/tracking-sync.module';
+import { ImportFilesModule } from './import-files/import-files.module';
 
 @Module({
   imports: [
@@ -125,6 +126,7 @@ import { TrackingSyncModule } from './tracking-sync/tracking-sync.module';
     ReturningModule,
     FedexStatusModule,
     TrackingSyncModule,
+    ImportFilesModule,
   ],
   controllers: [AppController],
   providers: [
