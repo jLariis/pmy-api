@@ -4,6 +4,7 @@ import {
   pickSheetWithHeaders,
   parseDynamicSheet,
   parseDynamicFileF2,
+  parseDynamicSheetCharge,
 } from './file-upload.utils';
 
 /** Helper: arma un workbook en memoria a partir de hojas {nombre: filas[][]}. */
@@ -141,5 +142,24 @@ describe('parseDynamicFileF2', () => {
     const res = parseDynamicFileF2(sheet);
     expect(res.map((r) => r.trackingNumber)).toEqual(['999999999999', '888888888888']);
     expect(res[0].recipientName).toBe('TIENDA');
+  });
+});
+
+describe('parseDynamicSheetCharge (cobro embebido usa el mismo parsePaymentCell)', () => {
+  it('extrae COD/FTC + monto robusto y omite filas sin cobro', () => {
+    const sheet = XLSX.utils.aoa_to_sheet([
+      ['Tracking Number', 'Recip Addr', 'COD'],
+      ['383264471120', 'Calle 1', 'COD-COLLECT CASH 2500.0 MXP'],
+      ['383011751254', 'Av 22', 'FTC 980 MXP'],
+      ['383000000000', 'Sin cobro', ''],
+    ]);
+    const res = parseDynamicSheetCharge(sheet);
+    expect(res).toHaveLength(2);
+    const a = res.find((r: any) => r.trackingNumber === '383264471120');
+    expect(a.payment.type).toBe('COD');
+    expect(a.payment.amount).toBe(2500);
+    const b = res.find((r: any) => r.trackingNumber === '383011751254');
+    expect(b.payment.type).toBe('FTC');
+    expect(b.payment.amount).toBe(980);
   });
 });

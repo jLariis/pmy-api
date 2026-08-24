@@ -6060,24 +6060,16 @@ export class ShipmentsService {
       // -----------------------
       // PAYMENT (igual que antes)
       // -----------------------
-      if (shipment.payment) {
-        const typeMatch = shipment.payment.match(/^(COD|FTC|ROD)/);
-        const amountMatch = shipment.payment.match(/([0-9]+(?:\.[0-9]+)?)/);
-
-        if (amountMatch) {
-          const paymentType = typeMatch ? typeMatch[1] as PaymentTypeEnum : null;
-          const paymentAmount = parseFloat(amountMatch[1]);
-
-          if (!isNaN(paymentAmount) && paymentAmount > 0) {
-            newShipment.payment = Object.assign(new Payment(), {
-              amount: paymentAmount,
-              type: paymentType,
-              status: histories.some(h => h.status === ShipmentStatusType.ENTREGADO)
-                ? PaymentStatus.PAID
-                : PaymentStatus.PENDING,
-            });
-          }
-        }
+      // Método ÚNICO de interpretación de cobro (mismo parsePaymentCell que el resto).
+      const parsedPayment = parsePaymentCell(shipment.payment);
+      if (parsedPayment) {
+        newShipment.payment = Object.assign(new Payment(), {
+          amount: parsedPayment.amount,
+          type: parsedPayment.type as PaymentTypeEnum | null,
+          status: histories.some(h => h.status === ShipmentStatusType.ENTREGADO)
+            ? PaymentStatus.PAID
+            : PaymentStatus.PENDING,
+        });
       }
 
       // aplicar histories ya procesado
