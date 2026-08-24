@@ -2,6 +2,7 @@ import {
   dayCountInclusive,
   proratedAmountInRange,
   dailyShareForDay,
+  consultedRangeLabel,
   ProratableExpense,
 } from './expense-proration.util';
 
@@ -43,5 +44,17 @@ describe('expense-proration', () => {
     const days = ['2026-07-01', '2026-07-02', '2026-07-03', '2026-07-04', '2026-07-05'];
     const sum = days.reduce((s, d) => s + dailyShareForDay(payroll, d), 0);
     expect(sum).toBeCloseTo(proratedAmountInRange(payroll, '2026-07-01', '2026-07-05'), 6);
+  });
+
+  it('consultedRangeLabel: single date when start equals end', () => {
+    expect(consultedRangeLabel('2026-08-20', '2026-08-20')).toBe('20/08/2026');
+  });
+
+  it('consultedRangeLabel: dd/mm/yyyy range when start differs from end', () => {
+    expect(consultedRangeLabel('2026-08-14', '2026-08-20')).toBe('14/08/2026 – 20/08/2026');
+  });
+
+  it('consultedRangeLabel: empty string when a bound is missing', () => {
+    expect(consultedRangeLabel(null, '2026-08-20')).toBe('');
   });
 });

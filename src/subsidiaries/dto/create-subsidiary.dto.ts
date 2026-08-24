@@ -104,4 +104,10 @@ export class CreateSubsidiaryDto {
 
   // Cierre de ruta: permitir cerrar con paquetes en "otros estatus" (solo Hermosillo por ahora).
   @IsBoolean() @IsOptional() allowRouteClosureWithOtherStatus?: boolean;
+
+  // Encargado/Supervisor que autoriza los borrados de esta sucursal (usuario registrado).
+  @IsString() @IsOptional() supervisorUserId?: string | null;
+
+  // Cobros: sumar el segundo abordo (secondAbordAmount) al costo de cargas F2/31.5 normales.
+  @IsBoolean() @IsOptional() chargeSecondAbord?: boolean;
 }

@@ -565,7 +565,8 @@ export class PackageDispatchService {
     // los paquetes se devuelven como conteo y el detalle se pide aparte por id.
     const applyFilters = <T extends import('typeorm').SelectQueryBuilder<PackageDispatch>>(qb: T): T => {
       qb.where('subsidiary.id = :subsidiaryId', { subsidiaryId })
-        .andWhere('pd.createdAt BETWEEN :start AND :end', { start, end });
+        .andWhere('pd.createdAt BETWEEN :start AND :end', { start, end })
+        .andWhere('pd.active = :active', { active: true });
       if (search) qb.andWhere('pd.trackingNumber LIKE :search', { search: `%${search}%` });
       return qb;
     };

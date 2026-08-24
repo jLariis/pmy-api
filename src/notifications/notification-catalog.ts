@@ -38,6 +38,10 @@ const CATALOG: Record<string, Partial<Presentation>> = {
   'operacion.cierre_ruta':  { category: 'operacion', icon: 'flag',       severity: 'info', channels: ['bell'] },
   'operacion.traslados':    { category: 'operacion', icon: 'arrow-left-right', severity: 'info', channels: ['bell'] },
   'operacion.gastos':       { category: 'operacion', icon: 'receipt',    severity: 'info', channels: ['bell'] },
+  // ---- Autorizaciones (borrado con aprobación) ----
+  'aprobacion.solicitada': { category: 'operacion', icon: 'gavel',       severity: 'warning', channels: ['bell', 'email'] },
+  'aprobacion.aprobada':   { category: 'operacion', icon: 'check-circle', severity: 'info',    channels: ['bell', 'email'] },
+  'aprobacion.rechazada':  { category: 'operacion', icon: 'x-circle',     severity: 'warning', channels: ['bell', 'email'] },
 };
 
 const DEFAULT_PRESENTATION: Presentation = {

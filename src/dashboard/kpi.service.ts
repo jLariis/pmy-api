@@ -94,11 +94,26 @@ export class KpiService {
    * Resumen de inicio de sesión: pendientes de días anteriores, sin DEX/67 y
    * paquetes que vencen hoy. Acotado por sucursal (si se pasa) y por tamaño.
    */
-  async getWelcomeDashboard(subsidiaryId?: string) {
+  async getWelcomeDashboard(subsidiaryIds?: string[]) {
     const { todayStart, todayEnd } = this.hermosilloToday();
     const now = new Date();
     const LIST_LIMIT = 100;
-    const subFilter: any = subsidiaryId ? { subsidiary: { id: subsidiaryId } } : {};
+    // Scoping por sucursal: una o varias (In). Sin lista → todas (el controller ya
+    // resolvió el alcance por rol antes de llegar aquí).
+    const ids = (subsidiaryIds || []).filter(Boolean);
+    const subFilter: any = ids.length ? { subsidiary: { id: ids.length === 1 ? ids[0] : In(ids) } } : {};
+
+    // Datos de contacto/logística compartidos por las tres secciones (para el Excel).
+    const carrierOf = (s: any): 'DHL' | 'FedEx' => (String(s.shipmentType || '').toUpperCase() === 'DHL' ? 'DHL' : 'FedEx');
+    const contactFields = (s: any) => ({
+      recipientAddress: s.recipientAddress || '',
+      recipientCity: s.recipientCity || '',
+      recipientZip: s.recipientZip || '',
+      recipientPhone: s.recipientPhone || '',
+      consNumber: s.consNumber || '',
+      carrier: carrierOf(s),
+      commitDateTime: s.commitDateTime ? new Date(s.commitDateTime).toISOString() : null,
+    });
 
     // --- 1. Vencen hoy: commitDateTime dentro de HOY + activos ---
     const expWhere: any = { ...subFilter, status: In(KpiService.WELCOME_ACTIVE_STATUSES), commitDateTime: Between(todayStart, todayEnd) };
@@ -117,6 +132,8 @@ export class KpiService {
         expiryDate: expiry.toISOString(),
         subsidiaryName: s.subsidiary?.name || '—',
         hoursRemaining: Math.max(0, Math.round((expiry.getTime() - now.getTime()) / 3600000)),
+        status: KpiService.STATUS_LABELS[String(s.status)] || String(s.status),
+        ...contactFields(s),
       };
     });
 
@@ -136,6 +153,7 @@ export class KpiService {
       status: KpiService.STATUS_LABELS[String(s.status)] || String(s.status),
       subsidiaryName: s.subsidiary?.name || '—',
       createdAt: (s.commitDateTime ? new Date(s.commitDateTime) : s.createdAt || now).toISOString(),
+      ...contactFields(s),
     }));
 
     // --- 3. Sin escaneo local: paquetes ACTIVOS cuyo historial NO tiene el código que
@@ -162,8 +180,9 @@ export class KpiService {
       trackingNumber: s.trackingNumber,
       recipientName: s.recipientName || '—',
       subsidiaryName: s.subsidiary?.name || '—',
-      carrier: String(s.shipmentType || '').toUpperCase() === 'DHL' ? 'DHL' : 'FedEx',
       missingDocument: `Código ${scanCodeOf(s)}`,
+      status: KpiService.STATUS_LABELS[String(s.status)] || String(s.status),
+      ...contactFields(s),
     }));
 
     return {

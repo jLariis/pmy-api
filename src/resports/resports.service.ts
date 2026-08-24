@@ -3,7 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Expense, Income, Subsidiary } from 'src/entities';
 import { Repository } from 'typeorm';
 import * as ExcelJS from 'exceljs';
-import { dailyShareForDay } from 'src/common/expense-proration.util';
+import { dailyShareForDay, consultedRangeLabel } from 'src/common/expense-proration.util';
 import { TemplateService } from 'src/documents/template.service';
 import { buildIncomeStatementData, dayLabel, IncomeStatementDetailRow, IncomeStatementInput } from 'src/documents/data/income-statement.mapper';
 
@@ -248,9 +248,16 @@ export class ResportsService {
     // =========================================================================
     // HOJA 2: DESGLOSE DETALLADO
     // =========================================================================
+    // "Día consultado": el día/rango que el usuario eligió para revisar. Aclara por qué un
+    // gasto recurrente creado el 17 aparece al consultar el 20 (su período cubre esos días).
+    const consultedLabel = dateKeys.length
+      ? consultedRangeLabel(dateKeys[0], dateKeys[dateKeys.length - 1])
+      : '';
+
     const detailSheet = workbook.addWorksheet('Desglose Detallado');
     detailSheet.columns = [
-      { header: 'FECHA', key: 'date', width: 20 },
+      { header: 'FECHA DE CREACIÓN', key: 'date', width: 20 },
+      { header: 'DÍA CONSULTADO', key: 'consultado', width: 20 },
       { header: 'REFERENCIA / GUÍA', key: 'ref', width: 25 },
       { header: 'TIPO', key: 'type', width: 15 },
       { header: 'CATEGORÍA', key: 'category', width: 30 },
@@ -261,10 +268,10 @@ export class ResportsService {
     this.styleSectionHeader(detailSheet.getRow(1), headerBlue, white);
 
     detailRows.forEach(row => {
-      this.styleDetailedRow(detailSheet.addRow([row.date, row.ref, row.type, row.category, row.desc, row.amount]));
+      this.styleDetailedRow(detailSheet.addRow([row.date, consultedLabel, row.ref, row.type, row.category, row.desc, row.amount]));
     });
 
-    detailSheet.autoFilter = 'A1:F1';
+    detailSheet.autoFilter = 'A1:G1';
 
     // =========================================================================
     // HOJA 3: DASHBOARD INDICADORES
@@ -362,9 +369,9 @@ export class ResportsService {
       c.alignment = { horizontal: 'center' };
       c.border = { top: { style: 'hair' }, bottom: { style: 'hair' }, left: { style: 'hair' }, right: { style: 'hair' } };
     });
-    row.getCell(1).numFmt = 'dd/mm/yyyy';
-    row.getCell(6).numFmt = '"$"#,##0.00';
-    const isInc = row.getCell(3).value === 'INGRESO';
-    row.getCell(3).font = { color: { argb: isInc ? 'FF27AE60' : 'FFC0392B' }, bold: true };
+    row.getCell(1).numFmt = 'dd/mm/yyyy'; // FECHA DE CREACIÓN
+    row.getCell(7).numFmt = '"$"#,##0.00'; // IMPORTE
+    const isInc = row.getCell(4).value === 'INGRESO'; // TIPO
+    row.getCell(4).font = { color: { argb: isInc ? 'FF27AE60' : 'FFC0392B' }, bold: true };
   }
 }

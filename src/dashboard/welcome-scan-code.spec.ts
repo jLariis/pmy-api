@@ -54,7 +54,7 @@ describe('KpiService.getWelcomeDashboard — código de escaneo por sucursal', (
     // Regresión: sucursales como Caborca/Santa Ana/Sonoyta/Puerto Peñasco subcontaban
     // porque el filtro se acotaba a [PENDIENTE, EN_BODEGA]. Debe abarcar el set activo.
     const svc = svcWith([]);
-    await svc.getWelcomeDashboard('sub-1');
+    await svc.getWelcomeDashboard(['sub-1']);
     const call = svc.shipmentRepository.find.mock.calls[0][0];
     const statuses: any[] = call.where.status?._value ?? [];
     expect(statuses).toEqual(expect.arrayContaining([

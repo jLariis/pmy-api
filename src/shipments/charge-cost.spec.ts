@@ -53,4 +53,48 @@ describe('resolveChargeCost (carga 1.5 toneladas)', () => {
       expect(resolveChargeCost({ chargeCost: '4440.00', chargeCostSundayHoliday: '6660.00' }, false, true)).toBe(6660);
     });
   });
+
+  describe('segundo abordo (chargeSecondAbord)', () => {
+    it('suma secondAbordAmount al costo NORMAL cuando el flag está activo', () => {
+      expect(
+        resolveChargeCost({ chargeCost: 4878, chargeSecondAbord: true, secondAbordAmount: 597 }, false, false),
+      ).toBe(5475);
+    });
+
+    it('NO suma si el flag está apagado', () => {
+      expect(
+        resolveChargeCost({ chargeCost: 4878, chargeSecondAbord: false, secondAbordAmount: 597 }, false, false),
+      ).toBe(4878);
+    });
+
+    it('NO se apila sobre la base de 1.5 ton', () => {
+      expect(
+        resolveChargeCost({ chargeCost: 4878, chargeCostHalfTon: 4228, chargeSecondAbord: true, secondAbordAmount: 597 }, true, false),
+      ).toBe(4228);
+    });
+
+    it('NO se apila sobre el sobreprecio domingo/festivo (F2)', () => {
+      expect(
+        resolveChargeCost({ chargeCost: 4878, chargeCostSundayHoliday: 6660, chargeSecondAbord: true, secondAbordAmount: 597 }, false, true),
+      ).toBe(6660);
+    });
+
+    it('NO se apila sobre el sobreprecio domingo/festivo (1.5 ton)', () => {
+      expect(
+        resolveChargeCost({ chargeCost: 4878, chargeCostHalfTon: 4228, chargeCostHalfTonSundayHoliday: 6004, chargeSecondAbord: true, secondAbordAmount: 597 }, true, true),
+      ).toBe(6004);
+    });
+
+    it('flag activo pero monto 0 es no-op', () => {
+      expect(
+        resolveChargeCost({ chargeCost: 4878, chargeSecondAbord: true, secondAbordAmount: 0 }, false, false),
+      ).toBe(4878);
+    });
+
+    it('maneja secondAbordAmount como string (decimal de MySQL)', () => {
+      expect(
+        resolveChargeCost({ chargeCost: '4878.00', chargeSecondAbord: true, secondAbordAmount: '597.00' }, false, false),
+      ).toBe(5475);
+    });
+  });
 });

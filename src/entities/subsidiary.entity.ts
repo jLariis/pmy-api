@@ -254,6 +254,23 @@ export class Subsidiary {
   @Column({ default: false })
   allowRouteClosureWithOtherStatus: boolean;
 
+  /**
+   * Encargado/Supervisor que autoriza los borrados (consolidado / salida a ruta)
+   * de esta sucursal. Es un usuario registrado, configurable en Configuración.
+   * Si es null, el aprobador cae al primer superadmin activo (Admin Principal).
+   */
+  @Column({ nullable: true })
+  supervisorUserId: string | null;
+
+  /**
+   * Cobros: si está activo, al crear cargas F2/31.5 se SUMA `secondAbordAmount` al costo
+   * de la carga (solo sobre el costo NORMAL: no aplica a 1.5 ton ni al sobreprecio de
+   * domingo/festivo) y ese total va como ingreso. Se siembra en true solo para Hermosillo
+   * (migración 1786000000057).
+   */
+  @Column({ default: false })
+  chargeSecondAbord: boolean;
+
   @BeforeInsert()
   setCreatedAt() {
     this.createdAt = new Date(); // Fecha en UTC

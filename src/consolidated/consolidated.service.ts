@@ -329,6 +329,7 @@ export class ConsolidatedService {
     ])
     .orderBy('c.date', 'DESC');
 
+  consolidatedQB.andWhere('c.active = :active', { active: true });
   if (subsidiaryIds.length > 0) consolidatedQB.andWhere('c.subsidiaryId IN (:...subsidiaryIds)', { subsidiaryIds });
   if (utcFromDate && utcToDate) {
     consolidatedQB.andWhere('c.date BETWEEN :fromDate AND :toDate', { fromDate: utcFromDate, toDate: utcToDate });
@@ -369,6 +370,7 @@ export class ConsolidatedService {
       .from(tableName, 't')
       .where('t.consolidatedId IN (:...ids)', { ids: consolidatedIds })
       .andWhere('t.status != :cancel', { cancel: 'cancelado' })
+      .andWhere('t.active = :active', { active: true })
       .groupBy('t.consolidatedId');
 
     // Cobros = paquetes con relación a `payment` (amount > 0). Aplica a AMBAS tablas.

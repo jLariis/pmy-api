@@ -108,6 +108,10 @@ export class PackageDispatch {
   @Column({ type: 'varchar', length: 500, nullable: true })
   emailLastError: string | null;
 
+  /** Baja lógica (borrado con aprobación). false ⇒ oculto en vistas operativas. */
+  @Column({ default: true })
+  active: boolean;
+
   @BeforeInsert()
   setDefaults() {
     this.createdAt = new Date();
