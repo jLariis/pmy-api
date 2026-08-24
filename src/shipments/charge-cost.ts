@@ -11,6 +11,9 @@
  *     - `chargeCostHalfTonSundayHoliday` para cargas 1.5 ton.
  *     - `chargeCostSundayHoliday` para cargas normales.
  *  3. Sin sobreprecio configurado (0) el flag domingo/festivo es no-op → se cobra la base.
+ *  4. Segundo abordo: si la sucursal tiene `chargeSecondAbord` activo, se SUMA
+ *     `secondAbordAmount` al costo — pero SOLO sobre la base NORMAL (no cuando se usa la
+ *     base de 1.5 ton ni cuando aplica el sobreprecio de domingo/festivo).
  *
  * Hermosillo: normal(1.5 ton) = 4228, domingo/festivo(1.5 ton) = 6004, domingo/festivo(F2) = 6660.
  */
@@ -20,6 +23,8 @@ export function resolveChargeCost(
     chargeCostHalfTon?: number | string | null;
     chargeCostSundayHoliday?: number | string | null;
     chargeCostHalfTonSundayHoliday?: number | string | null;
+    chargeSecondAbord?: boolean | null;
+    secondAbordAmount?: number | string | null;
   },
   isHalfTon: boolean,
   isSundayOrHoliday = false,
@@ -33,6 +38,13 @@ export function resolveChargeCost(
   const base = useHalfTon ? halfTon : normal;
   const premium = useHalfTon ? halfTonSH : normalSH;
 
-  const chosen = isSundayOrHoliday && premium > 0 ? premium : base;
-  return Number.isFinite(chosen) ? chosen : 0;
+  const usePremium = isSundayOrHoliday && premium > 0;
+  const chosen = usePremium ? premium : base;
+
+  // Segundo abordo: solo aplica sobre el costo NORMAL (ni 1.5 ton ni sobreprecio domingo/festivo).
+  const addSecondAbord = Boolean(subsidiary?.chargeSecondAbord) && !useHalfTon && !usePremium;
+  const secondAbord = addSecondAbord ? Number(subsidiary?.secondAbordAmount ?? 0) : 0;
+
+  const total = chosen + (Number.isFinite(secondAbord) ? secondAbord : 0);
+  return Number.isFinite(total) ? total : 0;
 }
