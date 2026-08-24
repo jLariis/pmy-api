@@ -2,10 +2,11 @@ import { BadRequestException, Injectable } from '@nestjs/common';
 import { UpdateExpenseDto } from './dto/update-expense.dto';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Expense, User, Vehicle, ExpenseCategory } from 'src/entities';
-import { Between, In, Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import * as XLSX from 'xlsx';
 import { Frequency } from 'src/common/enums/frequency-enum';
 import { toHermosilloDateString } from 'src/common/utils';
+import { proratedAmountInRange } from 'src/common/expense-proration.util';
 
 @Injectable()
 export class ExpensesService {
@@ -66,13 +67,34 @@ export class ExpensesService {
     return expenses;
   }
 
+  /**
+   * Gastos que CONTRIBUYEN al rango [firstDay, lastDay] (día calendario, inclusivo).
+   * A diferencia de un `date BETWEEN`, incluye gastos recurrentes cuyo período se solapa
+   * con el rango aunque se hayan registrado fuera de él (Nómina/Renta/mensuales/semanales),
+   * y agrega `proratedAmount`: la porción del gasto que cae dentro del rango.
+   * Mismo criterio que el Estado de Resultados (`resports.service`) y el Dashboard KPI.
+   */
   async findBySubsidiaryAndDates(subsidiaryId: string, firstDay: string, lastDay: string) {
-    return await this.expenseRepository.find({
-      where: {
-        subsidiary: { id: subsidiaryId },
-        date: Between(firstDay, lastDay), // 'YYYY-MM-DD' contra columna DATE
-      },
-    });
+    const candidates = await this.expenseRepository
+      .createQueryBuilder('expense')
+      .leftJoinAndSelect('expense.category', 'category')
+      .where('expense.subsidiaryId = :subsidiaryId', { subsidiaryId })
+      .andWhere(
+        '((expense.periodStart IS NOT NULL AND expense.periodEnd IS NOT NULL AND expense.periodStart <= :lastDay AND expense.periodEnd >= :firstDay) OR ((expense.periodStart IS NULL OR expense.periodEnd IS NULL) AND expense.date BETWEEN :firstDay AND :lastDay))',
+        { firstDay, lastDay },
+      )
+      .getMany();
+
+    return candidates
+      .map((exp) => ({
+        ...exp,
+        proratedAmount: proratedAmountInRange(
+          { amount: exp.amount, date: exp.date, periodStart: exp.periodStart, periodEnd: exp.periodEnd },
+          firstDay,
+          lastDay,
+        ),
+      }))
+      .filter((row) => row.proratedAmount > 0);
   }
 
   async update(id: string, updateExpenseDto: UpdateExpenseDto) {

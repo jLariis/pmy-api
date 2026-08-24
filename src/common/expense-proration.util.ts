@@ -36,6 +36,19 @@ export function proratedAmountInRange(exp: ProratableExpense, rangeStart: string
   return (amount * overlap) / periodDays;
 }
 
+/**
+ * Etiqueta legible del día/rango que el usuario consultó (para la columna "Día consultado"
+ * en los reportes). Un solo día -> 'dd/mm/yyyy'; rango -> 'dd/mm/yyyy – dd/mm/yyyy'. Vacío si
+ * falta algún extremo. Aclara por qué un gasto recurrente creado fuera del rango aparece.
+ */
+export function consultedRangeLabel(startDay?: string | null, endDay?: string | null): string {
+  if (!startDay || !endDay) return '';
+  const fmt = (k: string) => k.slice(0, 10).split('-').reverse().join('/');
+  const a = fmt(startDay);
+  const b = fmt(endDay);
+  return a === b ? a : `${a} – ${b}`;
+}
+
 /** This expense's share on a single day. */
 export function dailyShareForDay(exp: ProratableExpense, day: string): number {
   const amount = Number(exp.amount || 0);
