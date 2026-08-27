@@ -1514,29 +1514,65 @@ export class PackageDispatchService {
       console.error("⚠️ Error actualizando FedEx, pero mostraré lo que hay en DB:", error);
     }
 
-    // 2. Buscar en tu base de datos (lo que ya tenías)
+    // 2. Cabecera del despacho (sin las relaciones vivas de paquetes: esas se arman
+    //    desde el HISTORIAL, ver abajo).
     const packageDispatch = await this.packageDispatchRepository.findOne({
       where: { id: packageDispatchId },
-      relations: [
-        'shipments',
-        'shipments.payment',
-        'shipments.statusHistory',
-        'chargeShipments',
-        'drivers',
-        'vehicle',
-        'subsidiary',
-        'routes',
-      ],
+      relations: ['drivers', 'vehicle', 'subsidiary', 'routes'],
     });
 
     if (!packageDispatch) {
       throw new NotFoundException('Package dispatch not found'); // Mejor usar la excepción de Nest
     }
 
+    // 3. Paquetes desde `package_dispatch_history` (append-only), NO desde la relación
+    //    viva `shipments`/`chargeShipments`. La relación viva se apoya en el FK único
+    //    `routeId` del envío, así que si una guía se re-escanea en OTRA salida a ruta su
+    //    FK se reasigna y DESAPARECE de esta salida (bug "salió con 10, cierra con 9").
+    //    El historial conserva las 10; aquí las traemos todas y marcamos cuáles ya se
+    //    fueron a otra ruta para que el cierre las muestre (con badge) sin bloquear.
+    const history = await this.packageDispatchHistoryRepository.find({
+      where: { dispatch: { id: packageDispatchId } },
+      relations: [
+        'shipment',
+        'shipment.payment',
+        'shipment.statusHistory',
+        'shipment.packageDispatch',
+        'chargeShipment',
+        'chargeShipment.payment',
+        'chargeShipment.packageDispatch',
+      ],
+    });
+
+    // Marca de reasignación: el envío ya no apunta a ESTA salida (su `routeId`/dispatch
+    // actual es otro, o null). `currentDispatchTrackingNumber` = folio de la ruta nueva.
+    const annotate = (pkg: any) => {
+      const currentDispatchId = pkg?.packageDispatch?.id ?? null;
+      const movedToAnotherRoute = !!currentDispatchId && currentDispatchId !== packageDispatchId;
+      return {
+        ...pkg,
+        movedToAnotherRoute,
+        currentDispatchTrackingNumber: movedToAnotherRoute
+          ? pkg?.packageDispatch?.trackingNumber ?? null
+          : null,
+      };
+    };
+
+    // Dedup por id (por si el historial trae la misma guía más de una vez).
+    const dedupById = <T extends { id: string }>(items: T[]): T[] => {
+      const seen = new Set<string>();
+      return items.filter((it) => (it?.id && !seen.has(it.id) ? (seen.add(it.id), true) : false));
+    };
+
+    const shipments = dedupById(history.filter((h) => h.shipment).map((h) => annotate(h.shipment)));
+    const chargeShipments = dedupById(
+      history.filter((h) => h.chargeShipment).map((h) => annotate(h.chargeShipment)),
+    );
+
     // Ordenar los envíos según la config de la sucursal (CP o orden de escaneo).
     const sortByCp = packageDispatch.subsidiary?.sortDispatchByPostalCode;
-    packageDispatch.shipments = this.sortShipmentsForSubsidiary(packageDispatch.shipments, sortByCp);
-    packageDispatch.chargeShipments = this.sortShipmentsForSubsidiary(packageDispatch.chargeShipments, sortByCp);
+    (packageDispatch as any).shipments = this.sortShipmentsForSubsidiary(shipments, sortByCp);
+    (packageDispatch as any).chargeShipments = this.sortShipmentsForSubsidiary(chargeShipments, sortByCp);
 
     return packageDispatch;
   }

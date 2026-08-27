@@ -1,9 +1,10 @@
 import { BadRequestException, forwardRef, Inject, Injectable, Logger } from '@nestjs/common';
 import { CreateDevolutionDto } from './dto/create-devolution.dto';
-import { Between, DataSource, EntityManager, IsNull, Repository } from 'typeorm';
+import { Between, DataSource, EntityManager, In, IsNull, Repository } from 'typeorm';
 import { Devolution } from 'src/entities/devolution.entity';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ChargeShipment, Collection, Income, Shipment, ShipmentStatus, Subsidiary } from 'src/entities';
+import { PackageDispatchHistory } from 'src/entities/package-dispatch-history.entity';
 import { ShipmentStatusType } from 'src/common/enums/shipment-status-type.enum';
 import { ValidateShipmentDto } from './dto/valiation-devolution.dto';
 import { MailService } from 'src/mail/mail.service';
@@ -32,6 +33,8 @@ export class DevolutionsService {
     private readonly subsidiaryRepository: Repository<Subsidiary>,
     @InjectRepository(Collection)
     private readonly collectionRepository: Repository<Collection>,
+    @InjectRepository(PackageDispatchHistory)
+    private readonly packageDispatchHistoryRepository: Repository<PackageDispatchHistory>,
     private readonly mailService: MailService,
     @Inject(forwardRef(() => ShipmentsService))
     private readonly shipmentService: ShipmentsService,
@@ -245,6 +248,12 @@ export class DevolutionsService {
         where: { trackingNumber },
       });
 
+      // ¿Esta carga salió alguna vez a ruta? (para simetría con el shipment; el ingreso de la
+      // carga va agrupado en la Charge —sin trackingNumber— así que la UI lo marca aparte).
+      const wasDispatched = await this.packageDispatchHistoryRepository.exists({
+        where: { chargeShipment: { id: chargeShipment.id } },
+      });
+
       // Estatus/código EFECTIVOS: preferimos lo fresco de FedEx (resolver); si no lo trajo,
       // caemos a lo persistido en el charge.
       const effStatus = (latest.found && latest.status) || chargeShipment.status;
@@ -268,6 +277,7 @@ export class DevolutionsService {
         subsidiaryName: chargeShipment.subsidiary.name,
         hasIncome: incomeExists,
         isCharge: true,
+        wasDispatched,
         hasError: isProblematic ? true : false,
         errorMessage: isProblematic ? 'No tiene un dex registrado se debe revisar' : '',
         lastStatus: {
@@ -323,6 +333,16 @@ export class DevolutionsService {
       where: { trackingNumber },
     });
 
+    // ¿La guía perteneció alguna vez a un package_dispatch (salida a ruta)? El ingreso de
+    // shipment SOLO nace en el cierre de ruta; una guía devuelta que nunca salió a ruta nunca
+    // generó ingreso, y eso es lo esperado (no una falla). Se revisa contra TODAS las filas de
+    // la guía (una guía reciclada puede tener varios shipment). Caso frecuente en Bodega
+    // Hermosillo, donde a veces el repartidor sale antes de que se registre el despacho.
+    const shipmentIds = shipments.map((s) => s.id);
+    const wasDispatched = await this.packageDispatchHistoryRepository.exists({
+      where: { shipment: { id: In(shipmentIds) } },
+    });
+
     // ---------------------------------------------------------------
     // 7. Resolver respuesta final
     // ---------------------------------------------------------------
@@ -335,6 +355,7 @@ export class DevolutionsService {
       subsidiaryName: latestShipment.subsidiary.name,
       hasIncome: incomeExists,
       isCharge: false,
+      wasDispatched,
       hasError: isProblematic ? true : false,
       errorMessage: isProblematic ? 'No tiene un dex registrado se debe revisar' : '',
       lastStatus: {

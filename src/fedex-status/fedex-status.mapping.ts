@@ -20,6 +20,9 @@ const EXCEPTION_CODE_TO_STATUS: Record<string, ShipmentStatusType> = {
   '08': ShipmentStatusType.CLIENTE_NO_DISPONIBLE,
   '72': ShipmentStatusType.CLIENTE_NO_DISPONIBLE,
   '67': ShipmentStatusType.EN_BODEGA,
+  // 44 es el equivalente del 67 para sucursales con monitorFedexCode44. OJO: FedEx lo
+  // entrega en ancillaryDetails.reason (no como scanEvent.exceptionCode) — ver fedex-local-scan.util.
+  '44': ShipmentStatusType.EN_BODEGA,
   '03': ShipmentStatusType.DIRECCION_INCORRECTA,
   A12: ShipmentStatusType.DIRECCION_INCORRECTA,
   A13: ShipmentStatusType.DIRECCION_INCORRECTA,

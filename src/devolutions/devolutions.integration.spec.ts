@@ -190,6 +190,59 @@ describe('DevolutionsService.create — guías en varios consolidados (Bug #1)',
   });
 });
 
+describe('DevolutionsService.validateOnShipment — marca wasDispatched (motivo del "Ingreso: No")', () => {
+  function makeService(opts: {
+    shipments: any[];
+    dispatchExists: boolean;
+    incomeExists?: boolean;
+  }) {
+    const svc = Object.create(DevolutionsService.prototype) as any;
+    svc.logger = { warn: jest.fn(), log: jest.fn(), error: jest.fn() };
+    svc.fedexStatusResolver = {
+      getLatestStatus: jest.fn().mockResolvedValue({ found: false, validation: { ok: true, issues: [] } }),
+    };
+    svc.shipmentRepository = { find: jest.fn().mockResolvedValue(opts.shipments) };
+    svc.chargeShipmentRepository = { findOne: jest.fn().mockResolvedValue(null) };
+    svc.incomeRepository = { exists: jest.fn().mockResolvedValue(opts.incomeExists ?? false) };
+    svc.packageDispatchHistoryRepository = { exists: jest.fn().mockResolvedValue(opts.dispatchExists) };
+    return svc;
+  }
+
+  const shipment = {
+    id: 's-1',
+    trackingNumber: 'T1',
+    status: 'devuelto_a_fedex',
+    createdAt: '2026-08-20',
+    subsidiary: { id: 'SUB-1', name: 'Bodega Hermosillo' },
+    statusHistory: [],
+  };
+
+  it('shipment sin ingreso que NUNCA salió a ruta -> wasDispatched=false (Bodega Hermosillo)', async () => {
+    const svc = makeService({ shipments: [shipment], dispatchExists: false, incomeExists: false });
+    const res = await svc.validateOnShipment('T1');
+    expect(res.isCharge).toBe(false);
+    expect(res.hasIncome).toBe(false);
+    expect(res.wasDispatched).toBe(false);
+  });
+
+  it('shipment que SÍ salió a ruta -> wasDispatched=true', async () => {
+    const svc = makeService({ shipments: [shipment], dispatchExists: true, incomeExists: true });
+    const res = await svc.validateOnShipment('T1');
+    expect(res.wasDispatched).toBe(true);
+    expect(res.hasIncome).toBe(true);
+  });
+
+  it('consulta el dispatch contra TODAS las filas de la guía (In(shipmentIds))', async () => {
+    const svc = makeService({
+      shipments: [shipment, { ...shipment, id: 's-2' }],
+      dispatchExists: false,
+    });
+    await svc.validateOnShipment('T1');
+    const arg = svc.packageDispatchHistoryRepository.exists.mock.calls[0][0];
+    expect(arg.where.shipment.id._value ?? arg.where.shipment.id.value).toEqual(['s-1', 's-2']);
+  });
+});
+
 describe('DevolutionsService.sendByEmail — integración con Motor de Plantillas tras flag DOC_ENGINE_RETURNING', () => {
   const OLD_ENV = process.env.DOC_ENGINE_RETURNING;
   afterEach(() => { process.env.DOC_ENGINE_RETURNING = OLD_ENV; });

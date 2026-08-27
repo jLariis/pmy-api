@@ -13,6 +13,7 @@ import { getPriority, parseDynamicFileF2, parseDynamicHighValue, parseDynamicShe
 import { scanEventsFilter } from 'src/utils/scan-events-filter';
 import { ParsedShipmentDto } from './dto/parsed-shipment.dto';
 import { mapFedexStatusToLocalStatus } from 'src/utils/fedex.utils';
+import { resolveCode44ScanTime, localFacilityScanTimes } from 'src/utils/fedex-local-scan.util';
 import { mapWhereParcelStatusToLocal } from 'src/utils/dhl.utils';
 import { toHermosilloDateString } from 'src/common/utils';
 import type { NormalizedTrackingResult } from 'src/tracking/where-parcel-dhl.service';
@@ -3923,7 +3924,7 @@ export class ShipmentsService {
 
 
   /****** Métodos para el cron que valida los envios y actualiza los status ******************/
-    async getShipmentsToValidate(): Promise<Shipment[]> {
+    async getShipmentsToValidate(subsidiaryIds?: string[]): Promise<Shipment[]> {
       this.logger.log(`🔍 Iniciando getShipmentsToValidate...`);
       
       // 1. FECHA DE CORTE: Seguridad contra guías recicladas.
@@ -3962,7 +3963,13 @@ export class ShipmentsService {
           .andWhere('shipment.createdAt > :cutOffDate', { cutOffDate })
 
           // Filtro 3: Estatus permitidos
-          .andWhere('LOWER(shipment.status) IN (:...statuses)', { statuses: statusList })    
+          .andWhere('LOWER(shipment.status) IN (:...statuses)', { statuses: statusList })
+
+        // Filtro 4 (opcional): scoping por sucursal (lo usa el backfill manual de código 44).
+        const scopeIdsS = (subsidiaryIds || []).filter(Boolean);
+        if (scopeIdsS.length) {
+          query.andWhere('shipment.subsidiaryId IN (:...scopeIdsS)', { scopeIdsS });
+        }
 
         const shipments = await query.getMany();
         
@@ -3975,7 +3982,7 @@ export class ShipmentsService {
       }
     }
 
-    async getSimpleChargeShipments(): Promise<ChargeShipment[]> {
+    async getSimpleChargeShipments(subsidiaryIds?: string[]): Promise<ChargeShipment[]> {
       this.logger.log(`🔍 Iniciando Charge Shipments to validate...`);
       
       // 1. FECHA DE CORTE: Seguridad contra guías recicladas.
@@ -4013,7 +4020,13 @@ export class ShipmentsService {
           .andWhere('chargeShipment.createdAt > :cutOffDate', { cutOffDate })
 
           // Filtro 3: Estatus permitidos
-          .andWhere('LOWER(chargeShipment.status) IN (:...statuses)', { statuses: statusList })    
+          .andWhere('LOWER(chargeShipment.status) IN (:...statuses)', { statuses: statusList })
+
+        // Filtro 4 (opcional): scoping por sucursal (lo usa el backfill manual de código 44).
+        const scopeIdsC = (subsidiaryIds || []).filter(Boolean);
+        if (scopeIdsC.length) {
+          query.andWhere('chargeShipment.subsidiaryId IN (:...scopeIdsC)', { scopeIdsC });
+        }
 
         const chargeShipments = await query.getMany();
         
@@ -4024,6 +4037,45 @@ export class ShipmentsService {
         this.logger.error(`❌ Error en getSimpleChargeShipments: ${err.message}`);
         return [];
       }
+    }
+
+    /**
+     * Backfill manual del código 44 (disparo superadmin). Re-sincroniza contra FedEx las
+     * guías/cargas ACTIVAS de las sucursales indicadas (por defecto, TODAS las de
+     * `monitorFedexCode44 = true`) usando el MISMO pipeline del cron
+     * (`processMasterFedexUpdate`/`processChargeFedexUpdate`), que ya marca `exceptionCode='44'`
+     * en el escaneo local. Sirve para no esperar a la corrida horaria. Idempotente.
+     */
+    async backfillCode44(subsidiaryIds?: string[]) {
+      let ids = (subsidiaryIds || []).filter(Boolean);
+      if (!ids.length) {
+        const subs = await this.subsidiaryRepository.find({
+          where: { monitorFedexCode44: true },
+          select: ['id', 'name'],
+        });
+        ids = subs.map((s) => s.id);
+      }
+      if (!ids.length) {
+        return { subsidiaryIds: [], shipments: 0, charges: 0, message: 'No hay sucursales con monitorFedexCode44=true' };
+      }
+
+      this.logger.log(`♻️ [Backfill 44] Sucursales: ${ids.join(', ')}`);
+      const [shipments, chargeShipments] = await Promise.all([
+        this.getShipmentsToValidate(ids),
+        this.getSimpleChargeShipments(ids),
+      ]);
+      this.logger.log(`♻️ [Backfill 44] ${shipments.length} envíos y ${chargeShipments.length} cargas activas a re-sincronizar.`);
+
+      const master = shipments.length ? await this.processMasterFedexUpdate(shipments) : null;
+      const charge = chargeShipments.length ? await this.processChargeFedexUpdate(chargeShipments) : null;
+
+      return {
+        subsidiaryIds: ids,
+        shipments: shipments.length,
+        charges: chargeShipments.length,
+        master,
+        charge,
+      };
     }
 
     private async logUnusualCodes(unusualCodes: { trackingNumber: string; derivedCode: string; exceptionCode?: string; eventDate: string; statusByLocale?: string }[]): Promise<void> {
@@ -7923,8 +7975,11 @@ export class ShipmentsService {
         const top = results[0];
         const events: any[] = top?.scanEvents || [];
 
+        // FedEx NO manda el 44 en scanEvents; lo reporta en latestStatusDetail.ancillaryDetails.reason='44'.
+        // Contamos como "día con 44" cada escaneo local ("At local FedEx facility") cuando FedEx trae la
+        // reason 44 vigente (misma regla que la persistencia — ver fedex-local-scan.util).
         const days44 = new Set<string>(
-          events.filter((e) => e.exceptionCode === '44' && e.date).map((e) => herDay(e.date)),
+          localFacilityScanTimes(top?.latestStatusDetail, events).map((t) => herDay(t)),
         );
         const dl = events.find((e) => e.eventType === 'DL' && e.date);
         const delivered = !!dl;
@@ -8398,10 +8453,13 @@ export class ShipmentsService {
                   0,
                 );
 
-                const processedSignatures = new Set(existingHistory.map((h: any) => {
+                const processedSignatures = new Set<string>(existingHistory.flatMap((h: any) => {
                     const t = new Date(h.timestamp).getTime();
-                    const c = (h.exceptionCode || '').trim(); 
-                    return `${t}_${c}`;
+                    const c = (h.exceptionCode || '').trim();
+                    // El código 44 se DERIVA de un escaneo local que en FedEx trae exceptionCode ''
+                    // (ver fedex-local-scan.util). Registramos también la firma con código vacío
+                    // para que ese mismo escaneo no se re-inserte como duplicado en corridas futuras.
+                    return c === '44' ? [`${t}_${c}`, `${t}_`] : [`${t}_${c}`];
                 }));
 
                 // ── BLINDAJE PRE-REGISTRO (mismo día) ──────────────────────────
@@ -8591,6 +8649,29 @@ export class ShipmentsService {
                                 paidWeeks.add(weekKey);
                             }
                         }
+                    }
+                }
+
+                // === CÓDIGO 44 (escaneo en estación local de FedEx) ============================
+                // FedEx NO manda el 44 en scanEvents (a diferencia del 67); lo reporta en
+                // latestStatusDetail.ancillaryDetails[].reason='44'. Lo persistimos como
+                // exceptionCode='44' anclado al escaneo local MÁS RECIENTE ("At local FedEx
+                // facility"), que el loop de arriba ya insertó (o una corrida previa), para que
+                // welcome/inventarios/monitoreo lo lean como código de primera clase (igual que
+                // el 67). Solo UPDATE idempotente: no creamos filas (respeta el candado de
+                // pre-registro y no inventa historial). Sirve de auto-backfill en cada re-sync.
+                // Acotado a sucursales que monitorean el 44 (mismo criterio que los readers).
+                const code44Time = sub?.monitorFedexCode44 ? resolveCode44ScanTime(lsdHeader, scanEvents) : null;
+                if (code44Time !== null) {
+                    // El 44 = paquete en la estación local (de nuestro lado): la fila de historial
+                    // del escaneo local pasa a EN_BODEGA (no PENDIENTE). Solo esa fila; NO toca el
+                    // estatus "vivo" del envío (consenso/time-shield lo sigue derivando aparte).
+                    for (const ship of shipmentList) {
+                        await queryRunner.manager.query(
+                            `UPDATE shipment_status SET exceptionCode = '44', status = ?
+                               WHERE shipmentId = ? AND timestamp = ? AND (COALESCE(exceptionCode, '') <> '44' OR status <> ?)`,
+                            [ShipmentStatusType.EN_BODEGA, ship.id, new Date(code44Time), ShipmentStatusType.EN_BODEGA],
+                        );
                     }
                 }
 
@@ -8924,10 +9005,13 @@ export class ShipmentsService {
                   0,
                 );
 
-                const processedSignatures = new Set(existingHistory.map((h: any) => {
+                const processedSignatures = new Set<string>(existingHistory.flatMap((h: any) => {
                     const t = new Date(h.timestamp).getTime();
-                    const c = (h.exceptionCode || '').trim(); 
-                    return `${t}_${c}`;
+                    const c = (h.exceptionCode || '').trim();
+                    // El código 44 se DERIVA de un escaneo local que en FedEx trae exceptionCode ''
+                    // (ver fedex-local-scan.util). Registramos también la firma con código vacío
+                    // para que ese mismo escaneo no se re-inserte como duplicado en corridas futuras.
+                    return c === '44' ? [`${t}_${c}`, `${t}_`] : [`${t}_${c}`];
                 }));
 
                 // ── BLINDAJE PRE-REGISTRO (mismo día) ──────────────────────────
@@ -9010,6 +9094,24 @@ export class ShipmentsService {
 
                     // NOTA: aquí NO se generan ingresos — las cargas (ChargeShipment) no
                     // cobran por paquete (regla de negocio). Solo se guarda historial arriba.
+                }
+
+                // === CÓDIGO 44 (escaneo en estación local de FedEx) — espejo del flujo Master ===
+                // FedEx manda el 44 en latestStatusDetail.ancillaryDetails[].reason='44', no en
+                // scanEvents. Marcamos exceptionCode='44' en el escaneo local más reciente ya
+                // persistido, para que las cargas F2 también cuenten su 44. Solo UPDATE idempotente.
+                // Acotado a sucursales que monitorean el 44 (mismo criterio que los readers).
+                const code44TimeCharge = mainCharge.subsidiary?.monitorFedexCode44
+                  ? resolveCode44ScanTime(lsdHeader, scanEvents) : null;
+                if (code44TimeCharge !== null) {
+                    // Fila del escaneo local del 44 → EN_BODEGA (solo esa fila; no toca el estatus vivo).
+                    for (const charge of chargeList) {
+                        await queryRunner.manager.query(
+                            `UPDATE shipment_status SET exceptionCode = '44', status = ?
+                               WHERE chargeShipmentId = ? AND timestamp = ? AND (COALESCE(exceptionCode, '') <> '44' OR status <> ?)`,
+                            [ShipmentStatusType.EN_BODEGA, charge.id, new Date(code44TimeCharge), ShipmentStatusType.EN_BODEGA],
+                        );
+                    }
                 }
 
                 // NOTA: se eliminó el "SAFETY NET" de ingresos de cargas — las cargas
@@ -9789,30 +9891,23 @@ export class ShipmentsService {
                 continue; // 🚨 CORRECCIÓN: Usa 'continue'
             }
 
-            // --- 2. BÚSQUEDA DEL ESTATUS 44 EN SCAN EVENTS ---
+            // --- 2. BÚSQUEDA DEL CÓDIGO 44 ---
+            // FedEx manda el 44 en latestStatusDetail.ancillaryDetails.reason='44' (NO en scanEvents).
+            // Lo anclamos a los escaneos locales ("At local FedEx facility"): hay 44 si alguno cae hoy o
+            // ayer (misma regla que la persistencia y Visibilidad44 — ver fedex-local-scan.util).
             let has44 = false;
 
             for (const trackResult of allTrackResults) {
-                const scanEvents = trackResult.scanEvents || [];
-                
-                for (const event of scanEvents) {
-                    // NOTA: Ajusta 'eventType' según la propiedad exacta de la API de FedEx donde venga el "44"
-                    const isStatus44 = event.eventType === '44' || event.exceptionCode === '44'; 
-                    
-                    if (isStatus44 && event.date) {
-                        // Convertimos la fecha del evento y la normalizamos a la medianoche
-                        const eventDate = new Date(event.date);
-                        eventDate.setHours(0, 0, 0, 0); 
-                        
-                        // Comparamos si la fecha del evento es igual a hoy o ayer
-                        if (eventDate.getTime() === today.getTime() || eventDate.getTime() === yesterday.getTime()) {
-                            has44 = true;
-                            break; // Ya encontramos uno, podemos salir de este bucle (scanEvents)
-                        }
+                const localTimes = localFacilityScanTimes(trackResult.latestStatusDetail, trackResult.scanEvents || []);
+                for (const t of localTimes) {
+                    const d = new Date(t);
+                    d.setHours(0, 0, 0, 0);
+                    if (d.getTime() === today.getTime() || d.getTime() === yesterday.getTime()) {
+                        has44 = true;
+                        break;
                     }
                 }
-                
-                if (has44) break; // Si ya se encontró, salimos también del bucle principal de resultados
+                if (has44) break;
             }
 
             // 3. Guardamos el resultado de este tracking number

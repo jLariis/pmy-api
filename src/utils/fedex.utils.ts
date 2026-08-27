@@ -10,6 +10,9 @@ export function mapFedexStatusToLocalStatus(derivedStatusCode: string, exception
       case '07': return ShipmentStatusType.RECHAZADO;
       case '08': return ShipmentStatusType.CLIENTE_NO_DISPONIBLE;
       case '67': return ShipmentStatusType.EN_BODEGA;
+      // 44 = equivalente del 67 para sucursales monitorFedexCode44. FedEx lo manda en
+      // ancillaryDetails.reason (no en scanEvent.exceptionCode) — ver fedex-local-scan.util.
+      case '44': return ShipmentStatusType.EN_BODEGA;
       case '03':
       case 'A12':
       case 'A13': return ShipmentStatusType.DIRECCION_INCORRECTA;
@@ -19,7 +22,6 @@ export function mapFedexStatusToLocalStatus(derivedStatusCode: string, exception
       case '71':
       case 'DF': return ShipmentStatusType.PENDIENTE; 
       case '15':
-      //case '44':
       case '64': return ShipmentStatusType.ESTACION_FEDEX;
       case '14':
       case '086C': return ShipmentStatusType.RETORNO_ABANDONO_FEDEX;

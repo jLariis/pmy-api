@@ -101,6 +101,29 @@ export class ShipmentsController {
     return runAll();
   }
 
+  /**
+   * ♻️ Backfill manual del código 44 (sin esperar al cron horario). Re-sincroniza
+   * contra FedEx las guías/cargas ACTIVAS de las sucursales `monitorFedexCode44`
+   * (o las que se pasen en `subsidiaryIds`) con el MISMO pipeline del cron, que ahora
+   * marca `exceptionCode='44'` en el escaneo local. Idempotente. Solo superadmin.
+   * `bg=true` lo corre en segundo plano (recomendado si son muchas guías).
+   * Ej: POST /shipments/backfill-44?bg=true  body: { "subsidiaryIds": ["b45c..."] } (opcional)
+   */
+  @Post('backfill-44')
+  @UseGuards(SuperAdminGuard)
+  async backfillCode44(
+    @Body('subsidiaryIds') subsidiaryIds?: string[],
+    @Query('bg') bg?: string,
+  ) {
+    if (bg === 'true' || bg === '1') {
+      this.shipmentsService.backfillCode44(subsidiaryIds)
+        .then((r) => this.logger.log(`✅ [backfill-44 bg] Finalizado: ${JSON.stringify({ ...r, master: undefined, charge: undefined })}`))
+        .catch((e) => this.logger.error(`❌ [backfill-44 bg] Error: ${e.message}`));
+      return { started: true, background: true, note: 'Corriendo en segundo plano; revisa los logs (♻️).' };
+    }
+    return this.shipmentsService.backfillCode44(subsidiaryIds);
+  }
+
   @Get('test-new-cron')
   async testNewCronJob() {
     const globalStart = Date.now();    

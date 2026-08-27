@@ -25,6 +25,13 @@ export interface ShipmentWithout67 {
   firstStatusDate: Date | null;
   lastStatusDate: Date | null;
   daysInSystem: number | null;
+  /** Alta del shipment (createdAt) en ISO, para "Días con el paquete". */
+  createdAt: string | null;
+  /** Código que monitorea la sucursal ('44' | '67'). */
+  scanCode: '44' | '67';
+  /** Para la confirmación con FedEx desde el front. */
+  shipmentType?: string;
+  fedexUniqueId?: string | null;
   comment: string;
 }
 
@@ -883,6 +890,7 @@ export class InventoriesService {
       inventoryDate?: Date;
       percentageWithout67: number;
       inventoryId?: string;
+      scanCode?: '44' | '67';
     };
     details: ShipmentWithout67[];
   }> {
@@ -899,10 +907,13 @@ export class InventoriesService {
 
       console.log(`📦 Inventario ID: ${latestInventory.id}, Shipments: ${latestInventory.shipments?.length || 0}`);
 
+      // Código por sucursal (44/67): el reporte usa el que la sucursal monitorea.
+      const scanCode = await this.scanCodeForSubsidiary(subsidiaryId);
+
       // 2️⃣ PROCESAR SHIPMENTS DEL INVENTARIO
-      const { shipmentsWithout67, totalShipments } = 
-        await this.processInventoryShipments(latestInventory);
-      
+      const { shipmentsWithout67, totalShipments } =
+        await this.processInventoryShipments(latestInventory, scanCode);
+
       const withoutCode67 = shipmentsWithout67.length;
       const withCode67 = Math.max(0, totalShipments - withoutCode67);
       const percentageWithout67 = totalShipments > 0 
@@ -919,6 +930,7 @@ export class InventoriesService {
           inventoryDate: latestInventory.inventoryDate,
           percentageWithout67,
           inventoryId: latestInventory.id,
+          scanCode, // '44' | '67' — código que monitorea la sucursal
         },
         details: shipmentsWithout67
       };
@@ -938,9 +950,17 @@ export class InventoriesService {
    * estuvo ese día (tipo/fecha). La confirmación con FedEx la hace el front
    * reutilizando el mismo endpoint de Visibilidad 67 (por número de guía).
    */
+  /** Código de escaneo local que MONITOREA la sucursal: '44' si `monitorFedexCode44`, si no '67'. */
+  private async scanCodeForSubsidiary(subsidiaryId: string): Promise<'44' | '67'> {
+    const sub = await this.subsidiaryRepository.findOne({ where: { id: subsidiaryId }, select: ['monitorFedexCode44'] });
+    return sub?.monitorFedexCode44 === true ? '44' : '67';
+  }
+
   async getInventoryVisibilityReport(subsidiaryId: string, from: Date, to: Date) {
     const start = new Date(from); start.setHours(0, 0, 0, 0);
     const end = new Date(to); end.setHours(23, 59, 59, 999);
+    // Código por sucursal (44/67): el reporte usa el que la sucursal monitorea.
+    const scanCode = await this.scanCodeForSubsidiary(subsidiaryId);
 
     // 1) Inventarios del rango (solo metadatos — NO cargamos paquetes ni historial
     //    por relación: eso explotaba la memoria con el join de statusHistory).
@@ -989,7 +1009,7 @@ export class InventoriesService {
         if (part.length === 0) continue;
         const ph = part.map(() => '?').join(',');
         const rows: any[] = await this.dataSource.query(
-          `SELECT ${fkCol} AS id, MAX(timestamp) AS m FROM shipment_status WHERE ${fkCol} IN (${ph}) AND exceptionCode = '67' GROUP BY ${fkCol}`,
+          `SELECT ${fkCol} AS id, MAX(timestamp) AS m FROM shipment_status WHERE ${fkCol} IN (${ph}) AND exceptionCode = '${scanCode}' GROUP BY ${fkCol}`,
           part,
         );
         for (const r of rows) if (r.id) m.set(String(r.id), new Date(r.m));
@@ -1044,6 +1064,7 @@ export class InventoriesService {
         shipmentType: rep.shipmentType,
         fedexUniqueId: rep.fedexUniqueId,
         isCharge,
+        scanCode, // '44' | '67' — código que monitorea la sucursal del reporte
         createdAt: minCreatedAt.toISOString(),
         last67Date: max67 ? max67.toISOString() : null,
         daysSinceLast67,
@@ -1216,6 +1237,8 @@ export class InventoriesService {
           trackingNumber: true,
           status: true,
           createdAt: true,
+          shipmentType: true,
+          fedexUniqueId: true,
           statusHistory: {
             id: true,
             exceptionCode: true,
@@ -1230,7 +1253,7 @@ export class InventoriesService {
   /**
    * Procesa los shipments del inventario
    */
-  private async processInventoryShipments(inventory: Inventory): Promise<{
+  private async processInventoryShipments(inventory: Inventory, scanCode: '44' | '67' = '67'): Promise<{
     shipmentsWithout67: ShipmentWithout67[];
     totalShipments: number;
   }> {
@@ -1249,7 +1272,7 @@ export class InventoriesService {
       
       for (const shipment of batch) {
         try {
-          const result = this.processSingleShipment(shipment);
+          const result = this.processSingleShipment(shipment, scanCode);
           if (result) {
             shipmentsWithout67.push(result);
           }
@@ -1263,6 +1286,10 @@ export class InventoriesService {
             firstStatusDate: null,
             lastStatusDate: null,
             daysInSystem: null,
+            createdAt: shipment.createdAt ? new Date(shipment.createdAt).toISOString() : null,
+            scanCode,
+            shipmentType: shipment.shipmentType,
+            fedexUniqueId: shipment.fedexUniqueId ?? null,
             comment: `Error: ${error.message}`,
           });
         }
@@ -1275,7 +1302,7 @@ export class InventoriesService {
   /**
    * Procesa un solo shipment del inventario
    */
-  private processSingleShipment(shipment: any): ShipmentWithout67 | null {
+  private processSingleShipment(shipment: any, scanCode: '44' | '67' = '67'): ShipmentWithout67 | null {
     const statusHistory = shipment.statusHistory || [];
     const historyCount = statusHistory.length;
 
@@ -1291,10 +1318,10 @@ export class InventoriesService {
       let maxDate: Date | null = null;
       
       for (const status of statusHistory) {
-        // Verificar código 67
-        if (status.exceptionCode === '67') {
+        // Verificar el código que monitorea la sucursal (44/67)
+        if (status.exceptionCode === scanCode) {
           hasCode67 = true;
-          break; // Salir temprano si encontramos código 67
+          break; // Salir temprano si ya tiene el código
         }
         
         // Recoger exception codes únicos (excluyendo null/empty)
@@ -1337,9 +1364,13 @@ export class InventoriesService {
       firstStatusDate,
       lastStatusDate,
       daysInSystem,
-      comment: historyCount === 0 
-        ? 'Sin historial de estados' 
-        : 'No tiene exceptionCode 67',
+      createdAt: shipment.createdAt ? new Date(shipment.createdAt).toISOString() : null,
+      scanCode,
+      shipmentType: shipment.shipmentType,
+      fedexUniqueId: shipment.fedexUniqueId ?? null,
+      comment: historyCount === 0
+        ? 'Sin historial de estados'
+        : `No tiene exceptionCode ${scanCode}`,
     };
   }
 
@@ -1488,6 +1519,7 @@ export class InventoriesService {
       { header: 'Primera Fecha', key: 'firstStatusDate', width: 22 },
       { header: 'Última Fecha', key: 'lastStatusDate', width: 22 },
       { header: 'Días', key: 'daysInSystem', width: 10 },
+      { header: 'Días con el paquete', key: 'daysWithPackage', width: 18 },
       { header: 'Comentario', key: 'comment', width: 30 },
     ];
     
@@ -1538,7 +1570,15 @@ export class InventoriesService {
         row.getCell('daysInSystem').value = item.daysInSystem;
         row.getCell('daysInSystem').numFmt = '0';
       }
-      
+
+      // Días con el paquete (desde la creación del shipment = createdAt), en días calendario.
+      if (item.createdAt) {
+        const dayStart = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+        const dwp = Math.max(0, Math.round((dayStart(new Date()) - dayStart(new Date(item.createdAt))) / 86_400_000));
+        row.getCell('daysWithPackage').value = dwp;
+        row.getCell('daysWithPackage').numFmt = '0';
+      }
+
       // Comentario
       row.getCell('comment').value = item.comment;
       
@@ -1820,6 +1860,7 @@ export class InventoriesService {
         recipientCity: row.recipientCity, recipientZip: row.recipientZip, recipientPhone: row.recipientPhone,
         shipmentType: row.shipmentType, fedexUniqueId: row.fedexUniqueId,
         commitDateTime: row.commitDateTime ? new Date(row.commitDateTime).toISOString() : null,
+        createdAt: row.createdAt ? new Date(row.createdAt).toISOString() : null,
         dueOnFilterDate, movedThatDay, dexOnCommitDay, isLD,
         costPackage: costOf(row.shipmentType), ldSource: 'local',
       };

@@ -12,6 +12,7 @@ import { PaginatedResult, parsePagination, resolveDateRange } from 'src/common/p
 import { EmailFile, EmailLogService } from 'src/email-log/email-log.service';
 import { MailService } from 'src/mail/mail.service';
 import { EmailStatus } from 'src/common/enums/email-status.enum';
+import { hermosilloDayStartUtc } from 'src/common/utils';
 
 const EMAIL_MODULE = 'returning';
 const EMAIL_TYPE_RETURNING = 'returning';
@@ -62,7 +63,12 @@ export class ReturningService {
 
       // 1. Crear el lote (cabecera).
       const history = manager.create(ReturningHistory, {
-        date: dto.date ? new Date(dto.date) : new Date(),
+        // `dto.date` es un día-calendario flotante de un <input type="date"> ("2026-08-20").
+        // `new Date(str)` lo tomaría como MEDIANOCHE UTC (00:00Z), que pintado en Hermosillo
+        // (UTC-7) retrocede al día anterior — el bug de "salen con fecha de un día antes".
+        // Lo anclamos a la medianoche de Hermosillo (= 07:00Z), igual que ingresos/KPIs. Sin
+        // fecha (el usuario no eligió día), se usa el instante actual.
+        date: dto.date ? hermosilloDayStartUtc(dto.date) : new Date(),
         subsidiaryId: dto.subsidiaryId,
         vehicleId: dto.vehicleId ?? null,
         createdById: userId ?? null,
