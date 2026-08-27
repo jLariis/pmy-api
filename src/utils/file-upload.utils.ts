@@ -11,6 +11,36 @@ interface ParseOptions {
     sheetName?: string;
 }
 
+/**
+ * Normaliza una GUÍA que a veces no llega limpia desde Excel (la app la corrige, no el usuario):
+ *  - "383012036065.0" → "383012036065"  (float con .0)
+ *  - "3.83E+11"        → "383000000000"  (notación científica; best-effort, puede ser lossy)
+ *  - "3830 1203 6065"  → "383012036065"  (espacios/guiones si el resto es numérico)
+ * No toca IDs alfanuméricos (DHL JD…). Espejo de normalizeTrackingValue del front.
+ */
+export function normalizeTrackingValue(v: unknown): string {
+    let s = String(v ?? '').trim();
+    if (!s) return '';
+    if (/^\d+\.0+$/.test(s)) s = s.split('.')[0];
+    if (/^\d(\.\d+)?[eE][+-]?\d+$/.test(s)) {
+        const n = Number(s);
+        if (Number.isFinite(n)) s = n.toLocaleString('fullwide', { useGrouping: false });
+    }
+    const stripped = s.replace(/[\s-]/g, '');
+    if (/^\d+$/.test(stripped)) s = stripped;
+    return s;
+}
+
+/** Normaliza un TELÉFONO a solo dígitos (conserva un "+" inicial). Espejo del front. */
+export function normalizePhoneValue(v: unknown): string {
+    let s = String(v ?? '').trim();
+    if (!s) return '';
+    if (/^\d+\.0+$/.test(s)) s = s.split('.')[0];
+    const plus = s.startsWith('+') ? '+' : '';
+    const digits = plus + s.replace(/[^\d]/g, '');
+    return digits === '+' || digits === '' ? '' : digits;
+}
+
 export function getPriority(commitDate: Date): Priority {
     if(!commitDate) return null;
 
@@ -165,15 +195,16 @@ export function parseDynamicSheet(workbook: XLSX.WorkBook, options: ParseOptions
         const recipientCity = row[headerMap['recipientCity']] ?? null;
         const payment = row[headerMap['cod']]
 
+        const phone = normalizePhoneValue(row[headerMap['recipientPhone']]);
         return {
-            trackingNumber: row[headerMap['trackingNumber']],
+            trackingNumber: normalizeTrackingValue(row[headerMap['trackingNumber']]),
             recipientName: row[headerMap['recipientName']] ?? 'Sin Nombre',
             recipientAddress: row[headerMap['recipientAddress']] ?? 'Sin Dirección',
             recipientCity,
             recipientZip: row[headerMap['recipientZip']] ?? 'N/A',
             commitDate: commitDate,
             commitTime: formatExcelTimeToMySQL(row[headerMap['commitTime']]),
-            recipientPhone: row[headerMap['recipientPhone']] ?? 'Sin Teléfono',
+            recipientPhone: phone || 'Sin Teléfono',
             payment,
             consNumber: row[headerMap['consNumber']] ?? null,
             isPartOfCharge: is315,
@@ -197,13 +228,13 @@ export function parseDynamicFileF2(sheet: XLSX.Sheet) {
 
 
         return {
-            trackingNumber: row[headerMap['trackingNumber']],
+            trackingNumber: normalizeTrackingValue(row[headerMap['trackingNumber']]),
             recipientName: row[headerMap['recipientName']] ?? 'Sin Nombre',
             recipientAddress: row[headerMap['recipientAddress']] ?? 'Sin Dirección',
             recipientZip: row[headerMap['recipientZip']] ?? 'N/A',
             commitDate: commitDate, // ISO format string o null
             commitTime: formatExcelTimeToMySQL(row[headerMap['commitTime']]),
-            recipientPhone: row[headerMap['recipientPhone']] ?? '',
+            recipientPhone: normalizePhoneValue(row[headerMap['recipientPhone']]),
             recipientCity: row[headerMap['recipientCity']] ?? ''
         };
     }).filter(r => String(r.trackingNumber ?? '').trim() !== ''); // ignora filas sin guía
@@ -237,7 +268,7 @@ export function parseDynamicSheetCharge(sheet: XLSX.Sheet) {
         newPayment.status = PaymentStatus.PENDING;
 
         shipmentsWithCharge.push({
-            trackingNumber: row[headerMap['trackingNumber']],
+            trackingNumber: normalizeTrackingValue(row[headerMap['trackingNumber']]),
             recipientAddress: row[headerMap['recipientAddress']],
             payment: newPayment,
         });
@@ -263,7 +294,7 @@ export function parseDynamicHighValue(sheet: XLSX.Sheet) {
 
     dataRows.map(row => {
         highValueShipments.push({
-            trackingNumber: row[headerMap['trackingNumber']],
+            trackingNumber: normalizeTrackingValue(row[headerMap['trackingNumber']]),
             recipientAddress: row[headerMap['recipientAddress']],
         });
     });

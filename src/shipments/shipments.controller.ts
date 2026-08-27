@@ -402,17 +402,17 @@ export class ShipmentsController {
   @ApiConsumes('multipart/form-data')
   async previewUpload(
     @UploadedFile() file: Express.Multer.File,
-    @Body() body: { subsidiaryId: string; consNumber?: string; date?: string; carrier?: string },
+    @Body() body: { subsidiaryId: string; consNumber?: string; date?: string; carrier?: string; kind?: string; notRemoveCharge?: string },
   ) {
-    // Orden del servicio: (file, subsidiaryId, consNumber, date, carrier). Antes se
-    // pasaba `carrier` en el slot de `date` y nunca se leía `body.date` → el chequeo
-    // de conflicto de fecha nunca funcionaba con datos reales.
+    // Orden del servicio: (file, subsidiaryId, consNumber, date, carrier, kind).
+    // `kind` decide contra qué se deduplica: 'master' → shipments, 'f2' → cargas.
     return this.shipmentsService.previewUpload(
       file,
       body.subsidiaryId,
       body.consNumber || '',
       body.date || '',
       (body.carrier as any) || undefined,
+      (body.kind as 'master' | 'f2') || 'master',
     );
   }
 

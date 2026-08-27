@@ -844,6 +844,9 @@ export class ShipmentsService {
     this.logger.log("🚀 Iniciando migración masiva y carga directa (F2)");
 
     if (!file) throw new BadRequestException('No se subió ningún archivo');
+    // consNumber es la clave que agrupa las cargas y con la que se deduplica
+    // (findExistingChargeTrackings). Sin él no hay dedup posible → obligatorio.
+    if (!consNumber || !consNumber.trim()) throw new BadRequestException('El número de consolidado (consNumber) es obligatorio para cargas F2.');
 
     const { buffer } = file;
     const queryRunner = this.dataSource.createQueryRunner();
@@ -1054,6 +1057,9 @@ export class ShipmentsService {
     console.log("🟢 START addChargeShipments method");
     
     if (!file) throw new BadRequestException('No file uploaded');
+    // consNumber obligatorio: agrupa las cargas y es la clave de dedup (defensa en
+    // profundidad; el front ya lo exige).
+    if (!consNumber || !consNumber.trim()) throw new BadRequestException('El número de consolidado (consNumber) es obligatorio para cargas F2.');
     console.log("📂 File received:", file.originalname, "Size:", file.size);
 
     let savedIncome: Income;
@@ -3333,11 +3339,12 @@ export class ShipmentsService {
   }
 
   async previewUpload(
-    file: Express.Multer.File, 
-    subsidiaryId: string, 
-    consNumber: string, 
-    date: string, 
-    carrier: ShipmentType = ShipmentType.FEDEX
+    file: Express.Multer.File,
+    subsidiaryId: string,
+    consNumber: string,
+    date: string,
+    carrier: ShipmentType = ShipmentType.FEDEX,
+    kind: 'master' | 'f2' = 'master',
   ) {
     if (!file) throw new BadRequestException('No se recibió el archivo.');
     const sub = await this.subsidiaryService.findById(subsidiaryId);
@@ -3358,6 +3365,39 @@ export class ShipmentsService {
     const dupInFile = new Set<string>();
     withTn.forEach((t) => { if (seen.has(t)) dupInFile.add(t); else seen.add(t); });
     const uniqueTns = [...seen];
+
+    // --- F2 / CARGAS: deduplica contra `charge_shipment` (no contra `shipment`) por
+    // consNumber+sucursal, igual que el flujo de escritura (findExistingChargeTrackings).
+    // Sin este branch el preview de F2 diría "todas nuevas" (miraba solo shipments). ---
+    if (kind === 'f2') {
+      const exactConsMatchF2 = await this.consolidatedService.findByConsNumberScoped(consNumber, subsidiaryId, carrier);
+      const dupChargeSet = (uniqueTns.length && consNumber)
+        ? await this.findExistingChargeTrackings(this.dataSource.manager, uniqueTns, consNumber, subsidiaryId)
+        : new Set<string>();
+      const alreadyF2 = uniqueTns.filter((t) => dupChargeSet.has(t));
+      const newF2 = uniqueTns.filter((t) => !dupChargeSet.has(t));
+      return {
+        fileName: file.originalname,
+        parseError,
+        totalRows: all.length,
+        withTracking: withTn.length,
+        emptyTracking: all.length - withTn.length,
+        duplicatesInFile: dupInFile.size,
+        newCount: newF2.length,          // cargas a crear
+        recycledCount: 0,                // F2 no maneja "reingreso"
+        alreadyImportedCount: alreadyF2.length, // ya existen como carga en este consolidado
+        consNumberExists: exactConsMatchF2 ? {
+          id: exactConsMatchF2.id,
+          consNumber: exactConsMatchF2.consNumber,
+          type: exactConsMatchF2.type,
+          date: exactConsMatchF2.date,
+          numberOfPackages: exactConsMatchF2.numberOfPackages,
+          subsidiary: exactConsMatchF2.subsidiary?.name ?? null,
+          isExactMatch: true,
+          isDateConflict: false,
+        } : null,
+      };
+    }
 
     // Obtenemos TODAS las filas existentes en la BD (sin ventana ni filtro de devueltas).
     const existing = uniqueTns.length ? await this.findExistingTrackings(uniqueTns, subsidiaryId) : [];

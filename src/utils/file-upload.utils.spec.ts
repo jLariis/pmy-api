@@ -5,6 +5,8 @@ import {
   parseDynamicSheet,
   parseDynamicFileF2,
   parseDynamicSheetCharge,
+  normalizeTrackingValue,
+  normalizePhoneValue,
 } from './file-upload.utils';
 
 /** Helper: arma un workbook en memoria a partir de hojas {nombre: filas[][]}. */
@@ -161,5 +163,38 @@ describe('parseDynamicSheetCharge (cobro embebido usa el mismo parsePaymentCell)
     const b = res.find((r: any) => r.trackingNumber === '383011751254');
     expect(b.payment.type).toBe('FTC');
     expect(b.payment.amount).toBe(980);
+  });
+});
+
+describe('normalizeTrackingValue / normalizePhoneValue (limpieza automática)', () => {
+  it('quita ".0" de guías que Excel trajo como float', () => {
+    expect(normalizeTrackingValue('383012036065.0')).toBe('383012036065');
+  });
+  it('quita espacios y guiones cuando el resto es numérico', () => {
+    expect(normalizeTrackingValue('3830 1203 6065')).toBe('383012036065');
+    expect(normalizeTrackingValue('383-012-036-065')).toBe('383012036065');
+  });
+  it('expande notación científica (best-effort)', () => {
+    expect(normalizeTrackingValue('3.83E+11')).toBe('383000000000');
+  });
+  it('no toca IDs alfanuméricos (DHL JD…) ni recorta letras', () => {
+    expect(normalizeTrackingValue('JD014600003926438011')).toBe('JD014600003926438011');
+  });
+  it('teléfono: deja solo dígitos y conserva "+" inicial', () => {
+    expect(normalizePhoneValue('(662) 123-4567')).toBe('6621234567');
+    expect(normalizePhoneValue('+52 662 123 4567')).toBe('+526621234567');
+    expect(normalizePhoneValue('6621234567.0')).toBe('6621234567');
+    expect(normalizePhoneValue('')).toBe('');
+  });
+  it('parseDynamicSheet normaliza la guía leída del archivo', () => {
+    const sheet = XLSX.utils.aoa_to_sheet([
+      ['Tracking Number', 'Recip Name', 'Phone'],
+      ['383012036065.0', 'Juan', '(662) 123-4567'],
+    ]);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, sheet, 'Data');
+    const rows = parseDynamicSheet(wb, { fileName: 'test.xlsx' });
+    expect(rows[0].trackingNumber).toBe('383012036065');
+    expect(rows[0].recipientPhone).toBe('6621234567');
   });
 });
