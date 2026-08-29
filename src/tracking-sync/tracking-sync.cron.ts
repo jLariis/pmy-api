@@ -3,6 +3,7 @@ import { Cron } from '@nestjs/schedule';
 import { ShipmentsService } from 'src/shipments/shipments.service';
 import { TrackingSyncOrchestrator } from './tracking-sync.orchestrator';
 import { TrackableItem } from './tracking-sync.types';
+import { prioritizeTrackables } from './cadence/prioritize.util';
 
 /**
  * Corre en SHADOW cada hora al minuto :15 (desfasado del cron legacy en :00 para no
@@ -30,15 +31,18 @@ export class TrackingSyncCron {
         this.shipmentsService.getShipmentsToValidate(),
         this.shipmentsService.getSimpleChargeShipments(),
       ]);
-      const items: TrackableItem[] = [
+      const rawItems: TrackableItem[] = [
         ...shipments.map((entity) => ({ kind: 'shipment' as const, entity })),
         ...charges.map((entity) => ({ kind: 'charge' as const, entity })),
       ];
-      if (!items.length) {
+      if (!rawItems.length) {
         this.logger.log('📪 [shadow] no hay guías para observar.');
         return;
       }
-      this.logger.log(`🌓 [shadow] observando ${shipments.length} normales + ${charges.length} F2...`);
+      // Cadencia adaptativa: observa primero las guías "calientes" (movimiento activo).
+      // En shadow SIN tope → cobertura completa; el orden solo prioriza las urgentes.
+      const items = prioritizeTrackables(rawItems);
+      this.logger.log(`🌓 [shadow] observando ${shipments.length} normales + ${charges.length} F2 (calientes primero)...`);
       await this.orchestrator.runShadow(items);
     } catch (err: any) {
       this.logger.error(`❌ [shadow] error: ${err?.message}`);
