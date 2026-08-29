@@ -26,6 +26,8 @@ import { IncomeRule } from './rules/income.rule';
 import { NotificationRule } from './rules/notification.rule';
 import { IncomeExecutor } from './income/income-executor';
 import { IncomeReconciler } from './income/income-reconciler';
+import { CobrosReconciliationService } from './income/cobros-reconciliation.service';
+import { CobrosReconciliationCron } from './income/cobros-reconciliation.cron';
 import { SYNC_RULES } from './tracking-sync.types';
 
 /**
@@ -58,6 +60,8 @@ import { SYNC_RULES } from './tracking-sync.types';
     NotificationRule,
     IncomeExecutor,
     IncomeReconciler,
+    CobrosReconciliationService,
+    CobrosReconciliationCron,
     {
       provide: SYNC_RULES,
       useFactory: (terminal, external, income, notification) => [terminal, external, income, notification],
