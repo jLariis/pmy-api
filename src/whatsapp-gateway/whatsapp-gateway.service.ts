@@ -2,6 +2,7 @@ import { Injectable, Logger, OnModuleInit, OnModuleDestroy, ServiceUnavailableEx
 import * as fs from 'fs';
 import * as path from 'path';
 import * as QRCode from 'qrcode';
+import { installLibsignalConsoleFilter } from './silence-libsignal-logs';
 
 export type WaStatus = 'disconnected' | 'connecting' | 'qr' | 'connected';
 
@@ -46,6 +47,9 @@ export class WhatsappGatewayService implements OnModuleInit, OnModuleDestroy {
   /** Carga Baileys (ESM) de forma dinámica sin que TS lo convierta a require(). */
   private async loadBaileys() {
     if (!this.baileys) {
+      // Silencia el ruido (y la fuga de llaves privadas) que `libsignal` imprime
+      // por console.* crudo al rotar sesiones E2E. Idempotente.
+      installLibsignalConsoleFilter();
       const dynamicImport = new Function('m', 'return import(m)');
       this.baileys = await dynamicImport('@whiskeysockets/baileys');
       // Logger pino en nivel 'warn' para ver errores internos de Baileys en la
