@@ -29,6 +29,9 @@ import { DeliveryHeaderRule } from './rules/delivery-header.rule';
 import { TimeShieldRule } from './rules/time-shield.rule';
 import { PreRegistrationRule } from './rules/pre-registration.rule';
 import { PreRegResolvedRule } from './rules/pre-reg-resolved.rule';
+import { Code44Rule } from './rules/code44.rule';
+import { MetadataPersistRule } from './rules/metadata-persist.rule';
+import { IncomeHeaderSafetyNetRule } from './rules/income-header-safety-net.rule';
 import { IncomeExecutor } from './income/income-executor';
 import { IncomeReconciler } from './income/income-reconciler';
 import { CobrosReconciliationService } from './income/cobros-reconciliation.service';
@@ -68,6 +71,9 @@ import { SYNC_RULES } from './tracking-sync.types';
     TimeShieldRule,
     PreRegistrationRule,
     PreRegResolvedRule,
+    Code44Rule,
+    MetadataPersistRule,
+    IncomeHeaderSafetyNetRule,
     IncomeExecutor,
     IncomeReconciler,
     CobrosReconciliationService,
@@ -75,9 +81,9 @@ import { SYNC_RULES } from './tracking-sync.types';
     {
       provide: SYNC_RULES,
       // El pipeline ordena por `priority` (mayor primero); el orden aquí es indiferente.
-      useFactory: (terminal, external, income, notification, deliveryHeader, timeShield, preReg, preRegResolved) =>
-        [terminal, external, income, notification, deliveryHeader, timeShield, preReg, preRegResolved],
-      inject: [TerminalLockRule, ExternalDeliveryRule, IncomeRule, NotificationRule, DeliveryHeaderRule, TimeShieldRule, PreRegistrationRule, PreRegResolvedRule],
+      useFactory: (terminal, external, income, notification, deliveryHeader, timeShield, preReg, preRegResolved, code44, metadata, incomeHeader) =>
+        [terminal, external, income, notification, deliveryHeader, timeShield, preReg, preRegResolved, code44, metadata, incomeHeader],
+      inject: [TerminalLockRule, ExternalDeliveryRule, IncomeRule, NotificationRule, DeliveryHeaderRule, TimeShieldRule, PreRegistrationRule, PreRegResolvedRule, Code44Rule, MetadataPersistRule, IncomeHeaderSafetyNetRule],
     },
   ],
   // Exportado para que el cierre a ruta reconcile/persista el estatus FedEx al abrir

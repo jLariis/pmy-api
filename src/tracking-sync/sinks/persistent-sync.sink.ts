@@ -10,6 +10,7 @@ import { SyncContext } from '../tracking-sync.types';
 import { ApplyOutcome } from '../compare.types';
 import { IncomeExecutor } from '../income/income-executor';
 import { isSubsidiaryInCutover } from '../cutover.config';
+import { ShipmentStatusType } from 'src/common/enums/shipment-status-type.enum';
 
 export interface ApplyActor {
   userId?: string;
@@ -31,6 +32,41 @@ export class PersistentSyncSink {
     private readonly auditService: AuditService,
     private readonly incomeExecutor: IncomeExecutor,
   ) {}
+
+  /** Materializa los efectos diferidos (solo en cutover): cobros, código 44 y metadata. */
+  private async applyDeferredEffects(ctx: SyncContext, shipment: any, isCharge: boolean): Promise<void> {
+    const effects = ctx.deferredEffects || [];
+
+    // Cobros (solo envíos; los efectos income solo se emiten para shipments).
+    if (!isCharge && effects.some((e) => e.type === 'income')) {
+      await this.incomeExecutor.execute(effects, 'persist');
+    }
+
+    // Código 44: marca la fila del escaneo local (idempotente). Aplica a envíos y cargas.
+    const fkCol = isCharge ? 'chargeShipmentId' : 'shipmentId';
+    for (const e of effects.filter((x) => x.type === 'code44')) {
+      const at = new Date(e.payload.at);
+      await this.dataSource.query(
+        `UPDATE shipment_status SET exceptionCode = '44', status = ?
+           WHERE ${fkCol} = ? AND timestamp = ? AND (COALESCE(exceptionCode,'') <> '44' OR status <> ?)`,
+        [ShipmentStatusType.EN_BODEGA, shipment.id, at, ShipmentStatusType.EN_BODEGA],
+      );
+    }
+
+    // Metadata: fedexUniqueId / carrierCode / receivedByName / commitDateTime.
+    const meta = effects.find((x) => x.type === 'metadata');
+    if (meta) {
+      const p = meta.payload;
+      const patch: Record<string, any> = {};
+      if (p.uniqueId && shipment.fedexUniqueId !== p.uniqueId) patch.fedexUniqueId = p.uniqueId;
+      if (p.carrierCode && shipment.carrierCode !== p.carrierCode) patch.carrierCode = p.carrierCode;
+      if (p.receivedByName && shipment.receivedByName !== p.receivedByName) patch.receivedByName = p.receivedByName;
+      if (p.commitDateTime) patch.commitDateTime = new Date(p.commitDateTime);
+      if (Object.keys(patch).length) {
+        await this.dataSource.getRepository(isCharge ? ChargeShipment : Shipment).update({ id: shipment.id } as any, patch);
+      }
+    }
+  }
 
   async applyPlan(ctx: SyncContext, actor: ApplyActor): Promise<ApplyOutcome> {
     const shipment = ctx.shipment;
@@ -76,16 +112,13 @@ export class PersistentSyncSink {
         }
       });
 
-      // F4 (cobros) — solo cuando la sucursal está en CUTOVER (default OFF = status-only,
-      // idéntico a hoy). Genera los ingresos anclados al evento (idempotente por sourceEventKey).
-      // Fuera de cutover NO se ejecuta: el ingreso lo sigue creando el legacy.
+      // CUTOVER (F3/F4) — efectos diferidos (cobros, código 44, metadata). Solo cuando la
+      // sucursal está en cutover (default OFF = status-only, idéntico a hoy). Fuera de cutover
+      // NO se ejecutan: el ingreso/código 44/metadata los sigue manejando el legacy.
       const subsidiaryId = (shipment as any)?.subsidiary?.id ?? (shipment as any)?.subsidiaryId ?? null;
-      if (!isCharge && ctx.deferredEffects.length && isSubsidiaryInCutover(subsidiaryId)) {
-        try {
-          await this.incomeExecutor.execute(ctx.deferredEffects, 'persist');
-        } catch (e: any) {
-          this.logger.error(`applyPlan income ${shipment.trackingNumber}: ${e?.message}`);
-        }
+      if (ctx.deferredEffects.length && isSubsidiaryInCutover(subsidiaryId)) {
+        try { await this.applyDeferredEffects(ctx, shipment, isCharge); }
+        catch (e: any) { this.logger.error(`applyPlan efectos ${shipment.trackingNumber}: ${e?.message}`); }
       }
 
       const applied = inserted > 0 || statusChanged;
