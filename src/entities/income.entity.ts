@@ -71,6 +71,11 @@ export class Income {
   @Column({ type: 'char', length: 36, nullable: true })
   createdById?: string;
 
+  // Ancla del cobro al evento terminal de FedEx que lo originó (idempotencia fuerte,
+  // reconciliación exacta evento↔ingreso). Null en ingresos legacy/agrupados.
+  @Column({ type: 'varchar', length: 120, nullable: true })
+  sourceEventKey?: string | null;
+
   @BeforeInsert()
   setDefaults() {
     this.createdAt = new Date(); // Fecha en UTC
