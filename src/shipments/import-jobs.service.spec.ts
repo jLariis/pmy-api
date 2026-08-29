@@ -11,6 +11,7 @@ import { Shipment } from '../entities/shipment.entity';
 import { ChargeShipment } from '../entities/charge-shipment.entity';
 import { ConsolidatedService } from 'src/consolidated/consolidated.service';
 import { HolidaysService } from 'src/holidays/holidays.service';
+import { ShipmentsService } from './shipments.service';
 
 function repoMock(extra: any = {}) {
   return { find: jest.fn(), findOne: jest.fn(), create: jest.fn((x) => x), save: jest.fn(async (x) => x), update: jest.fn(), ...extra };
@@ -31,6 +32,7 @@ describe('ImportJobsService.create (idempotencia)', () => {
         { provide: DataSource, useValue: { createQueryRunner: jest.fn() } },
         { provide: ConsolidatedService, useValue: { findByConsNumberScoped: jest.fn().mockResolvedValue(null) } },
         { provide: HolidaysService, useValue: { getHolidayInputs: jest.fn().mockResolvedValue([]) } },
+        { provide: ShipmentsService, useValue: { processFileF2: jest.fn(), addChargeShipments: jest.fn(), processFileCharges: jest.fn() } },
       ],
     }).compile();
     service = moduleRef.get(ImportJobsService);
@@ -94,6 +96,7 @@ describe('ImportJobsService.processMasterJob', () => {
         { provide: DataSource, useValue: { query: jest.fn().mockResolvedValue([{ l: 1 }]), manager: dsManager, createQueryRunner: () => qr } },
         { provide: ConsolidatedService, useValue: { findByConsNumberScoped: jest.fn().mockResolvedValue(null) } },
         { provide: HolidaysService, useValue: { getHolidayInputs: jest.fn().mockResolvedValue([]) } },
+        { provide: ShipmentsService, useValue: { processFileF2: jest.fn(), addChargeShipments: jest.fn(), processFileCharges: jest.fn() } },
       ],
     }).compile();
     service = moduleRef.get(ImportJobsService);
@@ -128,5 +131,60 @@ describe('ImportJobsService.processMasterJob', () => {
     expect(job.failed).toBe(1);
     expect(job.status).toBe('failed');
     expect(qr.rollbackTransaction).toHaveBeenCalled();
+  });
+});
+
+describe('ImportJobsService.processChargeJob', () => {
+  let service: ImportJobsService;
+  let jobRepo: any;
+  let shipments: any;
+
+  beforeEach(async () => {
+    jobRepo = repoMock({ save: jest.fn(async (j: any) => j) });
+    shipments = {
+      processFileF2: jest.fn().mockResolvedValue({ summary: { insertedNew: 1, migrated: 0, duplicated: 0, failed: 0 } }),
+      addChargeShipments: jest.fn().mockResolvedValue({ savedChargeShipments: [{ id: 'x' }], duplicated: 0 }),
+      processFileCharges: jest.fn().mockResolvedValue({ applied: 0, appliedToCharges: 1, unmatched: 0, unmatchedTrackings: [] }),
+    };
+    const moduleRef = await Test.createTestingModule({
+      providers: [
+        ImportJobsService,
+        { provide: getRepositoryToken(ImportJob), useValue: jobRepo },
+        { provide: getRepositoryToken(Shipment), useValue: repoMock() },
+        { provide: getRepositoryToken(ChargeShipment), useValue: repoMock() },
+        { provide: DataSource, useValue: { query: jest.fn(), manager: {}, createQueryRunner: jest.fn() } },
+        { provide: ConsolidatedService, useValue: { findByConsNumberScoped: jest.fn() } },
+        { provide: HolidaysService, useValue: { getHolidayInputs: jest.fn().mockResolvedValue([]) } },
+        { provide: ShipmentsService, useValue: shipments },
+      ],
+    }).compile();
+    service = moduleRef.get(ImportJobsService);
+  });
+
+  it('inserta cargas (processFileF2) y aplica cobros (processFileCharges)', async () => {
+    const job: any = {
+      id: 'JC', kind: 'charge', subsidiaryId: 'S1', consNumber: 'C1', isHalfTon: false, notRemoveCharge: false,
+      payloadRows: JSON.stringify([{ trackingNumber: 'A', cod: 'COD 500' }]),
+      onlyTrackings: null, saved: 0, duplicated: 0, failed: 0, cobrosApplied: 0, cobrosUnmatched: 0,
+    };
+    await service.processChargeJob(job);
+    expect(shipments.processFileF2).toHaveBeenCalled();
+    expect(shipments.processFileCharges).toHaveBeenCalled();
+    expect(job.saved).toBe(1);
+    expect(job.cobrosApplied).toBe(1);
+    expect(job.status).toBe('done');
+  });
+
+  it('con notRemoveCharge usa addChargeShipments (insertar directo)', async () => {
+    const job: any = {
+      id: 'JC2', kind: 'charge', subsidiaryId: 'S1', consNumber: 'C1', isHalfTon: false, notRemoveCharge: true,
+      payloadRows: JSON.stringify([{ trackingNumber: 'A' }]),
+      onlyTrackings: null, saved: 0, duplicated: 0, failed: 0, cobrosApplied: 0, cobrosUnmatched: 0,
+    };
+    await service.processChargeJob(job);
+    expect(shipments.addChargeShipments).toHaveBeenCalled();
+    expect(shipments.processFileF2).not.toHaveBeenCalled();
+    expect(job.saved).toBe(1);
+    expect(job.status).toBe('done');
   });
 });

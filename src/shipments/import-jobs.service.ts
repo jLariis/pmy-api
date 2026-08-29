@@ -15,6 +15,8 @@ import { ShipmentStatusType } from 'src/common/enums/shipment-status-type.enum';
 import { ConsolidatedType } from 'src/common/enums/consolidated-type.enum';
 import { PaymentStatus } from 'src/common/enums/payment-status.enum';
 import { getPriority, parsePaymentCell } from 'src/utils/file-upload.utils';
+import * as XLSX from 'xlsx';
+import { ShipmentsService } from './shipments.service';
 import { CreateImportJobDto, PreviewImportDto } from './import-jobs.dto';
 import { CanonicalRow } from './import-jobs.types';
 import { parsePastedRows, hashRows, classifyMasterRows } from './import-jobs.util';
@@ -35,6 +37,7 @@ export class ImportJobsService {
     private readonly dataSource: DataSource,
     private readonly consolidatedService: ConsolidatedService,
     private readonly holidaysService: HolidaysService,
+    private readonly shipmentsService: ShipmentsService,
   ) {}
 
   async create(dto: CreateImportJobDto, user?: { userId?: string; name?: string }) {
@@ -254,6 +257,74 @@ export class ImportJobsService {
     job.failed = result.failedTrackings.length;
     job.result = JSON.stringify(result);
     job.status = job.saved === 0 && job.failed > 0 ? 'failed' : (job.failed > 0 ? 'partial' : 'done');
+    job.finishedAt = new Date();
+    await this.jobRepo.save(job);
+  }
+
+  /** Construye un .xlsx en memoria (Multer-like) con las columnas pedidas. */
+  private buildXlsx(rows: CanonicalRow[], columns: (keyof CanonicalRow)[], name: string): any {
+    const header = columns.map((c) => String(c));
+    const body = rows.map((r) => columns.map((c) => (r[c] ?? '') as any));
+    const ws = XLSX.utils.aoa_to_sheet([header, ...body]);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Pegado');
+    const buffer: Buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+    return { buffer, originalname: name, mimetype: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', size: buffer.length, fieldname: 'file', encoding: '7bit' };
+  }
+
+  /**
+   * Estrategia charge (carga / F2 / 31.5): reutiliza los métodos existentes y probados
+   * (`addChargeShipments` / `processFileF2` + `processFileCharges`) — mismo comportamiento
+   * que el paste actual, pero dentro del job async (sin timeout, con idempotencia/progreso).
+   */
+  async processChargeJob(job: ImportJob): Promise<void> {
+    const allRows = JSON.parse(job.payloadRows) as CanonicalRow[];
+    const only = job.onlyTrackings ? new Set(JSON.parse(job.onlyTrackings) as string[]) : null;
+    const rows = only ? allRows.filter((r) => only.has(r.trackingNumber)) : allRows;
+
+    const result = { failedTrackings: [] as { trackingNumber: string; reason: string }[], duplicatedTrackings: [] as string[], cobrosUnmatchedTrackings: [] as string[], summary: {} as Record<string, number> };
+    const consDate = job.consDate ?? undefined;
+
+    try {
+      const mainCols: (keyof CanonicalRow)[] = ['trackingNumber', 'recipientName', 'recipientAddress', 'recipientCity', 'recipientZip', 'commitDate', 'commitTime', 'recipientPhone', 'cod'];
+      const file = this.buildXlsx(rows, mainCols, `pegado_charge_${Date.now()}.xlsx`);
+
+      const res: any = job.notRemoveCharge
+        ? await this.shipmentsService.addChargeShipments(file, job.subsidiaryId, job.consNumber, consDate as any, job.createdById ?? undefined, job.isHalfTon)
+        : await this.shipmentsService.processFileF2(file, job.subsidiaryId, job.consNumber, consDate as any, job.createdById ?? undefined, job.isHalfTon);
+
+      const insertedNew = Number(res?.summary?.insertedNew ?? 0);
+      const migrated = Number(res?.summary?.migrated ?? 0);
+      const savedFromArray = Array.isArray(res?.savedChargeShipments) ? res.savedChargeShipments.length : 0;
+      job.saved = (insertedNew + migrated) || savedFromArray;
+      job.duplicated = Number(res?.summary?.duplicated ?? res?.duplicated ?? 0);
+      job.failed = Number(res?.summary?.failed ?? 0);
+      job.processedRows = rows.length;
+      job.heartbeatAt = new Date();
+      await this.jobRepo.save(job);
+
+      // Sub-paso cobros: filas con cod → reutiliza processFileCharges (resolveCobroTarget).
+      const payRows = rows.filter((r) => (r.cod ?? '').trim().length > 0);
+      if (payRows.length) {
+        try {
+          const payFile = this.buildXlsx(payRows, ['trackingNumber', 'cod'], `cobros_charge_${Date.now()}.xlsx`);
+          const payRes: any = await this.shipmentsService.processFileCharges(payFile, job.consNumber || undefined);
+          job.cobrosApplied = Number(payRes?.applied ?? 0) + Number(payRes?.appliedToCharges ?? 0);
+          job.cobrosUnmatched = Number(payRes?.unmatched ?? 0);
+          result.cobrosUnmatchedTrackings = Array.isArray(payRes?.unmatchedTrackings) ? payRes.unmatchedTrackings : [];
+        } catch (e: any) {
+          this.logger.warn(`[charge ${job.id}] cobros falló: ${e?.message}`);
+        }
+      }
+
+      result.summary = { saved: job.saved, duplicated: job.duplicated, failed: job.failed, cobrosApplied: job.cobrosApplied };
+      job.result = JSON.stringify(result);
+      job.status = job.saved === 0 && (job.failed > 0) ? 'failed' : (job.failed > 0 ? 'partial' : 'done');
+    } catch (e: any) {
+      job.error = e?.message ?? 'error';
+      job.status = 'failed';
+      job.result = JSON.stringify(result);
+    }
     job.finishedAt = new Date();
     await this.jobRepo.save(job);
   }
