@@ -18,7 +18,8 @@ export class IncomeRule implements SyncRule {
 
   async apply(ctx: SyncContext): Promise<void> {
     if (ctx.kind !== 'shipment') return;
-    const newEvents = ctx.reconcile.newEvents || [];
+    // Ignora eventos vetados (p.ej. pre-registro): no deben generar cobro.
+    const newEvents = (ctx.reconcile.newEvents || []).filter((e) => !ctx.vetoedEventKeys.has(e.eventKey));
     if (newEvents.length === 0) return;
 
     // Solo consultamos el conteo de 08 previos si hay un 08 nuevo (evita un query por guía).

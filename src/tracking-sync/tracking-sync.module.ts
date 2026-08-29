@@ -27,6 +27,8 @@ import { IncomeRule } from './rules/income.rule';
 import { NotificationRule } from './rules/notification.rule';
 import { DeliveryHeaderRule } from './rules/delivery-header.rule';
 import { TimeShieldRule } from './rules/time-shield.rule';
+import { PreRegistrationRule } from './rules/pre-registration.rule';
+import { PreRegResolvedRule } from './rules/pre-reg-resolved.rule';
 import { IncomeExecutor } from './income/income-executor';
 import { IncomeReconciler } from './income/income-reconciler';
 import { CobrosReconciliationService } from './income/cobros-reconciliation.service';
@@ -64,6 +66,8 @@ import { SYNC_RULES } from './tracking-sync.types';
     NotificationRule,
     DeliveryHeaderRule,
     TimeShieldRule,
+    PreRegistrationRule,
+    PreRegResolvedRule,
     IncomeExecutor,
     IncomeReconciler,
     CobrosReconciliationService,
@@ -71,9 +75,9 @@ import { SYNC_RULES } from './tracking-sync.types';
     {
       provide: SYNC_RULES,
       // El pipeline ordena por `priority` (mayor primero); el orden aquí es indiferente.
-      useFactory: (terminal, external, income, notification, deliveryHeader, timeShield) =>
-        [terminal, external, income, notification, deliveryHeader, timeShield],
-      inject: [TerminalLockRule, ExternalDeliveryRule, IncomeRule, NotificationRule, DeliveryHeaderRule, TimeShieldRule],
+      useFactory: (terminal, external, income, notification, deliveryHeader, timeShield, preReg, preRegResolved) =>
+        [terminal, external, income, notification, deliveryHeader, timeShield, preReg, preRegResolved],
+      inject: [TerminalLockRule, ExternalDeliveryRule, IncomeRule, NotificationRule, DeliveryHeaderRule, TimeShieldRule, PreRegistrationRule, PreRegResolvedRule],
     },
   ],
   // Exportado para que el cierre a ruta reconcile/persista el estatus FedEx al abrir
