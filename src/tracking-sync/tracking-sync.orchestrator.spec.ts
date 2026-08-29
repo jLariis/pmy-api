@@ -13,7 +13,10 @@ function deps() {
     reconciler: { reconcile: jest.fn() },
     pipeline: { run: jest.fn().mockResolvedValue(undefined) },
     sink: { applyPlan: jest.fn().mockResolvedValue({ shipmentId: 's1', trackingNumber: 'TN1', proposedStatus: ShipmentStatusType.EN_RUTA, wouldInsertEvents: 1, matchesLegacy: true }) },
-    loader: { load: jest.fn().mockResolvedValue(new Set<string>()) },
+    loader: {
+      load: jest.fn().mockResolvedValue(new Set<string>()),
+      loadFull: jest.fn().mockResolvedValue({ keys: new Set<string>(), existing: { lastOpTime: 0, count08: 0 } }),
+    },
     incomeReconciler: { reconcile: jest.fn().mockResolvedValue({ rows: [], missingCount: 0, okCount: 0 }) },
     savedRun,
   };

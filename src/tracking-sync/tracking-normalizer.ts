@@ -1,8 +1,9 @@
 import { Injectable } from '@nestjs/common';
 import { ShipmentStatusType } from 'src/common/enums/shipment-status-type.enum';
 import { resolveCanonicalStatus } from 'src/fedex-status/fedex-status.mapping';
+import { resolveCode44ScanTime } from 'src/utils/fedex-local-scan.util';
 import { buildEventKey, buildShadowKey } from './event-key.util';
-import { NormalizedEvent, NormalizedTracking, RawTrackingResult, StatusValidation } from './tracking-sync.types';
+import { NormalizedEvent, NormalizedTracking, RawTrackingResult, StatusValidation, TrackingHeader } from './tracking-sync.types';
 
 /**
  * Convierte un trackResult crudo de FedEx en la lista COMPLETA de eventos normalizados,
@@ -26,7 +27,30 @@ export class TrackingNormalizer {
       events,
       latest,
       commitDateTime: this.extractCommitDateTime(track),
+      header: this.buildHeader(track, scanEvents),
       validation: this.validate(track, events),
+    };
+  }
+
+  /** Extrae los datos del encabezado de FedEx (para reglas de header/44/metadata). */
+  private buildHeader(track: any, scanEvents: any[]): TrackingHeader {
+    const lsd = track?.latestStatusDetail ?? null;
+    const code: string | null = lsd?.code ?? null;
+    const derivedCode: string | null = lsd?.derivedCode ?? null;
+    const ancillaryReason: string | null = lsd?.ancillaryDetails?.[0]?.reason ?? null;
+    const actualRaw = track?.dateAndTimes?.find((d: any) => d?.type === 'ACTUAL_DELIVERY')?.dateTime;
+    const actualDeliveryAt = actualRaw ? new Date(actualRaw) : null;
+    const code44At = resolveCode44ScanTime(lsd, scanEvents ?? []);
+    return {
+      code,
+      derivedCode,
+      ancillaryReason,
+      isDeliveredHeader: code === 'DL' || derivedCode === 'DL',
+      actualDeliveryAt: actualDeliveryAt && !isNaN(actualDeliveryAt.getTime()) ? actualDeliveryAt : null,
+      receivedByName: track?.deliveryDetails?.receivedByName ?? null,
+      uniqueId: track?.trackingNumberInfo?.trackingNumberUniqueId ?? null,
+      carrierCode: track?.trackingNumberInfo?.carrierCode ?? null,
+      code44At: code44At !== null ? new Date(code44At) : null,
     };
   }
 

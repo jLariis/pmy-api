@@ -84,13 +84,13 @@ export class TrackingSyncOrchestrator {
               if (!normalized.latest) { noData++; return; }
 
               const entity = item.entity;
-              const knownKeys = await this.loader.load(entity.id, item.kind);
+              const { keys: knownKeys, existing } = await this.loader.loadFull(entity.id, item.kind);
               const reconcile = this.reconciler.reconcile(
                 normalized, knownKeys, entity.status, (e: NormalizedEvent) => e.shadowKey,
               );
 
               const ctx: SyncContext = {
-                shipment: entity, kind: item.kind, normalized, reconcile,
+                shipment: entity, kind: item.kind, normalized, reconcile, existing,
                 proposedStatus: reconcile.proposedStatus,
                 vetoedEventKeys: new Set<string>(), deferredEffects: [], notes: [],
               };
