@@ -9,6 +9,12 @@ describe('resolveCanonicalStatus (mapeo canónico nuevo)', () => {
     );
   });
 
+  it('005 (entrega por terceros) → entregado_por_fedex', () => {
+    expect(resolveCanonicalStatus({ exceptionCode: '005' })).toBe(
+      ShipmentStatusType.ENTREGADO_POR_FEDEX,
+    );
+  });
+
   it('exceptionCode refina el estatus (IT + 14 → retorno_abandono_fedex)', () => {
     expect(resolveCanonicalStatus({ derivedCode: 'IT', exceptionCode: '14' })).toBe(
       ShipmentStatusType.RETORNO_ABANDONO_FEDEX,
