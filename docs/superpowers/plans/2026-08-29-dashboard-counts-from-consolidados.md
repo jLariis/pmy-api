@@ -59,7 +59,7 @@ describe('rollupConsolidatedPackageStats', () => {
     const s = map.get('s1')!;
     expect(s.totalPackages).toBe(15);          // declarado
     expect(s.deliveredPackages).toBe(6);
-    expect(s.undeliveredPackages).toBe(3);     // dex03+dex07+dex08 = 1+1+1
+    expect(s.undeliveredPackages).toBe(2);     // dex03+dex07+dex08 = 1+1+0
     expect(s.byExceptionCode).toEqual({ code07: 1, code08: 0, code03: 1, unknown: 1 });
     expect(s.inTransitPackages).toBe(2);
     expect(s.totalCharges).toBe(4);            // countF2 = 3+1
