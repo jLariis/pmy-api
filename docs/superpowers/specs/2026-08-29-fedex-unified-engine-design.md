@@ -71,8 +71,7 @@ Puntos de entrada unificados:
 
 - **F1 — Paridad de estatus + observabilidad.** Comparar shadow vs legacy N días; métricas de divergencia y hit-rate; corregir reglas hasta paridad ≥ legacy. Sin cambios de escritura.
 - **F2 — Cobros en shadow (regla financiera + reconciliador).** Implementar `IncomeRule`/`IncomeExecutor` y el ancla (migración), corriendo en **shadow**: calcular "ingreso que se generaría" y reconciliar contra los reales → reporte. Validar cobros **antes** de activar.
-- **F3 — Cutover de estatus** (bandera por sucursal, reversible). Motor persistente para estatus; legacy como fallback.
-- **F4 — Cutover de cobros.** Activar `IncomeRule` persistente; retirar `generateIncomes` del cron. Reconciliador queda como guardia permanente.
+- **F3+F4 — Cutover (implementado, DEFAULT OFF).** En la práctica se acoplan en **una bandera** `TRACKING_SYNC_CUTOVER` (+ allowlist `TRACKING_SYNC_CUTOVER_SUBSIDIARIES`): no se pueden separar porque el ingreso legacy vive dentro del cron legacy. Al encender: el cron legacy se salta, `TrackingSyncPersistCron` escribe estatus vía `applyMany`, y el sink persistente genera cobros (`IncomeExecutor 'persist'`) para las sucursales en cutover. Reversible al instante (apagar la bandera). El reconciliador (F6) queda como guardia permanente.
 - **F5 — Frescura on-demand + cadencia adaptativa.** Scheduler por prioridad + refresco inmediato en momentos clave + primer sync de import-jobs.
 - **F6 — Reconciliación + SLA permanentes.** Job diario + alertas.
 
