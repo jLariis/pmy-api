@@ -14,6 +14,7 @@ function deps() {
     pipeline: { run: jest.fn().mockResolvedValue(undefined) },
     sink: { applyPlan: jest.fn().mockResolvedValue({ shipmentId: 's1', trackingNumber: 'TN1', proposedStatus: ShipmentStatusType.EN_RUTA, wouldInsertEvents: 1, matchesLegacy: true }) },
     loader: { load: jest.fn().mockResolvedValue(new Set<string>()) },
+    incomeReconciler: { reconcile: jest.fn().mockResolvedValue({ rows: [], missingCount: 0, okCount: 0 }) },
     savedRun,
   };
 }
@@ -32,7 +33,7 @@ describe('TrackingSyncOrchestrator', () => {
     }));
     d.reconciler.reconcile.mockReturnValue({ newEvents: [{ eventKey: 'k1' }], proposedStatus: ShipmentStatusType.EN_RUTA, currentStatus: ShipmentStatusType.EN_RUTA, transition: null });
 
-    const orch = new TrackingSyncOrchestrator(d.runRepo as any, d.source as any, d.normalizer as any, d.reconciler as any, d.pipeline as any, d.sink as any, d.loader as any);
+    const orch = new TrackingSyncOrchestrator(d.runRepo as any, d.source as any, d.normalizer as any, d.reconciler as any, d.pipeline as any, d.sink as any, d.loader as any, d.incomeReconciler as any);
     const items = [
       { kind: 'shipment' as const, entity: { id: 's1', trackingNumber: 'TN1', status: ShipmentStatusType.EN_RUTA } as any },
       { kind: 'shipment' as const, entity: { id: 's2', trackingNumber: 'TN2', status: ShipmentStatusType.PENDIENTE } as any },
@@ -49,7 +50,7 @@ describe('TrackingSyncOrchestrator', () => {
   it('aborts (circuit breaker) when the source throws a connectivity error and nothing succeeds', async () => {
     const d = deps();
     d.source.fetch.mockRejectedValue(Object.assign(new Error('ENOTFOUND'), { code: 'ENOTFOUND' }));
-    const orch = new TrackingSyncOrchestrator(d.runRepo as any, d.source as any, d.normalizer as any, d.reconciler as any, d.pipeline as any, d.sink as any, d.loader as any);
+    const orch = new TrackingSyncOrchestrator(d.runRepo as any, d.source as any, d.normalizer as any, d.reconciler as any, d.pipeline as any, d.sink as any, d.loader as any, d.incomeReconciler as any);
     const res = await orch.runShadow([{ kind: 'shipment', entity: { id: 's1', trackingNumber: 'TN1', status: ShipmentStatusType.EN_RUTA } as any }]);
     expect(res.aborted).toBe(true);
     expect(res.ok).toBe(0);

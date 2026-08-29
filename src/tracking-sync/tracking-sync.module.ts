@@ -24,6 +24,8 @@ import { TerminalLockRule } from './rules/terminal-lock.rule';
 import { ExternalDeliveryRule } from './rules/external-delivery.rule';
 import { IncomeRule } from './rules/income.rule';
 import { NotificationRule } from './rules/notification.rule';
+import { IncomeExecutor } from './income/income-executor';
+import { IncomeReconciler } from './income/income-reconciler';
 import { SYNC_RULES } from './tracking-sync.types';
 
 /**
@@ -54,6 +56,8 @@ import { SYNC_RULES } from './tracking-sync.types';
     ExternalDeliveryRule,
     IncomeRule,
     NotificationRule,
+    IncomeExecutor,
+    IncomeReconciler,
     {
       provide: SYNC_RULES,
       useFactory: (terminal, external, income, notification) => [terminal, external, income, notification],
