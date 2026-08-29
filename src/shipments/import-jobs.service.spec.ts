@@ -59,3 +59,74 @@ describe('ImportJobsService.create (idempotencia)', () => {
     expect(importJobRepo.save).not.toHaveBeenCalled();
   });
 });
+
+describe('ImportJobsService.processMasterJob', () => {
+  let service: ImportJobsService;
+  let qr: any;
+  let jobRepo: any;
+
+  function makeQR() {
+    return {
+      connect: jest.fn(), startTransaction: jest.fn(), commitTransaction: jest.fn(),
+      rollbackTransaction: jest.fn(), release: jest.fn(),
+      manager: {
+        create: jest.fn((_e: any, x: any) => x),
+        update: jest.fn(),
+        save: jest.fn(async (_e: any, x: any) => Array.isArray(x) ? x.map((r: any, i: number) => ({ ...r, id: `id${i}` })) : { ...x, id: 'x' }),
+      },
+    };
+  }
+
+  beforeEach(async () => {
+    qr = makeQR();
+    jobRepo = repoMock({ save: jest.fn(async (j: any) => j) });
+    const dsManager = {
+      findOne: jest.fn().mockResolvedValue({ id: 'S1', name: 'Hermosillo' }), // Subsidiary
+      create: jest.fn((_e: any, x: any) => x),
+      save: jest.fn(async (_e: any, x: any) => ({ ...x, id: 'CONS_NEW' })),   // Consolidated
+    };
+    const moduleRef = await Test.createTestingModule({
+      providers: [
+        ImportJobsService,
+        { provide: getRepositoryToken(ImportJob), useValue: jobRepo },
+        { provide: getRepositoryToken(Shipment), useValue: repoMock({ find: jest.fn().mockResolvedValue([]) }) },
+        { provide: getRepositoryToken(ChargeShipment), useValue: repoMock() },
+        { provide: DataSource, useValue: { query: jest.fn().mockResolvedValue([{ l: 1 }]), manager: dsManager, createQueryRunner: () => qr } },
+        { provide: ConsolidatedService, useValue: { findByConsNumberScoped: jest.fn().mockResolvedValue(null) } },
+        { provide: HolidaysService, useValue: { getHolidayInputs: jest.fn().mockResolvedValue([]) } },
+      ],
+    }).compile();
+    service = moduleRef.get(ImportJobsService);
+  });
+
+  it('inserta todas las guías como PENDIENTE (sin FedEx) y marca done', async () => {
+    const job: any = {
+      id: 'J', kind: 'master', subsidiaryId: 'S1', consNumber: 'C1', isAereo: true,
+      payloadRows: JSON.stringify([{ trackingNumber: 'A' }, { trackingNumber: 'B', cod: 'COD 1250' }]),
+      onlyTrackings: null, totalRows: 2, saved: 0, duplicated: 0, recycled: 0, failed: 0, hvMarked: 0,
+    };
+    await service.processMasterJob(job);
+    const savedShipments = qr.manager.save.mock.calls
+      .filter((c: any[]) => Array.isArray(c[1]) && c[1][0]?.trackingNumber)
+      .flatMap((c: any[]) => c[1]);
+    expect(savedShipments.length).toBe(2);
+    expect(savedShipments.every((s: any) => String(s.status).toLowerCase() === 'pendiente')).toBe(true);
+    expect(job.saved).toBe(2);
+    expect(job.status).toBe('done');
+    expect(job.consolidatedId).toBe('CONS_NEW');
+  });
+
+  it('tolerancia: si el save del lote truena, marca partial y registra fallidas', async () => {
+    qr.manager.save = jest.fn(async (_e: any, x: any) => { if (Array.isArray(x) && x[0]?.trackingNumber) throw new Error('DB down'); return x; });
+    const job: any = {
+      id: 'J2', kind: 'master', subsidiaryId: 'S1', consNumber: 'C1', isAereo: false,
+      payloadRows: JSON.stringify([{ trackingNumber: 'A' }]),
+      onlyTrackings: null, totalRows: 1, saved: 0, duplicated: 0, recycled: 0, failed: 0, hvMarked: 0,
+    };
+    await service.processMasterJob(job);
+    expect(job.saved).toBe(0);
+    expect(job.failed).toBe(1);
+    expect(job.status).toBe('failed');
+    expect(qr.rollbackTransaction).toHaveBeenCalled();
+  });
+});
