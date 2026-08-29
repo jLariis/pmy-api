@@ -8,6 +8,8 @@ import { AuditModule as AuditModuleEnum, AuditAction, AuditResult, AuditSeverity
 import { buildShadowKey } from '../event-key.util';
 import { SyncContext } from '../tracking-sync.types';
 import { ApplyOutcome } from '../compare.types';
+import { IncomeExecutor } from '../income/income-executor';
+import { isSubsidiaryInCutover } from '../cutover.config';
 
 export interface ApplyActor {
   userId?: string;
@@ -27,6 +29,7 @@ export class PersistentSyncSink {
   constructor(
     private readonly dataSource: DataSource,
     private readonly auditService: AuditService,
+    private readonly incomeExecutor: IncomeExecutor,
   ) {}
 
   async applyPlan(ctx: SyncContext, actor: ApplyActor): Promise<ApplyOutcome> {
@@ -72,6 +75,18 @@ export class PersistentSyncSink {
           statusChanged = true;
         }
       });
+
+      // F4 (cobros) — solo cuando la sucursal está en CUTOVER (default OFF = status-only,
+      // idéntico a hoy). Genera los ingresos anclados al evento (idempotente por sourceEventKey).
+      // Fuera de cutover NO se ejecuta: el ingreso lo sigue creando el legacy.
+      const subsidiaryId = (shipment as any)?.subsidiary?.id ?? (shipment as any)?.subsidiaryId ?? null;
+      if (!isCharge && ctx.deferredEffects.length && isSubsidiaryInCutover(subsidiaryId)) {
+        try {
+          await this.incomeExecutor.execute(ctx.deferredEffects, 'persist');
+        } catch (e: any) {
+          this.logger.error(`applyPlan income ${shipment.trackingNumber}: ${e?.message}`);
+        }
+      }
 
       const applied = inserted > 0 || statusChanged;
       if (applied) {

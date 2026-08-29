@@ -20,6 +20,7 @@ import { TrackingCompareService } from './tracking-compare.service';
 import { TrackingSyncController } from './tracking-sync.controller';
 import { TrackingSyncOrchestrator } from './tracking-sync.orchestrator';
 import { TrackingSyncCron } from './tracking-sync.cron';
+import { TrackingSyncPersistCron } from './tracking-sync-persist.cron';
 import { TerminalLockRule } from './rules/terminal-lock.rule';
 import { ExternalDeliveryRule } from './rules/external-delivery.rule';
 import { IncomeRule } from './rules/income.rule';
@@ -54,6 +55,7 @@ import { SYNC_RULES } from './tracking-sync.types';
     TrackingCompareService,
     TrackingSyncOrchestrator,
     TrackingSyncCron,
+    TrackingSyncPersistCron,
     TerminalLockRule,
     ExternalDeliveryRule,
     IncomeRule,

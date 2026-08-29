@@ -40,7 +40,7 @@ describe('PersistentSyncSink.applyPlan', () => {
   it('inserts missing events, updates status, logs audit', async () => {
     const manager = fakeManager([]); // no existing history
     const audit = { log: jest.fn() } as any;
-    const sink = new PersistentSyncSink(fakeDataSource(manager), audit);
+    const sink = new PersistentSyncSink(fakeDataSource(manager), audit, { execute: jest.fn() } as any);
 
     const ctx = ctxWith([ev(1000, ShipmentStatusType.EN_RUTA, null), ev(2000, ShipmentStatusType.ENTREGADO, null)], ShipmentStatusType.ENTREGADO, ShipmentStatusType.EN_RUTA);
     const out = await sink.applyPlan(ctx, { userId: 'u1', role: 'superadmin' });
@@ -57,7 +57,7 @@ describe('PersistentSyncSink.applyPlan', () => {
     const existing = [{ timestamp: new Date(1000), exceptionCode: null, status: ShipmentStatusType.EN_RUTA }];
     const manager = fakeManager(existing);
     const audit = { log: jest.fn() } as any;
-    const sink = new PersistentSyncSink(fakeDataSource(manager), audit);
+    const sink = new PersistentSyncSink(fakeDataSource(manager), audit, { execute: jest.fn() } as any);
 
     const ctx = ctxWith([ev(1000, ShipmentStatusType.EN_RUTA, null)], ShipmentStatusType.EN_RUTA, ShipmentStatusType.EN_RUTA);
     const out = await sink.applyPlan(ctx, { role: 'superadmin' });
@@ -69,7 +69,7 @@ describe('PersistentSyncSink.applyPlan', () => {
   it('for F2 (kind=charge) writes ShipmentStatus with chargeShipment and reads charge history', async () => {
     const manager = fakeManager([]);
     const audit = { log: jest.fn() } as any;
-    const sink = new PersistentSyncSink(fakeDataSource(manager), audit);
+    const sink = new PersistentSyncSink(fakeDataSource(manager), audit, { execute: jest.fn() } as any);
 
     const ctx = ctxWith([ev(3000, ShipmentStatusType.ENTREGADO, null)], ShipmentStatusType.ENTREGADO, ShipmentStatusType.EN_RUTA, 'charge');
     const out = await sink.applyPlan(ctx, { role: 'superadmin' });
