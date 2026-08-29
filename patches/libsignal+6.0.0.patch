@@ -1,0 +1,30 @@
+diff --git a/node_modules/libsignal/src/session_builder.js b/node_modules/libsignal/src/session_builder.js
+index 30c7313..e1b330f 100644
+--- a/node_modules/libsignal/src/session_builder.js
++++ b/node_modules/libsignal/src/session_builder.js
+@@ -71,7 +71,7 @@ class SessionBuilder {
+         }   
+         const existingOpenSession = record.getOpenSession();
+         if (existingOpenSession) {
+-            console.warn("Closing open session in favor of incoming prekey bundle");
++            // patched (pmy): removido console.warn ruidoso de rotacion de sesion E2E
+             record.closeSession(existingOpenSession);
+         }
+         record.setSession(await this.initSession(false, preKeyPair, signedPreKeyPair,
+diff --git a/node_modules/libsignal/src/session_record.js b/node_modules/libsignal/src/session_record.js
+index 7626a39..d22a1f2 100644
+--- a/node_modules/libsignal/src/session_record.js
++++ b/node_modules/libsignal/src/session_record.js
+@@ -267,10 +267,10 @@ class SessionRecord {
+ 
+     closeSession(session) {
+         if (this.isClosed(session)) {
+-            console.warn("Session already closed", session);
++            // patched (pmy): removido console.warn que volcaba la sesion (llaves privadas)
+             return;
+         }
+-        console.info("Closing session:", session);
++        // patched (pmy): removido console.info que volcaba la sesion completa (llaves privadas)
+         session.indexInfo.closed = Date.now();
+     }
+ 
