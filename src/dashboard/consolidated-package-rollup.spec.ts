@@ -61,3 +61,35 @@ describe('rollupConsolidatedPackageStats', () => {
     });
   });
 });
+
+describe('paridad dashboard vs pantalla Consolidados', () => {
+  it('el rollup reproduce la suma directa de findAll para el mismo scope', () => {
+    // Salida simulada de ConsolidatedService.findAll (subset de shipmentCounts que usa el rollup)
+    const findAllOut = [
+      { subsidiary: { id: 's1' }, type: 'ordinario', numberOfPackages: 20, shipmentCounts: { entregado: 12, dex03: 1, dex07: 2, dex08: 0, en_ruta: 3, otros: 1, countF2: 4 } },
+      { subsidiary: { id: 's1' }, type: 'aereo',     numberOfPackages: 8,  shipmentCounts: { entregado: 5,  dex03: 0, dex07: 1, dex08: 1, en_ruta: 1, otros: 0, countF2: 0 } },
+      { subsidiary: { id: 's2' }, type: 'carga',     numberOfPackages: 30, shipmentCounts: { entregado: 25, dex03: 2, dex07: 0, dex08: 0, en_ruta: 2, otros: 1, countF2: 9 } },
+    ];
+
+    // Adaptador identico al de kpi.service (getSubsidiariesKpis)
+    const rows: ConsolidatedRollupInput[] = findAllOut.map((c: any) => ({
+      subsidiaryId: c.subsidiary.id, type: c.type, numberOfPackages: c.numberOfPackages,
+      entregado: c.shipmentCounts.entregado, dex03: c.shipmentCounts.dex03,
+      dex07: c.shipmentCounts.dex07, dex08: c.shipmentCounts.dex08,
+      en_ruta: c.shipmentCounts.en_ruta, otros: c.shipmentCounts.otros, countF2: c.shipmentCounts.countF2,
+    }));
+    const map = rollupConsolidatedPackageStats(rows);
+
+    // Suma directa "a mano" (lo que hace la pantalla de Consolidados)
+    const sum = (sub: string, f: (c: any) => number) =>
+      findAllOut.filter(c => c.subsidiary.id === sub).reduce((a, c) => a + f(c), 0);
+
+    for (const sub of ['s1', 's2']) {
+      const s = map.get(sub)!;
+      expect(s.totalPackages).toBe(sum(sub, c => c.numberOfPackages));
+      expect(s.deliveredPackages).toBe(sum(sub, c => c.shipmentCounts.entregado));
+      expect(s.undeliveredPackages).toBe(sum(sub, c => c.shipmentCounts.dex03 + c.shipmentCounts.dex07 + c.shipmentCounts.dex08));
+      expect(s.inTransitPackages).toBe(sum(sub, c => c.shipmentCounts.en_ruta));
+    }
+  });
+});
