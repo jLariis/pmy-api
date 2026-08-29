@@ -261,6 +261,36 @@ export class ImportJobsService {
     await this.jobRepo.save(job);
   }
 
+  /** Crea un job hijo que reintenta SOLO las guías fallidas del padre. */
+  async retryFailed(parentId: string): Promise<{ jobId: string }> {
+    const parent = await this.jobRepo.findOne({ where: { id: parentId } });
+    if (!parent) throw new NotFoundException('Job no encontrado');
+    const res = parent.result ? JSON.parse(parent.result) : { failedTrackings: [] };
+    const only: string[] = (res.failedTrackings || []).map((f: any) => f.trackingNumber).filter(Boolean);
+    if (only.length === 0) throw new NotFoundException('No hay guías fallidas para reintentar.');
+    const child = this.jobRepo.create({
+      kind: parent.kind, status: 'pending', source: 'retry', parentJobId: parent.id,
+      subsidiaryId: parent.subsidiaryId, consNumber: parent.consNumber, consDate: parent.consDate,
+      isAereo: parent.isAereo, isHalfTon: parent.isHalfTon, notRemoveCharge: parent.notRemoveCharge,
+      label: `Reintento de ${parent.id.slice(0, 8)}`, payloadHash: parent.payloadHash,
+      payloadRows: parent.payloadRows, onlyTrackings: JSON.stringify(only),
+      totalRows: only.length, createdById: parent.createdById, createdByName: parent.createdByName,
+    });
+    const saved = await this.jobRepo.save(child);
+    return { jobId: saved.id };
+  }
+
+  /** Excel de las guías fallidas de un job (para revisión/reintento manual). */
+  async buildFailedXlsx(id: string): Promise<Buffer> {
+    const job = await this.jobRepo.findOne({ where: { id } });
+    if (!job) throw new NotFoundException('Job no encontrado');
+    const res = job.result ? JSON.parse(job.result) : { failedTrackings: [] };
+    const aoa = [['trackingNumber', 'reason'], ...(res.failedTrackings || []).map((f: any) => [f.trackingNumber, f.reason])];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa), 'Fallidas');
+    return XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
+  }
+
   /** Construye un .xlsx en memoria (Multer-like) con las columnas pedidas. */
   private buildXlsx(rows: CanonicalRow[], columns: (keyof CanonicalRow)[], name: string): any {
     const header = columns.map((c) => String(c));
