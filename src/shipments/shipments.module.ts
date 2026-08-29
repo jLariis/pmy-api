@@ -6,7 +6,7 @@ import { ShipmentsService } from './shipments.service';
 import { FedexService } from './fedex.service';
 import { TrackingModule } from 'src/tracking/tracking.module';
 import { SubsidiariesService } from 'src/subsidiaries/subsidiaries.service';
-import { Income, ShipmentStatus, Subsidiary, Charge, ChargeShipment, Consolidated } from 'src/entities';
+import { Income, ShipmentStatus, Subsidiary, Charge, ChargeShipment, Consolidated, ImportJob } from 'src/entities';
 import { ConsolidatedService } from 'src/consolidated/consolidated.service';
 import { MailService } from 'src/mail/mail.service';
 import { ForPickUp } from 'src/entities/for-pick-up.entity';
@@ -20,7 +20,7 @@ import { ImportFilesModule } from 'src/import-files/import-files.module';
 
 @Module({
   controllers: [ShipmentsController],
-  imports: [TypeOrmModule.forFeature([Shipment, ShipmentStatus,Subsidiary, Income, Charge, ChargeShipment, Consolidated, ForPickUp, PackageDispatch, Consolidated, Unloading]), TrackingModule, DocumentsModule, HolidaysModule, ImportFilesModule],
+  imports: [TypeOrmModule.forFeature([Shipment, ShipmentStatus, Subsidiary, Income, Charge, ChargeShipment, Consolidated, ForPickUp, PackageDispatch, Unloading, ImportJob]), TrackingModule, DocumentsModule, HolidaysModule, ImportFilesModule],
   providers: [ShipmentsService, FedexService, DhlService, SubsidiariesService, ConsolidatedService, MailService, WhereParcelDhlService],
   exports: [ShipmentsService],
 })
