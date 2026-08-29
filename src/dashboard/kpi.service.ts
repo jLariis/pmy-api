@@ -1,13 +1,17 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, Between, In, Brackets } from 'typeorm';
-import { ConsolidatedType } from 'src/common/enums/consolidated-type.enum';
 import { ShipmentStatusType } from 'src/common/enums/shipment-status-type.enum';
-import { ShipmentType } from 'src/common/enums/shipment-type.enum';
-import { Charge, ChargeShipment, Consolidated, Expense, Income, Shipment, ShipmentStatus, Subsidiary } from 'src/entities';
+import { ChargeShipment, Expense, Income, Shipment, Subsidiary } from 'src/entities';
 import { ChargeRule } from 'src/entities/charge-rule.entity';
-import { startOfDay, endOfDay, differenceInDays } from 'date-fns';
 import { proratedAmountInRange } from 'src/common/expense-proration.util';
+import { ConsolidatedService } from 'src/consolidated/consolidated.service';
+import {
+  rollupConsolidatedPackageStats,
+  emptyPackageStats,
+  ConsolidatedRollupInput,
+  SubsidiaryPackageStats,
+} from './consolidated-package-rollup';
 
 /**
  * Código de cobro efectivo del ingreso (espejo SQL de `effectiveChargeCode`):
@@ -40,10 +44,6 @@ export class KpiService {
   private readonly logger = new Logger(KpiService.name);
 
   constructor(
-    @InjectRepository(Charge)
-    private chargeRepository: Repository<Charge>,
-    @InjectRepository(Consolidated)
-    private consolidatedRepository: Repository<Consolidated>,
     @InjectRepository(Income)
     private incomeRepository: Repository<Income>,
     @InjectRepository(Shipment)
@@ -52,10 +52,9 @@ export class KpiService {
     private subsidiaryRepository: Repository<Subsidiary>,
     @InjectRepository(ChargeShipment)
     private chargeShipmentRepository: Repository<ChargeShipment>,
-    @InjectRepository(ShipmentStatus)
-    private shipmentStatusRepository: Repository<ShipmentStatus>,
     @InjectRepository(Expense)
     private expenseRepository: Repository<Expense>,
+    private readonly consolidatedService: ConsolidatedService,
   ) {}
 
   // ===================== Welcome Dashboard (resumen de inicio) =====================
@@ -209,10 +208,7 @@ export class KpiService {
       throw new Error('Invalid date format. Please use ISO 8601 format (e.g., YYYY-MM-DD).');
     }
 
-    const msPerDay = 1000 * 60 * 60 * 24;
-    const daysInDateRange = Math.floor((endDateObj.getTime() - startDateObj.getTime()) / msPerDay) + 1;
-
-    this.logger.log(`Fetching Optimized KPIs: ${baseStartDate} to ${baseEndDate} (${daysInDateRange} days) in Hermosillo TZ`);
+    this.logger.log(`Fetching KPIs: ${baseStartDate} to ${baseEndDate} (conteos desde consolidados)`);
 
     // 1. Obtener las sucursales base
     const subsidiariesQuery = this.subsidiaryRepository.createQueryBuilder('subsidiary');
@@ -227,55 +223,33 @@ export class KpiService {
     const subsidiaryCondition = (alias: string) =>
       hasSubsidiaryFilter ? `${alias}.subsidiaryId IN (:...subsidiaryIds)` : '1=1';
 
-    // 2. Definimos los estatus FINALES (los que ya no son Backlog)
-    // Todo lo que NO esté en esta lista, se considera un paquete "Vivo" (Bodega, Pendiente, En Ruta, etc.)
-    const finalStatuses = [
-      ShipmentStatusType.ENTREGADO,
-      ShipmentStatusType.RECHAZADO,
-      ShipmentStatusType.CLIENTE_NO_DISPONIBLE,
-      ShipmentStatusType.DIRECCION_INCORRECTA,
-      ShipmentStatusType.NO_ENTREGADO // Asumiendo que este es un estado de cierre
-    ];
+    // 2. CONTEOS DE PAQUETES: fuente unica = consolidados (mismo motor que la pantalla
+    //    de Consolidados). Fechas construidas igual que el controller de consolidados
+    //    (new Date('YYYY-MM-DD') -> medianoche UTC) para dar identico.
+    const consFrom = new Date(baseStartDate);
+    const consTo = new Date(baseEndDate);
+    const consolidatedDtos = await this.consolidatedService.findAll(
+      hasSubsidiaryFilter ? { subsidiaryIds } : {},
+      consFrom,
+      consTo,
+      { summaryOnly: true },
+    );
+    const rollupRows: ConsolidatedRollupInput[] = consolidatedDtos.map((c) => ({
+      subsidiaryId: c.subsidiary?.id,
+      type: c.type,
+      numberOfPackages: c.numberOfPackages,
+      entregado: c.shipmentCounts?.entregado ?? 0,
+      dex03: c.shipmentCounts?.dex03 ?? 0,
+      dex07: c.shipmentCounts?.dex07 ?? 0,
+      dex08: c.shipmentCounts?.dex08 ?? 0,
+      en_ruta: c.shipmentCounts?.en_ruta ?? 0,
+      otros: c.shipmentCounts?.otros ?? 0,
+      countF2: c.shipmentCounts?.countF2 ?? 0,
+    }));
+    const packageStatsBySub = rollupConsolidatedPackageStats(rollupRows);
 
-    // 3. EJECUTAR AGREGACIONES EN PARALELO EN LA BASE DE DATOS
-    const [
-      shipmentStats,
-      chargeStats,
-      expenseStats,
-      incomeStats,
-      consolidatedStats
-    ] = await Promise.all([
-
-      // -- A. ESTADÍSTICAS DE ENVÍOS (CON BACKLOG OPERATIVO) --
-      this.shipmentRepository.createQueryBuilder('shipment')
-        .select('shipment.subsidiaryId', 'subsidiaryId')
-        .addSelect('COUNT(shipment.id)', 'total')
-        .addSelect(`SUM(CASE WHEN shipment.status = '${ShipmentStatusType.ENTREGADO}' THEN 1 ELSE 0 END)`, 'delivered')
-        .addSelect(`SUM(CASE WHEN shipment.status = '${ShipmentStatusType.EN_RUTA}' THEN 1 ELSE 0 END)`, 'inTransit')
-        .addSelect(`SUM(CASE WHEN shipment.status = '${ShipmentStatusType.NO_ENTREGADO}' THEN 1 ELSE 0 END)`, 'noEntregadoBase')
-        .addSelect(`SUM(CASE WHEN shipment.status = '${ShipmentStatusType.RECHAZADO}' THEN 1 ELSE 0 END)`, 'code07')
-        .addSelect(`SUM(CASE WHEN shipment.status = '${ShipmentStatusType.CLIENTE_NO_DISPONIBLE}' THEN 1 ELSE 0 END)`, 'code08')
-        .addSelect(`SUM(CASE WHEN shipment.status = '${ShipmentStatusType.DIRECCION_INCORRECTA}' THEN 1 ELSE 0 END)`, 'code03')
-        .where(new Brackets(qb => {
-          // Condición 1: Los que nacieron en este mes
-          qb.where('shipment.createdAt BETWEEN :startDate AND :endDate', { startDate: startDateObj, endDate: endDateObj })
-          // Condición 2: El Backlog (Nacieron antes de este mes, pero siguen vivos hoy)
-            .orWhere('shipment.createdAt < :startDate AND shipment.status NOT IN (:...finalStatuses)', { startDate: startDateObj, finalStatuses });
-        }))
-        .andWhere(subsidiaryCondition('shipment'), { subsidiaryIds })
-        .groupBy('shipment.subsidiaryId')
-        .getRawMany(),
-
-      // -- B. ESTADÍSTICAS DE CARGOS --
-      this.chargeRepository.createQueryBuilder('charge')
-        .select('charge.subsidiaryId', 'subsidiaryId')
-        .addSelect('COUNT(charge.id)', 'totalCharges')
-        .addSelect('SUM(charge.numberOfPackages)', 'totalPackagesFromCharges')
-        .where('charge.chargeDate BETWEEN :startDate AND :endDate', { startDate: startDateObj, endDate: endDateObj })
-        .andWhere(subsidiaryCondition('charge'), { subsidiaryIds })
-        .groupBy('charge.subsidiaryId')
-        .getRawMany(),
-
+    // 3. FINANCIEROS (SIN CAMBIO): gastos (C) e ingresos (D) en paralelo.
+    const [expenseStats, incomeStats] = await Promise.all([
       // -- C. GASTOS (entidades que traslapan el rango; se prorratean en JS por periodo) --
       this.expenseRepository.createQueryBuilder('expense')
         .where(new Brackets(qb => {
@@ -296,40 +270,19 @@ export class KpiService {
         .andWhere(subsidiaryCondition('income'), { subsidiaryIds })
         .groupBy('income.subsidiaryId')
         .getRawMany(),
-
-      // -- E. CONSOLIDADOS --
-      this.consolidatedRepository.createQueryBuilder('cons')
-        .select('cons.subsidiaryId', 'subsidiaryId')
-        .addSelect(`SUM(CASE WHEN cons.type = '${ConsolidatedType.ORDINARIA}' THEN 1 ELSE 0 END)`, 'ordinary')
-        .addSelect(`SUM(CASE WHEN cons.type = '${ConsolidatedType.AEREO}' THEN 1 ELSE 0 END)`, 'air')
-        .where('cons.date BETWEEN :startDate AND :endDate', { startDate: startDateObj, endDate: endDateObj })
-        .andWhere(subsidiaryCondition('cons'), { subsidiaryIds })
-        .groupBy('cons.subsidiaryId')
-        .getRawMany()
     ]);
 
     // 4. MAPEAR LOS RESULTADOS A LA ESTRUCTURA FINAL
     const result = subsidiaries.map((subsidiary) => {
-      const sStats = shipmentStats.find(s => s.subsidiaryId === subsidiary.id) || {};
-      const cStats = chargeStats.find(c => c.subsidiaryId === subsidiary.id) || {};
       const iStats = incomeStats.find(i => i.subsidiaryId === subsidiary.id) || {};
-      const consStats = consolidatedStats.find(c => c.subsidiaryId === subsidiary.id) || {};
-      
-      const totalPackagesFromShipments = Number(sStats.total || 0);
-      const totalPackagesFromCharges = Number(cStats.totalPackagesFromCharges || 0);
-      const totalPackages = totalPackagesFromShipments + totalPackagesFromCharges;
-      
-      const deliveredPackages = Number(sStats.delivered || 0);
-      const inTransitPackages = Number(sStats.inTransit || 0);
-      const totalCharges = Number(cStats.totalCharges || 0);
-      const totalRevenue = Number(iStats.totalRevenue || 0);
+      const pkg: SubsidiaryPackageStats = packageStatsBySub.get(subsidiary.id) || emptyPackageStats();
 
-      const code07 = Number(sStats.code07 || 0);
-      const code08 = Number(sStats.code08 || 0);
-      const code03 = Number(sStats.code03 || 0);
-      const noEntregadoBase = Number(sStats.noEntregadoBase || 0); 
-      
-      const totalUndelivered = code07 + code08 + code03 + noEntregadoBase;
+      const totalPackages = pkg.totalPackages;
+      const deliveredPackages = pkg.deliveredPackages;
+      const inTransitPackages = pkg.inTransitPackages;
+      const totalUndelivered = pkg.undeliveredPackages;
+      const totalCharges = pkg.totalCharges;
+      const totalRevenue = Number(iStats.totalRevenue || 0);
 
       const subExpenses = expenseStats.filter(e => e.subsidiaryId === subsidiary.id);
       const totalExpenses = subExpenses.reduce(
@@ -357,18 +310,18 @@ export class KpiService {
         undeliveredDetails: {
           total: totalUndelivered,
           byExceptionCode: {
-            code07,
-            code08,
-            code03,
-            unknown: noEntregadoBase,
+            code07: pkg.byExceptionCode.code07,
+            code08: pkg.byExceptionCode.code08,
+            code03: pkg.byExceptionCode.code03,
+            unknown: pkg.byExceptionCode.unknown,
           },
         },
         inTransitPackages,
         totalCharges,
         consolidations: {
-          ordinary: Number(consStats.ordinary || 0),
-          air: Number(consStats.air || 0),
-          total: Number(consStats.ordinary || 0) + Number(consStats.air || 0),
+          ordinary: pkg.consolidations.ordinary,
+          air: pkg.consolidations.air,
+          total: pkg.consolidations.total,
         },
         averageRevenuePerPackage,
         totalRevenue,

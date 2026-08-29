@@ -1,3 +1,11 @@
+// p-limit es ESM y rompe el parseo de jest al entrar por la cadena
+// kpi.service -> consolidated.service -> shipments.service. Este test nunca
+// ejercita ese codigo (instancia KpiService directamente), asi que se mockea.
+jest.mock('p-limit', () => ({
+  __esModule: true,
+  default: () => (fn: any) => fn(),
+}));
+
 import { KpiService } from './kpi.service';
 import { ShipmentStatusType } from 'src/common/enums/shipment-status-type.enum';
 

@@ -307,6 +307,7 @@ export class ConsolidatedService {
   scope: { subsidiaryId?: string; subsidiaryIds?: string[]; zoneId?: string } = {},
   fromDate?: Date,
   toDate?: Date,
+  options: { summaryOnly?: boolean } = {},
 ): Promise<ConsolidatedDto[]> {
   let utcFromDate: Date | undefined;
   let utcToDate: Date | undefined;
@@ -410,10 +411,14 @@ export class ConsolidatedService {
     .andWhere('status IN (:...pendingStatuses)', { pendingStatuses: PENDING_MOV_STATUSES })
     .getRawMany();
 
-  const pendingShipments = await buildPendingQuery('shipment');
-  const pendingCharges = await buildPendingQuery('charge_shipment');
-
-  const allPending = [...pendingShipments, ...pendingCharges];
+  // El dashboard reutiliza este metodo solo para conteos (summaryOnly): las listas
+  // de pendientes son consultas extra que no necesita, se omiten.
+  const allPending = options.summaryOnly
+    ? []
+    : [
+        ...(await buildPendingQuery('shipment')),
+        ...(await buildPendingQuery('charge_shipment')),
+      ];
 
   return consolidated.map(row => {
     const ship = shipmentMap.get(row.id) || {};
