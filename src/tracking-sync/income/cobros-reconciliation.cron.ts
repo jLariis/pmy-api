@@ -16,7 +16,7 @@ export class CobrosReconciliationCron {
   @Cron('0 0 7 * * *', { timeZone: 'America/Hermosillo' })
   async handleDailyReconcile(): Promise<void> {
     try {
-      const r = await this.service.reconcile(14);
+      const r = await this.service.reconcileAndPersist(14);
       this.logger.log(
         `🧮 [cobros-recon] entregados(14d)=${r.deliveredShipments} · sin ingreso=${r.missingCount} · ingreso huérfano=${r.orphanCount}`,
       );

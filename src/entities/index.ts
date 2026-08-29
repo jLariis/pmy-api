@@ -57,3 +57,4 @@ export * from './template-render-log.entity';
 export * from './email-log.entity';
 export * from './email-attachment.entity';
 export * from './holiday.entity';
+export * from './cobros-reconciliation-report.entity';

@@ -1,11 +1,21 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { DataSource } from 'typeorm';
+import { CobrosReconciliationReport } from 'src/entities/cobros-reconciliation-report.entity';
 
 export interface CobrosReconcileReport {
   windowDays: number;
   deliveredShipments: number;
   missingIncome: string[];   // entregados SIN ingreso 'entregado' (posible cobro perdido)
   orphanIncome: string[];    // ingreso 'entregado' cuyo envío NO está entregado (posible cobro falso)
+  missingCount: number;
+  orphanCount: number;
+}
+
+export interface CobrosReportHistoryRow {
+  id: string;
+  runAt: Date;
+  windowDays: number;
+  deliveredShipments: number;
   missingCount: number;
   orphanCount: number;
 }
@@ -64,5 +74,32 @@ export class CobrosReconciliationService {
       missingCount: missingIncome.length,
       orphanCount: orphanIncome.length,
     };
+  }
+
+  /** Corre la reconciliación y persiste un snapshot (para la tendencia). Devuelve el reporte. */
+  async reconcileAndPersist(windowDays = 14): Promise<CobrosReconcileReport> {
+    const report = await this.reconcile(windowDays);
+    await this.dataSource.getRepository(CobrosReconciliationReport).save(
+      this.dataSource.getRepository(CobrosReconciliationReport).create({
+        runAt: new Date(),
+        windowDays: report.windowDays,
+        deliveredShipments: report.deliveredShipments,
+        missingCount: report.missingCount,
+        orphanCount: report.orphanCount,
+        missingSample: JSON.stringify(report.missingIncome),
+        orphanSample: JSON.stringify(report.orphanIncome),
+      }),
+    );
+    return report;
+  }
+
+  /** Últimas corridas persistidas (tendencia), más recientes primero. */
+  async history(limit = 30): Promise<CobrosReportHistoryRow[]> {
+    const rows = await this.dataSource.getRepository(CobrosReconciliationReport).find({
+      order: { runAt: 'DESC' },
+      take: Math.min(Math.max(limit, 1), 200),
+      select: ['id', 'runAt', 'windowDays', 'deliveredShipments', 'missingCount', 'orphanCount'],
+    });
+    return rows as CobrosReportHistoryRow[];
   }
 }
