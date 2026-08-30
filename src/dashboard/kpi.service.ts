@@ -242,8 +242,7 @@ export class KpiService {
       dex03: c.shipmentCounts?.dex03 ?? 0,
       dex07: c.shipmentCounts?.dex07 ?? 0,
       dex08: c.shipmentCounts?.dex08 ?? 0,
-      en_ruta: c.shipmentCounts?.en_ruta ?? 0,
-      otros: c.shipmentCounts?.otros ?? 0,
+      guiasPendientesDeMov: c.shipmentCounts?.guiasPendientesDeMov ?? 0,
       countF2: c.shipmentCounts?.countF2 ?? 0,
     }));
     const packageStatsBySub = rollupConsolidatedPackageStats(rollupRows);
@@ -279,7 +278,8 @@ export class KpiService {
 
       const totalPackages = pkg.totalPackages;
       const deliveredPackages = pkg.deliveredPackages;
-      const inTransitPackages = pkg.inTransitPackages;
+      const inProcessPackages = pkg.inProcessPackages;
+      const otherPackages = pkg.otherPackages;
       const totalUndelivered = pkg.undeliveredPackages;
       const totalCharges = pkg.totalCharges;
       const totalRevenue = Number(iStats.totalRevenue || 0);
@@ -316,7 +316,8 @@ export class KpiService {
             unknown: pkg.byExceptionCode.unknown,
           },
         },
-        inTransitPackages,
+        inProcessPackages,
+        otherPackages,
         totalCharges,
         consolidations: {
           ordinary: pkg.consolidations.ordinary,
