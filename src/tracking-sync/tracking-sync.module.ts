@@ -20,10 +20,22 @@ import { TrackingCompareService } from './tracking-compare.service';
 import { TrackingSyncController } from './tracking-sync.controller';
 import { TrackingSyncOrchestrator } from './tracking-sync.orchestrator';
 import { TrackingSyncCron } from './tracking-sync.cron';
+import { TrackingSyncPersistCron } from './tracking-sync-persist.cron';
 import { TerminalLockRule } from './rules/terminal-lock.rule';
 import { ExternalDeliveryRule } from './rules/external-delivery.rule';
 import { IncomeRule } from './rules/income.rule';
 import { NotificationRule } from './rules/notification.rule';
+import { DeliveryHeaderRule } from './rules/delivery-header.rule';
+import { TimeShieldRule } from './rules/time-shield.rule';
+import { PreRegistrationRule } from './rules/pre-registration.rule';
+import { PreRegResolvedRule } from './rules/pre-reg-resolved.rule';
+import { Code44Rule } from './rules/code44.rule';
+import { MetadataPersistRule } from './rules/metadata-persist.rule';
+import { IncomeHeaderSafetyNetRule } from './rules/income-header-safety-net.rule';
+import { IncomeExecutor } from './income/income-executor';
+import { IncomeReconciler } from './income/income-reconciler';
+import { CobrosReconciliationService } from './income/cobros-reconciliation.service';
+import { CobrosReconciliationCron } from './income/cobros-reconciliation.cron';
 import { SYNC_RULES } from './tracking-sync.types';
 
 /**
@@ -50,14 +62,28 @@ import { SYNC_RULES } from './tracking-sync.types';
     TrackingCompareService,
     TrackingSyncOrchestrator,
     TrackingSyncCron,
+    TrackingSyncPersistCron,
     TerminalLockRule,
     ExternalDeliveryRule,
     IncomeRule,
     NotificationRule,
+    DeliveryHeaderRule,
+    TimeShieldRule,
+    PreRegistrationRule,
+    PreRegResolvedRule,
+    Code44Rule,
+    MetadataPersistRule,
+    IncomeHeaderSafetyNetRule,
+    IncomeExecutor,
+    IncomeReconciler,
+    CobrosReconciliationService,
+    CobrosReconciliationCron,
     {
       provide: SYNC_RULES,
-      useFactory: (terminal, external, income, notification) => [terminal, external, income, notification],
-      inject: [TerminalLockRule, ExternalDeliveryRule, IncomeRule, NotificationRule],
+      // El pipeline ordena por `priority` (mayor primero); el orden aquí es indiferente.
+      useFactory: (terminal, external, income, notification, deliveryHeader, timeShield, preReg, preRegResolved, code44, metadata, incomeHeader) =>
+        [terminal, external, income, notification, deliveryHeader, timeShield, preReg, preRegResolved, code44, metadata, incomeHeader],
+      inject: [TerminalLockRule, ExternalDeliveryRule, IncomeRule, NotificationRule, DeliveryHeaderRule, TimeShieldRule, PreRegistrationRule, PreRegResolvedRule, Code44Rule, MetadataPersistRule, IncomeHeaderSafetyNetRule],
     },
   ],
   // Exportado para que el cierre a ruta reconcile/persista el estatus FedEx al abrir

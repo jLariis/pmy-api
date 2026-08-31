@@ -6,12 +6,13 @@ function ctx(proposed: ShipmentStatusType, current: ShipmentStatusType, newEvent
   return {
     shipment: { id: 's1', trackingNumber: 'TN', status: current } as any,
     kind: 'shipment',
-    normalized: { trackingNumber: 'TN', events: [], latest: null, commitDateTime: null, validation: { ok: true, issues: ['x'] } },
+    normalized: { trackingNumber: 'TN', events: [], latest: null, commitDateTime: null, header: { code: null, derivedCode: null, ancillaryReason: null, isDeliveredHeader: false, actualDeliveryAt: null, receivedByName: null, uniqueId: null, carrierCode: null, code44At: null }, validation: { ok: true, issues: ['x'] } },
     reconcile: {
       newEvents: newEventKeys.map((k) => ({ eventKey: k } as any)),
       proposedStatus: proposed, currentStatus: current, transition: null,
     },
     proposedStatus: proposed,
+    existing: { lastOpTime: 0, count08: 0 },
     vetoedEventKeys: new Set<string>(),
     deferredEffects: [],
     notes: [],

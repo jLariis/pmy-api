@@ -7,7 +7,12 @@ describe('TrackingSyncController', () => {
     compareByConsolidated: jest.fn().mockResolvedValue([]),
     applyMany: jest.fn().mockResolvedValue([]),
   } as any;
-  const ctrl = new TrackingSyncController(compare);
+  const cobrosRecon = {
+    reconcile: jest.fn().mockResolvedValue({ windowDays: 14, deliveredShipments: 0, missingIncome: [], orphanIncome: [], missingCount: 0, orphanCount: 0 }),
+    reconcileAndPersist: jest.fn().mockResolvedValue({ windowDays: 14, deliveredShipments: 0, missingIncome: [], orphanIncome: [], missingCount: 0, orphanCount: 0 }),
+    history: jest.fn().mockResolvedValue([]),
+  } as any;
+  const ctrl = new TrackingSyncController(compare, cobrosRecon);
 
   it('delegates compare/tracking', async () => {
     await ctrl.compareTracking('TN1');
@@ -25,5 +30,19 @@ describe('TrackingSyncController', () => {
     const req = { user: { id: 'u1', name: 'Super', role: 'superadmin' } };
     await ctrl.apply({ shipmentIds: ['s1', 's2'] }, req);
     expect(compare.applyMany).toHaveBeenCalledWith(['s1', 's2'], { userId: 'u1', userName: 'Super', role: 'superadmin' });
+  });
+  it('cobros-reconciliation usa ventana por defecto 14 y respeta el query', async () => {
+    await ctrl.cobrosReconciliation(undefined);
+    expect(cobrosRecon.reconcile).toHaveBeenCalledWith(14);
+    await ctrl.cobrosReconciliation('7');
+    expect(cobrosRecon.reconcile).toHaveBeenCalledWith(7);
+  });
+  it('cobros-reconciliation/history delega con limit', async () => {
+    await ctrl.cobrosReconciliationHistory('10');
+    expect(cobrosRecon.history).toHaveBeenCalledWith(10);
+  });
+  it('cobros-reconciliation/run persiste', async () => {
+    await ctrl.cobrosReconciliationRun({ windowDays: 30 });
+    expect(cobrosRecon.reconcileAndPersist).toHaveBeenCalledWith(30);
   });
 });

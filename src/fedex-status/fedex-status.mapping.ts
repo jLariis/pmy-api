@@ -17,6 +17,8 @@ import { ShipmentStatusType, TERMINAL_SHIPMENT_STATUSES } from 'src/common/enums
 /** exceptionCode / ancillary reason → estatus local (refina el desenlace). */
 const EXCEPTION_CODE_TO_STATUS: Record<string, ShipmentStatusType> = {
   '07': ShipmentStatusType.RECHAZADO,
+  // Entrega por terceros de FedEx (anti-cobro falso): 005 → ENTREGADO_POR_FEDEX (espejo del legacy).
+  '005': ShipmentStatusType.ENTREGADO_POR_FEDEX,
   '08': ShipmentStatusType.CLIENTE_NO_DISPONIBLE,
   '72': ShipmentStatusType.CLIENTE_NO_DISPONIBLE,
   '67': ShipmentStatusType.EN_BODEGA,

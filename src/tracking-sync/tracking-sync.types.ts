@@ -46,13 +46,34 @@ export interface StatusValidation {
   issues: string[];
 }
 
+/** Datos del ENCABEZADO de FedEx (latestStatusDetail + trackingNumberInfo + deliveryDetails). */
+export interface TrackingHeader {
+  code: string | null;            // latestStatusDetail.code
+  derivedCode: string | null;     // latestStatusDetail.derivedCode
+  ancillaryReason: string | null; // ancillaryDetails[0].reason (p.ej. '44')
+  isDeliveredHeader: boolean;     // code/derivedCode === 'DL'
+  actualDeliveryAt: Date | null;  // dateAndTimes ACTUAL_DELIVERY
+  receivedByName: string | null;
+  uniqueId: string | null;        // trackingNumberInfo.trackingNumberUniqueId
+  carrierCode: string | null;
+  /** Momento del escaneo local del código 44 (o null). Deriva de lsd+scanEvents. */
+  code44At: Date | null;
+}
+
 export interface NormalizedTracking {
   trackingNumber: string;
   /** Ordenados ascendente por `occurredAt`. */
   events: NormalizedEvent[];
   latest: NormalizedEvent | null;
   commitDateTime: Date | null;
+  header: TrackingHeader;
   validation: StatusValidation;
+}
+
+/** Historial existente (para reglas que dependen del pasado: Time Shield, 3×08, pre-registro). */
+export interface ExistingState {
+  lastOpTime: number;   // ms del último evento OPERATIVO interno (pendiente/en_bodega/en_ruta)
+  count08: number;      // nº de exceptionCode='08' ya persistidos
 }
 
 export interface ReconcileResult {
@@ -77,6 +98,8 @@ export interface SyncContext {
   kind: TrackableKind;
   normalized: NormalizedTracking;
   reconcile: ReconcileResult;
+  /** Historial existente (lastOpTime, 08). Reglas que dependen del pasado lo leen de aquí. */
+  existing: ExistingState;
   proposedStatus: ShipmentStatusType | null;
   vetoedEventKeys: Set<string>;
   deferredEffects: DeferredEffect[];

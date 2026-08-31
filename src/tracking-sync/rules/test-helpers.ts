@@ -16,6 +16,10 @@ export function makeCtx(overrides: {
       events: overrides.events ?? [],
       latest: null,
       commitDateTime: null,
+      header: {
+        code: null, derivedCode: null, ancillaryReason: null, isDeliveredHeader: false,
+        actualDeliveryAt: null, receivedByName: null, uniqueId: null, carrierCode: null, code44At: null,
+      },
       validation: { ok: true, issues: [] },
     },
     reconcile: {
@@ -24,6 +28,7 @@ export function makeCtx(overrides: {
       currentStatus: overrides.current,
       transition: null,
     },
+    existing: { lastOpTime: 0, count08: 0 },
     proposedStatus: overrides.proposed,
     vetoedEventKeys: new Set<string>(),
     deferredEffects: [],

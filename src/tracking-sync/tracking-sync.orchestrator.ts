@@ -9,6 +9,7 @@ import { ExistingEventLoader } from './existing-event-loader';
 import { FedexTrackingSource } from './sources/fedex-tracking.source';
 import { ShadowSyncSink } from './sinks/shadow-sync.sink';
 import { createLimit } from './concurrency.util';
+import { IncomeReconciler } from './income/income-reconciler';
 import { NormalizedEvent, RawTrackingResult, SyncContext, Trackable, TrackableItem } from './tracking-sync.types';
 
 /**
@@ -29,6 +30,7 @@ export class TrackingSyncOrchestrator {
     private readonly pipeline: SyncRulesPipeline,
     private readonly sink: ShadowSyncSink,
     private readonly loader: ExistingEventLoader,
+    private readonly incomeReconciler: IncomeReconciler,
   ) {}
 
   /** Acepta rastreables (normales y/o F2). Agrupa por (kind, trackingNumber). */
@@ -49,6 +51,8 @@ export class TrackingSyncOrchestrator {
 
     const limit = createLimit(TrackingSyncOrchestrator.CONCURRENCY);
     let ok = 0, noData = 0, failed = 0, matches = 0, diverges = 0;
+    // Cobros en shadow: cuántos ingresos PROPONDRÍA el motor y cuántos faltan hoy (paridad).
+    let cobrosWould = 0, cobrosMissing = 0;
     let aborted = false;
 
     for (let i = 0; i < keys.length; i += TrackingSyncOrchestrator.BATCH) {
@@ -80,19 +84,26 @@ export class TrackingSyncOrchestrator {
               if (!normalized.latest) { noData++; return; }
 
               const entity = item.entity;
-              const knownKeys = await this.loader.load(entity.id, item.kind);
+              const { keys: knownKeys, existing } = await this.loader.loadFull(entity.id, item.kind);
               const reconcile = this.reconciler.reconcile(
                 normalized, knownKeys, entity.status, (e: NormalizedEvent) => e.shadowKey,
               );
 
               const ctx: SyncContext = {
-                shipment: entity, kind: item.kind, normalized, reconcile,
+                shipment: entity, kind: item.kind, normalized, reconcile, existing,
                 proposedStatus: reconcile.proposedStatus,
                 vetoedEventKeys: new Set<string>(), deferredEffects: [], notes: [],
               };
               await this.pipeline.run(ctx);
               const outcome = await this.sink.applyPlan(ctx, run.id);
               outcome.matchesLegacy ? matches++ : diverges++;
+              // Reconciliación de cobros en shadow (no escribe): compara lo que el motor
+              // cobraría contra los Income reales, anclado al evento terminal.
+              if (ctx.deferredEffects.length) {
+                const inc = await this.incomeReconciler.reconcile(ctx.deferredEffects);
+                cobrosWould += inc.rows.length;
+                cobrosMissing += inc.missingCount;
+              }
               ok++;
             } catch (err: any) {
               failed++;
@@ -109,7 +120,8 @@ export class TrackingSyncOrchestrator {
     await this.runRepo.save(run);
 
     this.logger.log(`🏁 [shadow] run ${run.id}: ok=${ok} noData=${noData} failed=${failed} match=${matches} diverge=${diverges} aborted=${aborted}`);
-    return { runId: run.id, ok, noData, failed, aborted };
+    this.logger.log(`🧾 [shadow-cobros] propondría ${cobrosWould} (faltan ${cobrosMissing}, ya existen ${cobrosWould - cobrosMissing})`);
+    return { runId: run.id, ok, noData, failed, aborted, cobrosWould, cobrosMissing };
   }
 
   private refFor(e: Trackable) {

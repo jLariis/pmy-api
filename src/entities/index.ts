@@ -58,3 +58,4 @@ export * from './email-log.entity';
 export * from './email-attachment.entity';
 export * from './holiday.entity';
 export * from './import-job.entity';
+export * from './cobros-reconciliation-report.entity';

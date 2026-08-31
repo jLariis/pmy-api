@@ -11,7 +11,7 @@ function ev(shadowKey: string, status: ShipmentStatusType, ms: number): Normaliz
 }
 
 function tracking(events: NormalizedEvent[]): NormalizedTracking {
-  return { trackingNumber: 'TN', events, latest: events[events.length - 1] ?? null, commitDateTime: null, validation: { ok: true, issues: [] } };
+  return { trackingNumber: 'TN', events, latest: events[events.length - 1] ?? null, commitDateTime: null, header: { code: null, derivedCode: null, ancillaryReason: null, isDeliveredHeader: false, actualDeliveryAt: null, receivedByName: null, uniqueId: null, carrierCode: null, code44At: null }, validation: { ok: true, issues: [] } };
 }
 
 describe('EventReconciler', () => {

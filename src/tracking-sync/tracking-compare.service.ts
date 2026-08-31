@@ -243,6 +243,15 @@ export class TrackingCompareService {
     const ourLastEventAt = rows.length
       ? new Date(Math.max(...rows.map((r) => new Date(r.timestamp).getTime()))).toISOString()
       : null;
+    // Estado existente para reglas dependientes del pasado (Time Shield, 3×08).
+    const OPS = ['pendiente', 'en_bodega', 'en_ruta'];
+    let lastOpTime = 0, count08 = 0;
+    for (const r of rows) {
+      const t = new Date(r.timestamp).getTime();
+      if (OPS.includes(String(r.status).toLowerCase())) lastOpTime = Math.max(lastOpTime, t);
+      if ((r.exceptionCode ?? '').trim() === '08') count08++;
+    }
+    const existing = { lastOpTime, count08 };
 
     const reconcile = this.reconciler.reconcile(
       normalized, knownKeys, entity.status, (e: NormalizedEvent) => e.shadowKey,
@@ -253,6 +262,7 @@ export class TrackingCompareService {
       kind,
       normalized,
       reconcile,
+      existing,
       proposedStatus: reconcile.proposedStatus,
       vetoedEventKeys: new Set<string>(),
       deferredEffects: [],
