@@ -12,7 +12,11 @@ describe('TrackingSyncController', () => {
     reconcileAndPersist: jest.fn().mockResolvedValue({ windowDays: 14, deliveredShipments: 0, missingIncome: [], orphanIncome: [], missingCount: 0, orphanCount: 0 }),
     history: jest.fn().mockResolvedValue([]),
   } as any;
-  const ctrl = new TrackingSyncController(compare, cobrosRecon);
+  const parity = {
+    recentRuns: jest.fn().mockResolvedValue([]),
+    divergences: jest.fn().mockResolvedValue({ runId: null, rows: [] }),
+  } as any;
+  const ctrl = new TrackingSyncController(compare, cobrosRecon, parity);
 
   it('delegates compare/tracking', async () => {
     await ctrl.compareTracking('TN1');
@@ -44,5 +48,13 @@ describe('TrackingSyncController', () => {
   it('cobros-reconciliation/run persiste', async () => {
     await ctrl.cobrosReconciliationRun({ windowDays: 30 });
     expect(cobrosRecon.reconcileAndPersist).toHaveBeenCalledWith(30);
+  });
+  it('parity/runs delega', async () => {
+    await ctrl.parityRuns('5');
+    expect(parity.recentRuns).toHaveBeenCalledWith(5);
+  });
+  it('parity/divergences delega runId + limit', async () => {
+    await ctrl.parityDivergences('run1', '50');
+    expect(parity.divergences).toHaveBeenCalledWith('run1', 50);
   });
 });

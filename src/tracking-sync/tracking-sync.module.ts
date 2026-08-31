@@ -36,6 +36,7 @@ import { IncomeExecutor } from './income/income-executor';
 import { IncomeReconciler } from './income/income-reconciler';
 import { CobrosReconciliationService } from './income/cobros-reconciliation.service';
 import { CobrosReconciliationCron } from './income/cobros-reconciliation.cron';
+import { ParityService } from './parity/parity.service';
 import { SYNC_RULES } from './tracking-sync.types';
 
 /**
@@ -78,6 +79,7 @@ import { SYNC_RULES } from './tracking-sync.types';
     IncomeReconciler,
     CobrosReconciliationService,
     CobrosReconciliationCron,
+    ParityService,
     {
       provide: SYNC_RULES,
       // El pipeline ordena por `priority` (mayor primero); el orden aquí es indiferente.

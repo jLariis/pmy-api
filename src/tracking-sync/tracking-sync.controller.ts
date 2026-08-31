@@ -3,6 +3,7 @@ import { ApiTags, ApiOperation } from '@nestjs/swagger';
 import { SuperAdminGuard } from 'src/audit/super-admin.guard';
 import { TrackingCompareService } from './tracking-compare.service';
 import { CobrosReconciliationService } from './income/cobros-reconciliation.service';
+import { ParityService } from './parity/parity.service';
 
 /**
  * Panel experimental (solo superadmin): comparación en vivo contra FedEx y corrección
@@ -15,7 +16,22 @@ export class TrackingSyncController {
   constructor(
     private readonly compare: TrackingCompareService,
     private readonly cobrosRecon: CobrosReconciliationService,
+    private readonly parity: ParityService,
   ) {}
+
+  @Get('parity/runs')
+  @ApiOperation({ summary: 'Paridad shadow: últimas corridas (nuevo vs legacy) con % de coincidencia' })
+  parityRuns(@Query('limit') limit?: string) {
+    const l = Number(limit);
+    return this.parity.recentRuns(Number.isFinite(l) && l > 0 ? l : 20);
+  }
+
+  @Get('parity/divergences')
+  @ApiOperation({ summary: 'Paridad shadow: guías donde el motor difiere del legacy (con contexto)' })
+  parityDivergences(@Query('runId') runId?: string, @Query('limit') limit?: string) {
+    const l = Number(limit);
+    return this.parity.divergences(runId || undefined, Number.isFinite(l) && l > 0 ? l : 200);
+  }
 
   @Get('cobros-reconciliation')
   @ApiOperation({ summary: 'Reconciliación de cobros (snapshot en vivo): entregados sin ingreso / huérfanos' })

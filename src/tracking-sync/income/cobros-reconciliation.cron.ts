@@ -22,8 +22,9 @@ export class CobrosReconciliationCron {
       );
       const total = r.missingCount + r.orphanCount;
       if (total >= CobrosReconciliationCron.SLA_THRESHOLD) {
+        const tns = (rows: { trackingNumber: string }[]) => rows.slice(0, 20).map((x) => x.trackingNumber).join(', ');
         this.logger.warn(
-          `🚨 [cobros-recon][SLA] ${total} discrepancias de cobro (sin ingreso: ${r.missingIncome.slice(0, 20).join(', ')}${r.missingCount > 20 ? '…' : ''} | huérfanos: ${r.orphanIncome.slice(0, 20).join(', ')}${r.orphanCount > 20 ? '…' : ''})`,
+          `🚨 [cobros-recon][SLA] ${total} discrepancias de cobro (sin cobro: ${tns(r.missingIncome)}${r.missingCount > 20 ? '…' : ''} | huérfanos: ${tns(r.orphanIncome)}${r.orphanCount > 20 ? '…' : ''})`,
         );
       }
     } catch (e: any) {

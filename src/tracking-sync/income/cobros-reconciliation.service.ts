@@ -2,11 +2,22 @@ import { Injectable, Logger } from '@nestjs/common';
 import { DataSource } from 'typeorm';
 import { CobrosReconciliationReport } from 'src/entities/cobros-reconciliation-report.entity';
 
+/** Fila rica de descuadre (una por GUÍA, no por fila) para la pantalla. */
+export interface CobrosReconRow {
+  trackingNumber: string;
+  consNumber: string | null;
+  subsidiary: string | null;
+  recipientName: string | null;
+  status: string | null;
+  date: string | null; // entrega/compromiso (missing) o fecha del ingreso (orphan)
+  cost: number | null;
+}
+
 export interface CobrosReconcileReport {
   windowDays: number;
-  deliveredShipments: number;
-  missingIncome: string[];   // entregados SIN ingreso 'entregado' (posible cobro perdido)
-  orphanIncome: string[];    // ingreso 'entregado' cuyo envío NO está entregado (posible cobro falso)
+  deliveredShipments: number;    // GUÍAS entregadas distintas (dedup por trackingNumber)
+  missingIncome: CobrosReconRow[]; // entregados SIN ingreso 'entregado' (cobro perdido)
+  orphanIncome: CobrosReconRow[];  // ingreso 'entregado' cuyo envío NO está entregado (cobro a revisar)
   missingCount: number;
   orphanCount: number;
 }
@@ -37,34 +48,56 @@ export class CobrosReconciliationService {
     const since = new Date();
     since.setDate(since.getDate() - windowDays);
 
+    // Dedup por GUÍA: cuenta guías distintas, no filas (evita falsos por reciclaje en varios consolidados).
     const deliveredRow = await this.dataSource.query(
-      `SELECT COUNT(*) AS c FROM shipment
+      `SELECT COUNT(DISTINCT trackingNumber) AS c FROM shipment
         WHERE LOWER(status) = 'entregado' AND createdAt >= ?`,
       [since],
     );
     const deliveredShipments = Number(deliveredRow?.[0]?.c ?? 0);
 
+    // Entregados SIN ingreso 'entregado' → una fila por guía, con datos del paquete/consolidado.
     const missingRows = await this.dataSource.query(
-      `SELECT s.trackingNumber AS tn
+      `SELECT s.trackingNumber AS trackingNumber,
+              MAX(s.consNumber) AS consNumber, MAX(sub.name) AS subsidiary,
+              MAX(s.recipientName) AS recipientName, 'entregado' AS status,
+              MAX(s.commitDateTime) AS date, MAX(sub.fedexCostPackage) AS cost
          FROM shipment s
          LEFT JOIN income i
            ON i.trackingNumber = s.trackingNumber AND LOWER(i.incomeType) = 'entregado'
+         LEFT JOIN subsidiary sub ON sub.id = s.subsidiaryId
         WHERE LOWER(s.status) = 'entregado' AND s.createdAt >= ? AND i.id IS NULL
+        GROUP BY s.trackingNumber
         LIMIT ?`,
       [since, CobrosReconciliationService.SAMPLE_CAP + 1],
     );
 
+    // Ingreso 'entregado' cuyo envío ya NO está entregado → una fila por guía.
     const orphanRows = await this.dataSource.query(
-      `SELECT i.trackingNumber AS tn
+      `SELECT i.trackingNumber AS trackingNumber,
+              MAX(s.consNumber) AS consNumber, MAX(sub.name) AS subsidiary,
+              MAX(s.recipientName) AS recipientName, MAX(s.status) AS status,
+              MAX(i.date) AS date, MAX(i.cost) AS cost
          FROM income i
          JOIN shipment s ON s.id = i.shipmentId
+         LEFT JOIN subsidiary sub ON sub.id = s.subsidiaryId
         WHERE LOWER(i.incomeType) = 'entregado' AND i.date >= ? AND LOWER(s.status) <> 'entregado'
+        GROUP BY i.trackingNumber
         LIMIT ?`,
       [since, CobrosReconciliationService.SAMPLE_CAP + 1],
     );
 
-    const missingIncome = (missingRows || []).map((r: any) => String(r.tn));
-    const orphanIncome = (orphanRows || []).map((r: any) => String(r.tn));
+    const toRow = (r: any): CobrosReconRow => ({
+      trackingNumber: String(r.trackingNumber),
+      consNumber: r.consNumber ?? null,
+      subsidiary: r.subsidiary ?? null,
+      recipientName: r.recipientName ?? null,
+      status: r.status ?? null,
+      date: r.date ? new Date(r.date).toISOString() : null,
+      cost: r.cost != null ? Number(r.cost) : null,
+    });
+    const missingIncome = (missingRows || []).map(toRow);
+    const orphanIncome = (orphanRows || []).map(toRow);
 
     return {
       windowDays,
