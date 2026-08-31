@@ -45,4 +45,22 @@ describe('TimeShieldRule', () => {
     rule.apply(ctx);
     expect(ctx.proposedStatus).toBe(ShipmentStatusType.ENTREGADO);
   });
+
+  it('bodega-FedEx: evento del MISMO DÍA gana sobre EN_RUTA de captura tardía (arista B)', () => {
+    const ctx = makeCtx({ current: ShipmentStatusType.EN_RUTA, proposed: ShipmentStatusType.RECHAZADO, subsidiary: { allowSameDayPreRegistrationFedexEvents: true } });
+    const eventHoy = new Date(Date.now() - 3 * 3600_000); // hace 3h (mismo día)
+    ctx.normalized.latest = { occurredAt: eventHoy } as any;
+    ctx.existing.lastOpTime = Date.now(); // EN_RUTA "capturado" ahora (más nuevo que el evento)
+    rule.apply(ctx);
+    expect(ctx.proposedStatus).toBe(ShipmentStatusType.RECHAZADO); // FedEx gana, no se revierte
+  });
+
+  it('sucursal normal: NO aplica la excepción de bodega-FedEx → conserva EN_RUTA', () => {
+    const ctx = makeCtx({ current: ShipmentStatusType.EN_RUTA, proposed: ShipmentStatusType.RECHAZADO, subsidiary: { allowSameDayPreRegistrationFedexEvents: false } });
+    const eventHoy = new Date(Date.now() - 3 * 3600_000);
+    ctx.normalized.latest = { occurredAt: eventHoy } as any;
+    ctx.existing.lastOpTime = Date.now();
+    rule.apply(ctx);
+    expect(ctx.proposedStatus).toBe(ShipmentStatusType.EN_RUTA); // Time Shield protege
+  });
 });
