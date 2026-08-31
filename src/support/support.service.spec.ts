@@ -57,6 +57,22 @@ describe('SupportService.create', () => {
     await svc.create({ tipo: 'error', titulo: 'x', descripcion: 'y' } as any, requester as any, files as any);
     // no throw = attachment save path exercised
   });
+
+  it('toma la sucursal del solicitante desde el shape real del token (subsidiary.id)', async () => {
+    // El guard JWT inyecta `subsidiary` (objeto) y `subsidiaryIds` (arreglo),
+    // NO un `subsidiaryId` plano. El alta debe derivar la sucursal de ahí.
+    const { svc, savedTickets } = make();
+    const tokenUser = { userId: 'r1', name: 'Ana', subsidiary: { id: 's9' }, subsidiaryIds: ['s9', 's3'] };
+    await svc.create({ tipo: 'error', titulo: 'Falla', descripcion: 'x' } as any, tokenUser as any, []);
+    expect(savedTickets[0].subsidiaryId).toBe('s9');
+  });
+
+  it('cae a subsidiaryIds[0] si no viene la sucursal primaria como objeto', async () => {
+    const { svc, savedTickets } = make();
+    const tokenUser = { userId: 'r1', name: 'Ana', subsidiaryIds: ['s7'] };
+    await svc.create({ tipo: 'error', titulo: 'Falla', descripcion: 'x' } as any, tokenUser as any, []);
+    expect(savedTickets[0].subsidiaryId).toBe('s7');
+  });
 });
 
 describe('SupportService.addComment', () => {

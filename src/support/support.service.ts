@@ -26,7 +26,19 @@ import { SupportApprovalService, ApprovalActor } from './support-approval.servic
 import { initialApprovalStatus, isBlockedByApproval, isSuperRole } from './approval-logic';
 import { ForbiddenException, BadRequestException } from '@nestjs/common';
 
-type ReqUser = { userId: string; name?: string; lastName?: string; email?: string; subsidiaryId?: string; role?: string };
+type ReqUser = {
+  userId: string; name?: string; lastName?: string; email?: string; role?: string;
+  // El guard JWT inyecta la sucursal primaria como objeto (`subsidiary`) y el
+  // conjunto de ids (`subsidiaryIds`); NO existe un `subsidiaryId` plano.
+  subsidiary?: { id?: string } | null;
+  subsidiaryIds?: string[];
+  subsidiaryId?: string; // respaldo defensivo por si algún llamador lo pasa
+};
+
+/** Sucursal "de origen" del solicitante: primaria, con respaldos. */
+function requesterSubsidiaryId(user: ReqUser): string | null {
+  return user.subsidiary?.id ?? user.subsidiaryIds?.[0] ?? user.subsidiaryId ?? null;
+}
 
 /** Estados cuyo cambio dispara el aviso al grupo de WhatsApp (evita ruido). */
 const GROUP_NOTIFY_STATES = ['en_progreso', 'completado', 'rechazado'];
@@ -300,7 +312,7 @@ export class SupportService {
       requesterId: user.userId,
       requesterName: [user.name, user.lastName].filter(Boolean).join(' ') || null,
       requesterEmail: user.email ?? null,
-      subsidiaryId: user.subsidiaryId ?? null,
+      subsidiaryId: requesterSubsidiaryId(user),
       // Guardamos el id de config del agente (p.ej. 'admin') para que el dropdown de
       // reasignación lo refleje; el userId real se resuelve por email para notificar.
       assigneeId: agent.id,

@@ -2,7 +2,7 @@ import { Injectable, Logger, BadRequestException, InternalServerErrorException  
 import { CreateRouteclosureDto } from './dto/create-routeclosure.dto';
 import { InjectRepository } from '@nestjs/typeorm';
 import { RouteClosure } from 'src/entities/route-closure.entity';
-import { DataSource, Repository } from 'typeorm';
+import { DataSource, In, Repository } from 'typeorm';
 import { ValidateTrackingsForClosureDto } from './dto/validate-trackings-for-closure';
 import { PackageDispatch } from 'src/entities/package-dispatch.entity';
 import { ValidatedPackageDispatchDto } from 'src/package-dispatch/dto/validated-package-dispatch.dto';
@@ -366,7 +366,22 @@ export class RouteclosureService {
       if (trackingNumbers.length > 0) {
         const now = new Date();
         const utcDate = fromZonedTime(now, 'America/Hermosillo');
-        const collectionsToInsert = trackingNumbers.map(tn => {
+
+        // Guard de duplicados (defensa en profundidad, espejo de `saveCollectionsWithManager`):
+        // si un input sucio del cierre se reenvía (p. ej. el escáner del front no limpió su
+        // buffer persistido), no insertamos filas `Collection` repetidas por `trackingNumber`.
+        const existing = await queryRunner.manager.find(Collection, {
+          where: { trackingNumber: In(trackingNumbers) },
+          select: ['trackingNumber'],
+        });
+        const existingTrackings = new Set(existing.map(c => c.trackingNumber));
+        const newTrackings = [...new Set(trackingNumbers)].filter(tn => !existingTrackings.has(tn));
+        const skipped = trackingNumbers.length - newTrackings.length;
+        if (skipped > 0) {
+          this.logger.warn(`⚠️ [RouteClosure] Se omitieron ${skipped} recolección(es) ya existentes por trackingNumber.`);
+        }
+
+        const collectionsToInsert = newTrackings.map(tn => {
           return queryRunner.manager.create(Collection, {
             trackingNumber: tn,
             subsidiary: packageDispatch.subsidiary,
