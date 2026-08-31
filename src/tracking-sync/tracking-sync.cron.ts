@@ -4,6 +4,7 @@ import { ShipmentsService } from 'src/shipments/shipments.service';
 import { TrackingSyncOrchestrator } from './tracking-sync.orchestrator';
 import { TrackableItem } from './tracking-sync.types';
 import { prioritizeTrackables } from './cadence/prioritize.util';
+import { isCutoverEnabled } from './cutover.config';
 
 /**
  * Corre en SHADOW cada hora al minuto :15 (desfasado del cron legacy en :00 para no
@@ -21,6 +22,9 @@ export class TrackingSyncCron {
 
   @Cron('0 15 * * * *', { timeZone: 'America/Hermosillo' })
   async handleShadowSync() {
+    // Con el cutover ON, el motor ya escribe en persistente; el shadow sería una 2ª pasada
+    // redundante a FedEx. Se apaga para no duplicar cuota. (Default OFF → shadow corre normal.)
+    if (isCutoverEnabled()) return;
     if (this.isRunning) {
       this.logger.warn('⏭️ [shadow] corrida anterior en curso; se omite este disparo.');
       return;
