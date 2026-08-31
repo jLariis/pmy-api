@@ -6,7 +6,7 @@ import { ShipmentsService } from './shipments.service';
 import { FedexService } from './fedex.service';
 import { TrackingModule } from 'src/tracking/tracking.module';
 import { SubsidiariesService } from 'src/subsidiaries/subsidiaries.service';
-import { Income, ShipmentStatus, Subsidiary, Charge, ChargeShipment, Consolidated } from 'src/entities';
+import { Income, ShipmentStatus, Subsidiary, Charge, ChargeShipment, Consolidated, ImportJob } from 'src/entities';
 import { ConsolidatedService } from 'src/consolidated/consolidated.service';
 import { MailService } from 'src/mail/mail.service';
 import { ForPickUp } from 'src/entities/for-pick-up.entity';
@@ -17,11 +17,14 @@ import { WhereParcelDhlService } from 'src/tracking/where-parcel-dhl.service';
 import { DocumentsModule } from 'src/documents/documents.module';
 import { HolidaysModule } from 'src/holidays/holidays.module';
 import { ImportFilesModule } from 'src/import-files/import-files.module';
+import { ImportJobsController } from './import-jobs.controller';
+import { ImportJobsService } from './import-jobs.service';
+import { ImportJobsWorker } from './import-jobs.worker';
 
 @Module({
-  controllers: [ShipmentsController],
-  imports: [TypeOrmModule.forFeature([Shipment, ShipmentStatus,Subsidiary, Income, Charge, ChargeShipment, Consolidated, ForPickUp, PackageDispatch, Consolidated, Unloading]), TrackingModule, DocumentsModule, HolidaysModule, ImportFilesModule],
-  providers: [ShipmentsService, FedexService, DhlService, SubsidiariesService, ConsolidatedService, MailService, WhereParcelDhlService],
+  controllers: [ShipmentsController, ImportJobsController],
+  imports: [TypeOrmModule.forFeature([Shipment, ShipmentStatus, Subsidiary, Income, Charge, ChargeShipment, Consolidated, ForPickUp, PackageDispatch, Unloading, ImportJob]), TrackingModule, DocumentsModule, HolidaysModule, ImportFilesModule],
+  providers: [ShipmentsService, FedexService, DhlService, SubsidiariesService, ConsolidatedService, MailService, WhereParcelDhlService, ImportJobsService, ImportJobsWorker],
   exports: [ShipmentsService],
 })
 export class ShipmentsModule { }
