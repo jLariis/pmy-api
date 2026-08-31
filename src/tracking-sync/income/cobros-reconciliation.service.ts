@@ -10,6 +10,8 @@ export interface CobrosReconRow {
   recipientName: string | null;
   status: string | null;
   date: string | null; // entrega/compromiso (missing) o fecha del ingreso (orphan)
+  deliveredAt: string | null; // timestamp real del evento ENTREGADO de FedEx (fecha y hora)
+  type: 'envio' | 'f2';       // 'f2' si la guía también existe como carga (cobro agrupado → falso positivo)
   cost: number | null;
 }
 
@@ -57,15 +59,21 @@ export class CobrosReconciliationService {
     const deliveredShipments = Number(deliveredRow?.[0]?.c ?? 0);
 
     // Entregados SIN ingreso 'entregado' → una fila por guía, con datos del paquete/consolidado.
+    // `deliveredAt` = timestamp real del evento ENTREGADO (shipment_status). `isF2` = la guía
+    // también existe como carga → su cobro es agrupado (falso positivo).
     const missingRows = await this.dataSource.query(
       `SELECT s.trackingNumber AS trackingNumber,
               MAX(s.consNumber) AS consNumber, MAX(sub.name) AS subsidiary,
               MAX(s.recipientName) AS recipientName, 'entregado' AS status,
-              MAX(s.commitDateTime) AS date, MAX(sub.fedexCostPackage) AS cost
+              MAX(s.commitDateTime) AS date, MAX(ss.timestamp) AS deliveredAt,
+              MAX(sub.fedexCostPackage) AS cost,
+              MAX(CASE WHEN cs.trackingNumber IS NOT NULL THEN 1 ELSE 0 END) AS isF2
          FROM shipment s
          LEFT JOIN income i
            ON i.trackingNumber = s.trackingNumber AND LOWER(i.incomeType) = 'entregado'
          LEFT JOIN subsidiary sub ON sub.id = s.subsidiaryId
+         LEFT JOIN shipment_status ss ON ss.shipmentId = s.id AND LOWER(ss.status) = 'entregado'
+         LEFT JOIN charge_shipment cs ON cs.trackingNumber = s.trackingNumber
         WHERE LOWER(s.status) = 'entregado' AND s.createdAt >= ? AND i.id IS NULL
         GROUP BY s.trackingNumber
         LIMIT ?`,
@@ -77,10 +85,12 @@ export class CobrosReconciliationService {
       `SELECT i.trackingNumber AS trackingNumber,
               MAX(s.consNumber) AS consNumber, MAX(sub.name) AS subsidiary,
               MAX(s.recipientName) AS recipientName, MAX(s.status) AS status,
-              MAX(i.date) AS date, MAX(i.cost) AS cost
+              MAX(i.date) AS date, MAX(i.date) AS deliveredAt, MAX(i.cost) AS cost,
+              MAX(CASE WHEN cs.trackingNumber IS NOT NULL THEN 1 ELSE 0 END) AS isF2
          FROM income i
          JOIN shipment s ON s.id = i.shipmentId
          LEFT JOIN subsidiary sub ON sub.id = s.subsidiaryId
+         LEFT JOIN charge_shipment cs ON cs.trackingNumber = i.trackingNumber
         WHERE LOWER(i.incomeType) = 'entregado' AND i.date >= ? AND LOWER(s.status) <> 'entregado'
         GROUP BY i.trackingNumber
         LIMIT ?`,
@@ -94,6 +104,8 @@ export class CobrosReconciliationService {
       recipientName: r.recipientName ?? null,
       status: r.status ?? null,
       date: r.date ? new Date(r.date).toISOString() : null,
+      deliveredAt: r.deliveredAt ? new Date(r.deliveredAt).toISOString() : null,
+      type: Number(r.isF2) === 1 ? 'f2' : 'envio',
       cost: r.cost != null ? Number(r.cost) : null,
     });
     const missingIncome = (missingRows || []).map(toRow);
