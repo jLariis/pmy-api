@@ -1,14 +1,19 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
-import { ShipmentsService } from 'src/shipments/shipments.service';
 import { TrackingSyncOrchestrator } from './tracking-sync.orchestrator';
-import { TrackableItem } from './tracking-sync.types';
+import { RouteUniverseService } from './route-universe.service';
 import { prioritizeTrackables } from './cadence/prioritize.util';
 import { isCutoverEnabled } from './cutover.config';
 
+const START_HOUR = Number(process.env.FEDEX_SYNC_START_HOUR || 7);
+const END_HOUR = Number(process.env.FEDEX_SYNC_END_HOUR || 22);
+
 /**
- * Corre en SHADOW cada hora al minuto :15 (desfasado del cron legacy en :00 para no
- * competir por cuota de FedEx). Solo lee el universo de guías; no cambia estatus real.
+ * SHADOW (observa, NO escribe): cada 15 min en horario hábil (07:00–22:00 Hermosillo), sobre
+ * las guías de las RUTAS DEL DÍA — la MISMA cadencia y universo que usará el motor al encender
+ * el cutover, para que la paridad refleje la operación real. Anota qué estatus pondría el motor
+ * vs el actual (tracking_sync_observation) sin tocar nada. Se apaga cuando el cutover está ON
+ * (ahí el motor ya escribe y el shadow sería una 2ª pasada redundante a FedEx).
  */
 @Injectable()
 export class TrackingSyncCron {
@@ -16,37 +21,28 @@ export class TrackingSyncCron {
   private isRunning = false;
 
   constructor(
-    private readonly shipmentsService: ShipmentsService,
     private readonly orchestrator: TrackingSyncOrchestrator,
+    private readonly routeUniverse: RouteUniverseService,
   ) {}
 
-  @Cron('0 15 * * * *', { timeZone: 'America/Hermosillo' })
+  @Cron('0 */15 * * * *') // cada 15 minutos
   async handleShadowSync() {
-    // Con el cutover ON, el motor ya escribe en persistente; el shadow sería una 2ª pasada
-    // redundante a FedEx. Se apaga para no duplicar cuota. (Default OFF → shadow corre normal.)
-    if (isCutoverEnabled()) return;
+    if (isCutoverEnabled()) return; // con cutover ON el motor ya escribe; no dupliques FedEx
+    const hour = this.routeUniverse.hermosilloHour();
+    if (hour < START_HOUR || hour >= END_HOUR) return; // fuera de horario hábil
     if (this.isRunning) {
       this.logger.warn('⏭️ [shadow] corrida anterior en curso; se omite este disparo.');
       return;
     }
     this.isRunning = true;
     try {
-      const [shipments, charges] = await Promise.all([
-        this.shipmentsService.getShipmentsToValidate(),
-        this.shipmentsService.getSimpleChargeShipments(),
-      ]);
-      const rawItems: TrackableItem[] = [
-        ...shipments.map((entity) => ({ kind: 'shipment' as const, entity })),
-        ...charges.map((entity) => ({ kind: 'charge' as const, entity })),
-      ];
+      const rawItems = await this.routeUniverse.todayRouteItems();
       if (!rawItems.length) {
-        this.logger.log('📪 [shadow] no hay guías para observar.');
+        this.logger.log('📪 [shadow] sin guías de ruta para observar.');
         return;
       }
-      // Cadencia adaptativa: observa primero las guías "calientes" (movimiento activo).
-      // En shadow SIN tope → cobertura completa; el orden solo prioriza las urgentes.
       const items = prioritizeTrackables(rawItems);
-      this.logger.log(`🌓 [shadow] observando ${shipments.length} normales + ${charges.length} F2 (calientes primero)...`);
+      this.logger.log(`🌓 [shadow] observando ${items.length} guías de las rutas del día...`);
       await this.orchestrator.runShadow(items);
     } catch (err: any) {
       this.logger.error(`❌ [shadow] error: ${err?.message}`);

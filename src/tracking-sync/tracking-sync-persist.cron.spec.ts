@@ -14,9 +14,15 @@ describe('TrackingSyncPersistCron', () => {
       getShipmentsToValidate: jest.fn().mockResolvedValue([{ id: 's1', status: ShipmentStatusType.PENDIENTE, subsidiary: { id: 'sub1' } }]),
       getSimpleChargeShipments: jest.fn().mockResolvedValue([]),
     };
-    const repo: any = {};
-    const cron = new TrackingSyncPersistCron(repo, repo, shipmentsService, compare);
-    return { cron, compare, shipmentsService };
+    const routeUniverse: any = {
+      hermosilloHour: jest.fn().mockReturnValue(10),
+      todayRouteItems: jest.fn().mockResolvedValue([
+        { kind: 'shipment', entity: { id: 'a', status: ShipmentStatusType.PENDIENTE, subsidiary: { id: 'sub1' } } },
+        { kind: 'shipment', entity: { id: 'b', status: ShipmentStatusType.EN_RUTA, subsidiary: { id: 'sub1' } } },
+      ]),
+    };
+    const cron = new TrackingSyncPersistCron(shipmentsService, compare, routeUniverse);
+    return { cron, compare, shipmentsService, routeUniverse };
   }
 
   describe('handleRouteSync (15 min, rutas del día)', () => {
@@ -30,11 +36,6 @@ describe('TrackingSyncPersistCron', () => {
     it('cutover ON + en horario → applyMany con las guías de ruta (calientes primero)', async () => {
       process.env.TRACKING_SYNC_CUTOVER = 'true';
       const { cron, compare } = make();
-      jest.spyOn<any, any>(cron, 'hermosilloHour').mockReturnValue(10);
-      jest.spyOn<any, any>(cron, 'todayRouteIds').mockResolvedValue([
-        { kind: 'shipment', entity: { id: 'a', status: ShipmentStatusType.PENDIENTE, subsidiary: { id: 'sub1' } } },
-        { kind: 'shipment', entity: { id: 'b', status: ShipmentStatusType.EN_RUTA, subsidiary: { id: 'sub1' } } },
-      ]);
       await cron.handleRouteSync();
       expect(compare.applyMany).toHaveBeenCalledTimes(1);
       expect(compare.applyMany.mock.calls[0][0]).toEqual(['b', 'a']); // EN_RUTA (caliente) primero
@@ -42,11 +43,10 @@ describe('TrackingSyncPersistCron', () => {
 
     it('cutover ON + fuera de horario → no hace nada', async () => {
       process.env.TRACKING_SYNC_CUTOVER = 'true';
-      const { cron, compare } = make();
-      jest.spyOn<any, any>(cron, 'hermosilloHour').mockReturnValue(3); // 3am, fuera de 7–22
-      const spy = jest.spyOn<any, any>(cron, 'todayRouteIds');
+      const { cron, compare, routeUniverse } = make();
+      routeUniverse.hermosilloHour.mockReturnValue(3); // 3am, fuera de 7–22
       await cron.handleRouteSync();
-      expect(spy).not.toHaveBeenCalled();
+      expect(routeUniverse.todayRouteItems).not.toHaveBeenCalled();
       expect(compare.applyMany).not.toHaveBeenCalled();
     });
   });
