@@ -38,14 +38,14 @@ export function currentWeekRange(): { start: Date; end: Date } {
   start.setDate(now.getDate() + diffToMonday);
   start.setHours(0, 0, 0, 0);
   const end = new Date(start);
-  end.setDate(start.getDate() + 5); // lunes + 5 = sábado
+  end.setDate(start.getDate() + 6); // lunes + 6 = domingo (semana lun–dom)
   end.setHours(23, 59, 59, 999);
   return { start, end };
 }
 
 /**
  * Resuelve el rango de fechas a usar: si llegan `from`/`to` válidos se usan
- * (normalizando inicio/fin de día); si no, se usa la semana actual (lun-sáb).
+ * (normalizando inicio/fin de día); si no, se usa la semana actual (lun-dom).
  */
 export function resolveDateRange(from?: string, to?: string): { start: Date; end: Date } {
   if (from && to) {
