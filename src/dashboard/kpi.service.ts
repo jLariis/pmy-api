@@ -7,11 +7,9 @@ import { ChargeRule } from 'src/entities/charge-rule.entity';
 import { proratedAmountInRange } from 'src/common/expense-proration.util';
 import { ConsolidatedService } from 'src/consolidated/consolidated.service';
 import {
-  rollupConsolidatedPackageStats,
   emptyPackageStats,
-  ConsolidatedRollupInput,
   SubsidiaryPackageStats,
-} from './consolidated-package-rollup';
+} from 'src/consolidated/operational-package-stats';
 
 /**
  * Código de cobro efectivo del ingreso (espejo SQL de `effectiveChargeCode`):
@@ -223,29 +221,19 @@ export class KpiService {
     const subsidiaryCondition = (alias: string) =>
       hasSubsidiaryFilter ? `${alias}.subsidiaryId IN (:...subsidiaryIds)` : '1=1';
 
-    // 2. CONTEOS DE PAQUETES: fuente unica = consolidados (mismo motor que la pantalla
-    //    de Consolidados). Fechas construidas igual que el controller de consolidados
-    //    (new Date('YYYY-MM-DD') -> medianoche UTC) para dar identico.
+    // 2. CONTEOS DE PAQUETES: por SUCURSAL OPERATIVA (quien opera la guia hoy),
+    //    anclados a los consolidados del periodo. Resuelve el fan-out de bodegas:
+    //    un consolidado de bodega repartido a varias sucursales ya no infla a la
+    //    bodega — cada guia cuenta para quien la opera (ver spec 2026-09-01).
+    //    Fechas igual que el controller de consolidados (new Date('YYYY-MM-DD') ->
+    //    medianoche UTC) para conservar la misma ventana del periodo.
     const consFrom = new Date(baseStartDate);
     const consTo = new Date(baseEndDate);
-    const consolidatedDtos = await this.consolidatedService.findAll(
-      hasSubsidiaryFilter ? { subsidiaryIds } : {},
+    const packageStatsBySub = await this.consolidatedService.getOperationalCountsBySubsidiary(
       consFrom,
       consTo,
-      { summaryOnly: true },
+      hasSubsidiaryFilter ? subsidiaryIds : undefined,
     );
-    const rollupRows: ConsolidatedRollupInput[] = consolidatedDtos.map((c) => ({
-      subsidiaryId: c.subsidiary?.id,
-      type: c.type,
-      numberOfPackages: c.numberOfPackages,
-      entregado: c.shipmentCounts?.entregado ?? 0,
-      dex03: c.shipmentCounts?.dex03 ?? 0,
-      dex07: c.shipmentCounts?.dex07 ?? 0,
-      dex08: c.shipmentCounts?.dex08 ?? 0,
-      guiasPendientesDeMov: c.shipmentCounts?.guiasPendientesDeMov ?? 0,
-      countF2: c.shipmentCounts?.countF2 ?? 0,
-    }));
-    const packageStatsBySub = rollupConsolidatedPackageStats(rollupRows);
 
     // 3. FINANCIEROS (SIN CAMBIO): gastos (C) e ingresos (D) en paralelo.
     const [expenseStats, incomeStats] = await Promise.all([
