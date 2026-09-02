@@ -44,15 +44,29 @@ Dos granos separados **a propósito**:
 
 ### Decisiones confirmadas con el usuario
 
-- **Total = conteo real por sucursal operativa.** `totalPackages(sucursal)` = # de guías cuyo
-  `shipment.subsidiary` es esa sucursal (ancladas a consolidados del periodo). Se **abandona** el
-  denominador "declarado" a nivel de sucursal; el declarado queda solo como intake en Consolidados.
-- **Se elimina el concepto "faltante por escanear"** del dashboard: al contar filas reales,
-  `entregado + dex + enProceso + otros = total` cuadra exacto.
+- **Total = conteo real por sucursal operativa, COMBINANDO `shipment` + `charge_shipment`.**
+  `totalPackages(sucursal)` = # de guías (normales **y** cargas F2) cuyo `subsidiary` es esa sucursal,
+  ancladas a consolidados del periodo. (Las cargas cuentan **junto** con las guías en el total y el
+  desglose, igual que el motor viejo `findAll`: `total = shipments + F2`. `totalCharges` sigue siendo el
+  # de cargas como indicador aparte.) Se **abandona** el denominador "declarado" puro a nivel de
+  sucursal.
+- **Remanente declarado sin distribuir → al DUEÑO (bodega), como "en proceso".** Por consolidado,
+  `remanente = numberOfPackages declarado − guías ya ligadas (shipment + charge_shipment activas)`. Se
+  atribuye a la bodega dueña: son paquetes que llegaron y están físicamente en la bodega, aún sin
+  escanear/repartir. Así un consolidado recién creado **muestra su intake de inmediato** (no aparece en
+  0) y, conforme se escanea, el conteo se mueve a las sucursales operativas y el remanente baja. Suma a
+  `totalPackages` y a `inProcessPackages` para conservar el cuadre.
+- **Cuadre exacto:** `entregado + dex + enProceso + otros = totalPackages` por sucursal.
 - **Alcance: solo Dashboard.** La pantalla de Consolidados sigue mostrando por consolidado.
 - **`consolidations` se mantiene por dueño del consolidado** (la bodega). Una satélite que solo recibe
   traspasos tendrá `consolidations = 0` pero `totalPackages > 0`. Es correcto e informativo.
 - **Financieros sin cambio** (`Income`/`Expense` ya llavean por su propio `subsidiaryId`).
+
+> **Nota de implementación (2026-09-02):** la primera versión contaba **solo `shipment`** en
+> `totalPackages` y excluía las cargas, lo que dejaba en **0** a los consolidados cuyas guías viven en
+> `charge_shipment` (F2) — p.ej. un consolidado "ordinario" con 40 cargas y 0 shipments se veía vacío.
+> Se corrigió a conteo **combinado** shipment+charge, y se añadió el **remanente declarado** para
+> recuperar la visibilidad del intake del día.
 
 ## 3. Alcance
 
@@ -89,13 +103,13 @@ Pasos:
 
 | Campo | Cálculo |
 |---|---|
-| `totalPackages` | COUNT real de `shipment` de esa sucursal (buckets sumados) |
-| `deliveredPackages` | COUNT status entregado |
-| `byExceptionCode.code03/07/08` | COUNT dex03/dex07/dex08 |
+| `totalPackages` | COUNT real de `shipment` **+ `charge_shipment`** de esa sucursal (combinado) **+ remanente declarado si es dueña** |
+| `deliveredPackages` | COUNT status entregado (shipment + charge) |
+| `byExceptionCode.code03/07/08` | COUNT dex03/dex07/dex08 (shipment + charge) |
 | `undeliveredPackages` | dex03 + dex07 + dex08 |
-| `inProcessPackages` | pendiente + en_ruta + en_bodega (guías aún en movimiento) |
+| `inProcessPackages` | pendiente + en_ruta + en_bodega (shipment + charge) **+ remanente declarado si es dueña** |
 | `otherPackages` | total − entregado − dex − enProceso (residual ≥ 0; devueltos/ocurre/etc.) |
-| `totalCharges` | COUNT `charge_shipment` de esa sucursal |
+| `totalCharges` | COUNT `charge_shipment` de esa sucursal (indicador aparte, subconjunto del total) |
 
 Los buckets de estatus reutilizan el mismo mapeo que hoy usa `findAll` (mismos `ShipmentStatusType`
 por bucket), extraído a un helper compartido para no duplicar la clasificación.

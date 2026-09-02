@@ -14,6 +14,7 @@ import {
   OperationalStatusAgg,
   OperationalChargeAgg,
   ConsolidationOwnerRow,
+  OwnerRemainderRow,
 } from './operational-package-stats';
 
 @Injectable()
@@ -342,52 +343,80 @@ export class ConsolidatedService {
     const PENDING_MOV_STATUSES = ['pendiente', 'en_ruta', 'en_transito', 'en_bodega', 'recibido_en_bodega'];
     const PENDIENTE_MOV_SQL = PENDING_MOV_STATUSES.map(s => `'${s}'`).join(',');
 
-    // Desglose de estatus por sucursal OPERATIVA (join a consolidated para anclar al periodo).
-    const shipmentQb = this.consolidatedRepository.manager.createQueryBuilder()
-      .select('t.subsidiaryId', 'subsidiaryId')
-      .addSelect('COUNT(t.id)', 'total')
-      .addSelect(`SUM(CASE WHEN LOWER(t.status) IN ('entregado','entregada','pod') THEN 1 ELSE 0 END)`, 'entregado')
-      .addSelect(`SUM(CASE WHEN LOWER(t.status) IN ('dex03','direccion_incorrecta') THEN 1 ELSE 0 END)`, 'dex03')
-      .addSelect(`SUM(CASE WHEN LOWER(t.status) IN ('dex07','rechazado') THEN 1 ELSE 0 END)`, 'dex07')
-      .addSelect(`SUM(CASE WHEN LOWER(t.status) IN ('dex08','cliente_no_disponible') THEN 1 ELSE 0 END)`, 'dex08')
-      .addSelect(`SUM(CASE WHEN LOWER(t.status) IN (${PENDIENTE_MOV_SQL}) THEN 1 ELSE 0 END)`, 'pendienteMov')
-      .from('shipment', 't')
-      .innerJoin('consolidated', 'c', 'c.id = t.consolidatedId')
-      .where('c.date BETWEEN :from AND :to', { from: utcFrom, to: utcTo })
-      .andWhere('c.active = :cActive', { cActive: true })
-      .andWhere('t.active = :tActive', { tActive: true })
-      .andWhere('t.status != :cancel', { cancel: 'cancelado' })
-      .groupBy('t.subsidiaryId');
-    if (hasScope) shipmentQb.andWhere('t.subsidiaryId IN (:...scopeIds)', { scopeIds });
+    // Desglose de estatus por sucursal OPERATIVA (join a consolidated para anclar al
+    // periodo). Mismos buckets para shipment y charge_shipment: las cargas F2 cuentan
+    // JUNTO con las guias normales en el total y el desglose (igual que el motor viejo).
+    const statusAggQb = (table: string) => {
+      const qb = this.consolidatedRepository.manager.createQueryBuilder()
+        .select('t.subsidiaryId', 'subsidiaryId')
+        .addSelect('COUNT(t.id)', 'total')
+        .addSelect(`SUM(CASE WHEN LOWER(t.status) IN ('entregado','entregada','pod') THEN 1 ELSE 0 END)`, 'entregado')
+        .addSelect(`SUM(CASE WHEN LOWER(t.status) IN ('dex03','direccion_incorrecta') THEN 1 ELSE 0 END)`, 'dex03')
+        .addSelect(`SUM(CASE WHEN LOWER(t.status) IN ('dex07','rechazado') THEN 1 ELSE 0 END)`, 'dex07')
+        .addSelect(`SUM(CASE WHEN LOWER(t.status) IN ('dex08','cliente_no_disponible') THEN 1 ELSE 0 END)`, 'dex08')
+        .addSelect(`SUM(CASE WHEN LOWER(t.status) IN (${PENDIENTE_MOV_SQL}) THEN 1 ELSE 0 END)`, 'pendienteMov')
+        .from(table, 't')
+        .innerJoin('consolidated', 'c', 'c.id = t.consolidatedId')
+        .where('c.date BETWEEN :from AND :to', { from: utcFrom, to: utcTo })
+        .andWhere('c.active = :cActive', { cActive: true })
+        .andWhere('t.active = :tActive', { tActive: true })
+        .andWhere('t.status != :cancel', { cancel: 'cancelado' })
+        .groupBy('t.subsidiaryId');
+      if (hasScope) qb.andWhere('t.subsidiaryId IN (:...scopeIds)', { scopeIds });
+      return qb;
+    };
+    const shipmentQb = statusAggQb('shipment');
+    const chargeQb = statusAggQb('charge_shipment');
 
-    // Cargas F2 por sucursal operativa (solo conteo).
-    const chargeQb = this.consolidatedRepository.manager.createQueryBuilder()
-      .select('t.subsidiaryId', 'subsidiaryId')
-      .addSelect('COUNT(t.id)', 'total')
-      .from('charge_shipment', 't')
-      .innerJoin('consolidated', 'c', 'c.id = t.consolidatedId')
-      .where('c.date BETWEEN :from AND :to', { from: utcFrom, to: utcTo })
-      .andWhere('c.active = :cActive', { cActive: true })
-      .andWhere('t.active = :tActive', { tActive: true })
-      .andWhere('t.status != :cancel', { cancel: 'cancelado' })
-      .groupBy('t.subsidiaryId');
-    if (hasScope) chargeQb.andWhere('t.subsidiaryId IN (:...scopeIds)', { scopeIds });
-
-    // Consolidaciones por DUEÑO (actividad de la bodega): una fila por consolidado.
+    // Consolidados del periodo por DUEÑO (bodega): id + tipo + declarado. Sirven para
+    // `consolidations` y para el remanente declarado sin distribuir.
     const consQb = this.consolidatedRepository.createQueryBuilder('c')
-      .select('c.subsidiaryId', 'subsidiaryId')
+      .select('c.id', 'id')
+      .addSelect('c.subsidiaryId', 'subsidiaryId')
       .addSelect('c.type', 'type')
+      .addSelect('c.numberOfPackages', 'declared')
       .where('c.date BETWEEN :from AND :to', { from: utcFrom, to: utcTo })
       .andWhere('c.active = :cActive', { cActive: true });
     if (hasScope) consQb.andWhere('c.subsidiaryId IN (:...scopeIds)', { scopeIds });
 
-    const [shipmentAgg, chargeAgg, consolidationRows] = await Promise.all([
+    const [shipmentAgg, chargeAgg, consRows] = await Promise.all([
       shipmentQb.getRawMany() as Promise<OperationalStatusAgg[]>,
       chargeQb.getRawMany() as Promise<OperationalChargeAgg[]>,
-      consQb.getRawMany() as Promise<ConsolidationOwnerRow[]>,
+      consQb.getRawMany() as Promise<{ id: string; subsidiaryId: string; type: string; declared: number | string | null }[]>,
     ]);
 
-    return buildOperationalStats({ shipmentAgg, chargeAgg, consolidationRows });
+    const consolidationRows: ConsolidationOwnerRow[] = consRows.map(c => ({ subsidiaryId: c.subsidiaryId, type: c.type }));
+
+    // Remanente declarado SIN distribuir por consolidado = declarado - guias ya ligadas
+    // (shipment + charge_shipment activas, no canceladas). Se atribuye al DUEÑO.
+    const consIds = consRows.map(c => c.id);
+    const ownerRemainder: OwnerRemainderRow[] = [];
+    if (consIds.length) {
+      const linkedByCons = async (table: string): Promise<Map<string, number>> => {
+        const rows = await this.consolidatedRepository.manager.createQueryBuilder()
+          .select('t.consolidatedId', 'consolidatedId')
+          .addSelect('COUNT(t.id)', 'n')
+          .from(table, 't')
+          .where('t.consolidatedId IN (:...consIds)', { consIds })
+          .andWhere('t.active = :tActive', { tActive: true })
+          .andWhere('t.status != :cancel', { cancel: 'cancelado' })
+          .groupBy('t.consolidatedId')
+          .getRawMany();
+        return new Map(rows.map(r => [r.consolidatedId, Number(r.n) || 0]));
+      };
+      const [shipLinked, chargeLinked] = await Promise.all([
+        linkedByCons('shipment'),
+        linkedByCons('charge_shipment'),
+      ]);
+      for (const c of consRows) {
+        const declared = Number(c.declared) || 0;
+        const linked = (shipLinked.get(c.id) ?? 0) + (chargeLinked.get(c.id) ?? 0);
+        const remainder = declared - linked;
+        if (remainder > 0) ownerRemainder.push({ subsidiaryId: c.subsidiaryId, remainder });
+      }
+    }
+
+    return buildOperationalStats({ shipmentAgg, chargeAgg, consolidationRows, ownerRemainder });
   }
 
   async findAll(

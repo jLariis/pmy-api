@@ -9,7 +9,8 @@ import {
 const ship = (o: Partial<OperationalStatusAgg>): OperationalStatusAgg => ({
   subsidiaryId: 's1', total: 0, entregado: 0, dex03: 0, dex07: 0, dex08: 0, pendienteMov: 0, ...o,
 });
-const charge = (subsidiaryId: string, total: number): OperationalChargeAgg => ({ subsidiaryId, total });
+// Carga F2: misma forma que un status agg (las cargas cuentan junto con los shipments).
+const charge = (o: Partial<OperationalChargeAgg>): OperationalChargeAgg => ship(o);
 const cons = (subsidiaryId: string, type: string): ConsolidationOwnerRow => ({ subsidiaryId, type });
 
 describe('buildOperationalStats (dashboard por sucursal operativa)', () => {
@@ -36,20 +37,21 @@ describe('buildOperationalStats (dashboard por sucursal operativa)', () => {
     expect(map.get('huatabampo')!.consolidations).toEqual({ ordinary: 0, air: 0, total: 0 });
   });
 
-  it('desglose y cuadre exacto por sucursal (solo paquetes)', () => {
+  it('desglose y cuadre exacto por sucursal (paquetes + cargas combinados)', () => {
     const map = buildOperationalStats({
+      // 10 shipments (6 POD, 1+1 DEX, 2 en proceso) + 3 cargas F2 (todas entregadas).
       shipmentAgg: [ship({ subsidiaryId: 's1', total: 10, entregado: 6, dex07: 1, dex03: 1, pendienteMov: 2 })],
-      chargeAgg: [charge('s1', 3)],
+      chargeAgg: [charge({ subsidiaryId: 's1', total: 3, entregado: 3 })],
       consolidationRows: [cons('s1', 'ordinario'), cons('s1', 'aereo')],
     });
     const s = map.get('s1')!;
-    expect(s.totalPackages).toBe(10);
-    expect(s.deliveredPackages).toBe(6);
-    expect(s.undeliveredPackages).toBe(2); // dex03 + dex07 + dex08
+    expect(s.totalPackages).toBe(13);          // 10 shipments + 3 cargas (combinado)
+    expect(s.deliveredPackages).toBe(9);       // 6 + 3
+    expect(s.undeliveredPackages).toBe(2);     // dex03 + dex07 + dex08
     expect(s.byExceptionCode).toEqual({ code07: 1, code08: 0, code03: 1, unknown: 0 });
     expect(s.inProcessPackages).toBe(2);
-    expect(s.otherPackages).toBe(0); // 10 - 6 - 2 - 2
-    expect(s.totalCharges).toBe(3);
+    expect(s.otherPackages).toBe(0);           // 13 - 9 - 2 - 2
+    expect(s.totalCharges).toBe(3);            // # de cargas F2 (indicador aparte)
     expect(s.consolidations).toEqual({ ordinary: 1, air: 1, total: 2 });
     // CUADRE EXACTO: POD + DEX + En proceso + Otros = Total
     expect(s.deliveredPackages + s.undeliveredPackages + s.inProcessPackages + s.otherPackages).toBe(s.totalPackages);
@@ -78,25 +80,78 @@ describe('buildOperationalStats (dashboard por sucursal operativa)', () => {
     expect(s.consolidations).toEqual({ ordinary: 0, air: 0, total: 0 });
   });
 
-  it('cargas F2 se atribuyen por sucursal operativa y no entran al cuadre de paquetes', () => {
+  it('cargas F2 cuentan JUNTO con los paquetes (total + desglose) y ademas en totalCharges', () => {
+    // Consolidado cuyas guias viven en charge_shipment (F2): antes daban totalPackages=0.
     const map = buildOperationalStats({
       shipmentAgg: [],
-      chargeAgg: [charge('guaymas', 7)],
+      chargeAgg: [charge({ subsidiaryId: 'guaymas', total: 7, entregado: 5, dex07: 2 })],
       consolidationRows: [],
     });
     const s = map.get('guaymas')!;
-    expect(s.totalCharges).toBe(7);
-    expect(s.totalPackages).toBe(0);
-    expect(s.deliveredPackages).toBe(0);
+    expect(s.totalPackages).toBe(7);      // ya NO es 0: las cargas cuentan
+    expect(s.deliveredPackages).toBe(5);
+    expect(s.undeliveredPackages).toBe(2);
+    expect(s.totalCharges).toBe(7);       // indicador aparte del # de cargas
+    expect(s.deliveredPackages + s.undeliveredPackages + s.inProcessPackages + s.otherPackages).toBe(7);
   });
 
   it('ignora filas sin subsidiaryId', () => {
     const map = buildOperationalStats({
       shipmentAgg: [ship({ subsidiaryId: null, total: 9, entregado: 9 })],
-      chargeAgg: [charge('', 3)],
+      chargeAgg: [charge({ subsidiaryId: '', total: 3 })],
       consolidationRows: [cons('', 'ordinario')],
     });
     expect(map.size).toBe(0);
+  });
+
+  it('remanente declarado sin distribuir suma al DUEÑO (bodega) como total + en proceso', () => {
+    // Consolidado de bodega declarado 40, con 0 guias ligadas todavia -> remanente 40 a la bodega.
+    const map = buildOperationalStats({
+      shipmentAgg: [],
+      chargeAgg: [],
+      consolidationRows: [cons('bodega', 'ordinario')],
+      ownerRemainder: [{ subsidiaryId: 'bodega', remainder: 40 }],
+    });
+    const s = map.get('bodega')!;
+    expect(s.totalPackages).toBe(40);
+    expect(s.inProcessPackages).toBe(40);
+    expect(s.deliveredPackages).toBe(0);
+    expect(s.otherPackages).toBe(0);
+    // CUADRE: POD + DEX + En proceso + Otros = Total
+    expect(s.deliveredPackages + s.undeliveredPackages + s.inProcessPackages + s.otherPackages).toBe(40);
+  });
+
+  it('conforme se escanea, parte va a la satelite y el remanente baja (cuadre se mantiene)', () => {
+    // Declarado 40; 25 ya ligadas y operadas (15 bodega + 10 huatabampo); remanente 15 a la bodega.
+    const map = buildOperationalStats({
+      shipmentAgg: [
+        ship({ subsidiaryId: 'bodega', total: 15, entregado: 10, pendienteMov: 5 }),
+        ship({ subsidiaryId: 'huatabampo', total: 10, entregado: 10 }),
+      ],
+      chargeAgg: [],
+      consolidationRows: [cons('bodega', 'ordinario')],
+      ownerRemainder: [{ subsidiaryId: 'bodega', remainder: 15 }],
+    });
+    const bodega = map.get('bodega')!;
+    expect(bodega.totalPackages).toBe(30);        // 15 operadas + 15 remanente
+    expect(bodega.inProcessPackages).toBe(20);    // 5 pendientes reales + 15 remanente
+    expect(bodega.deliveredPackages).toBe(10);
+    expect(bodega.deliveredPackages + bodega.undeliveredPackages + bodega.inProcessPackages + bodega.otherPackages).toBe(bodega.totalPackages);
+    const hua = map.get('huatabampo')!;
+    expect(hua.totalPackages).toBe(10);
+    expect(hua.deliveredPackages).toBe(10);
+  });
+
+  it('remanente <= 0 (todo escaneado o de mas) no suma nada', () => {
+    const map = buildOperationalStats({
+      shipmentAgg: [ship({ subsidiaryId: 'bodega', total: 42, entregado: 42 })],
+      chargeAgg: [],
+      consolidationRows: [cons('bodega', 'ordinario')],
+      ownerRemainder: [{ subsidiaryId: 'bodega', remainder: 0 }, { subsidiaryId: 'bodega', remainder: -3 }],
+    });
+    const s = map.get('bodega')!;
+    expect(s.totalPackages).toBe(42);
+    expect(s.inProcessPackages).toBe(0);
   });
 
   it('emptyPackageStats arranca en ceros', () => {

@@ -23,16 +23,31 @@ export interface OperationalStatusAgg {
   pendienteMov: number | string | null;
 }
 
-/** Conteo de cargas F2 (charge_shipment) por sucursal operativa. */
-export interface OperationalChargeAgg {
-  subsidiaryId: string | null | undefined;
-  total: number | string | null;
-}
+/**
+ * Cargas F2 (charge_shipment) por sucursal operativa. Mismas columnas de estatus
+ * que `OperationalStatusAgg`: las cargas se cuentan JUNTO con los shipments en el
+ * total y el desglose (igual que el motor viejo `findAll`: total = shipments + F2),
+ * y ademas `total` sirve como `totalCharges` (indicador aparte del # de cargas).
+ */
+export type OperationalChargeAgg = OperationalStatusAgg;
 
 /** Un consolidado del periodo con su dueño (la bodega/sucursal que lo creo) y tipo. */
 export interface ConsolidationOwnerRow {
   subsidiaryId: string | null | undefined;
   type: string | null | undefined; // 'ordinario' | 'aereo' | 'carga'
+}
+
+/**
+ * Remanente DECLARADO aun sin distribuir de un consolidado: `numberOfPackages`
+ * declarado menos las guias ya ligadas (shipment + charge_shipment). Se atribuye
+ * al DUEÑO del consolidado (la bodega): son paquetes que llegaron y estan
+ * fisicamente en la bodega, todavia sin escanear/repartir. Recupera la visibilidad
+ * del intake del dia sin volver a inflar (conforme se escanean, el conteo se mueve
+ * a las sucursales operativas y el remanente baja).
+ */
+export interface OwnerRemainderRow {
+  subsidiaryId: string | null | undefined;
+  remainder: number | string | null;
 }
 
 export interface SubsidiaryPackageStats {
@@ -87,12 +102,12 @@ export function buildOperationalStats(input: {
   shipmentAgg: OperationalStatusAgg[];
   chargeAgg: OperationalChargeAgg[];
   consolidationRows: ConsolidationOwnerRow[];
+  /** Remanente declarado sin distribuir, por dueño del consolidado. Opcional. */
+  ownerRemainder?: OwnerRemainderRow[];
 }): Map<string, SubsidiaryPackageStats> {
   const map = new Map<string, SubsidiaryPackageStats>();
 
-  for (const r of input.shipmentAgg) {
-    if (!r?.subsidiaryId) continue;
-    const s = ensure(map, r.subsidiaryId);
+  const foldStatus = (s: SubsidiaryPackageStats, r: OperationalStatusAgg) => {
     const dex03 = num(r.dex03), dex07 = num(r.dex07), dex08 = num(r.dex08);
     s.totalPackages += num(r.total);
     s.deliveredPackages += num(r.entregado);
@@ -101,11 +116,21 @@ export function buildOperationalStats(input: {
     s.byExceptionCode.code08 += dex08;
     s.undeliveredPackages += dex03 + dex07 + dex08;
     s.inProcessPackages += num(r.pendienteMov);
+  };
+
+  // Shipments (guias normales) al total + desglose.
+  for (const r of input.shipmentAgg) {
+    if (!r?.subsidiaryId) continue;
+    foldStatus(ensure(map, r.subsidiaryId), r);
   }
 
+  // Cargas F2: cuentan JUNTO con los shipments en el total y el desglose (igual que el
+  // motor viejo: total = shipments + F2), y ademas `total` alimenta `totalCharges`.
   for (const r of input.chargeAgg) {
     if (!r?.subsidiaryId) continue;
-    ensure(map, r.subsidiaryId).totalCharges += num(r.total);
+    const s = ensure(map, r.subsidiaryId);
+    foldStatus(s, r);
+    s.totalCharges += num(r.total);
   }
 
   for (const r of input.consolidationRows) {
@@ -117,7 +142,19 @@ export function buildOperationalStats(input: {
     s.consolidations.total += 1;
   }
 
-  // Otros = residual que garantiza el cuadre contra el total real (solo shipment).
+  // Remanente declarado sin distribuir -> al DUEÑO (bodega), como "en proceso"
+  // (llego, esta en la bodega, aun sin escanear/repartir). Suma a total y a en proceso
+  // para que el cuadre se mantenga.
+  for (const r of input.ownerRemainder ?? []) {
+    if (!r?.subsidiaryId) continue;
+    const rem = Math.max(0, num(r.remainder));
+    if (rem === 0) continue;
+    const s = ensure(map, r.subsidiaryId);
+    s.totalPackages += rem;
+    s.inProcessPackages += rem;
+  }
+
+  // Otros = residual que garantiza el cuadre contra el total.
   for (const s of map.values()) {
     s.otherPackages = Math.max(
       0,
