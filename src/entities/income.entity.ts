@@ -71,6 +71,26 @@ export class Income {
   @Column({ type: 'char', length: 36, nullable: true })
   createdById?: string;
 
+  /**
+   * Soft-delete del ingreso. Al anular un `entregado` por una devolución, el original y su fila
+   * de reversa (−cost) quedan `active=false`: los reportes que SUMAN netean a 0 (incluyan o no
+   * inactivos) y los que CUENTAN por fila filtran `active=true`. Ver migración 064.
+   */
+  @Column({ type: 'tinyint', width: 1, default: 1 })
+  active: boolean;
+
+  /** Cuándo se anuló este ingreso (solo en el original anulado). */
+  @Column({ type: 'datetime', nullable: true })
+  annulledAt?: Date | null;
+
+  /** Quién anuló este ingreso: el usuario que registró la devolución. */
+  @Column({ type: 'char', length: 36, nullable: true })
+  annulledById?: string | null;
+
+  /** En una fila de REVERSA: id del ingreso original que anula. Null en ingresos normales. */
+  @Column({ type: 'char', length: 36, nullable: true })
+  reversalOfIncomeId?: string | null;
+
   // Ancla del cobro al evento terminal de FedEx que lo originó (idempotencia fuerte,
   // reconciliación exacta evento↔ingreso). Null en ingresos legacy/agrupados.
   @Column({ type: 'varchar', length: 120, nullable: true })

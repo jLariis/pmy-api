@@ -29,4 +29,13 @@ export class CreateDevolutionDto {
     @IsOptional()
     @IsBoolean()
     hasIncome?: boolean;
+
+    /**
+     * El usuario CONFIRMÓ en el front que, al devolver esta guía a FedEx, se anule su ingreso
+     * `entregado` vigente. Solo entonces `processOneDevolution` lo anula (soft) + crea la reversa.
+     * Sin este flag, el ingreso no se toca (sale en Reconciliación de cobros para revisión manual).
+     */
+    @IsOptional()
+    @IsBoolean()
+    annulEntregadoIncome?: boolean;
 }

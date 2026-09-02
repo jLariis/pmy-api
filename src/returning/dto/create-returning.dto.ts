@@ -1,6 +1,7 @@
 import { Type } from 'class-transformer';
 import {
   IsArray,
+  IsBoolean,
   IsNotEmpty,
   IsOptional,
   IsString,
@@ -20,6 +21,11 @@ export class ReturningDevolutionItemDto {
   @IsOptional()
   @IsString()
   reason?: string;
+
+  /** El usuario confirmó anular el ingreso `entregado` de esta guía al devolverla (ver DTO base). */
+  @IsOptional()
+  @IsBoolean()
+  annulEntregadoIncome?: boolean;
 }
 
 export class ReturningCollectionItemDto {

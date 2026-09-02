@@ -3,8 +3,9 @@
 jest.mock('p-limit', () => ({ __esModule: true, default: () => (fn: any) => fn() }));
 
 import { DevolutionsService } from './devolutions.service';
-import { Shipment, ChargeShipment } from 'src/entities';
+import { Shipment, ChargeShipment, Devolution, ShipmentStatus, Income } from 'src/entities';
 import { ShipmentStatusType } from 'src/common/enums/shipment-status-type.enum';
+import { IncomeStatus } from 'src/common/enums/income-status.enum';
 
 describe('DevolutionsService.renderReturningDocuments', () => {
   const baseInput = { subsidiaryName: 'Obregon', devolutions: [], collections: [] };
@@ -190,6 +191,139 @@ describe('DevolutionsService.create — guías en varios consolidados (Bug #1)',
   });
 });
 
+describe('DevolutionsService.processOneDevolution — fecha operativa (no la de captura)', () => {
+  function makeManager(shipments: any[], charges: any[]) {
+    const saved: any[] = [];
+    const manager = {
+      find: jest.fn((entity: any) => {
+        if (entity === Shipment) return Promise.resolve(shipments);
+        if (entity === ChargeShipment) return Promise.resolve(charges);
+        return Promise.resolve([]);
+      }),
+      findOne: jest.fn(() => Promise.resolve(null)),
+      create: jest.fn((entity: any, data: any) => ({ __entity: entity, ...data })),
+      save: jest.fn((e: any) => { saved.push(e); return Promise.resolve(e); }),
+      update: jest.fn(() => Promise.resolve({ affected: 1 })),
+    };
+    return { manager, saved };
+  }
+
+  function makeSvc() {
+    const svc = Object.create(DevolutionsService.prototype) as any;
+    svc.logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
+    return svc;
+  }
+
+  const dto = { trackingNumber: 'T1', subsidiary: { id: 'SUB-1' }, status: '03' } as any;
+
+  it('estampa Devolution.date y el evento devuelto_a_fedex con la operationalDate (sábado), no con new Date()', async () => {
+    const { manager, saved } = makeManager(
+      [{ id: 's-1', consolidatedId: 'CONS-A', status: 'en_ruta', createdAt: '2026-08-29' }],
+      [],
+    );
+    const svc = makeSvc();
+    const operationalDate = new Date('2026-08-29T07:00:00.000Z'); // sábado: día operativo real
+
+    const outcome = await svc.processOneDevolution(manager, dto, { userId: 'u1', operationalDate });
+    expect(outcome).toBe('success');
+
+    const devolution = saved.find((e) => e.__entity === Devolution);
+    expect(devolution.date).toEqual(operationalDate);
+
+    const statusRow = saved.find((e) => e.__entity === ShipmentStatus && e.timestamp);
+    expect(statusRow.status).toBe(ShipmentStatusType.DEVUELTO_A_FEDEX);
+    expect(statusRow.timestamp).toEqual(operationalDate);
+  });
+
+  it('sin operationalDate cae a "ahora" (flujo directo intacto)', async () => {
+    const { manager, saved } = makeManager(
+      [{ id: 's-1', consolidatedId: 'CONS-A', status: 'en_ruta', createdAt: '2026-08-29' }],
+      [],
+    );
+    const svc = makeSvc();
+    const before = Date.now();
+    await svc.processOneDevolution(manager, dto, { userId: 'u1' });
+    const after = Date.now();
+
+    const statusRow = saved.find((e) => e.__entity === ShipmentStatus && e.timestamp);
+    const t = new Date(statusRow.timestamp).getTime();
+    expect(t).toBeGreaterThanOrEqual(before);
+    expect(t).toBeLessThanOrEqual(after);
+  });
+});
+
+describe('DevolutionsService.processOneDevolution — anulación de ingreso entregado (con confirmación)', () => {
+  function makeManager(opts: { shipments: any[]; charges: any[]; incomes?: any[] }) {
+    const saved: any[] = [];
+    const updates: Array<{ entity: any; id: any; patch: any }> = [];
+    const manager = {
+      find: jest.fn((entity: any) => {
+        if (entity === Shipment) return Promise.resolve(opts.shipments);
+        if (entity === ChargeShipment) return Promise.resolve(opts.charges);
+        if (entity === Income) return Promise.resolve(opts.incomes ?? []);
+        return Promise.resolve([]);
+      }),
+      findOne: jest.fn(() => Promise.resolve(null)),
+      create: jest.fn((entity: any, data: any) => ({ __entity: entity, ...data })),
+      save: jest.fn((e: any) => { saved.push(e); return Promise.resolve(e); }),
+      update: jest.fn((entity: any, id: any, patch: any) => { updates.push({ entity, id, patch }); return Promise.resolve({ affected: 1 }); }),
+    };
+    return { manager, saved, updates };
+  }
+
+  function makeSvc() {
+    const svc = Object.create(DevolutionsService.prototype) as any;
+    svc.logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
+    svc.auditService = { log: jest.fn() };
+    return svc;
+  }
+
+  const entregadoIncome = {
+    id: 'inc-1', trackingNumber: 'T1', cost: 113, shipmentType: 'fedex',
+    nonDeliveryStatus: '', subsidiary: { id: 'SUB-1' }, shipment: { id: 's-1' },
+  };
+  const shipment = { id: 's-1', consolidatedId: 'CONS-A', status: 'entregado', createdAt: '2026-08-29' };
+  const opDate = new Date('2026-08-29T07:00:00.000Z');
+
+  it('con annulEntregadoIncome: soft-anula el original y crea reversa (−cost, active=0) + audita', async () => {
+    const { manager, saved, updates } = makeManager({ shipments: [shipment], charges: [], incomes: [entregadoIncome] });
+    const svc = makeSvc();
+    const dto = { trackingNumber: 'T1', subsidiary: { id: 'SUB-1' }, status: '03', annulEntregadoIncome: true } as any;
+
+    await svc.processOneDevolution(manager, dto, { userId: 'u-annul', operationalDate: opDate });
+
+    // Original soft-anulado
+    const incUpdate = updates.find((u) => u.entity === Income && u.id === 'inc-1');
+    expect(incUpdate).toBeDefined();
+    expect(incUpdate!.patch.active).toBe(false);
+    expect(incUpdate!.patch.annulledById).toBe('u-annul');
+    expect(incUpdate!.patch.annulledAt).toEqual(opDate);
+
+    // Fila de reversa
+    const reversal = saved.find((e) => e.__entity === Income && e.reversalOfIncomeId === 'inc-1');
+    expect(reversal).toBeDefined();
+    expect(Number(reversal.cost)).toBe(-113);
+    expect(reversal.active).toBe(false);
+    expect(reversal.createdById).toBe('u-annul');
+    expect(reversal.incomeType).toBe(IncomeStatus.ENTREGADO);
+
+    // Auditoría
+    expect(svc.auditService.log).toHaveBeenCalledTimes(1);
+  });
+
+  it('sin el flag: NO toca el ingreso (comportamiento actual)', async () => {
+    const { manager, saved, updates } = makeManager({ shipments: [shipment], charges: [], incomes: [entregadoIncome] });
+    const svc = makeSvc();
+    const dto = { trackingNumber: 'T1', subsidiary: { id: 'SUB-1' }, status: '03' } as any;
+
+    await svc.processOneDevolution(manager, dto, { userId: 'u1', operationalDate: opDate });
+
+    expect(updates.find((u) => u.entity === Income)).toBeUndefined();
+    expect(saved.find((e) => e.__entity === Income)).toBeUndefined();
+    expect(svc.auditService.log).not.toHaveBeenCalled();
+  });
+});
+
 describe('DevolutionsService.validateOnShipment — marca wasDispatched (motivo del "Ingreso: No")', () => {
   function makeService(opts: {
     shipments: any[];
@@ -203,7 +337,10 @@ describe('DevolutionsService.validateOnShipment — marca wasDispatched (motivo 
     };
     svc.shipmentRepository = { find: jest.fn().mockResolvedValue(opts.shipments) };
     svc.chargeShipmentRepository = { findOne: jest.fn().mockResolvedValue(null) };
-    svc.incomeRepository = { exists: jest.fn().mockResolvedValue(opts.incomeExists ?? false) };
+    svc.incomeRepository = {
+      exists: jest.fn().mockResolvedValue(opts.incomeExists ?? false),
+      findOne: jest.fn().mockResolvedValue(null),
+    };
     svc.packageDispatchHistoryRepository = { exists: jest.fn().mockResolvedValue(opts.dispatchExists) };
     return svc;
   }

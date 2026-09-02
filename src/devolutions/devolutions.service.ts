@@ -6,6 +6,10 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { ChargeShipment, Collection, Income, Shipment, ShipmentStatus, Subsidiary } from 'src/entities';
 import { PackageDispatchHistory } from 'src/entities/package-dispatch-history.entity';
 import { ShipmentStatusType } from 'src/common/enums/shipment-status-type.enum';
+import { IncomeStatus } from 'src/common/enums/income-status.enum';
+import { IncomeSourceType } from 'src/common/enums/income-source-type.enum';
+import { AuditService } from 'src/audit/audit.service';
+import { AuditAction, AuditModule, AuditResult, AuditSeverity } from 'src/common/enums/audit.enum';
 import { ValidateShipmentDto } from './dto/valiation-devolution.dto';
 import { MailService } from 'src/mail/mail.service';
 import { ShipmentsService } from 'src/shipments/shipments.service';
@@ -41,6 +45,7 @@ export class DevolutionsService {
     private dataSource: DataSource,
     private readonly templateService: TemplateService,
     private readonly fedexStatusResolver: FedexStatusResolver,
+    private readonly auditService: AuditService,
   ) {}
 
   async create(devolutions: CreateDevolutionDto[], userId?: string): Promise<{
@@ -89,12 +94,20 @@ export class DevolutionsService {
   async processOneDevolution(
     manager: EntityManager,
     dto: CreateDevolutionDto,
-    opts: { userId?: string; returningHistoryId?: string } = {},
+    opts: { userId?: string; returningHistoryId?: string; operationalDate?: Date } = {},
   ): Promise<'success' | 'duplicate' | 'notFound'> {
     const { trackingNumber, subsidiary, status } = dto;
     if (!subsidiary) {
       throw new Error('La sucursal es obligatoria para procesar la devolución.');
     }
+
+    // Fecha OPERATIVA de la devolución: el día real en que se devolvió (p.ej. sábado), que el
+    // caller ancla a la medianoche de Hermosillo (07:00Z) desde el `date` del lote —igual que el
+    // `routeDate` de la salida a ruta—. Si no llega, cae al instante de captura. Antes se usaba
+    // `new Date()` (momento de tecleo) y para el evento un `fromZonedTime(new Date(), TZ)` que
+    // además lo corría +7h: el `devuelto_a_fedex` quedaba fechado el día de captura (o después),
+    // no el día real de la devolución. Espejo del fix de "persistencia de horas" del Caso 1.
+    const opDate = opts.operationalDate ?? new Date();
 
     const shipments = await manager.find(Shipment, { where: { trackingNumber } });
     const charges = await manager.find(ChargeShipment, { where: { trackingNumber } });
@@ -121,7 +134,7 @@ export class DevolutionsService {
       const newDevolution = manager.create(Devolution, {
         ...dto,
         consolidatedId,
-        date: new Date(),
+        date: opDate,
         createdById: opts.userId ?? null,
         returningHistory: opts.returningHistoryId ? ({ id: opts.returningHistoryId } as any) : null,
       });
@@ -129,7 +142,6 @@ export class DevolutionsService {
     }
 
     // Marcar DEVUELTO_A_FEDEX en TODAS las filas de la guía + historial por fila (idempotente).
-    const utcDate = fromZonedTime(new Date(), RETURNING_TZ);
     const note = `Devolución registrada en sucursal: ${subsidiary}. Motivo: ${status || 'No especificado'}`;
 
     for (const s of shipments) {
@@ -140,7 +152,7 @@ export class DevolutionsService {
           status: ShipmentStatusType.DEVUELTO_A_FEDEX,
           exceptionCode: '',
           notes: note,
-          timestamp: utcDate,
+          timestamp: opDate,
           shipment: { id: s.id },
         }),
       );
@@ -154,13 +166,85 @@ export class DevolutionsService {
           status: ShipmentStatusType.DEVUELTO_A_FEDEX,
           exceptionCode: '',
           notes: note,
-          timestamp: utcDate,
+          timestamp: opDate,
           chargeShipment: { id: c.id },
         }),
       );
     }
 
+    // Anulación del ingreso `entregado` — SOLO si el usuario lo confirmó en el front. El paquete
+    // se regresa a FedEx: el cliente no lo recibió, así que ese cobro no procede.
+    if (dto.annulEntregadoIncome) {
+      await this.annulEntregadoIncomeFor(manager, trackingNumber, opDate, opts.userId ?? null);
+    }
+
     return existingDevolution ? 'duplicate' : 'success';
+  }
+
+  /**
+   * Anula (soft) el/los ingreso(s) `entregado` VIGENTE(s) de una guía y crea por cada uno una
+   * fila de REVERSA (−cost) ligada por `reversalOfIncomeId`. Ambas quedan `active=false`: los
+   * reportes que SUMAN netean a 0 (incluyan o no inactivos) y los que CUENTAN filtran `active`.
+   * Queda registrado quién anuló (en `annulledById` del original y en `createdById` de la reversa)
+   * y una entrada en `audit_log`. Solo shipment (las cargas cobran agrupado).
+   */
+  private async annulEntregadoIncomeFor(
+    manager: EntityManager,
+    trackingNumber: string,
+    opDate: Date,
+    userId: string | null,
+  ): Promise<void> {
+    const originals = await manager.find(Income, {
+      where: {
+        trackingNumber,
+        incomeType: IncomeStatus.ENTREGADO,
+        sourceType: IncomeSourceType.SHIPMENT,
+        active: true,
+      },
+      relations: ['subsidiary', 'shipment'],
+    });
+
+    for (const original of originals) {
+      // 1) Soft-anular el original (quién / cuándo).
+      await manager.update(Income, original.id, {
+        active: false,
+        annulledAt: opDate,
+        annulledById: userId,
+      });
+
+      // 2) Fila de reversa (−cost) atribuida a quien anuló, ligada al original.
+      await manager.save(
+        manager.create(Income, {
+          trackingNumber: original.trackingNumber,
+          subsidiary: original.subsidiary ? ({ id: original.subsidiary.id } as any) : null,
+          shipment: original.shipment ? ({ id: original.shipment.id } as any) : null,
+          shipmentType: original.shipmentType,
+          cost: -Number(original.cost),
+          incomeType: IncomeStatus.ENTREGADO,
+          nonDeliveryStatus: original.nonDeliveryStatus,
+          isGrouped: false,
+          sourceType: IncomeSourceType.SHIPMENT,
+          date: opDate,
+          createdById: userId,
+          active: false,
+          reversalOfIncomeId: original.id,
+        }),
+      );
+
+      // 3) Auditoría (dominio): quién anuló, monto, sucursal.
+      this.auditService.log({
+        module: AuditModule.INGRESOS,
+        action: AuditAction.DELETE,
+        result: AuditResult.SUCCESS,
+        severity: AuditSeverity.WARNING,
+        userId: userId ?? undefined,
+        subsidiaryId: original.subsidiary?.id,
+        entityName: 'income',
+        entityId: original.id,
+        description: `Ingreso "entregado" anulado por devolución de la guía ${trackingNumber} ($${Number(original.cost)})`,
+        metadata: { trackingNumber, cost: Number(original.cost), reason: 'devolucion' },
+      });
+    }
   }
 
   async findAll(subsidiaryId: string) {
@@ -333,6 +417,20 @@ export class DevolutionsService {
       where: { trackingNumber },
     });
 
+    // Ingreso `entregado` VIGENTE (active) de la guía: si existe, al devolverla se anulará, así
+    // que el front pide confirmación mostrando monto/sucursal. Solo shipment (cargas cobran
+    // agrupado). Ver processOneDevolution + migración 064.
+    const entregadoRow = await this.incomeRepository.findOne({
+      where: {
+        trackingNumber,
+        incomeType: IncomeStatus.ENTREGADO,
+        sourceType: IncomeSourceType.SHIPMENT,
+        active: true,
+      },
+      select: ['id', 'cost'],
+    });
+    const entregadoIncome = entregadoRow ? { id: entregadoRow.id, cost: Number(entregadoRow.cost) } : null;
+
     // ¿La guía perteneció alguna vez a un package_dispatch (salida a ruta)? El ingreso de
     // shipment SOLO nace en el cierre de ruta; una guía devuelta que nunca salió a ruta nunca
     // generó ingreso, y eso es lo esperado (no una falla). Se revisa contra TODAS las filas de
@@ -354,6 +452,7 @@ export class DevolutionsService {
       subsidiaryId: latestShipment.subsidiary.id,
       subsidiaryName: latestShipment.subsidiary.name,
       hasIncome: incomeExists,
+      entregadoIncome,
       isCharge: false,
       wasDispatched,
       hasError: isProblematic ? true : false,

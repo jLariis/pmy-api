@@ -15,6 +15,7 @@ import { createLimit } from './concurrency.util';
 import { buildShadowKey } from './event-key.util';
 import { NormalizedEvent, SyncContext, Trackable, TrackableKind } from './tracking-sync.types';
 import { ApplyOutcome, CompareResult, NormalizedEventDto } from './compare.types';
+import { computeEffectiveLastOpTime, DispatchAnchor } from './route-op-time.util';
 
 interface CompareItem {
   entity: Trackable;
@@ -244,13 +245,13 @@ export class TrackingCompareService {
       ? new Date(Math.max(...rows.map((r) => new Date(r.timestamp).getTime()))).toISOString()
       : null;
     // Estado existente para reglas dependientes del pasado (Time Shield, 3×08).
-    const OPS = ['pendiente', 'en_bodega', 'en_ruta'];
-    let lastOpTime = 0, count08 = 0;
-    for (const r of rows) {
-      const t = new Date(r.timestamp).getTime();
-      if (OPS.includes(String(r.status).toLowerCase())) lastOpTime = Math.max(lastOpTime, t);
-      if ((r.exceptionCode ?? '').trim() === '08') count08++;
-    }
+    // lastOpTime EFECTIVO: el EN_RUTA de una salida a ruta RETROACTIVA se re-ancla a su día
+    // operativo (routeDate) para que el Time Shield no lo blinde contra el estatus real de
+    // FedEx de ese día (caso 383295956902). Solo motor nuevo; no toca legacy ni la escritura.
+    const dispatches = await this.loadDispatchAnchors(entity.id, kind);
+    const lastOpTime = computeEffectiveLastOpTime(rows, dispatches);
+    let count08 = 0;
+    for (const r of rows) if ((r.exceptionCode ?? '').trim() === '08') count08++;
     const existing = { lastOpTime, count08 };
 
     const reconcile = this.reconciler.reconcile(
@@ -271,6 +272,22 @@ export class TrackingCompareService {
     await this.pipeline.run(ctx);
 
     return { ctx, ourLastEventAt };
+  }
+
+  /**
+   * Anclas de las salidas a ruta de una guía (routeDate declarado + momento de captura), para
+   * re-anclar el EN_RUTA de rutas retroactivas al día operativo. Pertenencia HISTÓRICA
+   * (package_dispatch_history), igual que `gatherRouteItems`: cubre reasignaciones de ruta.
+   */
+  private async loadDispatchAnchors(id: string, kind: TrackableKind): Promise<DispatchAnchor[]> {
+    const history = await this.dispatchHistoryRepo.find({
+      where: kind === 'charge' ? { chargeShipment: { id } } : { shipment: { id } },
+      relations: ['dispatch'],
+    });
+    return history
+      .map((h) => h.dispatch)
+      .filter((d) => !!d && !!d.routeDate && !!d.createdAt)
+      .map((d) => ({ routeDate: d.routeDate, createdAt: d.createdAt }));
   }
 
   /** Resuelve un id a su entidad + tipo (busca en shipment y luego en charge_shipment). */

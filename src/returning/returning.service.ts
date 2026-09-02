@@ -61,14 +61,19 @@ export class ReturningService {
     try {
       const manager = queryRunner.manager;
 
+      // Fecha OPERATIVA del lote (día real de la salida de devoluciones/recolecciones).
+      // `dto.date` es un día-calendario flotante de un <input type="date"> ("2026-08-20").
+      // `new Date(str)` lo tomaría como MEDIANOCHE UTC (00:00Z), que pintado en Hermosillo
+      // (UTC-7) retrocede al día anterior — el bug de "salen con fecha de un día antes".
+      // Lo anclamos a la medianoche de Hermosillo (= 07:00Z), igual que ingresos/KPIs. Sin
+      // fecha (el usuario no eligió día), se usa el instante actual. Esta MISMA fecha se propaga
+      // a cada devolución (Devolution.date + evento devuelto_a_fedex), para que el estatus quede
+      // fechado el día real de la devolución y no el de captura (ver processOneDevolution).
+      const operationalDate = dto.date ? hermosilloDayStartUtc(dto.date) : new Date();
+
       // 1. Crear el lote (cabecera).
       const history = manager.create(ReturningHistory, {
-        // `dto.date` es un día-calendario flotante de un <input type="date"> ("2026-08-20").
-        // `new Date(str)` lo tomaría como MEDIANOCHE UTC (00:00Z), que pintado en Hermosillo
-        // (UTC-7) retrocede al día anterior — el bug de "salen con fecha de un día antes".
-        // Lo anclamos a la medianoche de Hermosillo (= 07:00Z), igual que ingresos/KPIs. Sin
-        // fecha (el usuario no eligió día), se usa el instante actual.
-        date: dto.date ? hermosilloDayStartUtc(dto.date) : new Date(),
+        date: operationalDate,
         subsidiaryId: dto.subsidiaryId,
         vehicleId: dto.vehicleId ?? null,
         createdById: userId ?? null,
@@ -88,8 +93,9 @@ export class ReturningService {
             subsidiary: { id: dto.subsidiaryId } as any,
             status: item.status,
             reason: item.reason,
+            annulEntregadoIncome: item.annulEntregadoIncome,
           },
-          { userId, returningHistoryId: savedHistory.id },
+          { userId, returningHistoryId: savedHistory.id, operationalDate },
         );
         if (outcome === 'success') devResult.success.push(item.trackingNumber);
         else if (outcome === 'duplicate') devResult.duplicates.push(item.trackingNumber);

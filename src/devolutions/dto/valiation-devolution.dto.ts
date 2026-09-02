@@ -15,6 +15,13 @@ export class ValidateShipmentDto {
    * "Ingreso: No" a secas (que confunde y parece falla del sistema). Undefined en cargas.
    */
   wasDispatched?: boolean;
+  /**
+   * Ingreso `entregado` VIGENTE (active) de la guía, si existe. Si viene, al regresar el paquete
+   * a FedEx ese ingreso se anulará → el front pide confirmación mostrando guía/sucursal/monto.
+   * Null cuando no hay ingreso entregado que anular. Solo aplica a shipment (las cargas cobran
+   * agrupado). Ver processOneDevolution + migración 064.
+   */
+  entregadoIncome?: { id: string; cost: number } | null;
   hasError?: boolean;
   errorMessage?: string;
   lastStatus: {

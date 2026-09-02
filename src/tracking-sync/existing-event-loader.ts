@@ -1,16 +1,11 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { ShipmentStatus } from 'src/entities/shipment-status.entity';
-import { ShipmentStatusType } from 'src/common/enums/shipment-status-type.enum';
+import { PackageDispatchHistory } from 'src/entities/package-dispatch-history.entity';
 import { buildShadowKey } from './event-key.util';
 import { ExistingState, TrackableKind } from './tracking-sync.types';
-
-const OPERATIONAL = new Set<string>([
-  String(ShipmentStatusType.PENDIENTE),
-  String(ShipmentStatusType.EN_BODEGA),
-  String(ShipmentStatusType.EN_RUTA),
-]);
+import { computeEffectiveLastOpTime, DispatchAnchor } from './route-op-time.util';
 
 /**
  * Lee (READ-ONLY) el historial existente de shipment_status y construye el set de
@@ -23,6 +18,10 @@ export class ExistingEventLoader {
   constructor(
     @InjectRepository(ShipmentStatus)
     private readonly shipmentStatusRepo: Repository<ShipmentStatus>,
+    // Opcional para no romper tests que solo ejercen `load()`; en runtime siempre se inyecta.
+    @Optional()
+    @InjectRepository(PackageDispatchHistory)
+    private readonly dispatchHistoryRepo?: Repository<PackageDispatchHistory>,
   ) {}
 
   async load(id: string, kind: TrackableKind = 'shipment'): Promise<Set<string>> {
@@ -37,14 +36,29 @@ export class ExistingEventLoader {
       select: ['timestamp', 'exceptionCode', 'status'],
     });
     const keys = new Set<string>();
-    let lastOpTime = 0;
     let count08 = 0;
     for (const r of rows) {
       const t = new Date(r.timestamp).getTime();
       keys.add(buildShadowKey(t, r.exceptionCode ?? null, r.status));
-      if (OPERATIONAL.has(String(r.status))) lastOpTime = Math.max(lastOpTime, t);
       if ((r.exceptionCode ?? '').trim() === '08') count08++;
     }
+    // lastOpTime EFECTIVO: re-ancla el EN_RUTA de rutas RETROACTIVAS a su día operativo
+    // (routeDate) para que el Time Shield no lo blinde contra el estatus real de FedEx del día
+    // (caso 383295956902). El shadow lo usa para que la paridad refleje el motor mejorado.
+    const dispatches = await this.loadDispatchAnchors(id, kind);
+    const lastOpTime = computeEffectiveLastOpTime(rows, dispatches);
     return { keys, existing: { lastOpTime, count08 } };
+  }
+
+  private async loadDispatchAnchors(id: string, kind: TrackableKind): Promise<DispatchAnchor[]> {
+    if (!this.dispatchHistoryRepo) return [];
+    const history = await this.dispatchHistoryRepo.find({
+      where: kind === 'charge' ? { chargeShipment: { id } } : { shipment: { id } },
+      relations: ['dispatch'],
+    });
+    return history
+      .map((h) => h.dispatch)
+      .filter((d) => !!d && !!d.routeDate && !!d.createdAt)
+      .map((d) => ({ routeDate: d.routeDate, createdAt: d.createdAt }));
   }
 }
