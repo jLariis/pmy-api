@@ -35,109 +35,61 @@ describe('import-jobs.util', () => {
     });
   });
 
-  describe('classifyMasterRows', () => {
-    const RET = ['devuelto_a_fedex'];
-    const rows: CanonicalRow[] = [
-      { trackingNumber: 'A' }, // nueva
-      { trackingNumber: 'B' }, // duplicada en este cons
-      { trackingNumber: 'C' }, // reingreso desde otro cons (no devuelta)
-      { trackingNumber: 'D' }, // reingreso ya devuelto
-    ];
-    const existing = new Map<string, { consolidatedId: string | null; status: string }>([
-      ['B', { consolidatedId: 'CONS1', status: 'pendiente' }],
-      ['C', { consolidatedId: 'CONS0', status: 'pendiente' }],
-      ['D', { consolidatedId: 'CONS0', status: 'devuelto_a_fedex' }],
-    ]);
-    it('separa nuevas, duplicadas y reingresos', () => {
-      const r = classifyMasterRows(rows, existing, 'CONS1', RET);
-      expect(r.toInsert.map((x) => x.trackingNumber).sort()).toEqual(['A', 'C', 'D']);
-      expect(r.duplicated.map((x) => x.trackingNumber)).toEqual(['B']);
-      expect(r.recycledTrackings.sort()).toEqual(['C', 'D']);
-      expect(r.toMarkReturned).toEqual(['C']); // D ya estaba devuelta → no re-marcar
-    });
-  });
-
   // ===========================================================================
-  // REGRESIÓN — "faltó un paquete al pegar consolidado" (prod, sep-2026).
+  // Subida de consolidados SIN reglas de paquete (sep-2026).
   //
-  // Bug reproducido con datos reales (sucursal Cabo San Lucas): el dedup VIEJO
-  // (existShipmentForSubsidiary) omitía toda guía ya existente cuyo último
-  // estatus NO fuera de devolución, SIN mirar consolidado ni día. Así, una guía
-  // que FedEx "volvió a dar" en un consolidado nuevo se caía solo porque quedó
-  // registrada antes como `direccion_incorrecta` (u otro estatus activo).
-  //
-  // Regla correcta (la que estos tests BLINDAN): el reingreso se decide por
-  // IDENTIDAD DE CONSOLIDADO, nunca por estatus. Como los números de consolidado
-  // no se repiten entre días, "otro consolidado" ⟺ "otro día" ⟺ se recicla.
-  // Si alguien reintroduce un filtro por estatus, estos tests truenan.
+  // Decisión de producto: dejamos de perder guías por dedup/reingreso. La subida
+  // ya NO aplica ninguna regla de paquete; la única regla que queda (find-or-create
+  // del consolidado por consNumber) vive en el llamador, no aquí. Por eso
+  // `classifyMasterRows` mete TODO en `toInsert` y deja duplicated/recycled/
+  // toMarkReturned vacíos, sin importar el historial.
+  // Ver docs/superpowers/specs/2026-09-04-consolidado-upload-no-package-rules-design.md
   // ===========================================================================
-  describe('classifyMasterRows — regresión: el reingreso ignora el estatus', () => {
+  describe('classifyMasterRows — inserta todo, sin reglas de paquete', () => {
     const RET = ['devuelto_a_fedex'];
 
-    // Estatus "activos" (no de devolución) que el bug viejo trataba como duplicado.
-    const NON_RETURN_STATUSES = [
-      'direccion_incorrecta', // ← el que tiró prod (guía 876398883138, CARLOS)
-      'entregado',
-      'pendiente',
-      'en_bodega',
-      'cliente_no_disponible',
-      'rechazado',
-    ];
-
-    it.each(NON_RETURN_STATUSES)(
-      'guía en OTRO consolidado con estatus "%s" se recicla (no se omite)',
-      (status) => {
-        const targetCons = 'CONS_NUEVO_02SEP';
-        const rows: CanonicalRow[] = [{ trackingNumber: '876398883138' }];
-        const existing = new Map([
-          // existe solo en un consolidado anterior/distinto
-          ['876398883138', { consolidatedId: 'CONS_31AGO', status }],
-        ]);
-
-        const r = classifyMasterRows(rows, existing, targetCons, RET);
-
-        expect(r.toInsert.map((x) => x.trackingNumber)).toEqual(['876398883138']);
-        expect(r.recycledTrackings).toEqual(['876398883138']);
-        expect(r.duplicated).toEqual([]); // NUNCA debe caer como duplicado
-      },
-    );
-
-    it('reproduce el consolidado CARLOS real: 2 reingresos, 0 omitidas', () => {
-      const targetCons = 'CONS_305814055965'; // número nuevo (no existe aún)
+    it('mete TODAS las filas en toInsert, aunque existan (mismo u otro cons)', () => {
       const rows: CanonicalRow[] = [
-        { trackingNumber: '876398883138' }, // otro cons, direccion_incorrecta (31-ago)
-        { trackingNumber: '383318424746' }, // otro cons, devuelto_a_fedex (28-ago)
-        { trackingNumber: '876076374880' }, // 100% nueva
+        { trackingNumber: 'A' }, // nueva
+        { trackingNumber: 'B' }, // existía en ESTE cons (antes: duplicada)
+        { trackingNumber: 'C' }, // existía en OTRO cons (antes: reingreso)
+        { trackingNumber: 'D' }, // existía en OTRO cons, ya devuelta
       ];
-      const existing = new Map([
-        ['876398883138', { consolidatedId: 'CONS_305811299721', status: 'direccion_incorrecta' }],
-        ['383318424746', { consolidatedId: 'CONS_305811017120', status: 'devuelto_a_fedex' }],
+      const existing = new Map<string, { consolidatedId: string | null; status: string }>([
+        ['B', { consolidatedId: 'CONS1', status: 'pendiente' }],
+        ['C', { consolidatedId: 'CONS0', status: 'pendiente' }],
+        ['D', { consolidatedId: 'CONS0', status: 'devuelto_a_fedex' }],
       ]);
 
-      const r = classifyMasterRows(rows, existing, targetCons, RET);
+      const r = classifyMasterRows(rows, existing, 'CONS1', RET);
 
-      // Las 3 se insertan: nada se omite (antes se caía 876398883138).
-      expect(r.toInsert.map((x) => x.trackingNumber).sort()).toEqual(
-        ['383318424746', '876076374880', '876398883138'],
-      );
+      expect(r.toInsert.map((x) => x.trackingNumber)).toEqual(['A', 'B', 'C', 'D']);
       expect(r.duplicated).toEqual([]);
-      expect(r.recycledTrackings.sort()).toEqual(['383318424746', '876398883138']);
-      // Solo la que NO estaba ya devuelta se re-marca como devuelta en el cons viejo.
-      expect(r.toMarkReturned).toEqual(['876398883138']);
+      expect(r.recycledTrackings).toEqual([]);
+      expect(r.toMarkReturned).toEqual([]); // nunca se marca la vieja
     });
 
-    it('el dedup legítimo sigue vivo: misma guía en el MISMO consolidado se omite', () => {
-      const targetCons = 'CONS_ACTUAL';
+    it('cero chequeos: una guía repetida dentro del pegado se inserta las veces que aparezca', () => {
+      const rows: CanonicalRow[] = [{ trackingNumber: 'X' }, { trackingNumber: 'X' }];
+
+      const r = classifyMasterRows(rows, new Map(), 'CONS_ACTUAL', RET);
+
+      expect(r.toInsert.map((x) => x.trackingNumber)).toEqual(['X', 'X']);
+      expect(r.duplicated).toEqual([]);
+    });
+
+    it('misma guía en el MISMO consolidado ya NO se omite: también se inserta', () => {
       const rows: CanonicalRow[] = [{ trackingNumber: '876398883138' }];
       const existing = new Map([
         ['876398883138', { consolidatedId: 'CONS_ACTUAL', status: 'direccion_incorrecta' }],
       ]);
 
-      const r = classifyMasterRows(rows, existing, targetCons, RET);
+      const r = classifyMasterRows(rows, existing, 'CONS_ACTUAL', RET);
 
-      expect(r.duplicated.map((x) => x.trackingNumber)).toEqual(['876398883138']);
-      expect(r.toInsert).toEqual([]);
+      expect(r.toInsert.map((x) => x.trackingNumber)).toEqual(['876398883138']);
+      expect(r.duplicated).toEqual([]);
       expect(r.recycledTrackings).toEqual([]);
+      expect(r.toMarkReturned).toEqual([]);
     });
   });
 

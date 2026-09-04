@@ -152,14 +152,6 @@ export class ImportJobsService {
     const work = only ? allRows.filter((r) => only.has(r.trackingNumber)) : allRows;
 
     const result = { failedTrackings: [] as { trackingNumber: string; reason: string }[], duplicatedTrackings: [] as string[], cobrosUnmatchedTrackings: [] as string[], summary: {} as Record<string, number> };
-    const tns = work.map((r) => r.trackingNumber);
-
-    // Históricos por guía (para clasificar nueva/reingreso/duplicada).
-    const existingRows = tns.length
-      ? await this.shipmentRepo.find({ where: { trackingNumber: In(tns), subsidiary: { id: job.subsidiaryId } }, order: { createdAt: 'DESC' } })
-      : [];
-    const existing = new Map<string, { consolidatedId: string | null; status: string; id: string }>();
-    for (const s of existingRows) if (!existing.has(s.trackingNumber)) existing.set(s.trackingNumber, { consolidatedId: s.consolidatedId, status: String(s.status), id: s.id });
 
     await this.withConsolidatedLock(job.subsidiaryId, job.consNumber, async () => {
       const manager = this.dataSource.manager;
@@ -180,11 +172,11 @@ export class ImportJobsService {
       }
       job.consolidatedId = consolidatedId;
 
-      const cls = classifyMasterRows(work, existing as any, consolidatedId, RETURN_STATUSES);
-      result.duplicatedTrackings = cls.duplicated.map((r) => r.trackingNumber);
-      job.duplicated = result.duplicatedTrackings.length;
-      job.recycled = cls.recycledTrackings.length;
-      const markReturned = new Set(cls.toMarkReturned);
+      // Subida sin reglas de paquete: se insertan TODAS las filas. La única regla es el
+      // find-or-create del consolidado por consNumber (arriba). Sin dedup ni reingresos.
+      const cls = classifyMasterRows(work, new Map(), consolidatedId, RETURN_STATUSES);
+      job.duplicated = 0;
+      job.recycled = 0;
 
       for (const batch of this.chunk(cls.toInsert, this.BATCH)) {
         const qr = this.dataSource.createQueryRunner();
@@ -211,18 +203,6 @@ export class ImportJobsService {
             } catch (e: any) {
               result.failedTrackings.push({ trackingNumber: row.trackingNumber, reason: e?.message ?? 'map error' });
             }
-          }
-
-          // Reingresos: marcar viejos como DEVUELTO_A_FEDEX + nota.
-          for (const row of batch) {
-            if (!markReturned.has(row.trackingNumber)) continue;
-            const prev = existing.get(row.trackingNumber);
-            if (!prev) continue;
-            await qr.manager.update(Shipment, { id: prev.id }, { status: ShipmentStatusType.DEVUELTO_A_FEDEX });
-            await qr.manager.save(ShipmentStatus, qr.manager.create(ShipmentStatus, {
-              status: ShipmentStatusType.DEVUELTO_A_FEDEX, notes: 'Reingreso detectado por import (paste).',
-              timestamp: now, shipment: { id: prev.id }, exceptionCode: 'AUTO-RETURN',
-            }));
           }
 
           const savedShipments = prepared.length ? await qr.manager.save(Shipment, prepared.map((p) => p.entity), { chunk: 50 }) : [];

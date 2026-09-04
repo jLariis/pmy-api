@@ -45,33 +45,24 @@ export function parsePastedRows(rows: unknown, _kind: ImportJobKind): { rows: Ca
   return { rows: out, totalRows: out.length };
 }
 
-/** Clasifica guías nuevas / duplicadas / reingresos. Espejo de addConsMasterBySubsidiary. */
+/**
+ * Subida de consolidados SIN reglas de paquete: se insertan TODAS las filas.
+ *
+ * Ya no se deduplica (ni por consolidado, ni dentro del pegado) ni se detectan
+ * reingresos. La única regla que queda vive en el llamador: find-or-create del
+ * consolidado por `consNumber`. Espejo de `addConsMasterBySubsidiary`.
+ * Ver docs/superpowers/specs/2026-09-04-consolidado-upload-no-package-rules-design.md
+ *
+ * Se conserva la firma para no romper llamadores; los parámetros de historial
+ * (`_existing`, `_targetConsId`, `_returnStatuses`) ya no se usan.
+ */
 export function classifyMasterRows(
   rows: CanonicalRow[],
-  existing: Map<string, { consolidatedId: string | null; status: string }>,
-  targetConsId: string,
-  returnStatuses: string[],
+  _existing: Map<string, { consolidatedId: string | null; status: string }>,
+  _targetConsId: string,
+  _returnStatuses: string[],
 ): { toInsert: CanonicalRow[]; duplicated: CanonicalRow[]; recycledTrackings: string[]; toMarkReturned: string[] } {
-  const toInsert: CanonicalRow[] = [];
-  const duplicated: CanonicalRow[] = [];
-  const recycledTrackings: string[] = [];
-  const toMarkReturned: string[] = [];
-  const returns = returnStatuses.map((s) => s.toLowerCase());
-  const seen = new Set<string>();
-
-  for (const row of rows) {
-    const tn = row.trackingNumber;
-    if (seen.has(tn)) { duplicated.push(row); continue; } // duplicada dentro del pegado
-    seen.add(tn);
-    const prev = existing.get(tn);
-    if (!prev) { toInsert.push(row); continue; } // nueva
-    if (prev.consolidatedId === targetConsId) { duplicated.push(row); continue; } // ya en este cons
-    // reingreso desde otro cons
-    toInsert.push(row);
-    recycledTrackings.push(tn);
-    if (!returns.includes((prev.status || '').toLowerCase())) toMarkReturned.push(tn);
-  }
-  return { toInsert, duplicated, recycledTrackings, toMarkReturned };
+  return { toInsert: [...rows], duplicated: [], recycledTrackings: [], toMarkReturned: [] };
 }
 
 /** Hash estable del payload (claves ordenadas) para idempotencia. */

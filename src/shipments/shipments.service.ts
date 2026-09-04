@@ -2673,81 +2673,19 @@ export class ShipmentsService {
             targetCons = await transactionalEntityManager.save(Consolidated, consolidated);
         }
 
-        // --- 2. DETECCIÓN DE GUÍAS REUTILIZADAS VS NUEVAS ---
-        const allTns = shipmentsToSave.map(s => String(s.trackingNumber || s.TrackingNumber || '').trim()).filter(Boolean);
-
-        // Buscamos TODOS los shipments históricos de la sucursal con estos tracking numbers.
-        // SIN ventana de tiempo: una guía que aparece en otro consolidado SIEMPRE se recicla
-        // (se cierra la vieja marcándola devuelta y se inserta una nueva), sin importar la
-        // antigüedad. La inmutabilidad del historial la garantiza el marcado + nota, no un plazo.
-        const existingShipments = allTns.length > 0 ? await transactionalEntityManager.find(Shipment, {
-            where: { trackingNumber: In(allTns), subsidiary: { id: subsidiaryId } },
-            order: { createdAt: 'DESC' },
-        }) : [];
-
-        // Una guía puede tener varias filas históricas (reciclar NO borra las viejas). Al
-        // construir el mapa priorizamos la fila de ESTE consolidado (para detectar el
-        // duplicado real); si no existe, la más reciente (orden DESC → primera vista).
-        const existingMap = new Map<string, Shipment>();
-        for (const es of existingShipments) {
-            const prev = existingMap.get(es.trackingNumber);
-            if (!prev) { existingMap.set(es.trackingNumber, es); continue; }
-            if (es.consolidatedId === targetCons.id && prev.consolidatedId !== targetCons.id) {
-                existingMap.set(es.trackingNumber, es);
-            }
-        }
+        // --- 2. SUBIDA SIN REGLAS DE PAQUETE ---
+        // Ya NO se deduplica por consolidado ni se detectan reingresos: toda fila con
+        // guía válida se inserta tal cual. La única regla que queda es el find-or-create
+        // del consolidado por consNumber (arriba). Re-subir un consolidado duplicará sus
+        // paquetes; es responsabilidad del usuario no re-subir.
+        // Ver docs/superpowers/specs/2026-09-04-consolidado-upload-no-package-rules-design.md
         const shipmentsToProcess: any[] = [];
         const now = new Date();
 
         for (const shipment of shipmentsToSave) {
             const tNum = String(shipment.trackingNumber || shipment.TrackingNumber || '').trim();
             if (!tNum) continue;
-
-            const existingEs = existingMap.get(tNum);
-
-            // A) No existe en la sucursal → guía 100% nueva.
-            if (!existingEs) {
-                shipmentsToProcess.push(shipment);
-                continue;
-            }
-
-            // B) Ya existe en ESTE MISMO consolidado → duplicado real: se ignora por completo
-            //    (no se actualiza ni se inserta nada).
-            if (existingEs.consolidatedId === targetCons.id) {
-                result.duplicated++;
-                continue;
-            }
-
-            // C) Existe en un consolidado ANTERIOR/diferente → reingreso (devolución).
-            //    Cerramos el ciclo de la guía vieja SOLO si aún no está marcada como devuelta;
-            //    si YA tiene ese estatus, no la re-marcamos ni duplicamos historia: únicamente
-            //    insertamos el nuevo shipment limpio para el consolidado actual.
-            const alreadyReturned = ShipmentsService.RETURN_STATUSES_BYPASS_DEDUP.includes(existingEs.status as any);
-            if (!alreadyReturned) {
-                const oldCons = existingEs.consolidatedId
-                    ? await transactionalEntityManager.findOne(Consolidated, { where: { id: existingEs.consolidatedId } })
-                    : null;
-                const oldConsDateFormatted = oldCons?.date ? new Date(oldCons.date).toLocaleDateString('es-MX') : 's/fecha';
-                const oldConsNumberStr = oldCons?.consNumber || 'S/N';
-
-                // Paso A: marcamos la guía vieja como devuelta. Inmutabilidad: NO se mueve al
-                // consolidado nuevo; solo se cierra su ciclo en su consolidado original.
-                existingEs.status = ShipmentStatusType.DEVUELTO_A_FEDEX;
-                await transactionalEntityManager.save(Shipment, existingEs);
-
-                // Paso B: nota automática en el historial de la guía vieja.
-                await transactionalEntityManager.save(ShipmentStatus, transactionalEntityManager.create(ShipmentStatus, {
-                    status: ShipmentStatusType.DEVUELTO_A_FEDEX,
-                    notes: `El sistema detectó que no se realizó devolución del día ${oldConsDateFormatted} (Cons: ${oldConsNumberStr}) y se ejecutó en automático.`,
-                    timestamp: now,
-                    shipment: { id: existingEs.id },
-                    exceptionCode: 'AUTO-RETURN'
-                }));
-            }
-
-            // Paso C: en AMBOS casos, INSERT de la nueva instancia limpia ligada al consolidado actual.
             shipmentsToProcess.push(shipment);
-            result.recycled++;
         }
 
         // --- 3. PROCESAMIENTO GENERAL POR LOTES (Nuevas y Reingresos) ---
@@ -2884,17 +2822,20 @@ export class ShipmentsService {
       return;
     }
 
-    // 2. Validación de Duplicados. El anti-duplicado DENTRO del archivo siempre
-    //    aplica. El dedup contra BD a nivel sucursal solo cuando el llamador NO
-    //    prefiltró (flujo legacy); en el flujo nuevo la decisión ya se tomó arriba.
-    const isDbDuplicate = !preFiltered && await this.existShipmentForSubsidiary(trackingNumber, predefinedSubsidiary?.id);
-    if (processedTrackingNumbers.has(trackingNumber) || isDbDuplicate) {
-      result.duplicated++;
-      result.duplicatedTrackings.push(shipment);
+    // 2. Validación de Duplicados. En la subida de consolidados (preFiltered) ya NO se
+    //    aplica NINGUNA regla de paquete: se insertan todas las guías, incluso repetidas
+    //    dentro del mismo archivo. El dedup (dentro del archivo + BD a nivel sucursal)
+    //    solo aplica al flujo legacy (preFiltered=false).
+    if (!preFiltered) {
+      const isDbDuplicate = await this.existShipmentForSubsidiary(trackingNumber, predefinedSubsidiary?.id);
+      if (processedTrackingNumbers.has(trackingNumber) || isDbDuplicate) {
+        result.duplicated++;
+        result.duplicatedTrackings.push(shipment);
+        processedTrackingNumbers.add(trackingNumber);
+        return;
+      }
       processedTrackingNumbers.add(trackingNumber);
-      return;
     }
-    processedTrackingNumbers.add(trackingNumber);
 
     // 3. Consulta FedEx 
     let fedexShipmentData: FedExTrackingResponseDto;
