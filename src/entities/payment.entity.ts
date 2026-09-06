@@ -59,4 +59,13 @@ export class Payment {
     this.createdAt = new Date(); // Fecha en UTC
   }
 
+  // Backstop: la columna `type` es enum NOT NULL (default COD). Si algún flujo intenta
+  // guardar el pago sin tipo (cobro sin COD/FTC/ROD), null explícito rompería el INSERT.
+  // Aquí forzamos COD para que el cobro nunca se pierda por falta de tipo.
+  @BeforeInsert()
+  @BeforeUpdate()
+  ensureType() {
+    if (this.type === null || this.type === undefined) this.type = PaymentTypeEnum.COD;
+  }
+
 }

@@ -264,7 +264,9 @@ export function parseDynamicSheetCharge(sheet: XLSX.Sheet) {
 
         const newPayment: Payment = new Payment();
         newPayment.amount = parsed.amount;
-        newPayment.type = (parsed.type as PaymentTypeEnum) ?? null;
+        // Cobro sin COD/FTC/ROD explícito → COD por defecto (la columna es enum NOT NULL
+        // con default COD, y escribir null explícito rompe el INSERT). Espejo del FE.
+        newPayment.type = (parsed.type as PaymentTypeEnum) ?? PaymentTypeEnum.COD;
         newPayment.status = PaymentStatus.PENDING;
 
         shipmentsWithCharge.push({

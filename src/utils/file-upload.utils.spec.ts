@@ -164,6 +164,18 @@ describe('parseDynamicSheetCharge (cobro embebido usa el mismo parsePaymentCell)
     expect(b.payment.type).toBe('FTC');
     expect(b.payment.amount).toBe(980);
   });
+
+  it('cobro SIN tipo (solo monto) usa COD por defecto (columna enum NOT NULL)', () => {
+    const sheet = XLSX.utils.aoa_to_sheet([
+      ['Tracking Number', 'Recip Addr', 'COD'],
+      ['383264471120', 'Calle 1', 'COLLECT CASH 2500.0 MXP'], // sin COD/FTC/ROD
+      ['383011751254', 'Av 22', '1,743.51'],                   // monto pelón
+    ]);
+    const res = parseDynamicSheetCharge(sheet);
+    expect(res).toHaveLength(2);
+    expect(res.every((r: any) => r.payment.type === 'COD')).toBe(true); // nunca null
+    expect(res.find((r: any) => r.trackingNumber === '383011751254').payment.amount).toBe(1743.51);
+  });
 });
 
 describe('normalizeTrackingValue / normalizePhoneValue (limpieza automática)', () => {

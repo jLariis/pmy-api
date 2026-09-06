@@ -14,6 +14,7 @@ import { ShipmentType } from 'src/common/enums/shipment-type.enum';
 import { ShipmentStatusType } from 'src/common/enums/shipment-status-type.enum';
 import { ConsolidatedType } from 'src/common/enums/consolidated-type.enum';
 import { PaymentStatus } from 'src/common/enums/payment-status.enum';
+import { PaymentTypeEnum } from 'src/common/enums/payment-type.enum';
 import { getPriority, parsePaymentCell } from 'src/utils/file-upload.utils';
 import * as XLSX from 'xlsx';
 import { ShipmentsService } from './shipments.service';
@@ -198,7 +199,7 @@ export class ImportJobsService {
                 createdAt: now, createdById: job.createdById, subsidiary: predefinedSub, consolidatedId,
               });
               const pay = parsePaymentCell(row.cod);
-              const payment = pay ? { amount: pay.amount, type: pay.type, status: PaymentStatus.PENDING, createdAt: now } : null;
+              const payment = pay ? { amount: pay.amount, type: pay.type ?? PaymentTypeEnum.COD, status: PaymentStatus.PENDING, createdAt: now } : null;
               prepared.push({ entity, payment, isHighValue: row.isHighValue === true });
             } catch (e: any) {
               result.failedTrackings.push({ trackingNumber: row.trackingNumber, reason: e?.message ?? 'map error' });
@@ -216,7 +217,14 @@ export class ImportJobsService {
               timestamp: now, shipment: { id: s.id }, exceptionCode: 'INIT',
             }));
           });
-          if (payments.length) await qr.manager.save(Payment, payments);
+          if (payments.length) {
+            await qr.manager.save(Payment, payments);
+            // Enlazar el FK canónico shipment.paymentId (la app LEE el cobro por ahí); el
+            // save de arriba solo llenó payment.shipmentId. Ver addConsMasterBySubsidiary.
+            for (const pay of payments) {
+              if (pay?.shipment?.id && pay?.id) await qr.manager.update(Shipment, pay.shipment.id, { payment: { id: pay.id } as any });
+            }
+          }
           if (histories.length) await qr.manager.save(ShipmentStatus, histories);
           if (hvIds.length) { await this.markHighValue(qr.manager, hvIds); job.hvMarked += hvIds.length; }
 

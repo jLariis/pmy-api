@@ -545,11 +545,11 @@ export class ShipmentsController {
     @Body('consNumber') consNumber?: string,
     @Req() req?: any,
   ) {
-    const result = await this.shipmentsService.processHihValueShipments(file);
+    const result = await this.shipmentsService.processHihValueShipments(file, subsidiaryId, consNumber);
     try {
       await this.importFiles.persist(
         { originalname: file.originalname, buffer: file.buffer, mimetype: file.mimetype },
-        { kind: 'high_value', subsidiaryId: subsidiaryId ?? null, consNumber: consNumber ?? null, rowCount: (result as any)?.saved ?? null, uploadedById: req?.user?.userId, uploadedByName: req?.user?.name },
+        { kind: 'high_value', subsidiaryId: subsidiaryId ?? null, consNumber: consNumber ?? null, rowCount: (result as any)?.marked ?? null, uploadedById: req?.user?.userId, uploadedByName: req?.user?.name },
       );
     } catch (e) {
       this.logger.warn(`[upload-hv] no se pudo guardar import_file: ${(e as any)?.message}`);

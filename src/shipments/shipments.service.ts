@@ -1479,7 +1479,7 @@ export class ShipmentsService {
     return incoming;
   }
 
-  async processHihValueShipments(file: Express.Multer.File){
+  async processHihValueShipments(file: Express.Multer.File, subsidiaryId?: string, consNumber?: string){
     if (!file) throw new BadRequestException('No file uploaded');
 
     const { buffer, originalname } = file;
@@ -1493,23 +1493,42 @@ export class ShipmentsService {
 
     const highValueShipments = parseDynamicHighValue(sheet);
 
-    if(highValueShipments.length === 0) return 'No se encontraron envios con cobro.'
+    if(highValueShipments.length === 0) return { total: 0, marked: 0, notFound: 0, notFoundTrackings: [] };
 
-     for(const { trackingNumber, recipientAddress }of highValueShipments) {
-      let shipmentToUpdate = await this.shipmentRepository.findOneBy({
-        trackingNumber,
-        recipientAddress
-      })
+    // Se marca por GUÍA, no por dirección: el pegado de Alto Valor casi siempre trae
+    // solo la guía (sin dirección), así que exigir recipientAddress exacto hacía que NO
+    // se marcara nada. Se acota por consNumber (más específico) y luego por sucursal,
+    // tomando el más reciente. La dirección ya NO es requisito.
+    const cons = (consNumber ?? '').trim() || undefined;
+    let marked = 0;
+    const notFoundTrackings: string[] = [];
 
-      if(shipmentToUpdate) {
-        shipmentToUpdate.isHighValue = true;
-        await this.shipmentRepository.save(shipmentToUpdate);
+    for (const { trackingNumber } of highValueShipments) {
+      const tn = String(trackingNumber ?? '').trim();
+      if (!tn) continue;
+
+      const where: any = { trackingNumber: tn };
+      if (cons) where.consNumber = cons;
+      else if (subsidiaryId) where.subsidiary = { id: subsidiaryId };
+
+      let shipmentToUpdate = await this.shipmentRepository.findOne({ where, order: { createdAt: 'DESC' } });
+      // Fallback: si el scope por consNumber no dio, intenta por sucursal (o por guía sola).
+      if (!shipmentToUpdate && cons) {
+        const w2: any = { trackingNumber: tn };
+        if (subsidiaryId) w2.subsidiary = { id: subsidiaryId };
+        shipmentToUpdate = await this.shipmentRepository.findOne({ where: w2, order: { createdAt: 'DESC' } });
       }
 
+      if (shipmentToUpdate) {
+        shipmentToUpdate.isHighValue = true;
+        await this.shipmentRepository.save(shipmentToUpdate);
+        marked++;
+      } else {
+        notFoundTrackings.push(tn);
+      }
     }
 
-    return highValueShipments;
-
+    return { total: highValueShipments.length, marked, notFound: notFoundTrackings.length, notFoundTrackings };
   }
 
   private async applyIncomeValidationRules(
@@ -2759,6 +2778,20 @@ export class ShipmentsService {
 
                     if (paymentsToSave.length) {
                         await transactionalEntityManager.save(Payment, paymentsToSave);
+                        // La relación Shipment↔Payment está doblemente mapeada: existe FK en
+                        // AMBOS lados (shipment.paymentId por @JoinColumn en Shipment.payment,
+                        // y payment.shipmentId por @JoinColumn en Payment.shipment). El save de
+                        // arriba solo llenó payment.shipmentId, pero la app LEE el cobro por el FK
+                        // canónico shipment.paymentId (relations:['payment'] / consolidated.service:
+                        // 'p.id = t.paymentId'). Sin enlazar el lado dueño el cobro se guarda pero
+                        // NO aparece. Enlazamos shipment.paymentId aquí.
+                        for (const pay of paymentsToSave) {
+                            const linkedShipmentId = (pay as any).shipment?.id;
+                            const paymentId = (pay as any).id;
+                            if (linkedShipmentId && paymentId) {
+                                await transactionalEntityManager.update(Shipment, linkedShipmentId, { payment: { id: paymentId } as any });
+                            }
+                        }
                     }
 
                     if (historiesToSave.length) {
@@ -2939,7 +2972,8 @@ export class ShipmentsService {
       if (parsedPayment) {
         newShipment.payment = {
           amount: parsedPayment.amount,
-          type: parsedPayment.type,
+          // Sin tipo explícito → COD (enum NOT NULL; null explícito rompe el INSERT).
+          type: parsedPayment.type ?? PaymentTypeEnum.COD,
           status: finalStatus === ShipmentStatusType.ENTREGADO ? PaymentStatus.PAID : PaymentStatus.PENDING,
           createdAt: new Date(),
         } as any;
@@ -6098,7 +6132,8 @@ export class ShipmentsService {
       if (parsedPayment) {
         newShipment.payment = Object.assign(new Payment(), {
           amount: parsedPayment.amount,
-          type: parsedPayment.type as PaymentTypeEnum | null,
+          // Sin tipo explícito → COD (enum NOT NULL; null explícito rompe el INSERT).
+          type: (parsedPayment.type as PaymentTypeEnum) ?? PaymentTypeEnum.COD,
           status: histories.some(h => h.status === ShipmentStatusType.ENTREGADO)
             ? PaymentStatus.PAID
             : PaymentStatus.PENDING,
