@@ -9,6 +9,7 @@ import { ShipmentType } from '../../common/enums/shipment-type.enum';
 import { IncomeSourceType } from '../../common/enums/income-source-type.enum';
 import { deriveStatusCorrection } from '../logic/status-correction.util';
 import { deriveRepairIncome } from '../logic/repair-income.util';
+import { detectAnomalies } from '../logic/detect-anomalies.util';
 import { mapIncomeToRow } from '../read/consolidador-row.mapper';
 import { ConsolidadorRow } from '../consolidador.types';
 import { ConsolidadorAuditService } from '../audit/consolidador-audit.service';
@@ -56,6 +57,12 @@ export class ConsolidadorStatusService {
       incomeRepairType: repair.incomeType,
       statusDate: this.latestStatusDate(shipment),
       incomeDate: income ? (income.date instanceof Date ? income.date.toISOString() : new Date(income.date).toISOString()) : null,
+      anomalies: detectAnomalies({
+        currentStatus: shipment?.status ?? null,
+        history: (shipment as any)?.statusHistory ?? [],
+        income: income ? { date: income.date } : null,
+        statusDate: this.latestStatusDate(shipment),
+      }),
     };
   }
 
@@ -95,6 +102,12 @@ export class ConsolidadorStatusService {
         incomeRepairType: repair.incomeType,
         statusDate: this.latestStatusDate(shipment),
         incomeDate: income ? (income.date instanceof Date ? income.date.toISOString() : new Date(income.date).toISOString()) : null,
+        anomalies: detectAnomalies({
+          currentStatus: shipment?.status ?? null,
+          history: (shipment as any)?.statusHistory ?? [],
+          income: income ? { date: income.date } : null,
+          statusDate: this.latestStatusDate(shipment),
+        }),
       };
     });
     return { results };
