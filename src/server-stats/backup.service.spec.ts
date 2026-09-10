@@ -88,3 +88,30 @@ describe('BackupService.summarizeTimings', () => {
     expect(BackupService.summarizeTimings(marks, 900)).toEqual({ connect: 500, restore: 400 });
   });
 });
+
+describe('BackupService.buildDumpArgs', () => {
+  const db = { host: 'h', port: 3306, username: 'u', password: 'p', database: 'pmy-db' } as any;
+
+  it('pasada 1: ignora tablas de historial, incluye rutinas, sin --where', () => {
+    const args = BackupService.buildDumpArgs(db, { routines: true, ignoreTables: ['shipment_status'] });
+    expect(args).toContain('--single-transaction');
+    expect(args).toContain('--no-autocommit');
+    expect(args).toContain('--routines');
+    expect(args).toContain('--ignore-table=pmy-db.shipment_status');
+    expect(args.some((a) => a.startsWith('--where'))).toBe(false);
+    expect(args[args.length - 1]).toBe('pmy-db'); // la BD va al final (sin onlyTable)
+  });
+
+  it('pasada 2: solo la tabla, con --where y sin rutinas', () => {
+    const args = BackupService.buildDumpArgs(db, {
+      routines: false,
+      onlyTable: 'shipment_status',
+      whereClause: 'createdAt >= NOW() - INTERVAL 7 DAY',
+    });
+    expect(args).toContain('--where=createdAt >= NOW() - INTERVAL 7 DAY');
+    expect(args).toContain('--skip-triggers');
+    expect(args).not.toContain('--routines');
+    expect(args[args.length - 2]).toBe('pmy-db'); // BD
+    expect(args[args.length - 1]).toBe('shipment_status'); // tabla posicional
+  });
+});

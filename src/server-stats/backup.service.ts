@@ -49,6 +49,30 @@ export class BackupService {
     return Math.round(base + PHASE_WEIGHTS[phase] * f);
   }
 
+  /** Arma los argumentos de una pasada de `mysqldump`. */
+  static buildDumpArgs(
+    db: DbTarget,
+    opts: { routines: boolean; ignoreTables?: string[]; onlyTable?: string; whereClause?: string },
+  ): string[] {
+    const args = [
+      `--host=${db.host}`,
+      `--port=${db.port}`,
+      `--user=${db.username}`,
+      '--single-transaction',
+      '--no-autocommit',
+      '--quick',
+      '--no-tablespaces',
+      '--default-character-set=utf8mb4',
+    ];
+    if (opts.routines) args.push('--routines', '--triggers', '--events');
+    else args.push('--skip-triggers'); // triggers vienen ON por default; rutinas/events OFF
+    for (const t of opts.ignoreTables ?? []) args.push(`--ignore-table=${db.database}.${t}`);
+    if (opts.whereClause) args.push(`--where=${opts.whereClause}`);
+    args.push(db.database);
+    if (opts.onlyTable) args.push(opts.onlyTable);
+    return args;
+  }
+
   /** Nombre de tabla si la línea es el marcador `-- Dumping data for table \`X\``. */
   static parseTableMarker(line: string): string | null {
     const m = /^-- Dumping data for table `(.+?)`/.exec(line);
@@ -127,20 +151,7 @@ export class BackupService {
    */
   streamDump(res: Response): void {
     const db = this.dbTarget();
-    const args = [
-      `--host=${db.host}`,
-      `--port=${db.port}`,
-      `--user=${db.username}`,
-      '--single-transaction',
-      '--no-autocommit',
-      '--quick',
-      '--routines',
-      '--triggers',
-      '--events',
-      '--no-tablespaces',
-      '--default-character-set=utf8mb4',
-      db.database,
-    ];
+    const args = BackupService.buildDumpArgs(db, { routines: true });
 
     const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
     res.setHeader('Content-Type', 'application/gzip');
