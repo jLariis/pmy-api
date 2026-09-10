@@ -442,6 +442,7 @@ export class ShipmentsController {
     @Body('consDate') consDate?: string,
     @Body('notRemoveCharge') notRemoveCharge: any = false,
     @Body('isHalfTon') isHalfTon: any = false,
+    @Body('secondAbord') secondAbord?: any,
     @Req() req?: any,
   ) {
       console.log("🚀 ~ Raw notRemoveCharge:", notRemoveCharge);
@@ -461,7 +462,14 @@ export class ShipmentsController {
       isHalfTon === '1' ||
       isHalfTon === 1;
 
-    console.log("🚀 ~ Parsed notRemoveCharge:", shouldNotRemove, "| isHalfTon:", halfTon);
+    // 2º a bordo del alta F2 (override manual). Si NO viene, se deja `undefined` para que el
+    // servicio caiga al default de la sucursal (subsidiary.chargeSecondAbord).
+    const secondAbordOverride =
+      secondAbord === undefined || secondAbord === null || secondAbord === ''
+        ? undefined
+        : secondAbord === 'true' || secondAbord === true || secondAbord === '1' || secondAbord === 1;
+
+    console.log("🚀 ~ Parsed notRemoveCharge:", shouldNotRemove, "| isHalfTon:", halfTon, "| secondAbord:", secondAbordOverride);
 
     let dateForCons = null;
     if(consDate) {
@@ -469,8 +477,8 @@ export class ShipmentsController {
     }
 
     const result = shouldNotRemove
-      ? await this.shipmentsService.addChargeShipments(file, subsidiaryId, consNumber, dateForCons, req?.user?.userId, halfTon)
-      : await this.shipmentsService.processFileF2(file, subsidiaryId, consNumber, dateForCons, req?.user?.userId, halfTon);
+      ? await this.shipmentsService.addChargeShipments(file, subsidiaryId, consNumber, dateForCons, req?.user?.userId, halfTon, secondAbordOverride)
+      : await this.shipmentsService.processFileF2(file, subsidiaryId, consNumber, dateForCons, req?.user?.userId, halfTon, secondAbordOverride);
 
     try {
       await this.importFiles.persist(

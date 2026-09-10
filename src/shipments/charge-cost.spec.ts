@@ -1,4 +1,4 @@
-import { resolveChargeCost } from './charge-cost';
+import { resolveChargeCost, chargeSecondAbordApplied } from './charge-cost';
 
 describe('resolveChargeCost (carga 1.5 toneladas)', () => {
   it('usa chargeCostHalfTon cuando isHalfTon y la sucursal lo tiene configurado', () => {
@@ -95,6 +95,32 @@ describe('resolveChargeCost (carga 1.5 toneladas)', () => {
       expect(
         resolveChargeCost({ chargeCost: '4878.00', chargeSecondAbord: true, secondAbordAmount: '597.00' }, false, false),
       ).toBe(5475);
+    });
+  });
+
+  describe('override de segundo abordo (alta F2)', () => {
+    const sub = { chargeCost: 4878, chargeSecondAbord: false, secondAbordAmount: 597 };
+
+    it('override=true suma aunque la sucursal lo tenga apagado', () => {
+      expect(resolveChargeCost(sub, false, false, true)).toBe(5475);
+    });
+    it('override=false NO suma aunque la sucursal lo tenga prendido', () => {
+      expect(resolveChargeCost({ ...sub, chargeSecondAbord: true }, false, false, false)).toBe(4878);
+    });
+    it('override undefined cae al default de la sucursal', () => {
+      expect(resolveChargeCost({ ...sub, chargeSecondAbord: true }, false, false)).toBe(5475);
+    });
+  });
+
+  describe('chargeSecondAbordApplied', () => {
+    it('true cuando el override lo prende sobre base normal', () => {
+      expect(chargeSecondAbordApplied({ chargeCost: 4878, chargeSecondAbord: false }, false, false, true)).toBe(true);
+    });
+    it('false sobre base 1.5 ton aunque esté prendido', () => {
+      expect(chargeSecondAbordApplied({ chargeCost: 4878, chargeCostHalfTon: 4228, chargeSecondAbord: true }, true, false)).toBe(false);
+    });
+    it('false sobre sobreprecio domingo/festivo', () => {
+      expect(chargeSecondAbordApplied({ chargeCost: 4878, chargeCostSundayHoliday: 6660, chargeSecondAbord: true }, false, true)).toBe(false);
     });
   });
 });

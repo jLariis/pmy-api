@@ -1,6 +1,6 @@
 import { BadRequestException, forwardRef, HttpStatus, Inject, Injectable, InternalServerErrorException, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { resolveChargeCost } from './charge-cost';
+import { resolveChargeCost, chargeSecondAbordApplied } from './charge-cost';
 import { isSundayOrMexHoliday } from './sunday-holiday.util';
 import { HolidaysService } from 'src/holidays/holidays.service';
 import { Between, Brackets, EntityManager, In, Repository } from 'typeorm';
@@ -842,7 +842,7 @@ export class ShipmentsService {
     return { exist: count > 0, shipment: _[0] };
   }
 
-  async processFileF2(file: Express.Multer.File, subsidiaryId: string, consNumber: string, consDate?: Date, userId?: string, isHalfTon: boolean = false) {
+  async processFileF2(file: Express.Multer.File, subsidiaryId: string, consNumber: string, consDate?: Date, userId?: string, isHalfTon: boolean = false, secondAbord?: boolean) {
     this.logger.log("🚀 Iniciando migración masiva y carga directa (F2)");
 
     if (!file) throw new BadRequestException('No se subió ningún archivo');
@@ -899,7 +899,8 @@ export class ShipmentsService {
       // Festivos = lista fija Art. 74 (código) + los adicionales del usuario (tabla holiday).
       const extraHolidays = await this.holidaysService.getHolidayInputs();
       const chargeIsSundayHoliday = isSundayOrMexHoliday(consDate || new Date(), extraHolidays);
-      const chargeCostToUse = resolveChargeCost(chargeSubsidiary, isHalfTon, chargeIsSundayHoliday);
+      const chargeCostToUse = resolveChargeCost(chargeSubsidiary, isHalfTon, chargeIsSundayHoliday, secondAbord);
+      const chargeSecondAbordOn = chargeSecondAbordApplied(chargeSubsidiary, isHalfTon, chargeIsSundayHoliday, secondAbord);
 
       // 3. Procesamiento Atómico Paquete por Paquete
       for (const data of shipmentsToProcess) {
@@ -1019,6 +1020,7 @@ export class ShipmentsService {
           charge: savedCharge,
           date: consDate || new Date(),
           createdById: userId ?? null,
+          secondAbordApplied: chargeSecondAbordOn,
         });
         await queryRunner.manager.save(newIncome);
       }
@@ -1055,7 +1057,7 @@ export class ShipmentsService {
   }
 
   /*** NUEVO SI SE USA */
-  async addChargeShipments(file: Express.Multer.File, subsidiaryId: string, consNumber: string, consDate?: Date, userId?: string, isHalfTon: boolean = false) {
+  async addChargeShipments(file: Express.Multer.File, subsidiaryId: string, consNumber: string, consDate?: Date, userId?: string, isHalfTon: boolean = false, secondAbord?: boolean) {
     console.log("🟢 START addChargeShipments method");
     
     if (!file) throw new BadRequestException('No file uploaded');
@@ -1221,11 +1223,9 @@ export class ShipmentsService {
           // Sobreprecio si la carga se trabaja en domingo/festivo (fecha del consolidado).
           // Festivos = lista fija Art. 74 (código) + los adicionales del usuario (tabla holiday).
           const extraHolidays = await this.holidaysService.getHolidayInputs();
-          const chargeCostToUse = resolveChargeCost(
-            chargeSubsidiary,
-            isHalfTon,
-            isSundayOrMexHoliday(consDate || new Date(), extraHolidays),
-          );
+          const chargeIsSundayHolidayAdd = isSundayOrMexHoliday(consDate || new Date(), extraHolidays);
+          const chargeCostToUse = resolveChargeCost(chargeSubsidiary, isHalfTon, chargeIsSundayHolidayAdd, secondAbord);
+          const chargeSecondAbordOnAdd = chargeSecondAbordApplied(chargeSubsidiary, isHalfTon, chargeIsSundayHolidayAdd, secondAbord);
 
           console.log("💵 Creating income with cost:", chargeCostToUse, "| isHalfTon:", isHalfTon);
 
@@ -1239,6 +1239,7 @@ export class ShipmentsService {
             charge: { id: savedCharge.id },
             date: consDate ? consDate : new Date(),
             createdById: userId ?? null,
+            secondAbordApplied: chargeSecondAbordOnAdd,
           });
 
           console.log("💾 Saving income...");

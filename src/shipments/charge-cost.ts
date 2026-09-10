@@ -17,17 +17,40 @@
  *
  * Hermosillo: normal(1.5 ton) = 4228, domingo/festivo(1.5 ton) = 6004, domingo/festivo(F2) = 6660.
  */
-export function resolveChargeCost(
-  subsidiary: {
-    chargeCost?: number | string | null;
-    chargeCostHalfTon?: number | string | null;
-    chargeCostSundayHoliday?: number | string | null;
-    chargeCostHalfTonSundayHoliday?: number | string | null;
-    chargeSecondAbord?: boolean | null;
-    secondAbordAmount?: number | string | null;
-  },
+interface ChargeSubsidiary {
+  chargeCost?: number | string | null;
+  chargeCostHalfTon?: number | string | null;
+  chargeCostSundayHoliday?: number | string | null;
+  chargeCostHalfTonSundayHoliday?: number | string | null;
+  chargeSecondAbord?: boolean | null;
+  secondAbordAmount?: number | string | null;
+}
+
+/**
+ * ¿Se aplica el 2º a bordo a esta carga? Regla: el flag está activo (override manual del alta F2,
+ * o el default `subsidiary.chargeSecondAbord`) Y la base es la NORMAL (ni 1.5 ton ni sobreprecio
+ * domingo/festivo). `override` (cuando se pasa) manda sobre el flag de la sucursal.
+ */
+export function chargeSecondAbordApplied(
+  subsidiary: ChargeSubsidiary,
   isHalfTon: boolean,
   isSundayOrHoliday = false,
+  override?: boolean,
+): boolean {
+  const halfTon = Number(subsidiary?.chargeCostHalfTon ?? 0);
+  const halfTonSH = Number(subsidiary?.chargeCostHalfTonSundayHoliday ?? 0);
+  const normalSH = Number(subsidiary?.chargeCostSundayHoliday ?? 0);
+  const useHalfTon = isHalfTon && halfTon > 0;
+  const usePremium = isSundayOrHoliday && (useHalfTon ? halfTonSH : normalSH) > 0;
+  const secondAbordOn = override ?? Boolean(subsidiary?.chargeSecondAbord);
+  return secondAbordOn && !useHalfTon && !usePremium;
+}
+
+export function resolveChargeCost(
+  subsidiary: ChargeSubsidiary,
+  isHalfTon: boolean,
+  isSundayOrHoliday = false,
+  secondAbordOverride?: boolean,
 ): number {
   const halfTon = Number(subsidiary?.chargeCostHalfTon ?? 0);
   const normal = Number(subsidiary?.chargeCost ?? 0);
@@ -41,8 +64,9 @@ export function resolveChargeCost(
   const usePremium = isSundayOrHoliday && premium > 0;
   const chosen = usePremium ? premium : base;
 
-  // Segundo abordo: solo aplica sobre el costo NORMAL (ni 1.5 ton ni sobreprecio domingo/festivo).
-  const addSecondAbord = Boolean(subsidiary?.chargeSecondAbord) && !useHalfTon && !usePremium;
+  // Segundo abordo: solo aplica sobre el costo NORMAL. `secondAbordOverride` (alta F2) manda
+  // sobre `subsidiary.chargeSecondAbord`.
+  const addSecondAbord = chargeSecondAbordApplied(subsidiary, isHalfTon, isSundayOrHoliday, secondAbordOverride);
   const secondAbord = addSecondAbord ? Number(subsidiary?.secondAbordAmount ?? 0) : 0;
 
   const total = chosen + (Number.isFinite(secondAbord) ? secondAbord : 0);
