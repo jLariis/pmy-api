@@ -131,6 +131,30 @@ export class ConsolidadorIncomeService {
     return mapIncomeToRow(income);
   }
 
+  /** Reasigna el ingreso a otra sucursal (ingreso mal asignado). Solo toca `income`. */
+  async reassignSubsidiary(id: string, subsidiaryId: string, reason: string, userId: string): Promise<ConsolidadorRow> {
+    const income = await this.load(id);
+    const oldSubId = (income.subsidiary as any)?.id ?? null;
+    income.subsidiary = { id: subsidiaryId } as Subsidiary;
+    income.updatedById = userId;
+    income.updatedAt = new Date();
+    income.editReason = reason;
+    await this.incomeRepo.save(income);
+    await this.audit.record({
+      incomeId: income.id,
+      shipmentId: income.shipment?.id ?? null,
+      action: 'reassign',
+      field: 'subsidiary',
+      oldValue: oldSubId,
+      newValue: subsidiaryId,
+      reason,
+      userId,
+    });
+    // Recarga para traer el nombre de la nueva sucursal en la fila.
+    const reloaded = await this.incomeRepo.findOne({ where: { id }, relations: ['shipment', 'charge', 'subsidiary'] });
+    return mapIncomeToRow(reloaded ?? income);
+  }
+
   /** Elimina (soft-delete) un ingreso: deja de contar en los reportes. Solo toca `income`. */
   async deleteIncome(id: string, reason: string, userId: string): Promise<{ id: string; deleted: true }> {
     const income = await this.load(id);

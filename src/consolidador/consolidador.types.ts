@@ -21,6 +21,9 @@ export interface ConsolidadorRow {
   secondAbordApplied: boolean | null;
   /** Monto del 2º a bordo de la sucursal (para desglosar el costo de la carga en la edición). */
   secondAbordAmount: number;
+  /** Sucursal a la que pertenece el ingreso (para detectar/mover ingresos mal asignados). */
+  subsidiaryId: string | null;
+  subsidiaryName: string | null;
 }
 
 export interface ConsolidadorBucket {

@@ -22,5 +22,7 @@ export function mapIncomeToRow(i: Income): ConsolidadorRow {
     editReason: i.editReason ?? null,
     secondAbordApplied: i.secondAbordApplied ?? null,
     secondAbordAmount: Number((i.subsidiary as any)?.secondAbordAmount ?? 0),
+    subsidiaryId: (i.subsidiary as any)?.id ?? null,
+    subsidiaryName: (i.subsidiary as any)?.name ?? null,
   };
 }

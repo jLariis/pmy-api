@@ -29,7 +29,7 @@ export class ConsolidadorStatusService {
     const income = shipment
       ? await this.incomeRepo.findOne({
           where: { shipment: { id: shipment.id }, active: true },
-          relations: ['shipment', 'charge'],
+          relations: ['shipment', 'charge', 'subsidiary'],
         })
       : null;
     const suggestion = shipment ? deriveStatusCorrection(shipment.status, fedex.status) : null;
@@ -60,7 +60,7 @@ export class ConsolidadorStatusService {
 
     const shipmentIds = shipments.map((s) => s.id);
     const incomes = shipmentIds.length
-      ? await this.incomeRepo.find({ where: { shipment: { id: In(shipmentIds) }, active: true }, relations: ['shipment', 'charge'] })
+      ? await this.incomeRepo.find({ where: { shipment: { id: In(shipmentIds) }, active: true }, relations: ['shipment', 'charge', 'subsidiary'] })
       : [];
     const incomeByShipmentId = new Map(incomes.map((i) => [i.shipment?.id, i]));
 
@@ -113,7 +113,7 @@ export class ConsolidadorStatusService {
     // Ajusta el income ligado según el efecto acotado.
     const income = await this.incomeRepo.findOne({
       where: { shipment: { id: shipment.id } },
-      relations: ['shipment', 'charge'],
+      relations: ['shipment', 'charge', 'subsidiary'],
     });
     let oldIncomeType: string | null = null;
     if (income && incomeEffect.kind === 'reclassify') {
@@ -165,7 +165,7 @@ export class ConsolidadorStatusService {
 
     const existing = await this.incomeRepo.findOne({
       where: { shipment: { id: shipmentId }, active: true },
-      relations: ['shipment', 'charge'],
+      relations: ['shipment', 'charge', 'subsidiary'],
     });
     if (existing) {
       return { created: false, reason: 'El paquete ya tiene un ingreso activo', income: mapIncomeToRow(existing) };

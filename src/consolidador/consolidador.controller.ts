@@ -13,6 +13,7 @@ import { FixStatusDto } from './dto/fix-status.dto';
 import { SearchBatchDto } from './dto/search-batch.dto';
 import { DeleteIncomeDto } from './dto/delete-income.dto';
 import { RepairIncomeDto } from './dto/repair-income.dto';
+import { ReassignSubsidiaryDto } from './dto/reassign-subsidiary.dto';
 
 @ApiTags('consolidador')
 @ApiBearerAuth()
@@ -42,6 +43,12 @@ export class ConsolidadorController {
   @Patch('income/:id/second-abord')
   setSecondAbord(@Param('id') id: string, @Body() dto: SecondAbordDto, @Req() req: any) {
     return this.income.setSecondAbord(id, dto.enabled, dto.reason, req.user?.userId);
+  }
+
+  /** Reasigna el ingreso a otra sucursal (ingreso mal asignado). */
+  @Patch('income/:id/subsidiary')
+  reassignSubsidiary(@Param('id') id: string, @Body() dto: ReassignSubsidiaryDto, @Req() req: any) {
+    return this.income.reassignSubsidiary(id, dto.subsidiaryId, dto.reason, req.user?.userId);
   }
 
   /** Alta manual de ingreso (recolección / POD / DEX / manual). */
