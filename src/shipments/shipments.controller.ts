@@ -634,6 +634,30 @@ export class ShipmentsController {
     }
   }
 
+  /**
+   * PREVIEW (sin guardar) del Excel de DHL: combina las 3 hojas (Shipment/Piece/
+   * Event) y devuelve las filas en el shape del pegado, con el vencimiento (EDD
+   * real de la hoja Shipment) precargado. El front lo pinta en la tabla del Paso
+   * 2 para que el usuario valide, y luego guarda con el flujo existente.
+   */
+  @Post('dhl/parse-excel')
+  @UseInterceptors(FileInterceptor('file'))
+  @ApiOperation({ summary: 'Preview del Excel de DHL (combina 3 hojas, sin guardar)' })
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: { file: { type: 'string', format: 'binary' } },
+      required: ['file'],
+    },
+  })
+  async parseDhlExcel(@UploadedFile() file: Express.Multer.File) {
+    if (!file) {
+      throw new BadRequestException('El archivo Excel es requerido.');
+    }
+    return this.shipmentsService.parseDhlExcelPreview(file);
+  }
+
   @Post('process-dhl-txt-file')
   @UseInterceptors(FileInterceptor('file'))
   @ApiOperation({ summary: 'Procesar envíos de DHL desde archivo de texto (TXT)' })

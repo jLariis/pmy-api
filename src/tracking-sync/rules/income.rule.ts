@@ -22,18 +22,20 @@ export class IncomeRule implements SyncRule {
     const newEvents = (ctx.reconcile.newEvents || []).filter((e) => !ctx.vetoedEventKeys.has(e.eventKey));
     if (newEvents.length === 0) return;
 
-    // Solo consultamos el conteo de 08 previos si hay un 08 nuevo (evita un query por guía).
+    // Solo consultamos los 08 previos si hay un 08 nuevo (evita un query por guía).
+    // Necesitamos sus FECHAS (no solo el conteo) para agrupar por semana ISO: el cobro
+    // exige 3 eventos 08 en la MISMA semana, no acumulados de forma corrida.
     const has08 = newEvents.some((e) => (e.exceptionCode ?? '').trim() === '08');
-    let existing08 = 0;
+    let existing08Dates: Date[] = [];
     if (has08) {
       const rows = await this.dataSource.query(
-        `SELECT COUNT(*) AS c FROM shipment_status WHERE shipmentId = ? AND exceptionCode = '08'`,
+        `SELECT timestamp FROM shipment_status WHERE shipmentId = ? AND exceptionCode = '08'`,
         [ctx.shipment.id],
       );
-      existing08 = Number(rows?.[0]?.c ?? 0);
+      existing08Dates = (rows ?? []).map((r: any) => new Date(r.timestamp));
     }
 
-    const chargeables = deriveChargeableIncomes(newEvents, existing08);
+    const chargeables = deriveChargeableIncomes(newEvents, existing08Dates);
     for (const ci of chargeables) {
       ctx.deferredEffects.push({
         type: 'income',

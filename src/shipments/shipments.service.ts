@@ -10,6 +10,7 @@ import * as XLSX from 'xlsx';
 import { FedexService } from './fedex.service';
 import { ShipmentStatus } from 'src/entities/shipment-status.entity';
 import { getPriority, parseDynamicFileF2, parseDynamicHighValue, parseDynamicSheet, parseDynamicSheetCharge, parseDynamicSheetDHL, pickSheetWithHeaders, parsePaymentCell } from 'src/utils/file-upload.utils';
+import { combineDhlWorkbook, combinedToDhlShipmentDto, isThreeSheetDhlWorkbook } from 'src/utils/dhl-excel.util';
 import { scanEventsFilter } from 'src/utils/scan-events-filter';
 import { ParsedShipmentDto } from './dto/parsed-shipment.dto';
 import { mapFedexStatusToLocalStatus } from 'src/utils/fedex.utils';
@@ -61,6 +62,7 @@ import { ReturnValidationDto } from './dto/returning-validation.dto';
 import { DhlService } from './dhl.service';
 import { BusinessException } from 'src/common/business.exception';
 import { LD_QUALIFYING_SQL_IN } from 'src/common/ld-codes';
+import { weeklyDex08ChargeIndexes, isoWeekKey } from 'src/common/dex08-week.util';
 import { TemplateService } from 'src/documents/template.service';
 import { buildShipmentsNo67Data } from 'src/documents/data/shipments-no67.mapper';
 import { buildReceived67Data } from 'src/documents/data/received-67.mapper';
@@ -3565,11 +3567,18 @@ export class ShipmentsService {
       }
 
       // 1. Read and parse the Excel file
-      const workbook = XLSX.read(buffer, { type: 'buffer' });
-      const sheet = workbook.Sheets[workbook.SheetNames[0]];
-      const parsedShipments = parseDynamicSheetDHL(sheet);
+      // `cellDates: true` para que EDD/fechas lleguen como Date (lo usa el combinador).
+      const workbook = XLSX.read(buffer, { type: 'buffer', cellDates: true });
 
-      console.log(`📊 [DHL Import] Paquetes extraídos del Excel: ${parsedShipments ? parsedShipments.length : 0}`);
+      // El export "nativo" de DHL trae 3 hojas (Shipment/Piece/Event) y el dato
+      // real se arma combinándolas. Si detectamos ese formato, lo combinamos;
+      // si no, seguimos con el layout plano de siempre (compatibilidad total).
+      const isCombined = isThreeSheetDhlWorkbook(workbook);
+      const parsedShipments = isCombined
+        ? combineDhlWorkbook(workbook)
+        : parseDynamicSheetDHL(workbook.Sheets[workbook.SheetNames[0]]);
+
+      console.log(`📊 [DHL Import] Paquetes extraídos del Excel (${isCombined ? '3 hojas combinadas' : 'layout plano'}): ${parsedShipments ? parsedShipments.length : 0}`);
 
       if (!parsedShipments || parsedShipments.length === 0) {
         throw new BusinessException('generic', 'El archivo está vacío o no contiene paquetes válidos.', 'E', HttpStatus.BAD_REQUEST);
@@ -3577,6 +3586,8 @@ export class ShipmentsService {
 
       // =========================================================================
       // 🚀 VALIDACIÓN DE CABECERAS PARA EL FRONTEND
+      // Solo aplica al layout PLANO. El formato combinado ya trae todas las
+      // llaves por construcción (dirección/CP pueden venir vacías = incompletas).
       // =========================================================================
       const columnMapping: Record<string, string> = {
         'trackingNumber': 'AWB Maestro',
@@ -3594,12 +3605,12 @@ export class ShipmentsService {
       const firstShipment = parsedShipments[0];
       
       // 2. Filtramos cuáles de esas llaves técnicas faltan o son undefined
-      const missingTechnicalColumns = requiredColumns.filter(col => 
+      const missingTechnicalColumns = requiredColumns.filter(col =>
         !(col in firstShipment) || firstShipment[col] === undefined
       );
-      
+
       // 3. Si hay columnas faltantes, las "traducimos" usando el diccionario
-      if (missingTechnicalColumns.length > 0) {
+      if (!isCombined && missingTechnicalColumns.length > 0) {
         const missingFriendlyNames = missingTechnicalColumns.map(col => columnMapping[col]);
 
         throw new BusinessException(
@@ -3725,6 +3736,62 @@ export class ShipmentsService {
           HttpStatus.INTERNAL_SERVER_ERROR
         );
       }
+    }
+
+    /**
+     * PREVIEW (sin guardar) del Excel de DHL para el flujo de "pegar": lee el
+     * archivo, combina las 3 hojas (o cae al layout plano) y devuelve las filas
+     * en el mismo shape que produce el pegado (`DhlShipmentDto[]`), con el
+     * vencimiento (EDD real de la hoja Shipment) precargado en `dueDate`.
+     * El operador valida en la tabla y luego el guardado usa el flujo existente.
+     */
+    async parseDhlExcelPreview(file: Express.Multer.File): Promise<DhlShipmentDto[]> {
+      if (!file) {
+        throw new BusinessException('generic', 'No se ha subido ningún archivo.', 'E', HttpStatus.BAD_REQUEST);
+      }
+      if (!file.originalname?.match(/\.(csv|xlsx?)$/i)) {
+        throw new BusinessException('generic', 'Tipo de archivo no soportado. Sube un .csv o .xlsx', 'E', HttpStatus.BAD_REQUEST);
+      }
+
+      const workbook = XLSX.read(file.buffer, { type: 'buffer', cellDates: true });
+
+      if (isThreeSheetDhlWorkbook(workbook)) {
+        const rows = combineDhlWorkbook(workbook);
+        if (!rows.length) {
+          throw new BusinessException('generic', 'El archivo está vacío o no contiene piezas válidas.', 'E', HttpStatus.BAD_REQUEST);
+        }
+        return combinedToDhlShipmentDto(rows);
+      }
+
+      // Compatibilidad: layout plano (una sola hoja).
+      const flat = parseDynamicSheetDHL(workbook.Sheets[workbook.SheetNames[0]]);
+      if (!flat.length) {
+        throw new BusinessException('generic', 'El archivo está vacío o no contiene paquetes válidos.', 'E', HttpStatus.BAD_REQUEST);
+      }
+      return flat.map((f: any) => ({
+        awb: f.trackingNumber,
+        pid: f.dhlUniqueId || '',
+        origin: '',
+        destination: '',
+        shipmentTime: '',
+        product: '',
+        pieces: 1,
+        weight: 0,
+        shipperAccount: '',
+        payerAccount: '',
+        receiver: {
+          name: f.recipientName || '',
+          contactName: f.recipientName || '',
+          address1: f.recipientAddress || '',
+          address2: '',
+          city: f.recipientCity || '',
+          state: '',
+          country: 'MX',
+          zip: f.recipientZip || '',
+          phone: f.recipientPhone || '',
+        },
+        dueDate: f.commitDate || undefined,
+      }));
     }
 
     private parseAndFormatCommitDate(commitDate: any): Date {
@@ -8515,11 +8582,21 @@ export class ShipmentsService {
                 // =================================================================================
                 // --- 4. PROCESAMIENTO DE HISTORIA E INGRESOS (TU LÓGICA ORIGINAL) ---
                 // =================================================================================
-                const existing08Count = await queryRunner.manager.count(ShipmentStatus, {
-                    where: { shipment: { id: mainShipment.id }, exceptionCode: '08' }
-                });
-
-                let current08Count = existing08Count;
+                // Cobro DEX08 POR SEMANA: solo cuenta como "3ra visita" cuando 3 eventos 08
+                // caen en la MISMA semana ISO (lun–dom). Antes se acumulaba de forma corrida
+                // (existing08Count + contador), así que 08 repartidos entre semanas — o un 08
+                // viejo de una guía reciclada — llegaban a "3" y cobraban sin 3 visitas reales
+                // en una semana. Sembramos con los 08 ya persistidos (existingHistory) y
+                // marcamos qué eventos NUEVOS completan el 3ro de su semana. Ver dex08-week.util.
+                const existing08Dates: Date[] = existingHistory
+                    .filter((h: any) => (h.exceptionCode || '').trim() === '08')
+                    .map((h: any) => new Date(h.timestamp));
+                const new08Dates: Date[] = newEvents
+                    .filter((e: any) => (e.exceptionCode || '').trim() === '08')
+                    .map((e: any) => new Date(e.date));
+                const dex08ChargeTimes = new Set<number>(
+                    weeklyDex08ChargeIndexes(existing08Dates, new08Dates).map((i) => new08Dates[i].getTime()),
+                );
                 const paidWeeks = new Set<string>();
                 // ¿Algún evento nuevo es "cambio de fecha solicitada" (FedEx 17/84)?
                 // Si sí, más abajo sincronizamos commitDateTime con la nueva fecha de FedEx.
@@ -8608,10 +8685,10 @@ export class ShipmentsService {
                         isChargeable = true;
                         chargeReason = `RECHAZADO (${eCode})`;
                     } else if (eCode === '08') {
-                        current08Count++;
-                        if (current08Count >= 3) {
+                        // Cobra SOLO si este 08 es el 3ro de su MISMA semana ISO (ver arriba).
+                        if (dex08ChargeTimes.has(eventDate.getTime())) {
                             isChargeable = true;
-                            chargeReason = `3ra VISITA (Acumulado)`;
+                            chargeReason = `3ra VISITA (misma semana)`;
                         }
                     }
 
@@ -9600,7 +9677,9 @@ export class ShipmentsService {
                   const processedSignatures = new Set(existingHistory.map((h: any) => `${new Date(h.timestamp).getTime()}_${(h.exceptionCode || '').trim()}`));
 
                   // 4. ANÁLISIS FORENSE Y COBROS
-                  let count08 = 0;
+                  // Cobro DEX08 POR SEMANA: cuenta 08 por semana ISO (lun–dom) y cobra solo
+                  // el 3ro de CADA semana, no de forma corrida. Ver dex08-week.util.
+                  const week08 = new Map<string, number>();
                   const paidWeeks = new Set<string>();
                   const subId = isShipment ? entity.subsidiary?.id?.toLowerCase() : null;
                   const matchedKey = subId ? Object.keys(this.SUBSIDIARY_CONFIG).find(key => key.toLowerCase() === subId) : null;
@@ -9643,8 +9722,10 @@ export class ShipmentsService {
                           if (evtStatus === ShipmentStatusType.ENTREGADO) { shouldCharge = true; chargeReason = 'ENTREGADO (DL)'; } 
                           else if (evtCode === '07' || evtStatus === ShipmentStatusType.RECHAZADO) { shouldCharge = true; chargeReason = `RECHAZADO (${evtCode})`; } 
                           else if (evtCode === '08') {
-                              count08++;
-                              if (count08 >= 3) { shouldCharge = true; chargeReason = `3ra VISITA (08)`; }
+                              const wk = isoWeekKey(evtDate);
+                              const c = (week08.get(wk) ?? 0) + 1;
+                              week08.set(wk, c);
+                              if (c === 3) { shouldCharge = true; chargeReason = `3ra VISITA (misma semana)`; }
                           }
 
                           const mDate = dayjs(evtDate);

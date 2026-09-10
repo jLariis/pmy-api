@@ -23,7 +23,11 @@ export interface DhlShipmentDto {
     phone: string;
     reference?: string;
   };
-  remesas?: string[]; 
+  remesas?: string[];
+  /** yyyy-MM-dd: vencimiento (EDD) precargado cuando el origen es el Excel de DHL. */
+  dueDate?: string;
+  /** true = la pieza no cruzó con la hoja Shipment (sin dirección/CP reales). */
+  incomplete?: boolean;
   events?: {
     awbPid: string;
     origin?: string;

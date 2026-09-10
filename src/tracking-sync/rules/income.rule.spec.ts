@@ -35,14 +35,20 @@ describe('IncomeRule', () => {
     expect(ctx.deferredEffects).toHaveLength(0);
   });
 
-  it('cuenta 08 previos de BD para la 3ra visita', async () => {
-    const ds: any = { query: jest.fn().mockResolvedValue([{ c: 2 }]) };
+  it('cuenta 08 previos de BD (misma semana) para la 3ra visita', async () => {
+    // Evento nuevo default = 2026-08-20 (sem 34). Previas en la MISMA semana.
+    const ds: any = {
+      query: jest.fn().mockResolvedValue([
+        { timestamp: '2026-08-18T10:00:00Z' },
+        { timestamp: '2026-08-19T10:00:00Z' },
+      ]),
+    };
     const rule = new IncomeRule(ds);
     const ctx = makeCtx({ current: ShipmentStatusType.EN_RUTA, proposed: ShipmentStatusType.CLIENTE_NO_DISPONIBLE });
     (ctx.shipment as any).subsidiary = { id: 'sub1' };
     ctx.reconcile.newEvents = [ev({ k: 'k8', ec: '08', status: ShipmentStatusType.CLIENTE_NO_DISPONIBLE })] as any;
     await rule.apply(ctx);
     expect(ds.query).toHaveBeenCalled();
-    expect(ctx.deferredEffects).toHaveLength(1); // 2 previas + 1 = 3ra visita
+    expect(ctx.deferredEffects).toHaveLength(1); // 2 previas + 1 = 3ra visita (misma semana)
   });
 });
