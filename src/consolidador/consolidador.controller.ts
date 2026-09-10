@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { ConsolidadorAccessGuard } from '../auth/guards/consolidador-access.guard';
 import { ConsolidadorReadService } from './read/consolidador-read.service';
@@ -11,6 +11,7 @@ import { SecondAbordDto } from './dto/second-abord.dto';
 import { CreateManualIncomeDto } from './dto/create-manual-income.dto';
 import { FixStatusDto } from './dto/fix-status.dto';
 import { SearchBatchDto } from './dto/search-batch.dto';
+import { DeleteIncomeDto } from './dto/delete-income.dto';
 
 @ApiTags('consolidador')
 @ApiBearerAuth()
@@ -46,6 +47,12 @@ export class ConsolidadorController {
   @Post('income')
   createManual(@Body() dto: CreateManualIncomeDto, @Req() req: any) {
     return this.income.createManual(dto, req.user?.userId);
+  }
+
+  /** Elimina (soft-delete) un ingreso: deja de contar en los reportes. */
+  @Delete('income/:id')
+  deleteIncome(@Param('id') id: string, @Body() dto: DeleteIncomeDto, @Req() req: any) {
+    return this.income.deleteIncome(id, dto.reason, req.user?.userId);
   }
 
   /** Busca un paquete: estatus interno vs FedEx canónico + income ligado. */

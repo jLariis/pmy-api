@@ -200,6 +200,8 @@ export class IncomeService {
                 start: startLastWeekLocal.toDate(),
                 end: endCurrentLocal.add(7, 'hour').toDate()
             })
+            // Excluye ingresos eliminados/anulados (soft-delete): dejan de contar en el panel.
+            .andWhere('income.active = 1')
             .orderBy('income.date', 'ASC')
             .getMany();
 

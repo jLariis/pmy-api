@@ -130,4 +130,27 @@ export class ConsolidadorIncomeService {
     });
     return mapIncomeToRow(income);
   }
+
+  /** Elimina (soft-delete) un ingreso: deja de contar en los reportes. Solo toca `income`. */
+  async deleteIncome(id: string, reason: string, userId: string): Promise<{ id: string; deleted: true }> {
+    const income = await this.load(id);
+    income.active = false;
+    income.annulledAt = new Date();
+    income.annulledById = userId;
+    income.updatedById = userId;
+    income.updatedAt = new Date();
+    income.editReason = reason;
+    await this.incomeRepo.save(income);
+    await this.audit.record({
+      incomeId: income.id,
+      shipmentId: income.shipment?.id ?? null,
+      action: 'delete',
+      field: 'active',
+      oldValue: '1',
+      newValue: '0',
+      reason,
+      userId,
+    });
+    return { id, deleted: true };
+  }
 }

@@ -87,6 +87,22 @@ describe('ConsolidadorIncomeService auditoría', () => {
   });
 });
 
+describe('ConsolidadorIncomeService.deleteIncome', () => {
+  it('marca active=false y registra historial de borrado', async () => {
+    const calls: any[] = [];
+    const audit: any = { record: async (e: any) => calls.push(e) };
+    const income: any = { id: 'i1', cost: '100', active: true, date: new Date(), charge: null, shipment: { id: 's1' } };
+    const incomeRepo: any = { findOne: async () => income, save: async (x: any) => x };
+    const subsidiaryRepo: any = { findOne: async () => ({ id: 'sub' }) };
+    const svc = new ConsolidadorIncomeService(incomeRepo, subsidiaryRepo, audit);
+    const res = await svc.deleteIncome('i1', 'duplicado', 'user-1');
+    expect(income.active).toBe(false);
+    expect(income.annulledById).toBe('user-1');
+    expect(res).toEqual({ id: 'i1', deleted: true });
+    expect(calls[0]).toMatchObject({ action: 'delete', field: 'active', newValue: '0', userId: 'user-1' });
+  });
+});
+
 describe('ConsolidadorIncomeService.createManual', () => {
   it('crea income de recolección con sourceType/incomeType mapeados', async () => {
     const { svc, getCreated } = makeCreateService(null);
