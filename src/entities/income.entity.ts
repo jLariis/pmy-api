@@ -96,6 +96,20 @@ export class Income {
   @Column({ type: 'varchar', length: 120, nullable: true })
   sourceEventKey?: string | null;
 
+  /** Snapshot del `cost` antes del PRIMER ajuste in-place del consolidador. Null = nunca editado. */
+  @Column('decimal', { precision: 10, scale: 2, nullable: true })
+  originalCost?: number | null;
+
+  /** Auditoría de la última edición in-place hecha desde el consolidador. */
+  @Column({ type: 'char', length: 36, nullable: true })
+  updatedById?: string | null;
+
+  @Column({ type: 'datetime', nullable: true })
+  updatedAt?: Date | null;
+
+  @Column({ type: 'varchar', length: 255, nullable: true })
+  editReason?: string | null;
+
   @BeforeInsert()
   setDefaults() {
     this.createdAt = new Date(); // Fecha en UTC
