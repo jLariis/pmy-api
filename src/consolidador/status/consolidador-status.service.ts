@@ -22,9 +22,20 @@ export class ConsolidadorStatusService {
     private readonly audit: ConsolidadorAuditService,
   ) {}
 
+  /** Fecha del último evento de estatus (shipment_status.timestamp) — fecha "del cobro" por estatus. */
+  private latestStatusDate(shipment: Shipment | null): string | null {
+    const hist = (shipment as any)?.statusHistory as Array<{ timestamp?: Date }> | undefined;
+    if (!hist?.length) return null;
+    const max = hist.reduce<Date | null>((acc, s) => {
+      const t = s.timestamp ? new Date(s.timestamp) : null;
+      return t && (!acc || t > acc) ? t : acc;
+    }, null);
+    return max ? max.toISOString() : null;
+  }
+
   /** Busca un paquete y compone estatus interno vs FedEx canónico + income ligado (activo). */
   async search(tracking: string) {
-    const shipment = await this.shipmentRepo.findOne({ where: { trackingNumber: tracking } });
+    const shipment = await this.shipmentRepo.findOne({ where: { trackingNumber: tracking }, relations: ['statusHistory'] });
     const fedex = await this.resolver.getLatestStatus(tracking);
     const income = shipment
       ? await this.incomeRepo.findOne({
@@ -43,6 +54,8 @@ export class ConsolidadorStatusService {
       income: income ? mapIncomeToRow(income) : null,
       incomeRepairNeeded: repair.create,
       incomeRepairType: repair.incomeType,
+      statusDate: this.latestStatusDate(shipment),
+      incomeDate: income ? (income.date instanceof Date ? income.date.toISOString() : new Date(income.date).toISOString()) : null,
     };
   }
 
@@ -52,7 +65,7 @@ export class ConsolidadorStatusService {
     if (unique.length === 0) return { results: [] };
 
     const [shipments, fedexList] = await Promise.all([
-      this.shipmentRepo.find({ where: { trackingNumber: In(unique) } }),
+      this.shipmentRepo.find({ where: { trackingNumber: In(unique) }, relations: ['statusHistory'] }),
       this.resolver.getLatestStatusBatch(unique),
     ]);
     const shipmentByTn = new Map(shipments.map((s) => [s.trackingNumber, s]));
@@ -80,6 +93,8 @@ export class ConsolidadorStatusService {
         income: income ? mapIncomeToRow(income) : null,
         incomeRepairNeeded: repair.create,
         incomeRepairType: repair.incomeType,
+        statusDate: this.latestStatusDate(shipment),
+        incomeDate: income ? (income.date instanceof Date ? income.date.toISOString() : new Date(income.date).toISOString()) : null,
       };
     });
     return { results };
