@@ -131,6 +131,29 @@ export class ConsolidadorIncomeService {
     return mapIncomeToRow(income);
   }
 
+  /** Cambia la fecha del ingreso (fecha mal registrada). `date` = YYYY-MM-DD. Solo toca `income`. */
+  async editDate(id: string, date: string, reason: string, userId: string): Promise<ConsolidadorRow> {
+    const income = await this.load(id);
+    const old = income.date ? new Date(income.date).toISOString() : null;
+    // Mediodía local para caer con holgura dentro del día elegido (evita corrimientos por zona).
+    income.date = new Date(`${date}T12:00:00.000`);
+    income.updatedById = userId;
+    income.updatedAt = new Date();
+    income.editReason = reason;
+    await this.incomeRepo.save(income);
+    await this.audit.record({
+      incomeId: income.id,
+      shipmentId: income.shipment?.id ?? null,
+      action: 'date_edit',
+      field: 'date',
+      oldValue: old,
+      newValue: income.date.toISOString(),
+      reason,
+      userId,
+    });
+    return mapIncomeToRow(income);
+  }
+
   /** Reasigna el ingreso a otra sucursal (ingreso mal asignado). Solo toca `income`. */
   async reassignSubsidiary(id: string, subsidiaryId: string, reason: string, userId: string): Promise<ConsolidadorRow> {
     const income = await this.load(id);

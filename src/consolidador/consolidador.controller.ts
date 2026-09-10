@@ -7,6 +7,7 @@ import { ConsolidadorStatusService } from './status/consolidador-status.service'
 import { ConsolidadorAuditService } from './audit/consolidador-audit.service';
 import { ConsolidadorQueryDto } from './dto/consolidador-query.dto';
 import { EditCostDto } from './dto/edit-cost.dto';
+import { EditDateDto } from './dto/edit-date.dto';
 import { SecondAbordDto } from './dto/second-abord.dto';
 import { CreateManualIncomeDto } from './dto/create-manual-income.dto';
 import { FixStatusDto } from './dto/fix-status.dto';
@@ -43,6 +44,12 @@ export class ConsolidadorController {
   @Patch('income/:id/second-abord')
   setSecondAbord(@Param('id') id: string, @Body() dto: SecondAbordDto, @Req() req: any) {
     return this.income.setSecondAbord(id, dto.enabled, dto.reason, req.user?.userId);
+  }
+
+  /** Cambia la fecha del ingreso (fecha mal registrada). */
+  @Patch('income/:id/date')
+  editDate(@Param('id') id: string, @Body() dto: EditDateDto, @Req() req: any) {
+    return this.income.editDate(id, dto.date, dto.reason, req.user?.userId);
   }
 
   /** Reasigna el ingreso a otra sucursal (ingreso mal asignado). */
