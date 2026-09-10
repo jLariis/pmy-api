@@ -1,6 +1,7 @@
 import { ForbiddenException, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { spawn } from 'child_process';
+import { Transform } from 'stream';
 import { createGunzip, createGzip } from 'zlib';
 import { createReadStream, createWriteStream, promises as fsp } from 'fs';
 import * as os from 'os';
@@ -180,11 +181,19 @@ export class BackupService {
     const emit = (obj: Record<string, unknown>) => {
       if (!res.writableEnded) res.write(`${JSON.stringify(obj)}\n`);
     };
-    const step = (key: Phase, message: string) =>
+    const t0 = Date.now();
+    const marks: Partial<Record<Phase, number>> = {};
+    const logLevel = (level: 'info' | 'warn' | 'phase' | 'table' | 'heartbeat', line: string) =>
+      emit({ type: 'log', level, line, elapsedMs: Date.now() - t0 });
+    const step = (key: Phase, message: string) => {
+      marks[key] = Date.now();
+      logLevel('phase', message);
       emit({ type: 'step', key, message, percent: BackupService.computePercent(key, 0) });
+    };
     const progress = (phase: Phase, fraction: number, extra: Record<string, unknown> = {}) =>
       emit({ type: 'progress', phase, percent: BackupService.computePercent(phase, fraction), ...extra });
-    const log = (stream: 'stdout' | 'stderr', line: string) => emit({ type: 'log', stream, line });
+    const log = (stream: 'stdout' | 'stderr', line: string) =>
+      logLevel(stream === 'stderr' ? 'warn' : 'info', line);
 
     if (!this.isRestoreAllowed()) {
       // Doble candado: nunca en producción ni sin el flag explícito.
@@ -232,14 +241,44 @@ export class BackupService {
 
       // 4) Restaurar: descomprimir el temporal y alimentar el cliente mysql.
       step('restore', 'Restaurando en MySQL local…');
-      await this.withRelaxedInnodb(db, log, () =>
-        this.restoreFile(db, tmpFile, size, (bytes) => {
-          progress('restore', size ? bytes / size : 0, { bytes, totalBytes: size });
-        }, log),
-      );
+      let currentTable = '(inicio)';
+      let lastDecompressed = 0;
+      const heartbeat = setInterval(() => {
+        const mb = (lastDecompressed / 1_048_576).toFixed(0);
+        const secs = Math.round((Date.now() - (marks.restore ?? t0)) / 1000);
+        logLevel('heartbeat', `sigue trabajando · ${secs}s · ${mb} MB descomprimidos · tabla: \`${currentTable}\``);
+      }, 2000);
+      try {
+        await this.withRelaxedInnodb(db, log, () =>
+          this.restoreFile(
+            db,
+            tmpFile,
+            size,
+            (bytes) => {
+              lastDecompressed = bytes;
+              // Barra honesta: se topa en 95% mientras mysql sigue aplicando
+              // (el .sql descomprimido pesa ~4x el .gz; solo es para la barra).
+              const frac = size ? Math.min(0.95, bytes / (size * 4)) : 0;
+              progress('restore', frac, { bytes });
+            },
+            log,
+            (name, index) => {
+              currentTable = name;
+              logLevel('table', `▶ [#${index}] Restaurando \`${name}\``);
+            },
+          ),
+        );
+      } finally {
+        clearInterval(heartbeat);
+      }
       progress('restore', 1);
 
-      emit({ type: 'done', message: `Respaldo de producción restaurado en "${db.database}".`, percent: 100 });
+      emit({
+        type: 'done',
+        message: `Respaldo de producción restaurado en "${db.database}".`,
+        percent: 100,
+        timings: BackupService.summarizeTimings(marks, Date.now()),
+      });
     } catch (err: any) {
       this.logger.error(`Restore falló: ${err?.message}`);
       emit({ type: 'error', message: err?.message || 'Error desconocido durante el restore.' });
@@ -277,6 +316,7 @@ export class BackupService {
     totalGz: number,
     onBytes: (n: number) => void,
     log: (stream: 'stdout' | 'stderr', line: string) => void,
+    onTable: (name: string, index: number) => void = () => undefined,
   ): Promise<void> {
     // --max-allowed-packet alto: los dumps traen INSERTs extendidos grandes; con
     // el default (~16M) el cliente mysql aborta a media restauración con
@@ -291,13 +331,28 @@ export class BackupService {
     ];
     return new Promise<void>((resolve, reject) => {
       const child = spawn(this.mysqlBin(), args, { env: { ...process.env, MYSQL_PWD: db.password } });
-      let read = 0;
       const gz = createReadStream(file);
-      gz.on('data', (chunk) => {
-        read += chunk.length;
-        onBytes(read);
-      });
       const gunzip = createGunzip();
+
+      // Passthrough sobre el SQL descomprimido: cuenta bytes reales aplicados y
+      // detecta los marcadores de tabla del dump para reportar "tabla actual".
+      let decompressed = 0;
+      let tableCount = 0;
+      let tail = '';
+      const scanner = new Transform({
+        transform(chunk, _enc, cb) {
+          decompressed += chunk.length;
+          onBytes(decompressed);
+          const text = tail + chunk.toString('utf8');
+          const lines = text.split('\n');
+          tail = lines.pop() ?? '';
+          for (const l of lines) {
+            const name = BackupService.parseTableMarker(l);
+            if (name) onTable(name, ++tableCount);
+          }
+          cb(null, chunk);
+        },
+      });
 
       let stderr = '';
       child.stderr.on('data', (d) => {
@@ -318,7 +373,8 @@ export class BackupService {
       });
       gz.on('error', (err) => reject(err));
       gunzip.on('error', (err) => reject(err));
-      gz.pipe(gunzip).pipe(child.stdin);
+      scanner.on('error', (err) => reject(err));
+      gz.pipe(gunzip).pipe(scanner).pipe(child.stdin);
     });
   }
 
