@@ -131,6 +131,7 @@ export class BackupService {
       `--port=${db.port}`,
       `--user=${db.username}`,
       '--single-transaction',
+      '--no-autocommit',
       '--quick',
       '--routines',
       '--triggers',
@@ -231,9 +232,11 @@ export class BackupService {
 
       // 4) Restaurar: descomprimir el temporal y alimentar el cliente mysql.
       step('restore', 'Restaurando en MySQL local…');
-      await this.restoreFile(db, tmpFile, size, (bytes) => {
-        progress('restore', size ? bytes / size : 0, { bytes, totalBytes: size });
-      }, log);
+      await this.withRelaxedInnodb(db, log, () =>
+        this.restoreFile(db, tmpFile, size, (bytes) => {
+          progress('restore', size ? bytes / size : 0, { bytes, totalBytes: size });
+        }, log),
+      );
       progress('restore', 1);
 
       emit({ type: 'done', message: `Respaldo de producción restaurado en "${db.database}".`, percent: 100 });
@@ -283,6 +286,7 @@ export class BackupService {
       `--port=${db.port}`,
       `--user=${db.username}`,
       '--max-allowed-packet=1073741824',
+      '--init-command=SET sql_log_bin=0',
       db.database,
     ];
     return new Promise<void>((resolve, reject) => {
@@ -338,6 +342,52 @@ export class BackupService {
       child.on('close', (code) => (code === 0 ? resolve() : reject(new Error(`mysql exit ${code}: ${stderr.slice(0, 500)}`))));
       if (input) child.stdin.end(input);
       else child.stdin.end();
+    });
+  }
+
+  /**
+   * Baja innodb_flush_log_at_trx_commit a 2 durante `fn` y restaura el valor
+   * original al terminar. Si falta el privilegio, avisa y corre `fn` sin el ajuste.
+   */
+  private async withRelaxedInnodb<T>(
+    db: DbTarget,
+    log: (stream: 'stdout' | 'stderr', line: string) => void,
+    fn: () => Promise<T>,
+  ): Promise<T> {
+    let previous: string | null = null;
+    try {
+      previous = await this.queryScalar(db, 'SELECT @@GLOBAL.innodb_flush_log_at_trx_commit');
+      await this.runMysql(db, undefined, ['-e', 'SET GLOBAL innodb_flush_log_at_trx_commit=2'], log);
+      log('stdout', 'innodb_flush_log_at_trx_commit=2 (temporal, se restaura al terminar)');
+    } catch {
+      previous = null;
+      log('stderr', 'No se pudo relajar innodb_flush_log_at_trx_commit (sigue sin ese ajuste).');
+    }
+    try {
+      return await fn();
+    } finally {
+      if (previous != null) {
+        await this.runMysql(
+          db,
+          undefined,
+          ['-e', `SET GLOBAL innodb_flush_log_at_trx_commit=${Number(previous) || 1}`],
+          log,
+        ).catch(() => log('stderr', 'No se pudo restaurar innodb_flush_log_at_trx_commit.'));
+      }
+    }
+  }
+
+  /** Corre `mysql -N -e <sql>` y devuelve la primera celda como string, o null. */
+  private queryScalar(db: DbTarget, sql: string): Promise<string | null> {
+    const args = [`--host=${db.host}`, `--port=${db.port}`, `--user=${db.username}`, '-N', '-e', sql];
+    return new Promise((resolve, reject) => {
+      const child = spawn(this.mysqlBin(), args, { env: { ...process.env, MYSQL_PWD: db.password } });
+      let out = '';
+      child.stdout.on('data', (d) => (out += d.toString()));
+      child.on('error', reject);
+      child.on('close', (code) =>
+        code === 0 ? resolve(out.trim().split(/\s+/)[0] || null) : reject(new Error(`mysql exit ${code}`)),
+      );
     });
   }
 
