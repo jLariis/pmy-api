@@ -110,6 +110,14 @@ export class Income {
   @Column({ type: 'varchar', length: 255, nullable: true })
   editReason?: string | null;
 
+  /**
+   * Estado por-fila del 2º a bordo para ingresos de carga: true = el `cost` YA incluye el
+   * `secondAbordAmount`. Null en ingresos que nunca lo han tocado (se infiere de
+   * `subsidiary.chargeSecondAbord` la primera vez). Hace idempotente el toggle del consolidador.
+   */
+  @Column({ type: 'tinyint', width: 1, nullable: true })
+  secondAbordApplied?: boolean | null;
+
   @BeforeInsert()
   setDefaults() {
     this.createdAt = new Date(); // Fecha en UTC
