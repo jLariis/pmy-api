@@ -8,6 +8,7 @@ import { ShipmentStatusType } from '../../common/enums/shipment-status-type.enum
 import { deriveStatusCorrection } from '../logic/status-correction.util';
 import { mapIncomeToRow } from '../read/consolidador-row.mapper';
 import { ConsolidadorRow } from '../consolidador.types';
+import { ConsolidadorAuditService } from '../audit/consolidador-audit.service';
 
 @Injectable()
 export class ConsolidadorStatusService {
@@ -15,6 +16,7 @@ export class ConsolidadorStatusService {
     @InjectRepository(Shipment) private readonly shipmentRepo: Repository<Shipment>,
     @InjectRepository(Income) private readonly incomeRepo: Repository<Income>,
     private readonly resolver: FedexStatusResolver,
+    private readonly audit: ConsolidadorAuditService,
   ) {}
 
   /** Busca un paquete y compone estatus interno vs FedEx canónico + income ligado. */
@@ -94,6 +96,7 @@ export class ConsolidadorStatusService {
       throw new BadRequestException('El estatus solicitado no coincide con lo que reporta FedEx');
     }
 
+    const oldStatus = shipment.status;
     shipment.status = resolved; // escribe SHIPMENT
     await this.shipmentRepo.save(shipment);
 
@@ -102,12 +105,37 @@ export class ConsolidadorStatusService {
       where: { shipment: { id: shipment.id } },
       relations: ['shipment', 'charge'],
     });
+    let oldIncomeType: string | null = null;
     if (income && incomeEffect.kind === 'reclassify') {
+      oldIncomeType = income.incomeType;
       income.incomeType = incomeEffect.incomeType;
       income.updatedById = userId;
       income.updatedAt = new Date();
       income.editReason = reason;
       await this.incomeRepo.save(income);
+    }
+
+    await this.audit.record({
+      incomeId: income?.id ?? null,
+      shipmentId: shipment.id,
+      action: 'status_fix',
+      field: 'shipment.status',
+      oldValue: oldStatus,
+      newValue: resolved,
+      reason,
+      userId,
+    });
+    if (income && incomeEffect.kind === 'reclassify') {
+      await this.audit.record({
+        incomeId: income.id,
+        shipmentId: shipment.id,
+        action: 'status_fix',
+        field: 'income.incomeType',
+        oldValue: oldIncomeType,
+        newValue: incomeEffect.incomeType,
+        reason,
+        userId,
+      });
     }
 
     return { shipmentStatus: shipment.status, income: income ? mapIncomeToRow(income) : null };

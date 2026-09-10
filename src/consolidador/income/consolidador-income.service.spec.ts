@@ -1,12 +1,14 @@
 import { ConsolidadorIncomeService } from './consolidador-income.service';
 
+const auditStub: any = { record: async () => undefined };
+
 function makeService(income: any, subsidiary: any = { id: 'sub', secondAbordAmount: 594, chargeSecondAbord: true }) {
   const incomeRepo: any = {
     findOne: async () => income,
     save: async (x: any) => x,
   };
   const subsidiaryRepo: any = { findOne: async () => subsidiary };
-  return new ConsolidadorIncomeService(incomeRepo, subsidiaryRepo);
+  return new ConsolidadorIncomeService(incomeRepo, subsidiaryRepo, auditStub);
 }
 
 /** Service para probar createManual: controla el resultado del findOne de duplicados y captura el create. */
@@ -21,7 +23,7 @@ function makeCreateService(existingDuplicate: any = null) {
     save: async (x: any) => x,
   };
   const subsidiaryRepo: any = { findOne: async () => ({ id: 'sub' }) };
-  const svc = new ConsolidadorIncomeService(incomeRepo, subsidiaryRepo);
+  const svc = new ConsolidadorIncomeService(incomeRepo, subsidiaryRepo, auditStub);
   return { svc, getCreated: () => created };
 }
 
@@ -68,6 +70,20 @@ describe('ConsolidadorIncomeService.setSecondAbord', () => {
     await svc.setSecondAbord('i1', true, 'con 2º', 'user-1');
     expect(income.cost).toBe(4594);
     expect(income.secondAbordApplied).toBe(true);
+  });
+});
+
+describe('ConsolidadorIncomeService auditoría', () => {
+  it('editCost registra una fila de historial con antes/después', async () => {
+    const calls: any[] = [];
+    const audit: any = { record: async (e: any) => calls.push(e) };
+    const income: any = { id: 'i1', cost: '4594', originalCost: null, date: new Date(), charge: null, shipment: { id: 's1' } };
+    const incomeRepo: any = { findOne: async () => income, save: async (x: any) => x };
+    const subsidiaryRepo: any = { findOne: async () => ({ id: 'sub' }) };
+    const svc = new ConsolidadorIncomeService(incomeRepo, subsidiaryRepo, audit);
+    await svc.editCost('i1', 4000, 'ajuste', 'user-1');
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ action: 'cost_edit', field: 'cost', oldValue: 4594, newValue: 4000, userId: 'user-1' });
   });
 });
 

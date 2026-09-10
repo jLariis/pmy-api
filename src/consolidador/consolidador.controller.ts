@@ -4,6 +4,7 @@ import { ConsolidadorAccessGuard } from '../auth/guards/consolidador-access.guar
 import { ConsolidadorReadService } from './read/consolidador-read.service';
 import { ConsolidadorIncomeService } from './income/consolidador-income.service';
 import { ConsolidadorStatusService } from './status/consolidador-status.service';
+import { ConsolidadorAuditService } from './audit/consolidador-audit.service';
 import { ConsolidadorQueryDto } from './dto/consolidador-query.dto';
 import { EditCostDto } from './dto/edit-cost.dto';
 import { SecondAbordDto } from './dto/second-abord.dto';
@@ -20,6 +21,7 @@ export class ConsolidadorController {
     private readonly read: ConsolidadorReadService,
     private readonly income: ConsolidadorIncomeService,
     private readonly status: ConsolidadorStatusService,
+    private readonly audit: ConsolidadorAuditService,
   ) {}
 
   /** Filas de income de la semana (todos los sourceType) + totales por bucket. */
@@ -35,6 +37,12 @@ export class ConsolidadorController {
     const from = new Date(`${fromDate}T00:00:00.000`);
     const to = new Date(`${toDate}T23:59:59.999`);
     return this.read.getWeek(subsidiaryId, from, to, q);
+  }
+
+  /** Historial de cambios de un ingreso (más reciente primero). */
+  @Get('income/:id/history')
+  history(@Param('id') id: string) {
+    return this.audit.history(id);
   }
 
   /** Ajuste in-place del costo de un ingreso (bajar/subir costo de carga). */

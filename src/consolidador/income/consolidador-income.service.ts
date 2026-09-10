@@ -8,12 +8,14 @@ import { computeSecondAbordDelta } from '../logic/second-abord.util';
 import { ManualKind, resolveManualIncomeCost } from '../logic/manual-income.util';
 import { mapIncomeToRow } from '../read/consolidador-row.mapper';
 import { ConsolidadorRow } from '../consolidador.types';
+import { ConsolidadorAuditService } from '../audit/consolidador-audit.service';
 
 @Injectable()
 export class ConsolidadorIncomeService {
   constructor(
     @InjectRepository(Income) private readonly incomeRepo: Repository<Income>,
     @InjectRepository(Subsidiary) private readonly subsidiaryRepo: Repository<Subsidiary>,
+    private readonly audit: ConsolidadorAuditService,
   ) {}
 
   private async load(id: string): Promise<Income> {
@@ -36,8 +38,20 @@ export class ConsolidadorIncomeService {
 
   async editCost(id: string, cost: number, reason: string, userId: string): Promise<ConsolidadorRow> {
     const income = await this.load(id);
-    this.stamp(income, reason, userId, Number(cost.toFixed(2)));
+    const oldCost = Number(income.cost);
+    const newCost = Number(cost.toFixed(2));
+    this.stamp(income, reason, userId, newCost);
     await this.incomeRepo.save(income);
+    await this.audit.record({
+      incomeId: income.id,
+      shipmentId: income.shipment?.id ?? null,
+      action: 'cost_edit',
+      field: 'cost',
+      oldValue: oldCost,
+      newValue: newCost,
+      reason,
+      userId,
+    });
     return mapIncomeToRow(income);
   }
 
@@ -47,10 +61,21 @@ export class ConsolidadorIncomeService {
     const amount = Number(subsidiary?.secondAbordAmount ?? 0);
     // Estado actual: el flag por-fila manda; si es null, se infiere del default de la sucursal.
     const alreadyIncluded = income.secondAbordApplied ?? !!subsidiary?.chargeSecondAbord;
-    const next = computeSecondAbordDelta(Number(income.cost), amount, enabled, alreadyIncluded);
+    const oldCost = Number(income.cost);
+    const next = computeSecondAbordDelta(oldCost, amount, enabled, alreadyIncluded);
     this.stamp(income, reason, userId, next);
     income.secondAbordApplied = enabled;
     await this.incomeRepo.save(income);
+    await this.audit.record({
+      incomeId: income.id,
+      shipmentId: income.shipment?.id ?? null,
+      action: 'second_abord',
+      field: enabled ? 'poner 2º a bordo' : 'quitar 2º a bordo',
+      oldValue: oldCost,
+      newValue: next,
+      reason,
+      userId,
+    });
     return mapIncomeToRow(income);
   }
 
@@ -94,6 +119,15 @@ export class ConsolidadorIncomeService {
       editReason: dto.reason,
     });
     await this.incomeRepo.save(income);
+    await this.audit.record({
+      incomeId: income.id,
+      action: 'manual_create',
+      field: dto.kind,
+      oldValue: null,
+      newValue: cost,
+      reason: dto.reason,
+      userId,
+    });
     return mapIncomeToRow(income);
   }
 }

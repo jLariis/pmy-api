@@ -5,6 +5,7 @@ export * from './driver.entity';
 export * from './vehicle.entity';
 export * from './route.entity';
 export * from './income.entity';
+export * from './income-change-log.entity';
 export * from './shipment.entity';
 export * from './payment.entity';
 export * from './shipment-status.entity';

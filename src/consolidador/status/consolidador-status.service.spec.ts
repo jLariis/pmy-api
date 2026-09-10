@@ -19,14 +19,14 @@ function makeService(opts: {
     save: async (x: any) => x,
   };
   const resolver: any = { getLatestStatus: async () => opts.fedex };
-  return new ConsolidadorStatusService(shipmentRepo, incomeRepo, resolver);
+  return new ConsolidadorStatusService(shipmentRepo, incomeRepo, resolver, { record: async () => undefined } as any);
 }
 
 function makeBatchService(opts: { shipments: any[]; fedexList: any[]; incomes?: any[] }) {
   const shipmentRepo: any = { find: async () => opts.shipments };
   const incomeRepo: any = { find: async () => opts.incomes ?? [] };
   const resolver: any = { getLatestStatusBatch: async () => opts.fedexList };
-  return new ConsolidadorStatusService(shipmentRepo, incomeRepo, resolver);
+  return new ConsolidadorStatusService(shipmentRepo, incomeRepo, resolver, { record: async () => undefined } as any);
 }
 
 describe('ConsolidadorStatusService.search', () => {
