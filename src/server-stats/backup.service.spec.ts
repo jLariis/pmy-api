@@ -56,3 +56,35 @@ describe('BackupService.isRestoreAllowed (candado dev-only)', () => {
     expect(svc.isRestoreAllowed()).toBe(false);
   });
 });
+
+describe('BackupService.parseTableMarker', () => {
+  it('reconoce el marcador de datos de mysqldump', () => {
+    expect(BackupService.parseTableMarker('-- Dumping data for table `shipment`')).toBe('shipment');
+  });
+  it('acepta nombres con guion bajo y dígitos', () => {
+    expect(BackupService.parseTableMarker('-- Dumping data for table `package_dispatch_history`')).toBe(
+      'package_dispatch_history',
+    );
+  });
+  it('ignora otras líneas del dump', () => {
+    expect(BackupService.parseTableMarker('INSERT INTO `shipment` VALUES (1),(2);')).toBeNull();
+    expect(BackupService.parseTableMarker('-- Table structure for table `shipment`')).toBeNull();
+    expect(BackupService.parseTableMarker('')).toBeNull();
+  });
+});
+
+describe('BackupService.summarizeTimings', () => {
+  it('calcula duración de cada fase hasta la siguiente marca', () => {
+    const marks = { connect: 0, download: 100, prepare: 700, restore: 750 };
+    expect(BackupService.summarizeTimings(marks, 2000)).toEqual({
+      connect: 100,
+      download: 600,
+      prepare: 50,
+      restore: 1250,
+    });
+  });
+  it('omite fases sin marca', () => {
+    const marks = { connect: 0, restore: 500 };
+    expect(BackupService.summarizeTimings(marks, 900)).toEqual({ connect: 500, restore: 400 });
+  });
+});

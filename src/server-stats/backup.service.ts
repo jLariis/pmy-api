@@ -48,6 +48,35 @@ export class BackupService {
     return Math.round(base + PHASE_WEIGHTS[phase] * f);
   }
 
+  /** Nombre de tabla si la línea es el marcador `-- Dumping data for table \`X\``. */
+  static parseTableMarker(line: string): string | null {
+    const m = /^-- Dumping data for table `(.+?)`/.exec(line);
+    return m ? m[1] : null;
+  }
+
+  /** Duración (ms) por fase: de su marca a la siguiente fase con marca, o a `end`. */
+  static summarizeTimings(
+    marks: Partial<Record<Phase, number>>,
+    end: number,
+  ): Partial<Record<Phase, number>> {
+    const out: Partial<Record<Phase, number>> = {};
+    for (let i = 0; i < PHASE_ORDER.length; i++) {
+      const p = PHASE_ORDER[i];
+      const start = marks[p];
+      if (start == null) continue;
+      let stop = end;
+      for (let j = i + 1; j < PHASE_ORDER.length; j++) {
+        const next = marks[PHASE_ORDER[j]];
+        if (next != null) {
+          stop = next;
+          break;
+        }
+      }
+      out[p] = Math.max(0, stop - start);
+    }
+    return out;
+  }
+
   /** El restore local solo se permite fuera de producción y con el flag explícito. */
   isRestoreAllowed(): boolean {
     const isProd = (this.config.get<string>('NODE_ENV') || process.env.NODE_ENV) === 'production';
