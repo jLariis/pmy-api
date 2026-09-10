@@ -33,8 +33,10 @@ export class BackupController {
   @Public()
   @UseGuards(BackupSecretGuard)
   @NoAudit()
-  dump(@Res() res: Response) {
-    this.backupService.streamDump(res);
+  dump(@Res() res: Response, @Query('trimDays') trimDays?: string) {
+    const n = Number(trimDays);
+    if (n > 0) this.backupService.streamTrimmedDump(res, n);
+    else this.backupService.streamDump(res);
   }
 
   /**

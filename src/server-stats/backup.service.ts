@@ -21,6 +21,11 @@ type Phase = 'connect' | 'download' | 'prepare' | 'restore';
 const PHASE_WEIGHTS: Record<Phase, number> = { connect: 5, download: 55, prepare: 5, restore: 35 };
 const PHASE_ORDER: Phase[] = ['connect', 'download', 'prepare', 'restore'];
 
+/** Tablas de historial que se recortan en el respaldo recortado (por ahora solo una). */
+const HISTORY_TABLES: { table: string; dateColumn: string }[] = [
+  { table: 'shipment_status', dateColumn: 'createdAt' },
+];
+
 /**
  * Respaldo de la BD de producción hacia el MySQL local (solo desarrollo).
  *
@@ -179,6 +184,60 @@ export class BackupService {
     });
 
     child.stdout.pipe(gzip).pipe(res);
+  }
+
+  /**
+   * Dump recortado: 2+ pasadas de mysqldump al mismo gzip. Pasada 1 trae todo
+   * excepto las tablas de historial; cada pasada siguiente trae una tabla de
+   * historial solo con las filas de los últimos `days` días. Conserva todos los
+   * padres → sin huérfanos de FK.
+   */
+  streamTrimmedDump(res: Response, days: number): void {
+    const db = this.dbTarget();
+    const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+    res.setHeader('Content-Type', 'application/gzip');
+    res.setHeader('Content-Disposition', `attachment; filename="${db.database}-trim${days}d-${stamp}.sql.gz"`);
+    res.setHeader('Cache-Control', 'no-store');
+
+    const gzip = createGzip();
+    gzip.on('error', (err) => res.destroy(err));
+    gzip.pipe(res);
+
+    const ignore = HISTORY_TABLES.map((h) => h.table);
+
+    const runPass = (args: string[], isLast: boolean) =>
+      new Promise<void>((resolve, reject) => {
+        const child = spawn(this.mysqldumpBin(), args, { env: { ...process.env, MYSQL_PWD: db.password } });
+        let stderr = '';
+        child.stderr.on('data', (d) => (stderr += d.toString()));
+        child.on('error', (err) => reject(err));
+        child.on('close', (code) =>
+          code === 0 ? resolve() : reject(new Error(`mysqldump exit ${code}: ${stderr.slice(0, 300)}`)),
+        );
+        child.stdout.pipe(gzip, { end: isLast });
+      });
+
+    (async () => {
+      // Pasada 1: todo menos las tablas de historial.
+      await runPass(BackupService.buildDumpArgs(db, { routines: true, ignoreTables: ignore }), false);
+      // Pasadas 2..N: cada tabla de historial recortada.
+      for (let i = 0; i < HISTORY_TABLES.length; i++) {
+        const h = HISTORY_TABLES[i];
+        const isLast = i === HISTORY_TABLES.length - 1;
+        await runPass(
+          BackupService.buildDumpArgs(db, {
+            routines: false,
+            onlyTable: h.table,
+            whereClause: `${h.dateColumn} >= NOW() - INTERVAL ${days} DAY`,
+          }),
+          isLast,
+        );
+      }
+    })().catch((err) => {
+      this.logger.error(`Dump recortado falló: ${err?.message}`);
+      if (!res.headersSent) res.status(500).json({ message: `mysqldump: ${err?.message}` });
+      else res.destroy(err);
+    });
   }
 
   /**
