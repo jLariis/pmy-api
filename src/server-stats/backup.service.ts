@@ -244,7 +244,7 @@ export class BackupService {
    * Descarga el dump de prod y lo restaura en el MySQL local, emitiendo eventos
    * NDJSON de progreso. Cierra la respuesta al terminar (éxito o error).
    */
-  async restoreFromProd(res: Response, reuse = false): Promise<void> {
+  async restoreFromProd(res: Response, reuse = false, trimDays = 0): Promise<void> {
     res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
     res.setHeader('Cache-Control', 'no-cache, no-transform');
 
@@ -317,7 +317,10 @@ export class BackupService {
       if (!usedCache) {
         // 1b) Conectar y pedir el dump al API de producción (dominio estable).
         step('connect', 'Conectando al API de producción…');
-        const url = `${this.prodApiUrl().replace(/\/$/, '')}/server/backup/dump`;
+        if (trimDays > 0)
+          logLevel('phase', `Respaldo recortado a ${trimDays} días de historial (shipments completos).`);
+        const trimQs = trimDays > 0 ? `?trimDays=${trimDays}` : '';
+        const url = `${this.prodApiUrl().replace(/\/$/, '')}/server/backup/dump${trimQs}`;
         const resp = await fetch(url, { headers: { 'X-Backup-Secret': secret } });
         if (!resp.ok || !resp.body) {
           throw new Error(`El API de producción respondió ${resp.status} ${resp.statusText}`);

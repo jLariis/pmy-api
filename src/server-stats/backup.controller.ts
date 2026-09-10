@@ -60,7 +60,7 @@ export class BackupController {
   @ApiBearerAuth()
   @UseGuards(SuperAdminGuard)
   @NoAudit()
-  restoreFromProd(@Res() res: Response, @Query('reuse') reuse?: string) {
-    return this.backupService.restoreFromProd(res, reuse === '1');
+  restoreFromProd(@Res() res: Response, @Query('reuse') reuse?: string, @Query('trim') trim?: string) {
+    return this.backupService.restoreFromProd(res, reuse === '1', Number(trim) || 0);
   }
 }
