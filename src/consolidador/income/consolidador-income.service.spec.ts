@@ -9,6 +9,22 @@ function makeService(income: any, subsidiary: any = { id: 'sub', secondAbordAmou
   return new ConsolidadorIncomeService(incomeRepo, subsidiaryRepo);
 }
 
+/** Service para probar createManual: controla el resultado del findOne de duplicados y captura el create. */
+function makeCreateService(existingDuplicate: any = null) {
+  let created: any = null;
+  const incomeRepo: any = {
+    findOne: async () => existingDuplicate,
+    create: (x: any) => {
+      created = { ...x, id: 'new-1' };
+      return created;
+    },
+    save: async (x: any) => x,
+  };
+  const subsidiaryRepo: any = { findOne: async () => ({ id: 'sub' }) };
+  const svc = new ConsolidadorIncomeService(incomeRepo, subsidiaryRepo);
+  return { svc, getCreated: () => created };
+}
+
 describe('ConsolidadorIncomeService.editCost', () => {
   it('guarda originalCost en el 1er ajuste y estampa quién/motivo', async () => {
     const income: any = {
@@ -52,5 +68,31 @@ describe('ConsolidadorIncomeService.setSecondAbord', () => {
     await svc.setSecondAbord('i1', true, 'con 2º', 'user-1');
     expect(income.cost).toBe(4594);
     expect(income.secondAbordApplied).toBe(true);
+  });
+});
+
+describe('ConsolidadorIncomeService.createManual', () => {
+  it('crea income de recolección con sourceType/incomeType mapeados', async () => {
+    const { svc, getCreated } = makeCreateService(null);
+    await svc.createManual(
+      { subsidiaryId: 'sub', kind: 'recoleccion', trackingNumber: 'T1', cost: 120, date: '2026-09-09', reason: 'cobro' },
+      'user-1',
+    );
+    const created = getCreated();
+    expect(created.sourceType).toBe('collection');
+    expect(created.incomeType).toBe('entregado');
+    expect(created.cost).toBe(120);
+    expect(created.createdById).toBe('user-1');
+    expect(created.editReason).toBe('cobro');
+  });
+
+  it('lanza conflicto si ya existe un ingreso equivalente ese día', async () => {
+    const { svc } = makeCreateService({ id: 'dup' });
+    await expect(
+      svc.createManual(
+        { subsidiaryId: 'sub', kind: 'pod', trackingNumber: 'T1', cost: 100, date: '2026-09-09', reason: 'pod' },
+        'user-1',
+      ),
+    ).rejects.toThrow('Ya existe');
   });
 });

@@ -1,9 +1,11 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Between, Repository } from 'typeorm';
 import { Income } from '../../entities/income.entity';
 import { Subsidiary } from '../../entities/subsidiary.entity';
+import { ShipmentType } from '../../common/enums/shipment-type.enum';
 import { computeSecondAbordDelta } from '../logic/second-abord.util';
+import { ManualKind, resolveManualIncomeCost } from '../logic/manual-income.util';
 import { mapIncomeToRow } from '../read/consolidador-row.mapper';
 import { ConsolidadorRow } from '../consolidador.types';
 
@@ -48,6 +50,49 @@ export class ConsolidadorIncomeService {
     const next = computeSecondAbordDelta(Number(income.cost), amount, enabled, alreadyIncluded);
     this.stamp(income, reason, userId, next);
     income.secondAbordApplied = enabled;
+    await this.incomeRepo.save(income);
+    return mapIncomeToRow(income);
+  }
+
+  async createManual(
+    dto: { subsidiaryId: string; kind: ManualKind; trackingNumber?: string; cost: number; date: string; reason: string },
+    userId: string,
+  ): Promise<ConsolidadorRow> {
+    const { cost, sourceType, incomeType } = resolveManualIncomeCost(dto.kind, { cost: dto.cost });
+
+    // Día de la operación (mediodía local para caer con holgura dentro del día).
+    const day = new Date(`${dto.date}T12:00:00.000`);
+    const dayStart = new Date(`${dto.date}T00:00:00.000`);
+    const dayEnd = new Date(`${dto.date}T23:59:59.999`);
+
+    // Anti-duplicado: misma sucursal + guía + tipo + día. Solo cuando hay guía (una manual
+    // libre sin guía no se puede deduplicar con certeza).
+    if (dto.trackingNumber) {
+      const existing = await this.incomeRepo.findOne({
+        where: {
+          subsidiary: { id: dto.subsidiaryId },
+          trackingNumber: dto.trackingNumber,
+          incomeType,
+          date: Between(dayStart, dayEnd),
+        },
+      });
+      if (existing) {
+        throw new ConflictException('Ya existe un ingreso equivalente ese día para esa guía');
+      }
+    }
+
+    const income = this.incomeRepo.create({
+      subsidiary: { id: dto.subsidiaryId } as Subsidiary,
+      trackingNumber: dto.trackingNumber,
+      shipmentType: ShipmentType.FEDEX,
+      incomeType,
+      cost,
+      isGrouped: false,
+      sourceType,
+      date: day,
+      createdById: userId,
+      editReason: dto.reason,
+    });
     await this.incomeRepo.save(income);
     return mapIncomeToRow(income);
   }

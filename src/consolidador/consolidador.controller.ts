@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Patch, Query, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { ConsolidadorAccessGuard } from '../auth/guards/consolidador-access.guard';
 import { ConsolidadorReadService } from './read/consolidador-read.service';
@@ -6,6 +6,7 @@ import { ConsolidadorIncomeService } from './income/consolidador-income.service'
 import { ConsolidadorQueryDto } from './dto/consolidador-query.dto';
 import { EditCostDto } from './dto/edit-cost.dto';
 import { SecondAbordDto } from './dto/second-abord.dto';
+import { CreateManualIncomeDto } from './dto/create-manual-income.dto';
 
 @ApiTags('consolidador')
 @ApiBearerAuth()
@@ -25,8 +26,11 @@ export class ConsolidadorController {
     @Param('toDate') toDate: string,
     @Query() q: ConsolidadorQueryDto,
   ) {
-    // Los límites de la semana llegan ya calculados desde el FE (lun–dom); se respetan tal cual.
-    return this.read.getWeek(subsidiaryId, new Date(fromDate), new Date(toDate), q);
+    // Los límites llegan como YYYY-MM-DD (lun–dom) desde el FE. `new Date('YYYY-MM-DD')` es
+    // medianoche UTC, lo que dejaría fuera casi todo el domingo; expandimos a inicio/fin de día.
+    const from = new Date(`${fromDate}T00:00:00.000`);
+    const to = new Date(`${toDate}T23:59:59.999`);
+    return this.read.getWeek(subsidiaryId, from, to, q);
   }
 
   /** Ajuste in-place del costo de un ingreso (bajar/subir costo de carga). */
@@ -39,5 +43,11 @@ export class ConsolidadorController {
   @Patch('income/:id/second-abord')
   setSecondAbord(@Param('id') id: string, @Body() dto: SecondAbordDto, @Req() req: any) {
     return this.income.setSecondAbord(id, dto.enabled, dto.reason, req.user?.userId);
+  }
+
+  /** Alta manual de ingreso (recolección / POD / DEX / manual). */
+  @Post('income')
+  createManual(@Body() dto: CreateManualIncomeDto, @Req() req: any) {
+    return this.income.createManual(dto, req.user?.userId);
   }
 }
