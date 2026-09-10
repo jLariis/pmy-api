@@ -17,6 +17,8 @@ export interface ConsolidadorRow {
   shipmentId: string | null;
   shipmentStatus: ShipmentStatusType | null;
   editReason: string | null;
+  /** Estado del 2º a bordo (solo relevante para cargas): true=incluido, false=quitado, null=nunca tocado. */
+  secondAbordApplied: boolean | null;
 }
 
 export interface ConsolidadorBucket {

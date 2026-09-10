@@ -20,5 +20,6 @@ export function mapIncomeToRow(i: Income): ConsolidadorRow {
     shipmentId: shipment?.id ?? null,
     shipmentStatus: shipment?.status ?? null,
     editReason: i.editReason ?? null,
+    secondAbordApplied: i.secondAbordApplied ?? null,
   };
 }
