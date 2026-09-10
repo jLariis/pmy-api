@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Res, UseGuards } from '@nestjs/common';
+import { Controller, Get, Post, Query, Res, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import type { Response } from 'express';
 import { BackupService } from './backup.service';
@@ -45,7 +45,7 @@ export class BackupController {
   @ApiBearerAuth()
   @UseGuards(SuperAdminGuard)
   @NoAudit()
-  restoreFromProd(@Res() res: Response) {
-    return this.backupService.restoreFromProd(res);
+  restoreFromProd(@Res() res: Response, @Query('reuse') reuse?: string) {
+    return this.backupService.restoreFromProd(res, reuse === '1');
   }
 }

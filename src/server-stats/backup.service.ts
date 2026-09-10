@@ -174,7 +174,7 @@ export class BackupService {
    * Descarga el dump de prod y lo restaura en el MySQL local, emitiendo eventos
    * NDJSON de progreso. Cierra la respuesta al terminar (éxito o error).
    */
-  async restoreFromProd(res: Response): Promise<void> {
+  async restoreFromProd(res: Response, reuse = false): Promise<void> {
     res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
     res.setHeader('Cache-Control', 'no-cache, no-transform');
 
@@ -208,24 +208,40 @@ export class BackupService {
     }
 
     const db = this.dbTarget();
-    const tmpFile = path.join(os.tmpdir(), `pmy-restore-${Date.now()}.sql.gz`);
+    // Nombre estable: permite reusar el dump entre corridas cuando `reuse` está activo.
+    const tmpFile = path.join(os.tmpdir(), 'pmy-restore-cache.sql.gz');
 
     try {
-      // 1) Conectar y pedir el dump al API de producción (dominio estable).
-      step('connect', 'Conectando al API de producción…');
-      const url = `${this.prodApiUrl().replace(/\/$/, '')}/server/backup/dump`;
-      const resp = await fetch(url, { headers: { 'X-Backup-Secret': secret } });
-      if (!resp.ok || !resp.body) {
-        throw new Error(`El API de producción respondió ${resp.status} ${resp.statusText}`);
+      // 1) Si se pidió reusar y hay un dump reciente (< 2 h), saltar la descarga.
+      let usedCache = false;
+      if (reuse) {
+        const st = await fsp.stat(tmpFile).catch(() => null);
+        const ageMs = st ? Date.now() - st.mtimeMs : Infinity;
+        if (st && ageMs < 2 * 60 * 60 * 1000) {
+          usedCache = true;
+          marks.connect = Date.now();
+          marks.download = Date.now();
+          logLevel('phase', `Usando dump en caché (hace ${Math.round(ageMs / 60000)} min), se salta la descarga.`);
+        }
       }
 
-      // 2) Descargar el .sql.gz a un temporal, reportando bytes.
-      step('download', 'Descargando respaldo de producción…');
-      const totalBytes = Number(resp.headers.get('content-length')) || 0;
-      await this.downloadToFile(resp, tmpFile, (bytes) => {
-        const fraction = totalBytes ? bytes / totalBytes : 0;
-        progress('download', fraction, { bytes, totalBytes: totalBytes || undefined });
-      });
+      if (!usedCache) {
+        // 1b) Conectar y pedir el dump al API de producción (dominio estable).
+        step('connect', 'Conectando al API de producción…');
+        const url = `${this.prodApiUrl().replace(/\/$/, '')}/server/backup/dump`;
+        const resp = await fetch(url, { headers: { 'X-Backup-Secret': secret } });
+        if (!resp.ok || !resp.body) {
+          throw new Error(`El API de producción respondió ${resp.status} ${resp.statusText}`);
+        }
+
+        // 2) Descargar el .sql.gz a un temporal, reportando bytes.
+        step('download', 'Descargando respaldo de producción…');
+        const totalBytes = Number(resp.headers.get('content-length')) || 0;
+        await this.downloadToFile(resp, tmpFile, (bytes) => {
+          const fraction = totalBytes ? bytes / totalBytes : 0;
+          progress('download', fraction, { bytes, totalBytes: totalBytes || undefined });
+        });
+      }
       const { size } = await fsp.stat(tmpFile);
       progress('download', 1, { bytes: size, totalBytes: size });
 
@@ -283,7 +299,8 @@ export class BackupService {
       this.logger.error(`Restore falló: ${err?.message}`);
       emit({ type: 'error', message: err?.message || 'Error desconocido durante el restore.' });
     } finally {
-      await fsp.unlink(tmpFile).catch(() => undefined);
+      // Solo borrar el temporal cuando NO se está usando la caché (así se puede reusar).
+      if (!reuse) await fsp.unlink(tmpFile).catch(() => undefined);
       if (!res.writableEnded) res.end();
     }
   }
