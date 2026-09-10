@@ -7,6 +7,8 @@ interface ReportItem {
   status?: string;
   date: string;
   cost?: number;
+  /** Parte del `cost` de una carga que corresponde al 2º a bordo (derivado, informativo). */
+  secondAbord?: number;
 }
 
 export class FormatIncomesDto {

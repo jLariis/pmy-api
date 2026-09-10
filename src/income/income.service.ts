@@ -36,11 +36,15 @@ export class IncomeService {
         const [sub, resolver] = await Promise.all([
           this.incomeRepository.manager.getRepository(Subsidiary).findOne({
             where: { id: subsidiaryId },
-            select: ['countTransfersAsIncome'],
+            select: ['countTransfersAsIncome', 'secondAbordAmount'],
           }),
           this.chargeRules.buildResolver(subsidiaryId),
         ]);
-        return { countTransfers: sub?.countTransfersAsIncome ?? true, resolver };
+        return {
+          countTransfers: sub?.countTransfersAsIncome ?? true,
+          resolver,
+          secondAbordAmount: Number(sub?.secondAbordAmount ?? 0),
+        };
     }
 
     private async getTotalShipmentsIncome(subsidiaryId: string, fromDate: Date, toDate: Date){
@@ -344,6 +348,14 @@ export class IncomeService {
                       displayStatus = i.incomeType;
                   }
 
+                  // 2º a bordo (informativo): parte del costo de la carga. Solo cuando el ingreso
+                  // lo tiene marcado explícitamente (secondAbordApplied=true). No es un ingreso
+                  // aparte ni una columna nueva: se deriva del monto de la sucursal.
+                  const secondAbord =
+                      i.sourceType === 'charge' && i.secondAbordApplied === true
+                          ? Number(ctx.secondAbordAmount ?? 0)
+                          : 0;
+
                   return {
                       type: displayType,
                       trackingNumber: i.trackingNumber,
@@ -351,6 +363,7 @@ export class IncomeService {
                       status: displayStatus,
                       date: hermDate.format('YYYY-MM-DD HH:mm:ss'),
                       cost: Number(i.cost) || 0,
+                      secondAbord,
                       statusHistory: i.shipment?.statusHistory || [],
                       commitDateTime: i.shipment?.commitDateTime
                   };

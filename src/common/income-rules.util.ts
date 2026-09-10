@@ -34,6 +34,8 @@ export interface CountableOptions {
   countTransfers?: boolean;
   /** Reglas de cobro por estatus (charge_rule). Si falta → todo shipment/charge cuenta. */
   resolver?: ChargeableResolver;
+  /** Monto del 2º a bordo de la sucursal, para desglosarlo (informativo) en el reporte de cargas. */
+  secondAbordAmount?: number;
 }
 
 /** Código de cobro efectivo de un ingreso: 'DELIVERED' si entregado; si no, el código de no-entrega. */
