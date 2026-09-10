@@ -24,21 +24,6 @@ export class ConsolidadorController {
     private readonly audit: ConsolidadorAuditService,
   ) {}
 
-  /** Filas de income de la semana (todos los sourceType) + totales por bucket. */
-  @Get(':subsidiaryId/:fromDate/:toDate')
-  getWeek(
-    @Param('subsidiaryId') subsidiaryId: string,
-    @Param('fromDate') fromDate: string,
-    @Param('toDate') toDate: string,
-    @Query() q: ConsolidadorQueryDto,
-  ) {
-    // Los límites llegan como YYYY-MM-DD (lun–dom) desde el FE. `new Date('YYYY-MM-DD')` es
-    // medianoche UTC, lo que dejaría fuera casi todo el domingo; expandimos a inicio/fin de día.
-    const from = new Date(`${fromDate}T00:00:00.000`);
-    const to = new Date(`${toDate}T23:59:59.999`);
-    return this.read.getWeek(subsidiaryId, from, to, q);
-  }
-
   /** Historial de cambios de un ingreso (más reciente primero). */
   @Get('income/:id/history')
   history(@Param('id') id: string) {
@@ -79,5 +64,24 @@ export class ConsolidadorController {
   @Patch('package/:shipmentId/status')
   fixStatus(@Param('shipmentId') id: string, @Body() dto: FixStatusDto, @Req() req: any) {
     return this.status.fixStatus(id, dto.newStatus, dto.reason, req.user?.userId);
+  }
+
+  /**
+   * Filas de income de la semana (todos los sourceType) + totales por bucket.
+   * IMPORTANTE: va al FINAL — su patrón `:subsidiaryId/:fromDate/:toDate` (3 segmentos dinámicos)
+   * ensombrecería rutas más específicas de 3 segmentos como `income/:id/history` si se declarara antes.
+   */
+  @Get(':subsidiaryId/:fromDate/:toDate')
+  getWeek(
+    @Param('subsidiaryId') subsidiaryId: string,
+    @Param('fromDate') fromDate: string,
+    @Param('toDate') toDate: string,
+    @Query() q: ConsolidadorQueryDto,
+  ) {
+    // Los límites llegan como YYYY-MM-DD (lun–dom) desde el FE. `new Date('YYYY-MM-DD')` es
+    // medianoche UTC, lo que dejaría fuera casi todo el domingo; expandimos a inicio/fin de día.
+    const from = new Date(`${fromDate}T00:00:00.000`);
+    const to = new Date(`${toDate}T23:59:59.999`);
+    return this.read.getWeek(subsidiaryId, from, to, q);
   }
 }
