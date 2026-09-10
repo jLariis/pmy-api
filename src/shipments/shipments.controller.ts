@@ -17,8 +17,7 @@ import * as dayjs from 'dayjs';
 import { UniversalAuditDto } from './dto/audit-entity-type.dto';
 import { BusinessException } from 'src/common/business.exception';
 import { NoAudit } from 'src/audit/audit.decorator';
-import { WhereParcelDhlService } from 'src/tracking/where-parcel-dhl.service';
-import { runDhlTrackingCycle, runDhlWebhookRegistrationCycle } from 'src/tracking/dhl-tracking-cycle';
+import { DhlService } from './dhl.service';
 import { ImportFilesService } from 'src/import-files/import-files.service';
 
 @ApiTags('shipments')
@@ -30,7 +29,7 @@ export class ShipmentsController {
   constructor(
     private readonly shipmentsService: ShipmentsService,
     private readonly fedexService: FedexService,
-    private readonly whereParcelService: WhereParcelDhlService,
+    private readonly dhlService: DhlService,
     private readonly importFiles: ImportFilesService,
   ) {}
 
@@ -1053,9 +1052,9 @@ export class ShipmentsController {
     }
   }
 
-  @NoAudit() // Consulta directa a paquetería a través de WhereParcel: no auditable.
+  @NoAudit() // Consulta directa a la API oficial de DHL: no auditable.
   @Post('dhl/manual-track')
-  @ApiOperation({ summary: 'Consultar estatus de DHL manualmente vía WhereParcel' })
+  @ApiOperation({ summary: 'Consultar estatus de DHL manualmente (API oficial)' })
   @ApiBody({
     schema: {
       type: 'object',
@@ -1063,7 +1062,7 @@ export class ShipmentsController {
         trackingNumbers: {
           type: 'array',
           items: { type: 'string' },
-          description: 'Lista de números de rastreo de DHL'
+          description: 'Lista de números de rastreo DHL (guía maestra de 10 dígitos)'
         }
       }
     }
@@ -1077,13 +1076,13 @@ export class ShipmentsController {
     }
 
     try {
-      this.logger.log(`Solicitando estatus manual para ${trackingNumbers.length} guías de DHL a través de WhereParcel.`);
+      this.logger.log(`Solicitando estatus manual para ${trackingNumbers.length} guías de DHL (API oficial).`);
 
-      const trackingResults = await this.whereParcelService.fetchTrackingStatuses(trackingNumbers);
+      const trackingResults = await this.dhlService.trackBatch(trackingNumbers);
 
-      // Persistir el estatus normalizado en los envíos DHL (a menos que persist=false).
+      // Persistir el estatus en los envíos DHL (a menos que persist=false).
       const persistResult = persist
-        ? await this.shipmentsService.persistDhlTrackingResults(trackingResults)
+        ? await this.shipmentsService.persistDhlNativeResults(trackingResults)
         : null;
 
       return {
@@ -1095,88 +1094,30 @@ export class ShipmentsController {
       };
     } catch (error) {
       this.logger.error(`Error consultando estatus manual de DHL: ${error.message}`, error.stack);
-      throw new InternalServerErrorException('Ocurrió un problema interno al verificar los estatus de DHL en WhereParcel.');
+      throw new InternalServerErrorException('Ocurrió un problema interno al verificar los estatus de DHL en la API oficial.');
     }
   }
 
   /**
-   * Dispara el ciclo de tracking DHL (WhereParcel) on-demand: consulta las guías
-   * recientes no terminales y persiste su estatus. Solo superadmin.
+   * Dispara el ciclo de tracking DHL (API oficial) on-demand: rastrea las guías
+   * recientes no terminales y persiste su estatus. Corre en segundo plano. Solo superadmin.
    */
   @NoAudit()
   @Post('dhl/sync-cron')
   @UseGuards(SuperAdminGuard)
-  @ApiOperation({ summary: 'Ejecutar el ciclo de tracking DHL (WhereParcel) on-demand' })
+  @ApiOperation({ summary: 'Ejecutar el ciclo de tracking DHL (API oficial) on-demand' })
   async runDhlSyncCron() {
-    const pollCap = Number(process.env.WHEREPARCEL_POLL_CAP) || 200;
-    // El ciclo puede tardar varios minutos (el proveedor scrapea DHL, ~5s/guía).
-    // Lo corremos en SEGUNDO PLANO y respondemos de inmediato; el avance sale en
-    // los logs (lote i/n, tiempos, uso). El candado evita ciclos solapados.
-    runDhlTrackingCycle(this.shipmentsService, this.whereParcelService, pollCap, this.logger)
+    const pollCap = Number(process.env.DHL_POLL_CAP) || 100000;
+    // Puede tardar (miles de guías, 1 llamada/guía con concurrencia). Corre en
+    // SEGUNDO PLANO y responde de inmediato; el avance sale en los logs.
+    (async () => {
+      const toPoll = await this.shipmentsService.getDhlToPollNative(pollCap);
+      const results = await this.dhlService.trackBatch(toPoll.map((d) => d.trackingNumber));
+      return this.shipmentsService.persistDhlNativeResults(results);
+    })()
       .then((s) => this.logger.log(`✅ [dhl/sync-cron bg] ${JSON.stringify(s)}`))
       .catch((e) => this.logger.error(`❌ [dhl/sync-cron bg] ${e.message}`, e.stack));
     return { success: true, started: true, background: true };
-  }
-
-  /** Uso del plan WhereParcel (para mostrar en Configuración). */
-  @NoAudit()
-  @Get('dhl/quota')
-  @ApiOperation({ summary: 'Uso del plan WhereParcel (total/usado/restante)' })
-  async getWhereParcelUsage() {
-    // El uso real solo viene en /v2/track (no en register/subscriptions). Si el
-    // snapshot está viejo, lo refrescamos con UNA consulta a una guía DHL (cacheada
-    // suele ser gratis), máx 1 cada 10 min. Así la tarjeta muestra el valor real.
-    if (this.whereParcelService.isUsageStale()) {
-      try {
-        const one = await this.shipmentsService.getDhlToPoll(1);
-        if (one.length) await this.whereParcelService.fetchTrackingStatuses([one[0].trackingNumber]);
-      } catch (e: any) {
-        this.logger.warn(`No se pudo refrescar el uso de WhereParcel: ${e?.message}`);
-      }
-    }
-    return this.whereParcelService.getUsage();
-  }
-
-  /**
-   * Registra a webhooks (WhereParcel) las guías DHL pendientes (bootstrap o manual).
-   * Corre en segundo plano (puede registrar miles en lotes de 500). Solo superadmin.
-   * Devuelve la URL de callback que debe configurarse en el dashboard de WhereParcel.
-   */
-  @NoAudit()
-  @Post('dhl/webhooks/setup')
-  @UseGuards(SuperAdminGuard)
-  @ApiOperation({ summary: 'Registrar guías DHL pendientes a webhooks de WhereParcel' })
-  async setupDhlWebhooks() {
-    const cap = Number(process.env.WHEREPARCEL_WEBHOOK_SETUP_CAP) || 2000;
-    const callbackUrl = this.whereParcelService.buildCallbackUrl();
-
-    // Crea (o reutiliza) el endpoint en WhereParcel vía API — sin tocar el dashboard.
-    let endpointId: string | null = null;
-    let endpointError: string | null = null;
-    try {
-      endpointId = await this.whereParcelService.ensureWebhookEndpoint();
-    } catch (e: any) {
-      endpointError = e?.message ?? 'error desconocido';
-      this.logger.error(`No se pudo preparar el webhook endpoint: ${endpointError}`);
-    }
-
-    // Con el endpoint listo, registra las guías pendientes en segundo plano.
-    if (endpointId) {
-      runDhlWebhookRegistrationCycle(this.shipmentsService, this.whereParcelService, cap, this.logger)
-        .then((s) => this.logger.log(`✅ [dhl/webhooks/setup bg] ${JSON.stringify(s)}`))
-        .catch((e) => this.logger.error(`❌ [dhl/webhooks/setup bg] ${e.message}`, e.stack));
-    }
-
-    return {
-      success: !!endpointId,
-      started: !!endpointId,
-      background: true,
-      endpointId,
-      callbackUrl,
-      note: endpointId
-        ? `Endpoint listo (${endpointId}) y registro de guías iniciado en segundo plano.`
-        : `No se pudo preparar el endpoint: ${endpointError}. Revisa WHEREPARCEL_WEBHOOK_BASE_URL y las llaves.`,
-    };
   }
 }
 

@@ -14,15 +14,12 @@ import { UnloadingService } from 'src/unloading/unloading.service';
 import { Unloading } from 'src/entities/unloading.entity';
 import { PackageDispatch } from 'src/entities/package-dispatch.entity';
 import { DhlService } from 'src/shipments/dhl.service';
-import { WhereParcelDhlService } from 'src/tracking/where-parcel-dhl.service';
-import { WhereParcelWebhookController } from 'src/tracking/where-parcel-webhook.controller';
 import { AuditLog } from 'src/entities/audit-log.entity';
 import { DocumentsModule } from 'src/documents/documents.module';
 import { HolidaysModule } from 'src/holidays/holidays.module';
 
 @Module({
     imports: [TypeOrmModule.forFeature([Shipment, ShipmentStatus,Subsidiary, Income, ChargeShipment, Charge, Consolidated, ForPickUp, Unloading, PackageDispatch, AuditLog]), DocumentsModule, HolidaysModule],
-    controllers: [WhereParcelWebhookController],
-    providers: [TrackingCronService, ShipmentsService, FedexService, DhlService, SubsidiariesService, ConsolidatedService, MailService, UnloadingService, WhereParcelDhlService],
+    providers: [TrackingCronService, ShipmentsService, FedexService, DhlService, SubsidiariesService, ConsolidatedService, MailService, UnloadingService],
 })
 export class TrackingModule {}

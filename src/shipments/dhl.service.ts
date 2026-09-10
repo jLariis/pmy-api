@@ -1,7 +1,6 @@
 import { Injectable, Logger } from "@nestjs/common";
 import axios from 'axios';
-import * as fs from 'fs';
-import * as path from 'path';
+import pLimit from 'p-limit';
 import { Shipment, ShipmentStatus } from "src/entities";
 import { DhlShipmentDto } from "./dto/dhl/dhl-shipment.dto";
 import { ShipmentType } from "src/common/enums/shipment-type.enum";
@@ -9,132 +8,160 @@ import { ShipmentStatusType } from "src/common/enums/shipment-status-type.enum";
 import { Priority } from "src/common/enums/priority.enum";
 import { mapDhlStatusTextToEnum } from "src/utils/dhl.utils";
 
+/**
+ * Resultado normalizado de la API oficial de DHL (Shipment Tracking - Unified)
+ * por guía maestra (`trackingNumber` de 10 dígitos). Lo consume
+ * `ShipmentsService.persistDhlNativeResults`.
+ */
+export interface DhlNativeResult {
+    /** El número consultado (guía maestra de 10 dígitos). */
+    queryTrackingNumber: string;
+    /** ¿La API devolvió una guía? (404 → false, se omite). */
+    found: boolean;
+    /** Estatus de alto nivel: pre-transit | transit | delivered | failure | unknown. */
+    statusCode?: string;
+    /** Código DHL del último evento (OK/NH/BA/RD/CM/FD/PL/…). */
+    eventCode?: string;
+    /** Timestamp del último evento (ISO con offset). */
+    timestamp?: string;
+    /** Descripción legible del último evento/estatus. */
+    description?: string;
+    /** Localidad del último evento. */
+    location?: string;
+    /** JD de cada pieza de la guía (para persistir multi-pieza). */
+    pieceIds: string[];
+}
+
 @Injectable()
 export class DhlService {
     private readonly logger = new Logger(DhlService.name);
-    private currentAWB: string | null = null;
 
-    // Ruta del archivo en la raíz del proyecto para guardar el token de BlueDart/DHL
-    private readonly tokenPath = path.join(process.cwd(), 'dhl-token.json');
+    /** Concurrencia de llamadas a la API de DHL (1 guía por llamada, sin rate limit declarado). */
+    private readonly concurrency = Number(process.env.DHL_TRACK_CONCURRENCY) || 10;
+    /** Intentos por guía ante errores transitorios (429/5xx/red). */
+    private readonly maxAttempts = Number(process.env.DHL_TRACK_MAX_ATTEMPTS) || 3;
+    private readonly requestTimeoutMs = Number(process.env.DHL_TRACK_TIMEOUT_MS) || 20000;
+
+    private sleep(ms: number): Promise<void> {
+        return new Promise((resolve) => setTimeout(resolve, ms));
+    }
+
+    /** Backoff exponencial con jitter (tope 8s). */
+    private backoff(attempt: number): number {
+        return Math.min(1000 * 2 ** (attempt - 1), 8000) + Math.floor(Math.random() * 400);
+    }
 
     /**
-     * Obtiene el JWT Token (Basado en la API de Blue Dart / DHL)
+     * Rastrea UNA guía maestra en la API oficial de DHL (Shipment Tracking - Unified):
+     * `GET {DHL_API_URL}/track/shipments?trackingNumber={tn}&service=express`, header
+     * `DHL-API-Key: DHL_CLIENT_KEY`. Sin token. Reintenta ante 429/5xx/red (backoff+jitter).
+     * Un 404 = "sin datos" → `found:false` (NO es error). 401/403 = credencial inválida.
      */
-    public async getSmartToken(): Promise<string> {
-        const now = Date.now();
-        let cachedData = this.readTokenFromFile();
+    async trackByTrackingNumber(trackingNumber: string): Promise<DhlNativeResult> {
+        const tn = `${trackingNumber}`.trim();
+        const empty: DhlNativeResult = { queryTrackingNumber: tn, found: false, pieceIds: [] };
+        if (!tn) return empty;
 
-        // Validamos si el token existe y si aún es válido
-        if (cachedData && cachedData.token && now < (cachedData.expiresAt - 300000)) {
-            return cachedData.token;
+        const apiKey = process.env.DHL_CLIENT_KEY;
+        const baseUrl = process.env.DHL_API_URL;
+        if (!apiKey || !baseUrl) {
+            throw new Error('❌ Faltan DHL_API_URL / DHL_CLIENT_KEY en el entorno.');
         }
+        const url = `${baseUrl}/track/shipments`;
 
-        const clientID = process.env.DHL_CLIENT_ID;
-        const clientSecret = process.env.DHL_CLIENT_SECRET;
-       
-        if (!clientID || !clientSecret) {
-            throw new Error('❌ Las variables de entorno de DHL (ClientID / clientSecret) no están definidas.');
-        }
+        let lastError: any;
+        for (let attempt = 1; attempt <= this.maxAttempts; attempt++) {
+            try {
+                const response = await axios.get(url, {
+                    params: { trackingNumber: tn, service: 'express' },
+                    headers: { 'DHL-API-Key': apiKey },
+                    timeout: this.requestTimeoutMs,
+                });
+                return this.normalizeNative(tn, response.data);
+            } catch (error: any) {
+                const status = error.response?.status;
+                // 404: guía no encontrada aún en DHL → sin datos (no reintentar, no es error).
+                if (status === 404) return empty;
 
-        try {
-            this.logger.log('🔑 Solicitando nuevo token a DHL/Blue Dart...');
-            
-            // La documentación indica que es un método GET pasando las credenciales en los headers
-            const response = await axios.get(`${process.env.DHL_API_AUTH}`, {
-                headers: {
-                    'ClientID': clientID,
-                    'clientSecret': clientSecret
+                lastError = error;
+                const isLast = attempt === this.maxAttempts;
+                // 401/403: credencial inválida → no tiene sentido reintentar.
+                if (status === 401 || status === 403) {
+                    this.logger.error(`❌ DHL API-Key inválida/insuficiente (status ${status}) al consultar ${tn}.`);
+                    throw error;
                 }
-            });
-
-            // La respuesta entrega la propiedad JWTToken
-            const token = response.data.JWTToken;
-            
-            // Asumimos una expiración estándar (ej. 1 hora) ya que la doc no especifica el tiempo de vida
-            const expiresAt = Date.now() + (3600 * 1000);
-
-            // Guardamos el token en nuestro archivo local
-            this.saveTokenToFile(token, expiresAt);
-
-            return token;
-        } catch (error) {
-            this.logger.error('❌ Error al obtener token de DHL', error.response?.data || error.message);
-            throw error;
-        }
-    }
-
-    private saveTokenToFile(token: string, expiresAt: number) {
-        try {
-            const data = JSON.stringify({ token, expiresAt }, null, 2);
-            fs.writeFileSync(this.tokenPath, data, 'utf8');
-            this.logger.log('💾 Token persistido en dhl-token.json');
-        } catch (error) {
-            this.logger.error('❌ No se pudo escribir el archivo de token', error);
-        }
-    }
-
-    private readTokenFromFile(): { token: string; expiresAt: number } | null {
-        try {
-            if (!fs.existsSync(this.tokenPath)) {
-                this.logger.warn('📄 Archivo de token no encontrado. Se creará uno nuevo al solicitarlo.');
-                return null;
+                // 429 / 5xx / red: transitorio → backoff y reintento.
+                if (status === 429 || !error.response || (status >= 500 && status <= 599)) {
+                    if (!isLast) { await this.sleep(this.backoff(attempt)); continue; }
+                }
+                // 4xx no recuperable u otro → propaga.
+                this.logger.error(`❌ Error API DHL [${tn}] (status ${status || error.code}): ${JSON.stringify(error.response?.data || error.message).slice(0, 200)}`);
+                throw error;
             }
-            const data = fs.readFileSync(this.tokenPath, 'utf8');
-            return JSON.parse(data);
-        } catch (error) {
-            this.logger.error('❌ Error al leer o parsear el archivo de token', error);
-            return null;
         }
+        throw lastError;
     }
 
-    private deleteTokenFile() {
-        if (fs.existsSync(this.tokenPath)) {
-            fs.unlinkSync(this.tokenPath);
-            this.logger.warn('🗑️ Token local eliminado por invalidez.');
-        }
-    }
-    
     /**
-     * Rastrea el paquete usando la API principal de DHL Track.
-     * Nota: Este endpoint en particular usa un API Key directamente.
+     * Rastrea muchas guías en paralelo (concurrencia controlada, 1 guía/llamada).
+     * Las guías con 404 devuelven `found:false` (se omiten al persistir). Un error
+     * duro en una guía NO tira el lote: se registra y se continúa (el cron reintenta
+     * en el siguiente ciclo).
      */
-    async trackPackage(trackingNumber: string): Promise<any> {
-        this.logger.log(`Rastreando guía DHL: ${trackingNumber}`);
-        
-        //const token = await this.getSmartToken();
-        //console.log("🚀 ~ DhlService ~ trackPackage ~ token:", token)
+    async trackBatch(trackingNumbers: string[]): Promise<DhlNativeResult[]> {
+        const numbers = Array.from(new Set((trackingNumbers || []).map((n) => `${n}`.trim()).filter(Boolean)));
+        if (numbers.length === 0) return [];
 
-        // Endpoint principal de rastreo de DHL
-        const trackingUrl = `${process.env.DHL_API_URL}/track/shipments?trackingNumber=${trackingNumber}`;
-        
-        try {
-            // La documentación indica que se usa un método GET con el DHL-API-Key en el header
-            //'Authorization': `Bearer ${token}`
+        const limit = pLimit(this.concurrency);
+        this.logger.log(`🚚 [DHL] Rastreando ${numbers.length} guías (concurrencia ${this.concurrency})...`);
 
-            const response = await axios.get(trackingUrl, {
-                headers: {
-                    'DHL-API-Key': `${process.env.DHL_CLIENT_ID}`
-                },
-                timeout: 10000, 
-            });
-        
-            // Opcional: Aquí puedes mapear la respuesta con plainToInstance si tienes un DTO definido
-            // const trackData = plainToInstance(DhlTrackingResponseDto, response.data);
-            
-            return response.data;
-        
-        } catch (error) {
-            if (error.response?.status === 401) {
-                this.logger.warn(`API Key inválida o expirada al consultar [${trackingNumber}].`);
-            }
-            
-            const errorData = error.response?.data || error.message;
-            this.logger.error(`❌ Error API DHL [${trackingNumber}]:`, JSON.stringify(errorData));
-            
-            throw error; 
-        }
+        const results = await Promise.all(
+            numbers.map((tn) =>
+                limit(async () => {
+                    try {
+                        return await this.trackByTrackingNumber(tn);
+                    } catch (e: any) {
+                        this.logger.warn(`[DHL] Falló ${tn} tras reintentos: ${e?.message}`);
+                        return { queryTrackingNumber: tn, found: false, pieceIds: [] } as DhlNativeResult;
+                    }
+                }),
+            ),
+        );
+
+        const found = results.filter((r) => r.found).length;
+        this.logger.log(`🏁 [DHL] Rastreo terminado: ${found}/${numbers.length} con datos.`);
+        return results;
     }
-    
+
+    /** Normaliza la respuesta cruda de la API Unified a `DhlNativeResult`. */
+    private normalizeNative(queryTrackingNumber: string, data: any): DhlNativeResult {
+        const shipment = Array.isArray(data?.shipments) ? data.shipments[0] : undefined;
+        if (!shipment) return { queryTrackingNumber, found: false, pieceIds: [] };
+
+        const events = Array.isArray(shipment.events) ? shipment.events : [];
+        // Evento más reciente (no asumimos orden del arreglo).
+        const latest = events.length
+            ? events.reduce((a: any, c: any) =>
+                new Date(c?.timestamp || 0).getTime() > new Date(a?.timestamp || 0).getTime() ? c : a)
+            : undefined;
+
+        const pieceIds: string[] = Array.isArray(shipment?.details?.pieceIds)
+            ? shipment.details.pieceIds.map((p: any) => `${p}`.trim()).filter(Boolean)
+            : [];
+
+        return {
+            queryTrackingNumber,
+            found: true,
+            statusCode: shipment?.status?.statusCode ?? latest?.statusCode,
+            eventCode: latest?.status ?? shipment?.status?.status,
+            timestamp: latest?.timestamp ?? shipment?.status?.timestamp,
+            description: latest?.description ?? shipment?.status?.description,
+            location: latest?.location?.address?.addressLocality ?? shipment?.status?.location?.address?.addressLocality,
+            pieceIds,
+        };
+    }
+
+
     public parseDhlTextResp2805(text: string): DhlShipmentDto[] {
     this.logOperationStart('parseDhlText');
     

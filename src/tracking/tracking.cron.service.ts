@@ -3,8 +3,7 @@ import { Cron, CronExpression } from '@nestjs/schedule'; // Tu servicio que acce
 import { isCutoverEnabled } from 'src/tracking-sync/cutover.config';
 import { ShipmentsService } from 'src/shipments/shipments.service';
 import { UnloadingService } from 'src/unloading/unloading.service';
-import { WhereParcelDhlService } from 'src/tracking/where-parcel-dhl.service';
-import { runDhlTrackingCycle, runDhlWebhookRegistrationCycle } from 'src/tracking/dhl-tracking-cycle';
+import { DhlService } from 'src/shipments/dhl.service';
 
 
 @Injectable()
@@ -13,24 +12,18 @@ export class TrackingCronService implements OnModuleInit {
 
   /**
    * Guard de re-entrada: si la corrida anterior aún no termina (puede tardar
-   * más de 1 hora con miles de guías), NO arrancamos otra encima. Evita doble
-   * carga a FedEx, contención de locks y 429 por solapamiento.
+   * más de 1 hora con miles de guías), NO arrancamos otra encima. Cubre las 3
+   * fases (FedEx normales, FedEx F2 y DHL), que corren en secuencia.
    */
   private isRunning = false;
-  /** Guard de re-entrada para el polling de respaldo DHL. */
-  private isRunningDhl = false;
-  /** Guard de re-entrada para el registro a webhooks DHL. */
-  private isRunningDhlReg = false;
 
-  /** Tope de guías por ciclo de POLLING de respaldo (bajo, es solo red de seguridad). */
-  private readonly dhlPollCap = Number(process.env.WHEREPARCEL_FALLBACK_POLL_CAP) || 50;
-  /** Tope de guías por ciclo de REGISTRO a webhooks (lotes de 500 en el servicio). */
-  private readonly dhlRegisterCap = Number(process.env.WHEREPARCEL_REGISTER_CAP) || 500;
+  /** Tope de guías DHL por ciclo (guía maestra). Sin rate limit: default alto. */
+  private readonly dhlPollCap = Number(process.env.DHL_POLL_CAP) || 100000;
 
   constructor(
     private readonly shipmentService: ShipmentsService,
     private readonly unloadingService: UnloadingService,
-    private readonly whereParcelService: WhereParcelDhlService,
+    private readonly dhlService: DhlService,
   ) {}
 
   /**
@@ -39,8 +32,7 @@ export class TrackingCronService implements OnModuleInit {
    */
   onModuleInit() {
     this.logger.log('⏰ Crons de tracking programados:');
-    this.logger.log('   📦 FedEx: cada hora en punto (:00).');
-    this.logger.log(`   🚚 DHL/WhereParcel: registro a webhooks cada hora :30 (tope ${this.dhlRegisterCap}); polling de respaldo 1×/día 05:00 (tope ${this.dhlPollCap}) — America/Hermosillo.`);
+    this.logger.log('   📦 FedEx + 🚚 DHL: cada hora en punto (:00), con la API oficial de cada paquetería.');
   }
 
   @Cron(CronExpression.EVERY_HOUR)
@@ -68,11 +60,10 @@ export class TrackingCronService implements OnModuleInit {
       ]);
 
       if (shipments.length === 0 && chargeShipments.length === 0) {
-        this.logger.log('📪 No hay envíos ni F2 para procesar.');
-        return;
+        this.logger.log('📪 No hay envíos FedEx ni F2 para procesar; continúo con DHL.');
       }
 
-      this.logger.log(`📊 Total a procesar: ${shipments.length} normales y ${chargeShipments.length} F2`);
+      this.logger.log(`📊 Total a procesar: ${shipments.length} normales y ${chargeShipments.length} F2 (+ DHL abajo)`);
 
       // 2. FASE 1: Envíos Normales
       if (shipments.length > 0) {
@@ -103,10 +94,28 @@ export class TrackingCronService implements OnModuleInit {
         );
       }
 
+      // 4. FASE 3: DHL (API oficial) — mismo cron horario, tras FedEx.
+      const startF3 = Date.now();
+      this.logger.log('🚀 [FASE 3] Iniciando actualización de guías DHL (API oficial)...');
+      const dhlToPoll = await this.shipmentService.getDhlToPollNative(this.dhlPollCap);
+      if (dhlToPoll.length > 0) {
+        const numbers = dhlToPoll.map((d) => d.trackingNumber);
+        const dhlResults = await this.dhlService.trackBatch(numbers);
+        const dhlSummary = await this.shipmentService.persistDhlNativeResults(dhlResults);
+        const durationF3 = ((Date.now() - startF3) / 1000 / 60).toFixed(2);
+        this.logger.log(
+          `✅ [FASE 3] DHL finalizada en ${durationF3} min. ` +
+          `Guías: ${numbers.length} | actualizadas: ${dhlSummary.updated.length} | ` +
+          `sin datos: ${dhlSummary.notFound.length} | errores: ${dhlSummary.errors.length}`
+        );
+      } else {
+        this.logger.log('📭 [FASE 3] No hay guías DHL activas por rastrear.');
+      }
+
       // Resumen Final
       const totalDurationMin = ((Date.now() - globalStart) / 1000 / 60).toFixed(2);
-      const totalCount = shipments.length + chargeShipments.length;
-      
+      const totalCount = shipments.length + chargeShipments.length + dhlToPoll.length;
+
       this.logger.log(`🏁 Sincronización TOTAL finalizada con éxito.`);
       this.logger.log(`✅ Detalle final: ${totalCount} trackings procesados en ${totalDurationMin} minutos.`);
 
@@ -114,50 +123,6 @@ export class TrackingCronService implements OnModuleInit {
       this.logger.error(`❌ Error fatal en handleCron: ${err.message}`);
     } finally {
       this.isRunning = false;
-    }
-  }
-
-  /**
-   * MECANISMO PRINCIPAL: registra guías DHL nuevas a webhooks de WhereParcel
-   * (cada hora al minuto 30). Tras registrarlas, WhereParcel EMPUJA los cambios
-   * de estatus a nuestro callback (sin polling). Barato e idempotente.
-   */
-  @Cron('0 30 * * * *', { timeZone: 'America/Hermosillo' })
-  async handleDhlWebhookRegisterCron() {
-    if (this.isRunningDhlReg) {
-      this.logger.warn('⏭️ Cron DHL (registro webhook): la corrida anterior sigue en curso; se omite.');
-      return;
-    }
-    this.isRunningDhlReg = true;
-    this.logger.log('🕐 [DHL/webhook] Registrando guías nuevas a webhooks...');
-    try {
-      await runDhlWebhookRegistrationCycle(this.shipmentService, this.whereParcelService, this.dhlRegisterCap, this.logger);
-    } catch (err) {
-      this.logger.error(`❌ Error en handleDhlWebhookRegisterCron: ${err.message}`);
-    } finally {
-      this.isRunningDhlReg = false;
-    }
-  }
-
-  /**
-   * RESPALDO de baja frecuencia (1×/día, 05:00): consulta por polling unas pocas
-   * guías DHL no terminales, por si se perdió algún webhook. Tope bajo para no
-   * gastar cuota ni sufrir la lentitud del scraping.
-   */
-  @Cron('0 0 5 * * *', { timeZone: 'America/Hermosillo' })
-  async handleDhlFallbackPollCron() {
-    if (this.isRunningDhl) {
-      this.logger.warn('⏭️ Cron DHL (respaldo): la corrida anterior sigue en curso; se omite.');
-      return;
-    }
-    this.isRunningDhl = true;
-    this.logger.log('🕐 [DHL/WhereParcel] Polling de respaldo (1×/día)...');
-    try {
-      await runDhlTrackingCycle(this.shipmentService, this.whereParcelService, this.dhlPollCap, this.logger);
-    } catch (err) {
-      this.logger.error(`❌ Error en handleDhlFallbackPollCron: ${err.message}`);
-    } finally {
-      this.isRunningDhl = false;
     }
   }
 

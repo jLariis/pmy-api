@@ -22,8 +22,7 @@ export interface CarrierStatusResolution {
  * Regla de negocio (2026-07): SOLO `OK` (entregado/POD) cobra y es terminal.
  * Código desconocido → pendiente, sin cobro, no terminal.
  *
- * Listo para enchufar la API oficial de DHL: basta llamar aquí con el código que
- * devuelva DHL. (17track/WhereParcel quedaron descartados.)
+ * Lo alimenta `resolveDhlNativeStatus` con el código de evento de la API oficial de DHL.
  */
 export function mapDhlCodeToInternal(code: string): CarrierStatusResolution {
   const key = (code || '').trim().toUpperCase();
@@ -57,37 +56,60 @@ export function mapDhlStatusTextToEnum(code: string): ShipmentStatusType {
   return statusMap[code] || ShipmentStatusType.PENDIENTE;
 }
 
+/** Códigos de RESULTADO de entrega de DHL (los únicos con semántica de cobro/terminal). */
+const DHL_OUTCOME_CODES = new Set<string>([
+  DhlStatusType.OK, DhlStatusType.NH, DhlStatusType.BA, DhlStatusType.RD, DhlStatusType.CM,
+]);
+
 /**
- * Mapea el ESTATUS PRINCIPAL de 17TRACK v2.4 (`track_info.latest_status.status`)
- * al estatus local de la app. OJO: son los valores de 17TRACK (InTransit,
- * Delivered, …), NO los códigos nativos de DHL (PU/PL/…); por eso es un mapa
- * aparte de `mapDhlStatusTextToEnum`.
+ * Resuelve el estatus de la **API oficial de DHL** (Shipment Tracking - Unified,
+ * `api-eu.dhl.com/track/shipments`) a la capa canónica interna.
  *
- * Devuelve `null` para estados que NO conviene persistir (NotFound / sin dato),
- * para que el servicio simplemente los omita.
+ * Combina dos señales de la respuesta:
+ *  - `statusCode` de alto nivel: `pre-transit | transit | delivered | failure | unknown`.
+ *  - `eventCode`: el código DHL del último evento (`status`): OK/NH/BA/RD/CM (resultado de
+ *    entrega) o FD/PL/AR/… (movimientos de tránsito).
+ *
+ * Precedencia: entrega > incidencia con código fino (DEX) > fallo genérico > tránsito >
+ * pre-tránsito. Devuelve `null` cuando NO conviene persistir (`unknown`/sin dato), para que
+ * el llamador simplemente lo omita. Es la ÚNICA pieza que conoce la semántica DHL nativa.
  */
-export function map17TrackStatusToLocal(status: string): ShipmentStatusType | null {
-  const key = (status || '').trim().toLowerCase();
-  const map: Record<string, ShipmentStatusType | null> = {
-    delivered: ShipmentStatusType.ENTREGADO,
-    outfordelivery: ShipmentStatusType.EN_RUTA,
-    intransit: ShipmentStatusType.EN_TRANSITO,
-    inforeceived: ShipmentStatusType.RECOLECCION,
-    availableforpickup: ShipmentStatusType.ES_OCURRE,
-    deliveryfailure: ShipmentStatusType.NO_ENTREGADO,
-    exception: ShipmentStatusType.PENDIENTE, // incidencia (espejo de MS/TD)
-    expired: ShipmentStatusType.PENDIENTE,
-    notfound: null,
-    undelivered: ShipmentStatusType.NO_ENTREGADO,
-  };
-  return key in map ? map[key] : ShipmentStatusType.PENDIENTE;
+export function resolveDhlNativeStatus(
+  statusCode?: string,
+  eventCode?: string,
+): CarrierStatusResolution | null {
+  const sc = (statusCode || '').trim().toLowerCase();
+  const ec = (eventCode || '').trim().toUpperCase();
+
+  // 1. Entrega: lo más específico y terminal (cobra).
+  if (sc === 'delivered' || ec === DhlStatusType.OK) return mapDhlCodeToInternal(DhlStatusType.OK);
+
+  // 2. Incidencia con código de resultado conocido → DEX exacto (NH/BA/RD/CM).
+  if (DHL_OUTCOME_CODES.has(ec)) return mapDhlCodeToInternal(ec);
+
+  // 3. Fallo genérico sin código fino.
+  if (sc === 'failure') {
+    return { internalStatus: ShipmentStatusType.NO_ENTREGADO, chargeable: false, terminal: false };
+  }
+
+  // 4. En tránsito (paridad con FedEx IT/OD → EN_RUTA).
+  if (sc === 'transit') {
+    return { internalStatus: ShipmentStatusType.EN_RUTA, chargeable: false, terminal: false };
+  }
+
+  // 5. Pre-tránsito: etiqueta creada / info recibida, aún sin movimiento real.
+  if (sc === 'pre-transit' || sc === 'pretransit') {
+    return { internalStatus: ShipmentStatusType.PENDIENTE, chargeable: false, terminal: false };
+  }
+
+  // 6. Desconocido / sin dato → no persistir.
+  return null;
 }
 
 /**
- * Clasifica el texto de una incidencia DHL (descripción del evento de WhereParcel)
- * a un código DEX de la taxonomía de la app, por palabras clave. WhereParcel NO
- * entrega el código DEX directo para DHL (solo `exception` + descripción libre,
- * a veces en otro idioma), por eso se infiere del texto.
+ * Clasifica el texto de una incidencia DHL (descripción del evento) a un código DEX
+ * de la taxonomía de la app, por palabras clave. Útil cuando solo se tiene la
+ * descripción libre del evento (a veces en otro idioma) y no un código fino.
  *
  * DEX03 = dirección incorrecta · DEX07 = rechazado · DEX08 = cliente no disponible
  * · DEX17 = cambio de fecha. Devuelve {code,label} o null si no se reconoce.
@@ -115,33 +137,3 @@ export function classifyDhlException(
   return null;
 }
 
-/**
- * Mapea el ESTATUS normalizado de WhereParcel (campo `data.status`) al estatus
- * local de la app. WhereParcel usa un set estándar (delivered, in_transit,
- * out_for_delivery, …). Normalizamos quitando separadores para tolerar variantes
- * (snake_case / camelCase / espacios).
- *
- * Devuelve `null` para estados que NO conviene persistir (sin info), para que el
- * servicio simplemente los omita.
- */
-export function mapWhereParcelStatusToLocal(status: string): ShipmentStatusType | null {
-  const key = (status || '').trim().toLowerCase().replace(/[\s_-]/g, '');
-  const map: Record<string, ShipmentStatusType | null> = {
-    delivered: ShipmentStatusType.ENTREGADO,
-    outfordelivery: ShipmentStatusType.EN_RUTA,
-    intransit: ShipmentStatusType.EN_TRANSITO,
-    inforeceived: ShipmentStatusType.RECOLECCION,
-    pending: ShipmentStatusType.PENDIENTE,
-    availableforpickup: ShipmentStatusType.ES_OCURRE,
-    failedattempt: ShipmentStatusType.NO_ENTREGADO,
-    deliveryfailure: ShipmentStatusType.NO_ENTREGADO,
-    undelivered: ShipmentStatusType.NO_ENTREGADO,
-    returned: ShipmentStatusType.NO_ENTREGADO,
-    returntosender: ShipmentStatusType.NO_ENTREGADO,
-    exception: ShipmentStatusType.PENDIENTE, // incidencia
-    expired: ShipmentStatusType.PENDIENTE,
-    notfound: null,
-    unknown: null,
-  };
-  return key in map ? map[key] : ShipmentStatusType.PENDIENTE;
-}

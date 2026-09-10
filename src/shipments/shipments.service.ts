@@ -15,9 +15,9 @@ import { scanEventsFilter } from 'src/utils/scan-events-filter';
 import { ParsedShipmentDto } from './dto/parsed-shipment.dto';
 import { mapFedexStatusToLocalStatus } from 'src/utils/fedex.utils';
 import { resolveCode44ScanTime, localFacilityScanTimes } from 'src/utils/fedex-local-scan.util';
-import { mapWhereParcelStatusToLocal } from 'src/utils/dhl.utils';
+import { resolveDhlNativeStatus } from 'src/utils/dhl.utils';
 import { toHermosilloDateString } from 'src/common/utils';
-import type { NormalizedTrackingResult } from 'src/tracking/where-parcel-dhl.service';
+import type { DhlNativeResult } from './dhl.service';
 import { addDays, differenceInCalendarDays, differenceInDays, endOfToday, format, isSameDay, parse, parseISO, startOfToday } from 'date-fns';
 import { ShipmentType } from 'src/common/enums/shipment-type.enum';
 import { Consolidated, Income, Payment, Subsidiary } from 'src/entities';
@@ -4691,14 +4691,16 @@ export class ShipmentsService {
     }
 
     /**
-     * Persiste en los envíos DHL los estatus normalizados que devuelve 17TRACK.
-     * Por cada resultado: localiza el envío (variantes JJD↔JD + dhlUniqueId, el
-     * MÁS RECIENTE por createdAt), mapea el estatus 17TRACK → local y, si es nuevo,
-     * agrega un ShipmentStatus al historial y actualiza `shipment.status`.
-     * Si la sucursal tiene `generateDhlIncomeOnDelivery`, al detectar ENTREGADO
-     * genera el ingreso (idempotente con el cierre de ruta).
+     * Persiste el estatus de la API oficial de DHL (Shipment Tracking - Unified).
+     * Por cada resultado con datos: resuelve el estatus canónico con
+     * `resolveDhlNativeStatus` y actualiza TODAS las piezas de la guía maestra
+     * (match por `dhlUniqueId ∈ pieceIds` o por `trackingNumber = queryTrackingNumber`),
+     * agregando un `ShipmentStatus` al historial (dedupe por estatus+día, solo si es
+     * más nuevo) y actualizando `shipment.status`.
+     * Si `resolution.chargeable` (ENTREGADO) y la sucursal tiene
+     * `generateDhlIncomeOnDelivery`, genera el ingreso (idempotente con el cierre de ruta).
      */
-    async persistDhlTrackingResults(results: NormalizedTrackingResult[]) {
+    async persistDhlNativeResults(results: DhlNativeResult[]) {
       const summary = {
         updated: [] as { trackingNumber: string; status: string; subsidiaryId?: string; rawStatus?: string; detail?: string }[],
         unchanged: [] as string[],
@@ -4708,73 +4710,81 @@ export class ShipmentsService {
       };
 
       for (const r of results || []) {
-        const trackingNumber = r.trackingNumber;
+        const trackingNumber = r.queryTrackingNumber;
         try {
-          const mapped = mapWhereParcelStatusToLocal(r.currentStatus);
-          if (!mapped) { summary.skipped.push(trackingNumber); continue; }
+          if (!r.found) { summary.notFound.push(trackingNumber); continue; }
 
-          // Variantes DHL: JJD↔JD + dhlUniqueId (mismo criterio que la búsqueda de detalle).
-          const variants = [trackingNumber];
-          if (trackingNumber.startsWith('JJD')) variants.push(trackingNumber.substring(1));
-          else if (trackingNumber.startsWith('JD')) variants.push('J' + trackingNumber);
-          const where = variants.flatMap((tn) => [{ trackingNumber: tn }, { dhlUniqueId: tn }]);
+          const resolution = resolveDhlNativeStatus(r.statusCode, r.eventCode);
+          if (!resolution) { summary.skipped.push(trackingNumber); continue; }
+          const mapped = resolution.internalStatus;
 
+          const parsed = r.timestamp ? new Date(r.timestamp) : new Date();
+          const eventDate = isNaN(parsed.getTime()) ? new Date() : parsed;
+
+          // MULTI-PIEZA: todas las filas cuyo dhlUniqueId esté en pieceIds de la
+          // respuesta, MÁS las que compartan el trackingNumber maestro consultado.
+          const pieceIds = (r.pieceIds || []).filter(Boolean);
+          const where = [
+            { trackingNumber: r.queryTrackingNumber },
+            ...pieceIds.map((jd) => ({ dhlUniqueId: jd })),
+          ];
           const matches = await this.shipmentRepository.find({
             where,
-            relations: ['statusHistory', 'subsidiary'], // subsidiary: para costo + flag de ingreso
+            relations: ['statusHistory', 'subsidiary'], // subsidiary: costo + flag de ingreso
             order: { createdAt: 'DESC' },
           });
           if (matches.length === 0) { summary.notFound.push(trackingNumber); continue; }
-          const shipment = matches[0]; // el más reciente (dedup de guías recicladas)
 
-          const parsed = r.latestEvent?.time ? new Date(r.latestEvent.time) : new Date();
-          const eventDate = isNaN(parsed.getTime()) ? new Date() : parsed;
+          let anyUpdated = false;
+          for (const shipment of matches) {
+            shipment.statusHistory = shipment.statusHistory || [];
+            const latest = shipment.statusHistory.length
+              ? shipment.statusHistory.reduce((a, c) => (new Date(c.timestamp) > new Date(a.timestamp) ? c : a))
+              : null;
+            const isNewer = !latest || eventDate > new Date(latest.timestamp);
+            const isDuplicate = shipment.statusHistory.some(
+              (s) => s.status === mapped && isSameDay(s.timestamp, eventDate),
+            );
+            if (isDuplicate && !isNewer) { summary.unchanged.push(shipment.trackingNumber); continue; }
 
-          shipment.statusHistory = shipment.statusHistory || [];
-          const latest = shipment.statusHistory.length
-            ? shipment.statusHistory.reduce((a, c) => (new Date(c.timestamp) > new Date(a.timestamp) ? c : a))
-            : null;
-          const isNewer = !latest || eventDate > new Date(latest.timestamp);
-          const isDuplicate = shipment.statusHistory.some(
-            (s) => s.status === mapped && isSameDay(s.timestamp, eventDate),
-          );
-          if (isDuplicate && !isNewer) { summary.unchanged.push(trackingNumber); continue; }
+            const ns = new ShipmentStatus();
+            ns.status = mapped;
+            ns.timestamp = eventDate;
+            ns.notes = `DHL: ${r.statusCode ?? '?'}${r.eventCode ? ` / ${r.eventCode}` : ''}${
+              r.description ? ` - ${r.description}` : ''
+            }`.slice(0, 250);
+            ns.shipment = shipment;
 
-          const ns = new ShipmentStatus();
-          ns.status = mapped;
-          ns.timestamp = eventDate;
-          ns.notes = `WhereParcel: ${r.currentStatus}${r.subStatus ? ` / ${r.subStatus}` : ''}${
-            r.latestEvent?.description ? ` - ${r.latestEvent.description}` : ''
-          }`.slice(0, 250);
-          ns.shipment = shipment;
+            await this.shipmentRepository.manager.transaction(async (tem) => {
+              await tem.save(ShipmentStatus, ns);
+              await tem
+                .createQueryBuilder()
+                .update(Shipment)
+                .set({ status: mapped })
+                .where('id = :id', { id: shipment.id })
+                .execute();
 
-          await this.shipmentRepository.manager.transaction(async (tem) => {
-            await tem.save(ShipmentStatus, ns);
-            await tem
-              .createQueryBuilder()
-              .update(Shipment)
-              .set({ status: mapped })
-              .where('id = :id', { id: shipment.id })
-              .execute();
+              // Ingreso DHL al detectar ENTREGA (si la sucursal lo activa). Solo el
+              // desenlace `chargeable` (ENTREGADO) cobra aquí; los DEX se cobran en
+              // cierre de ruta. generateIncomes es idempotente (dedup guía+tipo+semana)
+              // y el cierre también checa "¿ya existe ingreso?", así que NO se duplica.
+              if (resolution.chargeable && mapped === ShipmentStatusType.ENTREGADO &&
+                  (shipment.subsidiary as any)?.generateDhlIncomeOnDelivery) {
+                shipment.status = mapped; // generateIncomes lee shipment.status
+                await this.generateIncomes(shipment, eventDate, undefined, tem);
+              }
+            });
 
-            // Ingreso DHL al detectar ENTREGA (si la sucursal lo activa). Solo
-            // entregado: es el único billable claro que da 17TRACK (los DEX se
-            // cobran en cierre de ruta, donde sí se conoce el código). generateIncomes
-            // es idempotente (dedup guía+tipo+semana) y el cierre de ruta también
-            // checa "¿ya existe ingreso?", así que NO se duplica.
-            if (mapped === ShipmentStatusType.ENTREGADO && (shipment.subsidiary as any)?.generateDhlIncomeOnDelivery) {
-              shipment.status = mapped; // generateIncomes lee shipment.status
-              await this.generateIncomes(shipment, eventDate, undefined, tem);
-            }
-          });
-
-          summary.updated.push({
-            trackingNumber,
-            status: mapped,
-            subsidiaryId: (shipment.subsidiary as any)?.id,
-            rawStatus: r.currentStatus,
-            detail: r.latestEvent?.description || undefined,
-          });
+            anyUpdated = true;
+            summary.updated.push({
+              trackingNumber: shipment.trackingNumber,
+              status: mapped,
+              subsidiaryId: (shipment.subsidiary as any)?.id,
+              rawStatus: r.statusCode,
+              detail: r.description || undefined,
+            });
+          }
+          if (!anyUpdated && matches.length > 0) { /* todas sin cambio, ya contadas */ }
         } catch (err: any) {
           this.logger.error(`Error persistiendo estatus DHL ${trackingNumber}: ${err?.message}`);
           summary.errors.push({ trackingNumber, reason: err?.message });
@@ -4782,13 +4792,13 @@ export class ShipmentsService {
       }
 
       this.logger.log(
-        `DHL WhereParcel persistencia → actualizados:${summary.updated.length} sin_cambio:${summary.unchanged.length} ` +
+        `DHL persistencia → actualizados:${summary.updated.length} sin_cambio:${summary.unchanged.length} ` +
           `no_encontrados:${summary.notFound.length} omitidos:${summary.skipped.length} errores:${summary.errors.length}`,
       );
       return summary;
     }
 
-    /* ===================== Reciclaje de quota 17TRACK (DHL) ===================== */
+    /* ===================== Selección de guías DHL a rastrear ===================== */
 
     /** Fecha de corte: solo guías recientes (evita reciclados viejos). */
     private dhlTrackingCutoff(): Date {
@@ -4798,138 +4808,27 @@ export class ShipmentsService {
     }
 
     /**
-     * Guías DHL a CONSULTAR en WhereParcel: recientes (cutoff) y NO terminales.
-     * Se trackea por `dhlUniqueId` (es ÚNICO; el trackingNumber puede repetirse),
-     * por eso se devuelve el `dhlUniqueId` en el campo `trackingNumber` (lo que se
-     * envía a WhereParcel) y solo se incluyen guías que SÍ tienen dhlUniqueId.
-     * `persistDhlTrackingResults` hace match por dhlUniqueId. Se prioriza lo más
-     * nuevo y se acota con `limit` (presupuesto de llamadas del ciclo).
+     * Guías DHL a RASTREAR en la API oficial: recientes (cutoff) y NO terminales.
+     * La API se consulta por el `trackingNumber` de 10 dígitos (guía maestra), que
+     * cubre TODAS las piezas de la guía en una sola llamada, así que se hace DISTINCT
+     * por `trackingNumber` (no por pieza). Devuelve {trackingNumber}, acotado por `limit`.
      */
-    async getDhlToPoll(limit: number): Promise<{ id: string; trackingNumber: string }[]> {
-      if (limit <= 0) return [];
-      const terminal = TERMINAL_SHIPMENT_STATUSES.map((s) => String(s).toLowerCase());
-      return this.shipmentRepository
-        .createQueryBuilder('s')
-        .select(['s.id AS id', 's.dhlUniqueId AS trackingNumber'])
-        .where('LOWER(s.shipmentType) = :type', { type: ShipmentType.DHL.toLowerCase() })
-        .andWhere('s.dhlUniqueId IS NOT NULL')
-        .andWhere("TRIM(s.dhlUniqueId) != ''")
-        .andWhere('s.createdAt > :cutoff', { cutoff: this.dhlTrackingCutoff() })
-        .andWhere('LOWER(s.status) NOT IN (:...terminal)', { terminal })
-        .orderBy('s.createdAt', 'DESC')
-        .limit(limit)
-        .getRawMany();
-    }
-
-    /** Guías DHL ACTIVAS en 17TRACK (registradas y no liberadas) — para hacer polling. */
-    async getActiveRegisteredDhl(): Promise<{ id: string; trackingNumber: string; status: ShipmentStatusType }[]> {
-      const rows = await this.shipmentRepository
-        .createQueryBuilder('s')
-        .select(['s.id AS id', 's.trackingNumber AS trackingNumber', 's.status AS status'])
-        .where('LOWER(s.shipmentType) = :type', { type: ShipmentType.DHL.toLowerCase() })
-        .andWhere('s.seventeenRegisteredAt IS NOT NULL')
-        .andWhere('s.seventeenReleasedAt IS NULL')
-        .getRawMany();
-      return rows;
-    }
-
-    /** Cuenta los slots de quota ocupados (activos en 17TRACK). */
-    async countActiveRegisteredDhl(): Promise<number> {
-      return this.shipmentRepository
-        .createQueryBuilder('s')
-        .where('LOWER(s.shipmentType) = :type', { type: ShipmentType.DHL.toLowerCase() })
-        .andWhere('s.seventeenRegisteredAt IS NOT NULL')
-        .andWhere('s.seventeenReleasedAt IS NULL')
-        .getCount();
-    }
-
-    /** Guías DHL NO terminales aún sin registrar en 17TRACK (candidatas a alta). */
-    async getUnregisteredDhl(limit: number): Promise<{ id: string; trackingNumber: string }[]> {
+    async getDhlToPollNative(limit: number): Promise<{ trackingNumber: string }[]> {
       if (limit <= 0) return [];
       const terminal = TERMINAL_SHIPMENT_STATUSES.map((s) => String(s).toLowerCase());
       const rows = await this.shipmentRepository
         .createQueryBuilder('s')
-        .select(['s.id AS id', 's.trackingNumber AS trackingNumber'])
+        .select('s.trackingNumber', 'trackingNumber')
         .where('LOWER(s.shipmentType) = :type', { type: ShipmentType.DHL.toLowerCase() })
-        .andWhere('s.seventeenRegisteredAt IS NULL')
+        .andWhere('s.trackingNumber IS NOT NULL')
+        .andWhere("TRIM(s.trackingNumber) != ''")
         .andWhere('s.createdAt > :cutoff', { cutoff: this.dhlTrackingCutoff() })
         .andWhere('LOWER(s.status) NOT IN (:...terminal)', { terminal })
-        .orderBy('s.createdAt', 'DESC')
+        .groupBy('s.trackingNumber')
+        .orderBy('MAX(s.createdAt)', 'DESC')
         .limit(limit)
         .getRawMany();
       return rows;
-    }
-
-    /**
-     * Guías DHL pendientes de REGISTRAR a webhook de WhereParcel: recientes, NO
-     * terminales, con `dhlUniqueId`, y aún sin registrar (`seventeenRegisteredAt`
-     * se reusa como "registrada a webhook"). Devuelve {id, trackingNumber=dhlUniqueId}.
-     */
-    async getDhlToRegisterForWebhook(limit: number): Promise<{ id: string; trackingNumber: string }[]> {
-      if (limit <= 0) return [];
-      const terminal = TERMINAL_SHIPMENT_STATUSES.map((s) => String(s).toLowerCase());
-      return this.shipmentRepository
-        .createQueryBuilder('s')
-        .select(['s.id AS id', 's.dhlUniqueId AS trackingNumber'])
-        .where('LOWER(s.shipmentType) = :type', { type: ShipmentType.DHL.toLowerCase() })
-        .andWhere('s.dhlUniqueId IS NOT NULL')
-        .andWhere("TRIM(s.dhlUniqueId) != ''")
-        .andWhere('s.seventeenRegisteredAt IS NULL')
-        .andWhere('s.createdAt > :cutoff', { cutoff: this.dhlTrackingCutoff() })
-        .andWhere('LOWER(s.status) NOT IN (:...terminal)', { terminal })
-        .orderBy('s.createdAt', 'DESC')
-        .limit(limit)
-        .getRawMany();
-    }
-
-    /** Marca guías como registradas a webhook (por id). Reusa `seventeenRegisteredAt`. */
-    async markDhlWebhookRegistered(ids: string[]): Promise<void> {
-      if (!ids?.length) return;
-      await this.shipmentRepository
-        .createQueryBuilder()
-        .update(Shipment)
-        .set({ seventeenRegisteredAt: () => 'CURRENT_TIMESTAMP' })
-        .where('id IN (:...ids)', { ids })
-        .andWhere('seventeenRegisteredAt IS NULL')
-        .execute();
-    }
-
-    /** Guías DHL activas en 17TRACK que YA llegaron a terminal → liberar su slot. */
-    async getActiveRegisteredDhlTerminal(): Promise<{ id: string; trackingNumber: string }[]> {
-      const terminal = TERMINAL_SHIPMENT_STATUSES.map((s) => String(s).toLowerCase());
-      const rows = await this.shipmentRepository
-        .createQueryBuilder('s')
-        .select(['s.id AS id', 's.trackingNumber AS trackingNumber'])
-        .where('LOWER(s.shipmentType) = :type', { type: ShipmentType.DHL.toLowerCase() })
-        .andWhere('s.seventeenRegisteredAt IS NOT NULL')
-        .andWhere('s.seventeenReleasedAt IS NULL')
-        .andWhere('LOWER(s.status) IN (:...terminal)', { terminal })
-        .getRawMany();
-      return rows;
-    }
-
-    /** Marca como registradas (consumió quota) las guías indicadas. */
-    async markDhlRegistered(trackingNumbers: string[]): Promise<void> {
-      if (!trackingNumbers?.length) return;
-      await this.shipmentRepository
-        .createQueryBuilder()
-        .update(Shipment)
-        .set({ seventeenRegisteredAt: () => 'CURRENT_TIMESTAMP' })
-        .where('trackingNumber IN (:...nums)', { nums: trackingNumbers })
-        .andWhere('LOWER(shipmentType) = :type', { type: ShipmentType.DHL.toLowerCase() })
-        .andWhere('seventeenRegisteredAt IS NULL')
-        .execute();
-    }
-
-    /** Marca como liberadas (slot de quota devuelto) las guías indicadas. */
-    async markDhlReleased(ids: string[]): Promise<void> {
-      if (!ids?.length) return;
-      await this.shipmentRepository
-        .createQueryBuilder()
-        .update(Shipment)
-        .set({ seventeenReleasedAt: () => 'CURRENT_TIMESTAMP' })
-        .where('id IN (:...ids)', { ids })
-        .execute();
     }
 
      async getShipmentDetailsByTrackingNumber(trackingNumber: string): Promise<SearchShipmentDto | null> {
