@@ -38,6 +38,19 @@ export class BackupController {
   }
 
   /**
+   * Tamaño real de la BD conectada (en prod = producción) y número de tablas.
+   * Lo consume el restore local para mostrar el peso total desde el inicio.
+   * Autorizado por el secreto compartido `X-Backup-Secret`.
+   */
+  @Get('size')
+  @Public()
+  @UseGuards(BackupSecretGuard)
+  @NoAudit()
+  size() {
+    return this.backupService.dbSizeInfo();
+  }
+
+  /**
    * Trae el dump de producción y lo restaura en el MySQL local (SOLO-DEV).
    * Transmite el progreso en NDJSON. Solo superadmin.
    */

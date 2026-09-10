@@ -212,6 +212,25 @@ export class BackupService {
     const tmpFile = path.join(os.tmpdir(), 'pmy-restore-cache.sql.gz');
 
     try {
+      // 0) Peso real de la BD de producción (desde el inicio), sin bloquear si falla.
+      let prodBytes = 0;
+      let totalTables = 0;
+      try {
+        const sizeResp = await fetch(`${this.prodApiUrl().replace(/\/$/, '')}/server/backup/size`, {
+          headers: { 'X-Backup-Secret': secret },
+        });
+        if (sizeResp.ok) {
+          const info: any = await sizeResp.json();
+          prodBytes = Number(info.bytes) || 0;
+          totalTables = Number(info.tables) || 0;
+          emit({ type: 'size', bytes: prodBytes, tables: totalTables });
+          const gb = (prodBytes / 1_073_741_824).toFixed(2);
+          logLevel('phase', `BD de producción: ${gb} GB en disco · ${totalTables} tablas`);
+        }
+      } catch {
+        /* el peso es informativo; si prod no responde el size, seguimos igual */
+      }
+
       // 1) Si se pidió reusar y hay un dump reciente (< 2 h), saltar la descarga.
       let usedCache = false;
       if (reuse) {
@@ -272,15 +291,21 @@ export class BackupService {
             size,
             (bytes) => {
               lastDecompressed = bytes;
-              // Barra honesta: se topa en 95% mientras mysql sigue aplicando
-              // (el .sql descomprimido pesa ~4x el .gz; solo es para la barra).
-              const frac = size ? Math.min(0.95, bytes / (size * 4)) : 0;
-              progress('restore', frac, { bytes });
+              // Barra honesta: contra el tamaño real de la BD si lo conocemos
+              // (bytes descomprimidos aplicados / bytes en disco), si no, estimando
+              // ~4x sobre el .gz. Se topa antes del 100% hasta que mysql cierra.
+              const frac = prodBytes
+                ? Math.min(0.99, bytes / prodBytes)
+                : size
+                  ? Math.min(0.95, bytes / (size * 4))
+                  : 0;
+              progress('restore', frac, { bytes, totalBytes: prodBytes || undefined });
             },
             log,
             (name, index) => {
               currentTable = name;
-              logLevel('table', `▶ [#${index}] Restaurando \`${name}\``);
+              const of = totalTables ? `/${totalTables}` : '';
+              logLevel('table', `▶ [#${index}${of}] Restaurando \`${name}\``);
             },
           ),
         );
@@ -452,6 +477,11 @@ export class BackupService {
 
   /** Corre `mysql -N -e <sql>` y devuelve la primera celda como string, o null. */
   private queryScalar(db: DbTarget, sql: string): Promise<string | null> {
+    return this.queryRow(db, sql).then((row) => row[0] ?? null);
+  }
+
+  /** Corre `mysql -N -e <sql>` y devuelve las celdas de la primera fila. */
+  private queryRow(db: DbTarget, sql: string): Promise<string[]> {
     const args = [`--host=${db.host}`, `--port=${db.port}`, `--user=${db.username}`, '-N', '-e', sql];
     return new Promise((resolve, reject) => {
       const child = spawn(this.mysqlBin(), args, { env: { ...process.env, MYSQL_PWD: db.password } });
@@ -459,9 +489,24 @@ export class BackupService {
       child.stdout.on('data', (d) => (out += d.toString()));
       child.on('error', reject);
       child.on('close', (code) =>
-        code === 0 ? resolve(out.trim().split(/\s+/)[0] || null) : reject(new Error(`mysql exit ${code}`)),
+        code === 0
+          ? resolve(out.trim().split('\n')[0]?.split(/\s+/).filter(Boolean) ?? [])
+          : reject(new Error(`mysql exit ${code}`)),
       );
     });
+  }
+
+  /**
+   * Tamaño real (bytes en disco, data+index) y número de tablas de la BD
+   * conectada. En el proceso de PRODUCCIÓN reporta el tamaño de la BD de prod.
+   */
+  async dbSizeInfo(): Promise<{ bytes: number; tables: number; database: string }> {
+    const db = this.dbTarget();
+    const row = await this.queryRow(
+      db,
+      `SELECT COALESCE(SUM(data_length+index_length),0), COUNT(*) FROM information_schema.tables WHERE table_schema='${db.database}'`,
+    );
+    return { bytes: Number(row[0]) || 0, tables: Number(row[1]) || 0, database: db.database };
   }
 
   private splitLines(chunk: string): string[] {
