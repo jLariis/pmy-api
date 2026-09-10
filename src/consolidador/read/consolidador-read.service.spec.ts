@@ -10,7 +10,10 @@ function repoMock() {
   const qb: any = {};
   ['leftJoinAndSelect', 'leftJoin', 'where', 'andWhere'].forEach((m) => (qb[m] = () => qb));
   qb.getMany = async () => rows;
-  return { createQueryBuilder: () => qb } as any;
+  return {
+    createQueryBuilder: () => qb,
+    manager: { getRepository: () => ({ findOne: async () => ({ secondAbordAmount: 594 }) }) },
+  } as any;
 }
 
 describe('ConsolidadorReadService.getWeek', () => {

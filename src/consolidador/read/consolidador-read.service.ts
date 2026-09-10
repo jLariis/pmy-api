@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Income } from '../../entities/income.entity';
+import { Subsidiary } from '../../entities/subsidiary.entity';
 import { ConsolidadorBuckets, ConsolidadorReadResult, ConsolidadorRow } from '../consolidador.types';
 import { mapIncomeToRow } from './consolidador-row.mapper';
 
@@ -38,6 +39,15 @@ export class ConsolidadorReadService {
 
     const list = await qb.getMany();
     const rows = list.map((i) => mapIncomeToRow(i));
+
+    // El query no carga subsidiary; traemos el monto del 2º a bordo una vez (reporte por sucursal)
+    // y lo estampamos para poder desglosar el costo de las cargas en la edición.
+    const sub = await this.incomeRepo.manager
+      .getRepository(Subsidiary)
+      .findOne({ where: { id: subsidiaryId }, select: ['secondAbordAmount'] });
+    const secondAbordAmount = Number(sub?.secondAbordAmount ?? 0);
+    for (const r of rows) r.secondAbordAmount = secondAbordAmount;
+
     return { rows, buckets: this.buckets(rows) };
   }
 

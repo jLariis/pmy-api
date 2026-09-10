@@ -19,6 +19,8 @@ export interface ConsolidadorRow {
   editReason: string | null;
   /** Estado del 2º a bordo (solo relevante para cargas): true=incluido, false=quitado, null=nunca tocado. */
   secondAbordApplied: boolean | null;
+  /** Monto del 2º a bordo de la sucursal (para desglosar el costo de la carga en la edición). */
+  secondAbordAmount: number;
 }
 
 export interface ConsolidadorBucket {
