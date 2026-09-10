@@ -3,7 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { IncomeChangeLog } from '../../entities/income-change-log.entity';
 
-export type AuditAction = 'cost_edit' | 'second_abord' | 'manual_create' | 'status_fix' | 'delete';
+export type AuditAction = 'cost_edit' | 'second_abord' | 'manual_create' | 'status_fix' | 'delete' | 'income_repair';
 
 export interface AuditEntry {
   incomeId?: string | null;

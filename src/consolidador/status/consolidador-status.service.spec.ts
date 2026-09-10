@@ -69,6 +69,51 @@ describe('ConsolidadorStatusService.searchBatch', () => {
   });
 });
 
+describe('ConsolidadorStatusService.repairIncome', () => {
+  function makeRepair(opts: { shipment?: any; existingIncome?: any }) {
+    let created: any = null;
+    const shipmentRepo: any = { findOne: async () => opts.shipment ?? null };
+    const incomeRepo: any = {
+      findOne: async () => opts.existingIncome ?? null,
+      create: (x: any) => { created = { ...x, id: 'inc-new' }; return created; },
+      save: async (x: any) => x,
+    };
+    const audit: any = { record: async () => undefined };
+    const svc = new ConsolidadorStatusService(shipmentRepo, incomeRepo, { getLatestStatus: async () => ({}) } as any, audit);
+    return { svc, getCreated: () => created };
+  }
+
+  it('crea income con fedexCostPackage cuando el estatus es cobrable y no hay ingreso', async () => {
+    const { svc, getCreated } = makeRepair({
+      shipment: { id: 's1', trackingNumber: 'T1', status: ShipmentStatusType.ENTREGADO, shipmentType: 'fedex', subsidiary: { id: 'sub', fedexCostPackage: 85 } },
+    });
+    const res = await svc.repairIncome('s1', 'reparar', 'u1');
+    expect(res.created).toBe(true);
+    expect(getCreated().cost).toBe(85);
+    expect(getCreated().incomeType).toBe('entregado');
+    expect(getCreated().sourceType).toBe('shipment');
+  });
+
+  it('no crea si ya tiene ingreso activo', async () => {
+    const { svc } = makeRepair({
+      shipment: { id: 's1', trackingNumber: 'T1', status: ShipmentStatusType.ENTREGADO, subsidiary: { fedexCostPackage: 85 } },
+      existingIncome: { id: 'i1', cost: '85', date: new Date(), shipment: { id: 's1' }, charge: null },
+    });
+    const res = await svc.repairIncome('s1', 'reparar', 'u1');
+    expect(res.created).toBe(false);
+    expect(res.reason).toContain('ya tiene');
+  });
+
+  it('no crea si el estatus no es cobrable', async () => {
+    const { svc } = makeRepair({
+      shipment: { id: 's1', trackingNumber: 'T1', status: ShipmentStatusType.EN_RUTA, subsidiary: { fedexCostPackage: 85 } },
+    });
+    const res = await svc.repairIncome('s1', 'reparar', 'u1');
+    expect(res.created).toBe(false);
+    expect(res.reason).toContain('no genera ingreso');
+  });
+});
+
 describe('ConsolidadorStatusService.fixStatus', () => {
   it('bloquea si FedEx no confirma', async () => {
     const svc = makeService({

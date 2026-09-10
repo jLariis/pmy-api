@@ -5,7 +5,10 @@ import { Shipment } from '../../entities/shipment.entity';
 import { Income } from '../../entities/income.entity';
 import { FedexStatusResolver } from '../../fedex-status/fedex-status.resolver';
 import { ShipmentStatusType } from '../../common/enums/shipment-status-type.enum';
+import { ShipmentType } from '../../common/enums/shipment-type.enum';
+import { IncomeSourceType } from '../../common/enums/income-source-type.enum';
 import { deriveStatusCorrection } from '../logic/status-correction.util';
+import { deriveRepairIncome } from '../logic/repair-income.util';
 import { mapIncomeToRow } from '../read/consolidador-row.mapper';
 import { ConsolidadorRow } from '../consolidador.types';
 import { ConsolidadorAuditService } from '../audit/consolidador-audit.service';
@@ -19,23 +22,27 @@ export class ConsolidadorStatusService {
     private readonly audit: ConsolidadorAuditService,
   ) {}
 
-  /** Busca un paquete y compone estatus interno vs FedEx canónico + income ligado. */
+  /** Busca un paquete y compone estatus interno vs FedEx canónico + income ligado (activo). */
   async search(tracking: string) {
     const shipment = await this.shipmentRepo.findOne({ where: { trackingNumber: tracking } });
     const fedex = await this.resolver.getLatestStatus(tracking);
     const income = shipment
       ? await this.incomeRepo.findOne({
-          where: { shipment: { id: shipment.id } },
+          where: { shipment: { id: shipment.id }, active: true },
           relations: ['shipment', 'charge'],
         })
       : null;
     const suggestion = shipment ? deriveStatusCorrection(shipment.status, fedex.status) : null;
+    // ¿Se puede reparar el ingreso? Solo si hay shipment, NO tiene ingreso activo y su estatus es cobrable.
+    const repair = shipment && !income ? deriveRepairIncome(shipment.status) : { create: false, incomeType: null };
     return {
       shipment: shipment ? { id: shipment.id, trackingNumber: shipment.trackingNumber, status: shipment.status } : null,
       internalStatus: shipment?.status ?? null,
       fedex,
       suggestion,
       income: income ? mapIncomeToRow(income) : null,
+      incomeRepairNeeded: repair.create,
+      incomeRepairType: repair.incomeType,
     };
   }
 
@@ -53,7 +60,7 @@ export class ConsolidadorStatusService {
 
     const shipmentIds = shipments.map((s) => s.id);
     const incomes = shipmentIds.length
-      ? await this.incomeRepo.find({ where: { shipment: { id: In(shipmentIds) } }, relations: ['shipment', 'charge'] })
+      ? await this.incomeRepo.find({ where: { shipment: { id: In(shipmentIds) }, active: true }, relations: ['shipment', 'charge'] })
       : [];
     const incomeByShipmentId = new Map(incomes.map((i) => [i.shipment?.id, i]));
 
@@ -63,6 +70,7 @@ export class ConsolidadorStatusService {
       const fedex = fedexByTn.get(tn) ?? { trackingNumber: tn, found: false, status: null, error: 'Sin datos' };
       const suggestion = shipment ? deriveStatusCorrection(shipment.status, fedex.status ?? null) : null;
       const income = shipment ? incomeByShipmentId.get(shipment.id) : null;
+      const repair = shipment && !income ? deriveRepairIncome(shipment.status) : { create: false, incomeType: null };
       return {
         tracking: tn,
         shipment: shipment ? { id: shipment.id, trackingNumber: shipment.trackingNumber, status: shipment.status } : null,
@@ -70,6 +78,8 @@ export class ConsolidadorStatusService {
         fedex,
         suggestion,
         income: income ? mapIncomeToRow(income) : null,
+        incomeRepairNeeded: repair.create,
+        incomeRepairType: repair.incomeType,
       };
     });
     return { results };
@@ -139,5 +149,58 @@ export class ConsolidadorStatusService {
     }
 
     return { shipmentStatus: shipment.status, income: income ? mapIncomeToRow(income) : null };
+  }
+
+  /**
+   * Repara el ingreso de un paquete: si NO tiene ingreso activo y su estatus es cobrable, crea uno
+   * (sourceType=shipment, costo=subsidiary.fedexCostPackage, tipo según el estatus). Solo toca `income`.
+   */
+  async repairIncome(
+    shipmentId: string,
+    reason: string,
+    userId: string,
+  ): Promise<{ created: boolean; reason?: string; income: ConsolidadorRow | null }> {
+    const shipment = await this.shipmentRepo.findOne({ where: { id: shipmentId }, relations: ['subsidiary'] });
+    if (!shipment) throw new NotFoundException('Shipment no encontrado');
+
+    const existing = await this.incomeRepo.findOne({
+      where: { shipment: { id: shipmentId }, active: true },
+      relations: ['shipment', 'charge'],
+    });
+    if (existing) {
+      return { created: false, reason: 'El paquete ya tiene un ingreso activo', income: mapIncomeToRow(existing) };
+    }
+
+    const { create, incomeType } = deriveRepairIncome(shipment.status);
+    if (!create || !incomeType) {
+      return { created: false, reason: 'El estatus del paquete no genera ingreso (no es cobrable/terminal)', income: null };
+    }
+
+    const cost = Number((shipment.subsidiary as any)?.fedexCostPackage ?? 0);
+    const income = this.incomeRepo.create({
+      subsidiary: shipment.subsidiary,
+      trackingNumber: shipment.trackingNumber,
+      shipmentType: shipment.shipmentType ?? ShipmentType.FEDEX,
+      incomeType,
+      cost,
+      isGrouped: false,
+      sourceType: IncomeSourceType.SHIPMENT,
+      shipment: { id: shipment.id } as any,
+      date: new Date(),
+      createdById: userId,
+      editReason: reason,
+    });
+    await this.incomeRepo.save(income);
+    await this.audit.record({
+      incomeId: income.id,
+      shipmentId,
+      action: 'income_repair',
+      field: 'create',
+      oldValue: null,
+      newValue: cost,
+      reason,
+      userId,
+    });
+    return { created: true, income: mapIncomeToRow(income) };
   }
 }

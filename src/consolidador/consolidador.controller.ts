@@ -12,6 +12,7 @@ import { CreateManualIncomeDto } from './dto/create-manual-income.dto';
 import { FixStatusDto } from './dto/fix-status.dto';
 import { SearchBatchDto } from './dto/search-batch.dto';
 import { DeleteIncomeDto } from './dto/delete-income.dto';
+import { RepairIncomeDto } from './dto/repair-income.dto';
 
 @ApiTags('consolidador')
 @ApiBearerAuth()
@@ -71,6 +72,12 @@ export class ConsolidadorController {
   @Patch('package/:shipmentId/status')
   fixStatus(@Param('shipmentId') id: string, @Body() dto: FixStatusDto, @Req() req: any) {
     return this.status.fixStatus(id, dto.newStatus, dto.reason, req.user?.userId);
+  }
+
+  /** Repara el ingreso del paquete: crea el ingreso si falta y su estatus es cobrable. */
+  @Patch('package/:shipmentId/repair-income')
+  repairIncome(@Param('shipmentId') id: string, @Body() dto: RepairIncomeDto, @Req() req: any) {
+    return this.status.repairIncome(id, dto.reason, req.user?.userId);
   }
 
   /**
