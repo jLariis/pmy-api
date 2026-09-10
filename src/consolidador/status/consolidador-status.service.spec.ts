@@ -22,6 +22,13 @@ function makeService(opts: {
   return new ConsolidadorStatusService(shipmentRepo, incomeRepo, resolver);
 }
 
+function makeBatchService(opts: { shipments: any[]; fedexList: any[]; incomes?: any[] }) {
+  const shipmentRepo: any = { find: async () => opts.shipments };
+  const incomeRepo: any = { find: async () => opts.incomes ?? [] };
+  const resolver: any = { getLatestStatusBatch: async () => opts.fedexList };
+  return new ConsolidadorStatusService(shipmentRepo, incomeRepo, resolver);
+}
+
 describe('ConsolidadorStatusService.search', () => {
   it('devuelve estatus interno y de FedEx + sugerencia', async () => {
     const svc = makeService({
@@ -33,6 +40,32 @@ describe('ConsolidadorStatusService.search', () => {
     expect(r.internalStatus).toBe(ShipmentStatusType.EN_RUTA);
     expect(r.fedex.status).toBe(ShipmentStatusType.ENTREGADO);
     expect(r.suggestion?.newStatus).toBe(ShipmentStatusType.ENTREGADO);
+  });
+});
+
+describe('ConsolidadorStatusService.searchBatch', () => {
+  it('dedup + cap 30 y arma un resultado por guía con sugerencia', async () => {
+    const svc = makeBatchService({
+      shipments: [{ id: 's1', trackingNumber: 'T1', status: ShipmentStatusType.EN_RUTA }],
+      fedexList: [
+        { trackingNumber: 'T1', found: true, status: ShipmentStatusType.ENTREGADO },
+        { trackingNumber: 'T2', found: false, status: null, error: 'no encontrado' },
+      ],
+    });
+    const { results } = await svc.searchBatch(['T1', 'T1', 'T2']); // T1 duplicado
+    expect(results).toHaveLength(2);
+    const r1 = results.find((r) => r.tracking === 'T1');
+    expect(r1?.internalStatus).toBe(ShipmentStatusType.EN_RUTA);
+    expect(r1?.suggestion?.newStatus).toBe(ShipmentStatusType.ENTREGADO);
+    const r2 = results.find((r) => r.tracking === 'T2');
+    expect(r2?.shipment).toBeNull();
+    expect(r2?.fedex.found).toBe(false);
+  });
+
+  it('lista vacía → results vacío', async () => {
+    const svc = makeBatchService({ shipments: [], fedexList: [] });
+    const { results } = await svc.searchBatch(['   ', '']);
+    expect(results).toEqual([]);
   });
 });
 

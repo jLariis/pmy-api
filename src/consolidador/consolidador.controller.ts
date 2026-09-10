@@ -9,6 +9,7 @@ import { EditCostDto } from './dto/edit-cost.dto';
 import { SecondAbordDto } from './dto/second-abord.dto';
 import { CreateManualIncomeDto } from './dto/create-manual-income.dto';
 import { FixStatusDto } from './dto/fix-status.dto';
+import { SearchBatchDto } from './dto/search-batch.dto';
 
 @ApiTags('consolidador')
 @ApiBearerAuth()
@@ -58,6 +59,12 @@ export class ConsolidadorController {
   @Get('package/:tracking')
   searchPackage(@Param('tracking') tracking: string) {
     return this.status.search(tracking);
+  }
+
+  /** Búsqueda por lote (hasta 30 guías): interno vs FedEx + income ligado por guía. */
+  @Post('package/batch')
+  searchBatch(@Body() dto: SearchBatchDto) {
+    return this.status.searchBatch(dto.trackings);
   }
 
   /** Corrige el estatus del shipment (verificado contra FedEx) y ajusta el income ligado. */

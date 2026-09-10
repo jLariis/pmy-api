@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import { Shipment } from '../../entities/shipment.entity';
 import { Income } from '../../entities/income.entity';
 import { FedexStatusResolver } from '../../fedex-status/fedex-status.resolver';
@@ -35,6 +35,42 @@ export class ConsolidadorStatusService {
       suggestion,
       income: income ? mapIncomeToRow(income) : null,
     };
+  }
+
+  /** Búsqueda por lote (hasta 30 guías). Usa el batch de FedEx y arma un resultado por guía. */
+  async searchBatch(trackings: string[]) {
+    const unique = [...new Set((trackings || []).map((t) => t.trim()).filter(Boolean))].slice(0, 30);
+    if (unique.length === 0) return { results: [] };
+
+    const [shipments, fedexList] = await Promise.all([
+      this.shipmentRepo.find({ where: { trackingNumber: In(unique) } }),
+      this.resolver.getLatestStatusBatch(unique),
+    ]);
+    const shipmentByTn = new Map(shipments.map((s) => [s.trackingNumber, s]));
+    const fedexByTn = new Map(fedexList.map((f) => [f.trackingNumber, f]));
+
+    const shipmentIds = shipments.map((s) => s.id);
+    const incomes = shipmentIds.length
+      ? await this.incomeRepo.find({ where: { shipment: { id: In(shipmentIds) } }, relations: ['shipment', 'charge'] })
+      : [];
+    const incomeByShipmentId = new Map(incomes.map((i) => [i.shipment?.id, i]));
+
+    const results = unique.map((tn) => {
+      const shipment = shipmentByTn.get(tn) ?? null;
+      // getLatestStatusBatch devuelve una entrada por guía; el fallback es defensivo.
+      const fedex = fedexByTn.get(tn) ?? { trackingNumber: tn, found: false, status: null, error: 'Sin datos' };
+      const suggestion = shipment ? deriveStatusCorrection(shipment.status, fedex.status ?? null) : null;
+      const income = shipment ? incomeByShipmentId.get(shipment.id) : null;
+      return {
+        tracking: tn,
+        shipment: shipment ? { id: shipment.id, trackingNumber: shipment.trackingNumber, status: shipment.status } : null,
+        internalStatus: shipment?.status ?? null,
+        fedex,
+        suggestion,
+        income: income ? mapIncomeToRow(income) : null,
+      };
+    });
+    return { results };
   }
 
   /** Corrige `shipment.status` (verificado contra FedEx) y ajusta el income ligado. */
