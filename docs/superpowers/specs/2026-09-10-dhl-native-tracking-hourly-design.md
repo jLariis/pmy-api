@@ -111,8 +111,13 @@ Ya se cuenta con permisos y credenciales en `.env` (sin rate limit, autorizado).
   (`getDhlToRegisterForWebhook`, `markDhlWebhookRegistered`, `getActiveRegisteredDhl`,
   `getActiveRegisteredDhlTerminal`, `getUnregisteredDhl`, `countActiveRegisteredDhl`,
   `getDhlToPoll`, `persistDhlTrackingResults`) y el import de `NormalizedTrackingResult`.
-- **Columnas BD** `seventeenRegisteredAt` / `seventeenReleasedAt`: se **conservan**
-  (sin migración destructiva); solo se dejan de usar. (Opción futura: migración de drop.)
+- **Columnas BD** `seventeenRegisteredAt` / `seventeenReleasedAt` (17track): se **eliminan**.
+  - Nueva migración `1786000000070-DropShipmentSeventeenTrackState.ts`: `DROP INDEX
+    idx_shipment_seventeen` + `DROP COLUMN` de ambas (idempotente con guardas, con `down()` que
+    las recrea, espejo de `1786000000011`).
+  - Quitar las 2 columnas `@Column` de `src/entities/shipment.entity.ts`
+    (`seventeenRegisteredAt`, `seventeenReleasedAt`).
+  - `DB_SYNC=false` en todos los entornos → el esquema cambia SOLO por esta migración.
 - **Endpoints del controller** (`shipments.controller.ts`):
   - `POST dhl/manual-track` → repuntar a nativo (`dhlService.trackBatch` + `persistDhlNativeResults`).
   - `POST dhl/sync-cron` → repuntar a nativo (`getDhlToPollNative` → `trackBatch` → persist, en 2º plano).
@@ -147,8 +152,9 @@ recompilaciones pesadas innecesarias).
 ## No-objetivos
 
 - No se toca el motor `tracking-sync` (shadow/cutover) en esta entrega.
-- No se dropean columnas `seventeen*` (sin migración destructiva).
 - No se cambia la lógica de ingreso por cierre de ruta (DEX se cobran ahí, como hoy).
+- El backend queda **exclusivamente sobre la API oficial de DHL**: cero rastros de
+  WhereParcel/17track (código, endpoints, columnas, vars).
 
 ## Riesgos
 
