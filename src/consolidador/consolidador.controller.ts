@@ -3,10 +3,12 @@ import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { ConsolidadorAccessGuard } from '../auth/guards/consolidador-access.guard';
 import { ConsolidadorReadService } from './read/consolidador-read.service';
 import { ConsolidadorIncomeService } from './income/consolidador-income.service';
+import { ConsolidadorStatusService } from './status/consolidador-status.service';
 import { ConsolidadorQueryDto } from './dto/consolidador-query.dto';
 import { EditCostDto } from './dto/edit-cost.dto';
 import { SecondAbordDto } from './dto/second-abord.dto';
 import { CreateManualIncomeDto } from './dto/create-manual-income.dto';
+import { FixStatusDto } from './dto/fix-status.dto';
 
 @ApiTags('consolidador')
 @ApiBearerAuth()
@@ -16,6 +18,7 @@ export class ConsolidadorController {
   constructor(
     private readonly read: ConsolidadorReadService,
     private readonly income: ConsolidadorIncomeService,
+    private readonly status: ConsolidadorStatusService,
   ) {}
 
   /** Filas de income de la semana (todos los sourceType) + totales por bucket. */
@@ -49,5 +52,17 @@ export class ConsolidadorController {
   @Post('income')
   createManual(@Body() dto: CreateManualIncomeDto, @Req() req: any) {
     return this.income.createManual(dto, req.user?.userId);
+  }
+
+  /** Busca un paquete: estatus interno vs FedEx canónico + income ligado. */
+  @Get('package/:tracking')
+  searchPackage(@Param('tracking') tracking: string) {
+    return this.status.search(tracking);
+  }
+
+  /** Corrige el estatus del shipment (verificado contra FedEx) y ajusta el income ligado. */
+  @Patch('package/:shipmentId/status')
+  fixStatus(@Param('shipmentId') id: string, @Body() dto: FixStatusDto, @Req() req: any) {
+    return this.status.fixStatus(id, dto.newStatus, dto.reason, req.user?.userId);
   }
 }
