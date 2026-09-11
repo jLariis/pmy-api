@@ -42,20 +42,36 @@ export function detectAnomalies(input: AnomalyInput): Anomaly[] {
   const currentTerminal = input.currentStatus ? TERMINAL.has(String(input.currentStatus)) : false;
 
   if (input.income && input.statusDate && dayKey(input.income.date) !== dayKey(input.statusDate)) {
-    out.push({ code: 'date_mismatch', label: 'Fecha del ingreso no coincide con el estatus' });
+    out.push({
+      code: 'date_mismatch',
+      label:
+        'La fecha del cobro no coincide con el día en que se movió el paquete. Corrige la fecha del ingreso para que caiga en el día correcto.',
+    });
   }
 
   if (!currentTerminal && terminalEvents.length > 0) {
-    out.push({ code: 'status_regressed', label: 'Estatus retrocedió (hubo un evento terminal antes)' });
+    out.push({
+      code: 'status_regressed',
+      label:
+        'El paquete ya tenía un estatus final (entregado, rechazado o devuelto) pero volvió a aparecer en tránsito. Verifica cuál es el estatus real.',
+    });
   }
 
   if (input.income && terminalEvents.length === 0) {
-    out.push({ code: 'income_without_support', label: 'Ingreso sin evento de estatus que lo respalde' });
+    out.push({
+      code: 'income_without_support',
+      label:
+        'Se generó un cobro pero el paquete no tiene ninguna entrega ni rechazo que lo respalde. Revisa si de verdad debe cobrarse o elimínalo.',
+    });
   }
 
   // Cobro de una entrega que hizo FedEx, no nosotros: ENTREGADO_POR_FEDEX no debe generar ingreso.
   if (input.income && deliveredByFedex(input.currentStatus, input.history)) {
-    out.push({ code: 'delivered_by_fedex', label: 'Entregado por FedEx (no por nosotros) — revisar cobro' });
+    out.push({
+      code: 'delivered_by_fedex',
+      label:
+        'El paquete lo entregó FedEx, no nosotros. Normalmente este cobro no debería existir; considera eliminarlo.',
+    });
   }
 
   return out;
