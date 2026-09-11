@@ -16,7 +16,7 @@ import { buildShadowKey } from './event-key.util';
 import { NormalizedEvent, SyncContext, Trackable, TrackableKind } from './tracking-sync.types';
 import { ApplyOutcome, CompareResult, NormalizedEventDto } from './compare.types';
 import { computeEffectiveLastOpTime, DispatchAnchor } from './route-op-time.util';
-import { shouldForceFedexAtClosure } from './closure-stuck-resolver.util';
+import { selectRouteDayFedexEvent, shouldForceFedexAtClosure } from './closure-stuck-resolver.util';
 
 interface CompareItem {
   entity: Trackable;
@@ -130,10 +130,11 @@ export class TrackingCompareService {
    * captura tardía (`allowSameDayPreRegistrationFedexEvents`), solo guías todavía EN_RUTA.
    *
    * A diferencia de la excepción del Time Shield —anclada a `new Date()` (hoy), que deja de
-   * aplicar al abrir el cierre en día distinto al del evento— este resolver ancla la decisión
-   * al DÍA OPERATIVO de la ruta (`routeAnchor`), así corta el problema de raíz sin importar
-   * cuándo se abra el cierre. Cuando decide, ANULA el escudo para esa guía y persiste el estatus
-   * real vía el mismo sink (idempotente, auditado). NO toca el pipeline compartido ni el cron.
+   * aplicar al abrir el cierre en día distinto al del evento— este resolver decide con el estatus
+   * del ÚLTIMO evento de FedEx OCURRIDO en el día operativo de la ruta (`routeAnchor`), semántica
+   * ESTRICTA: cerrar la ruta de ayer toma el desenlace de AYER, nunca el de hoy. Cuando decide,
+   * ANULA el escudo para esa guía y persiste ese estatus vía el mismo sink (idempotente, auditado).
+   * NO toca el pipeline compartido ni el cron.
    *
    * Devuelve solo las guías efectivamente corregidas (marcadas `forcedByClosureResolver`), para
    * que el llamador las funda con los outcomes de `applyByRoute` y reconcilie sus ingresos.
@@ -165,23 +166,37 @@ export class TrackingCompareService {
             const built = await this.buildContext(it.entity, it.kind);
             if (!built) return null;
             const { ctx } = built;
-            const fedexLastStatus = ctx.reconcile.proposedStatus; // último evento FedEx, PRE-escudo
+            // Estatus del ÚLTIMO evento de FedEx OCURRIDO en el día operativo de la ruta (estricto:
+            // ignora días posteriores/anteriores). Nada de "hoy" ni del último evento absoluto.
+            const routeDayEvent = selectRouteDayFedexEvent(
+              ctx.normalized.events.map((e) => ({
+                status: e.status, occurredAt: e.occurredAt, exceptionCode: e.exceptionCode ?? null,
+              })),
+              routeAnchor,
+            );
             const force = shouldForceFedexAtClosure({
               currentStatus: it.entity.status,
-              fedexLastStatus,
-              fedexLastEventAt: ctx.normalized.latest?.occurredAt ?? null,
-              routeAnchor,
+              routeDayStatus: routeDayEvent?.status ?? null,
               persistenceBranch: !!(it.entity.subsidiary as any)?.allowSameDayPreRegistrationFedexEvents,
             });
-            if (!force || !fedexLastStatus) return null;
+            if (!force || !routeDayEvent) return null;
 
             this.logger.warn(
-              `🛟 [Cierre] Rescatando ${it.entity.trackingNumber}: EN_RUTA pegado → ${fedexLastStatus} (evento real del día operativo, Time Shield anulado).`,
+              `🛟 [Cierre] Rescatando ${it.entity.trackingNumber}: EN_RUTA pegado → ${routeDayEvent.status} (desenlace del día operativo de la ruta, Time Shield anulado).`,
             );
-            // Anula el escudo SOLO para esta guía: persiste el desenlace real de FedEx.
-            ctx.proposedStatus = fedexLastStatus;
+            // Anula el escudo SOLO para esta guía: persiste el desenlace del DÍA de la ruta.
+            ctx.proposedStatus = routeDayEvent.status;
             const outcome = await this.persistentSink.applyPlan(ctx, actor);
-            return { ...outcome, kind: it.kind, forcedByClosureResolver: true } as ApplyOutcome;
+            // Ancla el outcome (estatus/fecha/código) al evento del día de la ruta, para que la
+            // reconciliación de ingresos cobre en el día correcto y no en el del evento más nuevo.
+            return {
+              ...outcome,
+              kind: it.kind,
+              toStatus: routeDayEvent.status,
+              eventAt: routeDayEvent.occurredAt.toISOString(),
+              exceptionCode: routeDayEvent.exceptionCode ?? null,
+              forcedByClosureResolver: true,
+            } as ApplyOutcome;
           } catch (err: any) {
             this.logger.warn(`resolveStuckEnRutaForClosure ${it.entity.trackingNumber}: ${err?.message}`);
             return null;

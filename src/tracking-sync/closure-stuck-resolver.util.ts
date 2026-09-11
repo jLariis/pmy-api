@@ -22,15 +22,44 @@ export function isResolvedFedexOutcome(status: ShipmentStatusType | null | undef
   return !!status && !OPERATIONAL_OR_UNKNOWN.has(status);
 }
 
+/** Evento FedEx mínimo para elegir el estatus del día operativo. */
+export interface RouteDayFedexEvent {
+  status: ShipmentStatusType;
+  occurredAt: Date;
+  exceptionCode: string | null;
+}
+
+/**
+ * Elige el estatus de FedEx "tal como estaba al cierre del DÍA OPERATIVO de la ruta": el ÚLTIMO
+ * evento de FedEx que ocurrió EN ese día (zona Hermosillo). Semántica ESTRICTA del cierre —
+ * cerrar la ruta de ayer NO debe tomar estatus de hoy, sino los del día en que se creó la ruta.
+ *
+ * - Eventos de días POSTERIORES a la ruta se ignoran (p. ej. una entrega al día siguiente no
+ *   cambia el desenlace del cierre de ayer).
+ * - Eventos de días ANTERIORES se ignoran (evento viejo pre-ruta; el paquete salió después).
+ *
+ * Devuelve `null` si FedEx no tuvo ningún evento en el día de la ruta.
+ */
+export function selectRouteDayFedexEvent(
+  events: RouteDayFedexEvent[],
+  routeAnchor: Date | null,
+): RouteDayFedexEvent | null {
+  if (!routeAnchor) return null;
+  const routeDay = toHermosilloDateString(routeAnchor);
+  let picked: RouteDayFedexEvent | null = null;
+  for (const e of events) {
+    if (!e?.occurredAt) continue;
+    if (toHermosilloDateString(e.occurredAt) !== routeDay) continue;
+    if (!picked || e.occurredAt.getTime() > picked.occurredAt.getTime()) picked = e;
+  }
+  return picked;
+}
+
 export interface StuckResolveInput {
   /** Estatus interno ACTUAL de la guía tras la reconciliación normal (applyByRoute). */
   currentStatus: ShipmentStatusType;
-  /** Último estatus CRUDO de FedEx (antes del Time Shield): `ctx.reconcile.proposedStatus`. */
-  fedexLastStatus: ShipmentStatusType | null;
-  /** Instante del último evento de FedEx (`ctx.normalized.latest.occurredAt`). */
-  fedexLastEventAt: Date | null;
-  /** Día operativo de la ruta (routeDate, o createdAt de respaldo). */
-  routeAnchor: Date | null;
+  /** Estatus del último evento de FedEx OCURRIDO en el día operativo de la ruta (o null). */
+  routeDayStatus: ShipmentStatusType | null;
   /** ¿La sucursal opera desde bodega FedEx (captura tardía)? `allowSameDayPreRegistrationFedexEvents`. */
   persistenceBranch: boolean;
 }
@@ -43,26 +72,16 @@ export interface StuckResolveInput {
  * última operación interna. Para sucursales de captura tardía (Hermosillo/persistencia) eso es
  * un falso positivo: la salida a ruta se sella con la hora de captura, DESPUÉS de que FedEx ya
  * marcó el desenlace real del día operativo. La excepción del escudo lo cubría, pero anclada a
- * `new Date()` (hoy): si el cierre se abre en un día distinto al del evento (cerrar hoy la ruta
- * de ayer), dejaba de aplicar y el paquete quedaba EN_RUTA para siempre.
+ * `new Date()` (hoy): al cerrar la ruta de ayer dejaba de aplicar y el paquete quedaba EN_RUTA.
  *
- * Este resolver ancla la comparación al **día operativo de la ruta (`routeAnchor`)**, no al reloj
- * de pared. Fuerza FedEx solo si:
+ * Semántica ESTRICTA: se decide con el estatus del DÍA de la ruta (`routeDayStatus`, calculado
+ * por `selectRouteDayFedexEvent`), nunca con el de hoy. Fuerza FedEx solo si:
  *  - la sucursal es de persistencia (captura tardía),
  *  - la guía sigue EN_RUTA tras la reconciliación normal,
- *  - FedEx reporta un desenlace real (no operativo),
- *  - y ese evento cae en el día operativo de la ruta o después (`eventDay >= routeDay`).
- *
- * Eventos ANTERIORES al día de la ruta NO se tocan: ahí el Time Shield protege legítimamente un
- * EN_RUTA que sí salió después de un evento viejo.
+ *  - y el desenlace del día de la ruta es real (no operativo).
  */
 export function shouldForceFedexAtClosure(input: StuckResolveInput): boolean {
   if (!input.persistenceBranch) return false;
   if (input.currentStatus !== ShipmentStatusType.EN_RUTA) return false;
-  if (!isResolvedFedexOutcome(input.fedexLastStatus)) return false;
-  if (!input.fedexLastEventAt || !input.routeAnchor) return false;
-
-  const eventDay = toHermosilloDateString(input.fedexLastEventAt);
-  const routeDay = toHermosilloDateString(input.routeAnchor);
-  return eventDay >= routeDay;
+  return isResolvedFedexOutcome(input.routeDayStatus);
 }
