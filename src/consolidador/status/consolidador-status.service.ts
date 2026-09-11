@@ -3,6 +3,8 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { In, Repository } from 'typeorm';
 import { Shipment } from '../../entities/shipment.entity';
 import { Income } from '../../entities/income.entity';
+import { Consolidated } from '../../entities/consolidated.entity';
+import { PackageDispatch } from '../../entities/package-dispatch.entity';
 import { FedexStatusResolver } from '../../fedex-status/fedex-status.resolver';
 import { ShipmentStatusType } from '../../common/enums/shipment-status-type.enum';
 import { ShipmentType } from '../../common/enums/shipment-type.enum';
@@ -22,6 +24,63 @@ export class ConsolidadorStatusService {
     private readonly resolver: FedexStatusResolver,
     private readonly audit: ConsolidadorAuditService,
   ) {}
+
+  /**
+   * Timeline unificado del paquete: recibido → consolidado → salida a ruta → eventos FedEx → ingreso.
+   * Ascendente por fecha. Cada evento trae `kind` para pintarlo distinto en el FE.
+   */
+  async packageTimeline(tracking: string) {
+    const shipment = await this.shipmentRepo.findOne({
+      where: { trackingNumber: tracking },
+      relations: ['statusHistory'],
+    });
+    if (!shipment) return { events: [] as any[] };
+
+    const iso = (d: Date | string | null | undefined) => (d ? new Date(d).toISOString() : null);
+    const events: Array<{ kind: string; label: string; date: string | null; meta?: any }> = [];
+
+    if (shipment.createdAt) events.push({ kind: 'recibido', label: 'Registrado en el sistema', date: iso(shipment.createdAt) });
+
+    if ((shipment as any).consolidatedId) {
+      const cons = await this.shipmentRepo.manager
+        .getRepository(Consolidated)
+        .findOne({ where: { id: (shipment as any).consolidatedId } });
+      if (cons) {
+        events.push({
+          kind: 'consolidado',
+          label: cons.consNumber ? `Consolidado ${cons.consNumber}` : 'Consolidado',
+          date: iso(cons.date ?? cons.createdAt),
+        });
+      }
+    }
+
+    if ((shipment as any).routeId) {
+      const pd = await this.shipmentRepo.manager
+        .getRepository(PackageDispatch)
+        .findOne({ where: { id: (shipment as any).routeId } });
+      if (pd) events.push({ kind: 'salida_ruta', label: 'Salió a ruta', date: iso((pd as any).routeDate ?? (pd as any).createdAt) });
+    }
+
+    for (const s of (shipment as any).statusHistory ?? []) {
+      events.push({ kind: 'estatus', label: String(s.status ?? '').replace(/_/g, ' '), date: iso(s.timestamp) });
+    }
+
+    const income = await this.incomeRepo.findOne({
+      where: { shipment: { id: shipment.id }, active: true },
+      relations: ['subsidiary'],
+    });
+    if (income) {
+      events.push({
+        kind: 'ingreso',
+        label: `Ingreso (${income.incomeType})`,
+        date: iso(income.date),
+        meta: { cost: Number(income.cost), subsidiary: (income.subsidiary as any)?.name ?? null },
+      });
+    }
+
+    events.sort((a, b) => new Date(a.date ?? 0).getTime() - new Date(b.date ?? 0).getTime());
+    return { tracking, currentStatus: shipment.status, events };
+  }
 
   /** Historial de estatus del shipment (status + timestamp), más reciente primero. */
   private statusHistoryOf(shipment: Shipment | null): Array<{ status: string; timestamp: string | null }> {

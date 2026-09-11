@@ -88,6 +88,12 @@ export class ConsolidadorController {
     return this.status.search(tracking);
   }
 
+  /** Timeline unificado del paquete (recibido, consolidado, salida a ruta, FedEx, ingreso). */
+  @Get('package/:tracking/timeline')
+  packageTimeline(@Param('tracking') tracking: string) {
+    return this.status.packageTimeline(tracking);
+  }
+
   /** Búsqueda por lote (hasta 30 guías): interno vs FedEx + income ligado por guía. */
   @Post('package/batch')
   searchBatch(@Body() dto: SearchBatchDto) {
