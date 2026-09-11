@@ -23,6 +23,15 @@ export class ConsolidadorStatusService {
     private readonly audit: ConsolidadorAuditService,
   ) {}
 
+  /** Historial de estatus del shipment (status + timestamp), más reciente primero. */
+  private statusHistoryOf(shipment: Shipment | null): Array<{ status: string; timestamp: string | null }> {
+    const hist = (shipment as any)?.statusHistory as Array<{ status?: string; timestamp?: Date }> | undefined;
+    if (!hist?.length) return [];
+    return hist
+      .map((s) => ({ status: String(s.status ?? ''), timestamp: s.timestamp ? new Date(s.timestamp).toISOString() : null }))
+      .sort((a, b) => new Date(b.timestamp ?? 0).getTime() - new Date(a.timestamp ?? 0).getTime());
+  }
+
   /** Fecha del último evento de estatus (shipment_status.timestamp) — fecha "del cobro" por estatus. */
   private latestStatusDate(shipment: Shipment | null): string | null {
     const hist = (shipment as any)?.statusHistory as Array<{ timestamp?: Date }> | undefined;
@@ -63,6 +72,7 @@ export class ConsolidadorStatusService {
         income: income ? { date: income.date } : null,
         statusDate: this.latestStatusDate(shipment),
       }),
+      statusHistory: this.statusHistoryOf(shipment),
     };
   }
 
@@ -108,6 +118,7 @@ export class ConsolidadorStatusService {
           income: income ? { date: income.date } : null,
           statusDate: this.latestStatusDate(shipment),
         }),
+        statusHistory: this.statusHistoryOf(shipment),
       };
     });
     return { results };

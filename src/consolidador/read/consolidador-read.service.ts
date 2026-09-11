@@ -9,7 +9,11 @@ import { detectAnomalies, Anomaly } from '../logic/detect-anomalies.util';
 
 const TRASLADO = ['tyco', 'aeropuerto', 'special_transfer'];
 
-export type AnomalyRow = ConsolidadorRow & { anomalies: Anomaly[]; statusDate: string | null };
+export type AnomalyRow = ConsolidadorRow & {
+  anomalies: Anomaly[];
+  statusDate: string | null;
+  statusHistory: Array<{ status: string; timestamp: string | null }>;
+};
 
 @Injectable()
 export class ConsolidadorReadService {
@@ -41,7 +45,12 @@ export class ConsolidadorReadService {
         income: { date: i.date },
         statusDate,
       });
-      if (anomalies.length) rows.push({ ...mapIncomeToRow(i), anomalies, statusDate });
+      if (anomalies.length) {
+        const statusHistory = history
+          .map((s: any) => ({ status: String(s.status ?? ''), timestamp: s.timestamp ? new Date(s.timestamp).toISOString() : null }))
+          .sort((a, b) => new Date(b.timestamp ?? 0).getTime() - new Date(a.timestamp ?? 0).getTime());
+        rows.push({ ...mapIncomeToRow(i), anomalies, statusDate, statusHistory });
+      }
     }
     return { rows };
   }
