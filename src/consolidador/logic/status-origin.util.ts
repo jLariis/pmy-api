@@ -7,7 +7,7 @@ import { ShipmentStatusType } from '../../common/enums/shipment-status-type.enum
  */
 export const FEDEX_ORIGIN_STATUSES = new Set<string>([
   ShipmentStatusType.ENTREGADO_POR_FEDEX,
-  ShipmentStatusType.DEVUELTO_A_FEDEX,
+  // NOTA: DEVUELTO_A_FEDEX es NUESTRA acción de devolución (no un evento reportado por FedEx) → interno.
   ShipmentStatusType.RETORNO_ABANDONO_FEDEX,
   ShipmentStatusType.ESTACION_FEDEX,
   ShipmentStatusType.LLEGADO_DESPUES,

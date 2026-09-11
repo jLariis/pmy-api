@@ -22,6 +22,20 @@ describe('detectAnomalies', () => {
     expect(res.map((a) => a.code)).toContain('date_mismatch');
   });
 
+  it('NO marca fecha: ingreso fechado el día del DEX aunque después haya más eventos', () => {
+    const res = detectAnomalies({
+      currentStatus: ShipmentStatusType.DEVUELTO_A_FEDEX,
+      history: [
+        { status: 'rechazado', timestamp: '2026-09-07T15:15:00Z' },
+        { status: 'rechazado', timestamp: '2026-09-08T07:21:00Z' },
+        { status: 'devuelto_a_fedex', timestamp: '2026-09-09T12:00:00Z' },
+      ],
+      income: { date: '2026-09-07T15:15:00Z' }, // coincide con el DEX del 07
+      statusDate: '2026-09-09T12:00:00Z',
+    });
+    expect(res.map((a) => a.code)).not.toContain('date_mismatch');
+  });
+
   it('status_regressed: en_ruta ahora pero hubo DEX07 (rechazado) antes', () => {
     const res = detectAnomalies({
       currentStatus: ShipmentStatusType.EN_RUTA,

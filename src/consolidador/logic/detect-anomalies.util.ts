@@ -41,11 +41,14 @@ export function detectAnomalies(input: AnomalyInput): Anomaly[] {
   const terminalEvents = (input.history || []).filter((h) => h.status && TERMINAL.has(String(h.status)));
   const currentTerminal = input.currentStatus ? TERMINAL.has(String(input.currentStatus)) : false;
 
-  if (input.income && input.statusDate && dayKey(input.income.date) !== dayKey(input.statusDate)) {
+  // Fecha del cobro desalineada: SOLO si el día del ingreso no coincide con NINGÚN evento de estatus.
+  // (Un ingreso de rechazado fechado el día del DEX es correcto aunque después haya más eventos.)
+  const eventDays = new Set((input.history || []).map((h) => dayKey(h.timestamp)).filter(Boolean));
+  if (input.income && eventDays.size > 0 && !eventDays.has(dayKey(input.income.date))) {
     out.push({
       code: 'date_mismatch',
       label:
-        'La fecha del cobro no coincide con el día en que se movió el paquete. Corrige la fecha del ingreso para que caiga en el día correcto.',
+        'La fecha del cobro no coincide con ningún día en que se movió el paquete. Corrige la fecha del ingreso para que caiga en un día real.',
     });
   }
 
