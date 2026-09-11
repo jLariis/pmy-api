@@ -28,6 +28,18 @@ export class ConsolidadorController {
     private readonly audit: ConsolidadorAuditService,
   ) {}
 
+  /** Ingresos con anomalías de la semana (panel de revisión). */
+  @Get(':subsidiaryId/:fromDate/:toDate/anomalies')
+  weekAnomalies(
+    @Param('subsidiaryId') subsidiaryId: string,
+    @Param('fromDate') fromDate: string,
+    @Param('toDate') toDate: string,
+  ) {
+    const from = new Date(`${fromDate}T00:00:00.000`);
+    const to = new Date(`${toDate}T23:59:59.999`);
+    return this.read.getWeekAnomalies(subsidiaryId, from, to);
+  }
+
   /** Historial de cambios de un ingreso (más reciente primero). */
   @Get('income/:id/history')
   history(@Param('id') id: string) {

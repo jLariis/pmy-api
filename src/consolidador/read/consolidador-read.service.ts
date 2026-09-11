@@ -5,12 +5,52 @@ import { Income } from '../../entities/income.entity';
 import { Subsidiary } from '../../entities/subsidiary.entity';
 import { ConsolidadorBuckets, ConsolidadorReadResult, ConsolidadorRow } from '../consolidador.types';
 import { mapIncomeToRow } from './consolidador-row.mapper';
+import { detectAnomalies, Anomaly } from '../logic/detect-anomalies.util';
 
 const TRASLADO = ['tyco', 'aeropuerto', 'special_transfer'];
+
+export type AnomalyRow = ConsolidadorRow & { anomalies: Anomaly[]; statusDate: string | null };
 
 @Injectable()
 export class ConsolidadorReadService {
   constructor(@InjectRepository(Income) private readonly incomeRepo: Repository<Income>) {}
+
+  /** Barre la semana de la sucursal y devuelve solo los ingresos con anomalías detectadas. */
+  async getWeekAnomalies(subsidiaryId: string, fromDate: Date, toDate: Date): Promise<{ rows: AnomalyRow[] }> {
+    const list = await this.incomeRepo
+      .createQueryBuilder('income')
+      .leftJoinAndSelect('income.shipment', 'shipment')
+      .leftJoinAndSelect('shipment.statusHistory', 'sh')
+      .leftJoinAndSelect('income.charge', 'charge')
+      .leftJoinAndSelect('income.subsidiary', 'subsidiary')
+      .where('income.subsidiaryId = :subsidiaryId', { subsidiaryId })
+      .andWhere('income.date BETWEEN :fromDate AND :toDate', { fromDate, toDate })
+      .andWhere('income.active = 1')
+      .getMany();
+
+    const rows: AnomalyRow[] = [];
+    for (const i of list) {
+      const history = ((i.shipment as any)?.statusHistory ?? []).map((s: any) => ({ status: s.status, timestamp: s.timestamp }));
+      const statusDate = this.latestStatusDate(history);
+      const anomalies = detectAnomalies({
+        currentStatus: (i.shipment as any)?.status ?? null,
+        history,
+        income: { date: i.date },
+        statusDate,
+      });
+      if (anomalies.length) rows.push({ ...mapIncomeToRow(i), anomalies, statusDate });
+    }
+    return { rows };
+  }
+
+  private latestStatusDate(history: Array<{ timestamp?: Date | string | null }>): string | null {
+    if (!history?.length) return null;
+    const max = history.reduce<Date | null>((acc, s) => {
+      const t = s.timestamp ? new Date(s.timestamp) : null;
+      return t && (!acc || t > acc) ? t : acc;
+    }, null);
+    return max ? max.toISOString() : null;
+  }
 
   async getWeek(
     subsidiaryId: string,
