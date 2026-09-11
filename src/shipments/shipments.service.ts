@@ -4808,24 +4808,36 @@ export class ShipmentsService {
     }
 
     /**
-     * Guías DHL a RASTREAR en la API oficial: recientes (cutoff) y NO terminales.
-     * La API se consulta por el `trackingNumber` de 10 dígitos (guía maestra), que
-     * cubre TODAS las piezas de la guía en una sola llamada, así que se hace DISTINCT
-     * por `trackingNumber` (no por pieza). Devuelve {trackingNumber}, acotado por `limit`.
+     * Guías DHL a RASTREAR en la API oficial. IMPORTANTE: la API de DHL tiene rate limit
+     * estricto (spike arrest 1 cada 5s + cuota diaria, 250/día por defecto), así que NO se
+     * rastrean las miles de guías no terminales, sino solo las que **salieron a ruta**
+     * recientemente (join a `package_dispatch` por `routeDate` dentro de la ventana
+     * `DHL_ROUTE_LOOKBACK_DAYS`, default 3) y siguen NO terminales — el conjunto operativo
+     * "en ruta por día", análogo a lo que se rastrea de FedEx pero acotado por volumen.
+     *
+     * La API se consulta por el `trackingNumber` de 10 dígitos (guía maestra), que cubre TODAS
+     * las piezas en una llamada, por eso DISTINCT por `trackingNumber`. Acotado por `limit`.
      */
     async getDhlToPollNative(limit: number): Promise<{ trackingNumber: string }[]> {
       if (limit <= 0) return [];
       const terminal = TERMINAL_SHIPMENT_STATUSES.map((s) => String(s).toLowerCase());
+      const lookbackDays = Number(process.env.DHL_ROUTE_LOOKBACK_DAYS) || 3;
       const rows = await this.shipmentRepository
         .createQueryBuilder('s')
+        .innerJoin('s.packageDispatch', 'pd')
         .select('s.trackingNumber', 'trackingNumber')
         .where('LOWER(s.shipmentType) = :type', { type: ShipmentType.DHL.toLowerCase() })
         .andWhere('s.trackingNumber IS NOT NULL')
         .andWhere("TRIM(s.trackingNumber) != ''")
         .andWhere('s.createdAt > :cutoff', { cutoff: this.dhlTrackingCutoff() })
         .andWhere('LOWER(s.status) NOT IN (:...terminal)', { terminal })
+        // Solo guías cuya ruta (salida) es reciente: "en ruta por día".
+        .andWhere('pd.routeDate IS NOT NULL')
+        .andWhere('pd.routeDate >= :routeFrom', {
+          routeFrom: new Date(Date.now() - lookbackDays * 24 * 60 * 60 * 1000),
+        })
         .groupBy('s.trackingNumber')
-        .orderBy('MAX(s.createdAt)', 'DESC')
+        .orderBy('MAX(pd.routeDate)', 'DESC')
         .limit(limit)
         .getRawMany();
       return rows;

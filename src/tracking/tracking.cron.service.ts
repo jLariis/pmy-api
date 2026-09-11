@@ -17,8 +17,12 @@ export class TrackingCronService implements OnModuleInit {
    */
   private isRunning = false;
 
-  /** Tope de guías DHL por ciclo (guía maestra). Sin rate limit: default alto. */
-  private readonly dhlPollCap = Number(process.env.DHL_POLL_CAP) || 100000;
+  /**
+   * Tope de guías DHL por ciclo (guía maestra). DHL tiene cuota diaria (250/día por defecto);
+   * la selección ya se acota a "en ruta por día", y este cap es una RED de seguridad para no
+   * reventar la cuota. Súbelo con `DHL_POLL_CAP` si amplías la cuota en el portal DHL.
+   */
+  private readonly dhlPollCap = Number(process.env.DHL_POLL_CAP) || 240;
 
   constructor(
     private readonly shipmentService: ShipmentsService,

@@ -1107,7 +1107,7 @@ export class ShipmentsController {
   @UseGuards(SuperAdminGuard)
   @ApiOperation({ summary: 'Ejecutar el ciclo de tracking DHL (API oficial) on-demand' })
   async runDhlSyncCron() {
-    const pollCap = Number(process.env.DHL_POLL_CAP) || 100000;
+    const pollCap = Number(process.env.DHL_POLL_CAP) || 240;
     // Puede tardar (miles de guías, 1 llamada/guía con concurrencia). Corre en
     // SEGUNDO PLANO y responde de inmediato; el avance sale en los logs.
     (async () => {

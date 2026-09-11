@@ -37,15 +37,17 @@ export class DhlService {
     private readonly logger = new Logger(DhlService.name);
 
     /**
-     * Concurrencia de llamadas a la API de DHL (1 guía por llamada). DHL SÍ tiene rate limit
-     * (429 "Too Many Requests"), así que además de la concurrencia limitamos la CADENCIA con
-     * `minIntervalMs` (ver `rateGate`). Concurrencia baja por defecto para no saturar.
+     * Límites REALES de la API oficial de DHL (Shipment Tracking - Unified), plan por defecto:
+     *   • Spike arrest: 1 llamada cada 5 segundos.
+     *   • Cuota diaria: 250 llamadas/día (ampliable por el portal). Al pasarla → 429 el resto del día.
+     * Por eso: concurrencia 1 y cadencia `minIntervalMs` = 5s. La selección de guías se acota a
+     * las que salieron a ruta (ver `ShipmentsService.getDhlToPollNative`) para no reventar la cuota.
      */
-    private readonly concurrency = Number(process.env.DHL_TRACK_CONCURRENCY) || 3;
-    /** Separación mínima entre INICIOS de request (throttle global). 5 req/s por defecto. */
-    private readonly minIntervalMs = Number(process.env.DHL_TRACK_MIN_INTERVAL_MS) || 200;
-    /** Intentos por guía ante errores transitorios (429/5xx/red). */
-    private readonly maxAttempts = Number(process.env.DHL_TRACK_MAX_ATTEMPTS) || 4;
+    private readonly concurrency = Number(process.env.DHL_TRACK_CONCURRENCY) || 1;
+    /** Separación mínima entre INICIOS de request (spike arrest DHL = 1 cada 5s). */
+    private readonly minIntervalMs = Number(process.env.DHL_TRACK_MIN_INTERVAL_MS) || 5000;
+    /** Intentos por guía ante errores transitorios (5xx/red). El 429 se maneja aparte. */
+    private readonly maxAttempts = Number(process.env.DHL_TRACK_MAX_ATTEMPTS) || 3;
     private readonly requestTimeoutMs = Number(process.env.DHL_TRACK_TIMEOUT_MS) || 20000;
 
     /** Instante (epoch ms) en que se puede lanzar el próximo request. Compartido entre guías. */
@@ -114,16 +116,25 @@ export class DhlService {
                     this.logger.error(`❌ DHL API-Key inválida/insuficiente (status ${status}) al consultar ${tn}.`);
                     throw error;
                 }
-                // 429 / 5xx / red: transitorio → espera y reintenta. En 429 honra Retry-After si viene.
-                if (status === 429 || !error.response || (status >= 500 && status <= 599)) {
-                    if (!isLast) {
+                // 429: spike arrest (se recupera en ~5s) o CUOTA DIARIA agotada (no se recupera hoy,
+                // sin Retry-After). Con la cadencia de 5s el spike no debería pasar; hacemos UN
+                // reintento espaciado para descartarlo y, si persiste, marcamos cuota agotada para
+                // que `trackBatch` ABORTE el ciclo (no tiene sentido intentar miles de guías más).
+                if (status === 429) {
+                    if (attempt < 2) {
                         const retryAfter = Number(error.response?.headers?.['retry-after']) || 0;
-                        const wait = retryAfter > 0 ? retryAfter * 1000 : this.backoff(attempt);
-                        // Empuja también la cadencia global para que las guías en cola no reboten en 429.
+                        const wait = Math.max(retryAfter * 1000, this.minIntervalMs, 5000);
                         this.nextSlot = Math.max(this.nextSlot, Date.now() + wait);
                         await this.sleep(wait);
                         continue;
                     }
+                    const quotaErr: any = new Error(`DHL 429: límite/cuota diaria excedido (${tn}).`);
+                    quotaErr.dhlQuotaExhausted = true;
+                    throw quotaErr;
+                }
+                // 5xx / red: transitorio → backoff exponencial y reintenta.
+                if (!error.response || (status >= 500 && status <= 599)) {
+                    if (!isLast) { await this.sleep(this.backoff(attempt)); continue; }
                 }
                 // 4xx no recuperable u otro → propaga.
                 this.logger.error(`❌ Error API DHL [${tn}] (status ${status || error.code}): ${JSON.stringify(error.response?.data || error.message).slice(0, 200)}`);
@@ -134,33 +145,52 @@ export class DhlService {
     }
 
     /**
-     * Rastrea muchas guías en paralelo (concurrencia controlada, 1 guía/llamada).
-     * Las guías con 404 devuelven `found:false` (se omiten al persistir). Un error
-     * duro en una guía NO tira el lote: se registra y se continúa (el cron reintenta
-     * en el siguiente ciclo).
+     * Rastrea muchas guías (cadencia 1 cada 5s, concurrencia 1). Las guías con 404 devuelven
+     * `found:false` (se omiten al persistir). Si se detecta que la CUOTA DIARIA de DHL se agotó
+     * (429 sostenido), se ABORTA el ciclo: las guías restantes se devuelven `found:false` sin
+     * llamar a la API (se reintentarán en el próximo ciclo, ya con cuota). Así no generamos
+     * miles de 429 inútiles.
      */
     async trackBatch(trackingNumbers: string[]): Promise<DhlNativeResult[]> {
         const numbers = Array.from(new Set((trackingNumbers || []).map((n) => `${n}`.trim()).filter(Boolean)));
         if (numbers.length === 0) return [];
 
         const limit = pLimit(this.concurrency);
-        this.logger.log(`🚚 [DHL] Rastreando ${numbers.length} guías (concurrencia ${this.concurrency})...`);
+        this.logger.log(`🚚 [DHL] Rastreando ${numbers.length} guías (1 cada ${this.minIntervalMs}ms)...`);
+
+        let aborted = false;
+        let skipped = 0;
 
         const results = await Promise.all(
             numbers.map((tn) =>
                 limit(async () => {
+                    const notFound = { queryTrackingNumber: tn, found: false, pieceIds: [] } as DhlNativeResult;
+                    if (aborted) { skipped++; return notFound; }
                     try {
                         return await this.trackByTrackingNumber(tn);
                     } catch (e: any) {
+                        if (e?.dhlQuotaExhausted) {
+                            if (!aborted) {
+                                this.logger.error(
+                                    '⛔ [DHL] Cuota/límite diario alcanzado (429). Se ABORTA el ciclo; el resto se rastreará en el próximo. Considera subir la cuota en el portal DHL.',
+                                );
+                            }
+                            aborted = true;
+                            skipped++;
+                            return notFound;
+                        }
                         this.logger.warn(`[DHL] Falló ${tn} tras reintentos: ${e?.message}`);
-                        return { queryTrackingNumber: tn, found: false, pieceIds: [] } as DhlNativeResult;
+                        return notFound;
                     }
                 }),
             ),
         );
 
         const found = results.filter((r) => r.found).length;
-        this.logger.log(`🏁 [DHL] Rastreo terminado: ${found}/${numbers.length} con datos.`);
+        this.logger.log(
+            `🏁 [DHL] Rastreo terminado: ${found}/${numbers.length} con datos` +
+            (aborted ? ` · ABORTADO por cuota (${skipped} sin intentar)` : ''),
+        );
         return results;
     }
 
