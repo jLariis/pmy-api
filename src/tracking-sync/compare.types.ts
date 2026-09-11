@@ -41,4 +41,6 @@ export interface ApplyOutcome {
   eventAt?: string | null;
   skippedReason?: string;
   error?: string;
+  /** true si el resolver de cierre anuló el Time Shield para persistir el desenlace real de FedEx. */
+  forcedByClosureResolver?: boolean;
 }

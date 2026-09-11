@@ -16,6 +16,7 @@ import { buildShadowKey } from './event-key.util';
 import { NormalizedEvent, SyncContext, Trackable, TrackableKind } from './tracking-sync.types';
 import { ApplyOutcome, CompareResult, NormalizedEventDto } from './compare.types';
 import { computeEffectiveLastOpTime, DispatchAnchor } from './route-op-time.util';
+import { shouldForceFedexAtClosure } from './closure-stuck-resolver.util';
 
 interface CompareItem {
   entity: Trackable;
@@ -120,6 +121,75 @@ export class TrackingCompareService {
         }),
       ),
     );
+  }
+
+  /**
+   * SEGUNDA PASADA del cierre de ruta (externa a `applyByRoute`): rescata las guías que el
+   * Time Shield dejó PEGADAS en EN_RUTA pese a que FedEx ya reportó un desenlace real del día
+   * operativo (rechazado, cliente_no_disponible, entregado, devuelto…). Solo sucursales de
+   * captura tardía (`allowSameDayPreRegistrationFedexEvents`), solo guías todavía EN_RUTA.
+   *
+   * A diferencia de la excepción del Time Shield —anclada a `new Date()` (hoy), que deja de
+   * aplicar al abrir el cierre en día distinto al del evento— este resolver ancla la decisión
+   * al DÍA OPERATIVO de la ruta (`routeAnchor`), así corta el problema de raíz sin importar
+   * cuándo se abra el cierre. Cuando decide, ANULA el escudo para esa guía y persiste el estatus
+   * real vía el mismo sink (idempotente, auditado). NO toca el pipeline compartido ni el cron.
+   *
+   * Devuelve solo las guías efectivamente corregidas (marcadas `forcedByClosureResolver`), para
+   * que el llamador las funda con los outcomes de `applyByRoute` y reconcilie sus ingresos.
+   */
+  async resolveStuckEnRutaForClosure(
+    routeId: string,
+    routeAnchor: Date | null,
+    actor: ApplyActor,
+    opts: { kinds?: TrackableKind[] } = {},
+  ): Promise<ApplyOutcome[]> {
+    let items = await this.gatherRouteItems(routeId);
+    if (opts.kinds?.length) {
+      const allowed = new Set(opts.kinds);
+      items = items.filter((it) => allowed.has(it.kind));
+    }
+    // Candidatas: aún EN_RUTA y de sucursal de persistencia (captura tardía).
+    const candidates = items.filter(
+      (it) =>
+        it.entity.status === ShipmentStatusType.EN_RUTA &&
+        !!(it.entity.subsidiary as any)?.allowSameDayPreRegistrationFedexEvents,
+    );
+    if (!candidates.length) return [];
+
+    const limit = createLimit(6);
+    const results = await Promise.all(
+      candidates.map((it) =>
+        limit(async () => {
+          try {
+            const built = await this.buildContext(it.entity, it.kind);
+            if (!built) return null;
+            const { ctx } = built;
+            const fedexLastStatus = ctx.reconcile.proposedStatus; // último evento FedEx, PRE-escudo
+            const force = shouldForceFedexAtClosure({
+              currentStatus: it.entity.status,
+              fedexLastStatus,
+              fedexLastEventAt: ctx.normalized.latest?.occurredAt ?? null,
+              routeAnchor,
+              persistenceBranch: !!(it.entity.subsidiary as any)?.allowSameDayPreRegistrationFedexEvents,
+            });
+            if (!force || !fedexLastStatus) return null;
+
+            this.logger.warn(
+              `🛟 [Cierre] Rescatando ${it.entity.trackingNumber}: EN_RUTA pegado → ${fedexLastStatus} (evento real del día operativo, Time Shield anulado).`,
+            );
+            // Anula el escudo SOLO para esta guía: persiste el desenlace real de FedEx.
+            ctx.proposedStatus = fedexLastStatus;
+            const outcome = await this.persistentSink.applyPlan(ctx, actor);
+            return { ...outcome, kind: it.kind, forcedByClosureResolver: true } as ApplyOutcome;
+          } catch (err: any) {
+            this.logger.warn(`resolveStuckEnRutaForClosure ${it.entity.trackingNumber}: ${err?.message}`);
+            return null;
+          }
+        }),
+      ),
+    );
+    return results.filter((o): o is ApplyOutcome => !!o);
   }
 
   /**

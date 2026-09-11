@@ -41,6 +41,8 @@ function makeRouteClosureService(packageDispatch: any, opts: { existingIncome?: 
       return null;
     }),
     create: jest.fn((_entity: any, data: any) => data),
+    // Guard de duplicados de `create` (queryRunner.manager.find(Collection)): sin existentes.
+    find: jest.fn(async () => []),
     save: jest.fn(async (entity: any, data: any) => {
       if (entity === Collection) {
         const arr = Array.isArray(data) ? data : [data];
@@ -191,11 +193,14 @@ describe('RouteclosureService.create — (1) No VAN → FedEx → ingreso', () =
 describe('RouteclosureService.reconcileRouteWithFedex — (3) revalidación FedEx al abrir', () => {
   const subsidiary = { id: 'S1', name: 'Test', fedexCostPackage: 45 };
 
-  function makeService(packageDispatch: any, opts: { outcomes?: any[]; existingByTracking?: Record<string, any[]> } = {}) {
+  function makeService(packageDispatch: any, opts: { outcomes?: any[]; rescued?: any[]; existingByTracking?: Record<string, any[]> } = {}) {
     const outcomes = opts.outcomes ?? [
       { shipmentId: 's1', trackingNumber: 'TN1', applied: true, fromStatus: 'en_ruta', toStatus: ShipmentStatusType.ENTREGADO, insertedEvents: 1, kind: 'shipment', exceptionCode: null, eventAt: '2026-08-12T20:00:00Z' },
     ];
     const applyByRoute = jest.fn().mockResolvedValue(outcomes);
+    // Resolver de cierre (segunda pasada): por defecto no rescata nada; los tests que lo
+    // ejercitan pasan `opts.rescued`.
+    const resolveStuckEnRutaForClosure = jest.fn().mockResolvedValue(opts.rescued ?? []);
     const savedIncomes: any[] = [];
     const updatedIncomes: any[] = [];
     const incomeRepo = {
@@ -206,10 +211,10 @@ describe('RouteclosureService.reconcileRouteWithFedex — (3) revalidación FedE
     };
     const svc = Object.create(RouteclosureService.prototype) as any;
     svc.logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
-    svc.trackingCompare = { applyByRoute };
+    svc.trackingCompare = { applyByRoute, resolveStuckEnRutaForClosure };
     svc.packageDispatchRepository = { findOne: jest.fn().mockResolvedValue(packageDispatch) };
     svc.dataSource = { getRepository: () => incomeRepo };
-    return { svc, applyByRoute, incomeRepo, savedIncomes, updatedIncomes };
+    return { svc, applyByRoute, resolveStuckEnRutaForClosure, incomeRepo, savedIncomes, updatedIncomes };
   }
 
   it('ruta NORMAL: reconcilia shipments Y F2 (ambos kinds)', async () => {
@@ -274,6 +279,26 @@ describe('RouteclosureService.reconcileRouteWithFedex — (3) revalidación FedE
     expect(updatedIncomes).toHaveLength(0); // el DEX se conserva
     expect(savedIncomes).toHaveLength(1);
     expect(savedIncomes[0].incomeType).toBe(IncomeStatus.ENTREGADO);
+  });
+
+  it('RESCATE: guía EN_RUTA pegada → el resolver la funde a RECHAZADO y le genera su ingreso', async () => {
+    // applyByRoute devolvió la guía todavía EN_RUTA (el Time Shield la conservó).
+    const outcomes = [
+      { shipmentId: 's1', trackingNumber: 'TN1', applied: false, fromStatus: 'en_ruta', toStatus: ShipmentStatusType.EN_RUTA, insertedEvents: 0, kind: 'shipment', exceptionCode: null, eventAt: null },
+    ];
+    // El resolver de cierre la rescata al desenlace real de FedEx.
+    const rescued = [
+      { shipmentId: 's1', trackingNumber: 'TN1', applied: true, fromStatus: 'en_ruta', toStatus: ShipmentStatusType.RECHAZADO, insertedEvents: 1, kind: 'shipment', exceptionCode: '07', eventAt: '2026-08-12T20:00:00Z', forcedByClosureResolver: true },
+    ];
+    const { svc, savedIncomes } = makeService({ id: 'PD-1', is315: false, subsidiary }, { outcomes, rescued });
+    const res = await svc.reconcileRouteWithFedex('PD-1', { userId: 'U1' });
+
+    expect(res.rescued).toBe(1);
+    expect(res.updated).toBe(1); // el rescatado (applied) reemplaza al EN_RUTA base
+    expect(res.outcomes.find((o: any) => o.trackingNumber === 'TN1').toStatus).toBe(ShipmentStatusType.RECHAZADO);
+    // El rechazado es cobrable → nace su ingreso (antes se perdía por quedar pegado en EN_RUTA).
+    expect(savedIncomes).toHaveLength(1);
+    expect(savedIncomes[0].incomeType).toBe(IncomeStatus.NO_ENTREGADO);
   });
 
   it('skip charge: un outcome kind=charge NO genera ni toca ingresos', async () => {

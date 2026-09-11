@@ -237,7 +237,7 @@ export class Subsidiary {
   @Column({ default: true })
   chargeDelivered: boolean;
 
-  /** ¿Generar ingreso DHL al detectar entrega (17track), no solo en cierre de ruta? */
+  /** ¿Generar ingreso DHL al detectar entrega (API nativa DHL), no solo en cierre de ruta? */
   @Column({ default: true })
   generateDhlIncomeOnDelivery: boolean;
 

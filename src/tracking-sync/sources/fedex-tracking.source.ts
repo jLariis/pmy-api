@@ -15,8 +15,15 @@ export class FedexTrackingSource implements TrackingSource {
 
   async fetch(refs: TrackingRef[]): Promise<RawTrackingResult[]> {
     const out: RawTrackingResult[] = [];
-    for (let i = 0; i < refs.length; i += FedexTrackingSource.BATCH) {
-      const slice = refs.slice(i, i + FedexTrackingSource.BATCH);
+    // Defensa: nunca mandamos a FedEx una guía vacía/nula (produce 422 y tira TODO el lote).
+    // Las guías sin trackingNumber salen como "sin datos" y el resto se consulta normal.
+    const valid: TrackingRef[] = [];
+    for (const r of refs) {
+      if (r?.trackingNumber && `${r.trackingNumber}`.trim()) valid.push(r);
+      else out.push({ trackingNumber: r?.trackingNumber ?? '', trackResults: [] });
+    }
+    for (let i = 0; i < valid.length; i += FedexTrackingSource.BATCH) {
+      const slice = valid.slice(i, i + FedexTrackingSource.BATCH);
       const map = await this.fedexService.trackBatch(
         slice.map((r) => ({ trackingNumber: r.trackingNumber, fedexUniqueId: r.fedexUniqueId, carrierCode: r.carrierCode })),
         'tracking-sync',

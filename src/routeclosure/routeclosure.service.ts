@@ -68,23 +68,54 @@ export class RouteclosureService {
     );
 
     const outcomes = await this.trackingCompare.applyByRoute(packageDispatchId, actor, { kinds });
-    const updated = outcomes.filter((o) => o.applied).length;
+
+    // SEGUNDA PASADA (resolver de cierre, externo a applyByRoute): rescata las guías que el Time
+    // Shield dejó pegadas en EN_RUTA aunque FedEx ya reportó el desenlace real del día operativo
+    // (caso 383562128973: rechazado tomado ANTES de crear la ruta, cierre abierto días después).
+    // Ancla la decisión al día operativo de la ruta, no a `hoy`. Solo sucursales de persistencia.
+    const routeAnchor = dispatch.routeDate ?? dispatch.createdAt ?? null;
+    const rescued = await this.trackingCompare.resolveStuckEnRutaForClosure(
+      packageDispatchId,
+      routeAnchor,
+      actor,
+      { kinds },
+    );
+
+    // Funde los rescates sobre los outcomes base (por guía+tipo): el estatus forzado manda.
+    const merged = this.mergeOutcomes(outcomes, rescued);
+    const updated = merged.filter((o) => o.applied).length;
     this.logger.log(
-      `✅ [RouteClosure] Reconciliación de ruta ${packageDispatchId}: ${updated}/${outcomes.length} guías actualizadas.`,
+      `✅ [RouteClosure] Reconciliación de ruta ${packageDispatchId}: ${updated}/${merged.length} guías actualizadas` +
+        (rescued.length ? `, ${rescued.length} rescatadas de EN_RUTA pegado.` : '.'),
     );
 
     // Reconciliación de INGRESOS (solo shipments; is315 no toca nada; ENTREGADO > DEX mismo día).
-    const income = await this.reconcileRouteIncome(dispatch, outcomes, actor.userId);
+    // Se corre sobre el set FUNDIDO para que los rescatados también generen su ingreso.
+    const income = await this.reconcileRouteIncome(dispatch, merged, actor.userId);
 
     return {
       packageDispatchId,
       is315: !!dispatch.is315,
-      total: outcomes.length,
+      total: merged.length,
       updated,
+      rescued: rescued.length,
       incomeCreated: income.incomeCreated,
       incomeSuperseded: income.incomeSuperseded,
-      outcomes,
+      outcomes: merged,
     };
+  }
+
+  /**
+   * Funde los outcomes forzados por el resolver de cierre sobre los base de `applyByRoute`.
+   * Clave por (trackingNumber, kind): un rescate reemplaza su outcome base (el estatus real
+   * de FedEx manda sobre el EN_RUTA que el escudo había conservado).
+   */
+  private mergeOutcomes(base: ApplyOutcome[], forced: ApplyOutcome[]): ApplyOutcome[] {
+    if (!forced.length) return base;
+    const keyOf = (o: ApplyOutcome) => `${o.kind ?? 'shipment'}::${o.trackingNumber}`;
+    const byKey = new Map(base.map((o) => [keyOf(o), o]));
+    for (const f of forced) byKey.set(keyOf(f), f);
+    return [...byKey.values()];
   }
 
   /**

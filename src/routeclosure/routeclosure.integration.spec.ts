@@ -13,6 +13,8 @@ describe('RouteclosureService.create — ingreso por recolección', () => {
         return packageDispatch; // PackageDispatch
       }),
       create: jest.fn((_entity: any, data: any) => data),
+      // Guard de duplicados de `create` (queryRunner.manager.find(Collection)): sin existentes.
+      find: jest.fn(async () => []),
       save: jest.fn(async (entity: any, data: any) => {
         if (entity === Collection) {
           const arr = Array.isArray(data) ? data : [data];

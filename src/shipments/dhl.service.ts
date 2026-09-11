@@ -36,14 +36,37 @@ export interface DhlNativeResult {
 export class DhlService {
     private readonly logger = new Logger(DhlService.name);
 
-    /** Concurrencia de llamadas a la API de DHL (1 guía por llamada, sin rate limit declarado). */
-    private readonly concurrency = Number(process.env.DHL_TRACK_CONCURRENCY) || 10;
+    /**
+     * Concurrencia de llamadas a la API de DHL (1 guía por llamada). DHL SÍ tiene rate limit
+     * (429 "Too Many Requests"), así que además de la concurrencia limitamos la CADENCIA con
+     * `minIntervalMs` (ver `rateGate`). Concurrencia baja por defecto para no saturar.
+     */
+    private readonly concurrency = Number(process.env.DHL_TRACK_CONCURRENCY) || 3;
+    /** Separación mínima entre INICIOS de request (throttle global). 5 req/s por defecto. */
+    private readonly minIntervalMs = Number(process.env.DHL_TRACK_MIN_INTERVAL_MS) || 200;
     /** Intentos por guía ante errores transitorios (429/5xx/red). */
-    private readonly maxAttempts = Number(process.env.DHL_TRACK_MAX_ATTEMPTS) || 3;
+    private readonly maxAttempts = Number(process.env.DHL_TRACK_MAX_ATTEMPTS) || 4;
     private readonly requestTimeoutMs = Number(process.env.DHL_TRACK_TIMEOUT_MS) || 20000;
+
+    /** Instante (epoch ms) en que se puede lanzar el próximo request. Compartido entre guías. */
+    private nextSlot = 0;
 
     private sleep(ms: number): Promise<void> {
         return new Promise((resolve) => setTimeout(resolve, ms));
+    }
+
+    /**
+     * Puerta de cadencia: serializa el ARRANQUE de cada request para que estén separados al
+     * menos `minIntervalMs`, aun con varias guías concurrentes. Reserva su turno de forma
+     * atómica (avanza `nextSlot`) y espera hasta que llegue. Así respetamos el rate limit de DHL.
+     */
+    private async rateGate(): Promise<void> {
+        if (this.minIntervalMs <= 0) return;
+        const now = Date.now();
+        const slot = Math.max(now, this.nextSlot);
+        this.nextSlot = slot + this.minIntervalMs;
+        const wait = slot - now;
+        if (wait > 0) await this.sleep(wait);
     }
 
     /** Backoff exponencial con jitter (tope 8s). */
@@ -71,6 +94,7 @@ export class DhlService {
 
         let lastError: any;
         for (let attempt = 1; attempt <= this.maxAttempts; attempt++) {
+            await this.rateGate(); // respeta la cadencia global antes de cada intento
             try {
                 const response = await axios.get(url, {
                     params: { trackingNumber: tn, service: 'express' },
@@ -90,9 +114,16 @@ export class DhlService {
                     this.logger.error(`❌ DHL API-Key inválida/insuficiente (status ${status}) al consultar ${tn}.`);
                     throw error;
                 }
-                // 429 / 5xx / red: transitorio → backoff y reintento.
+                // 429 / 5xx / red: transitorio → espera y reintenta. En 429 honra Retry-After si viene.
                 if (status === 429 || !error.response || (status >= 500 && status <= 599)) {
-                    if (!isLast) { await this.sleep(this.backoff(attempt)); continue; }
+                    if (!isLast) {
+                        const retryAfter = Number(error.response?.headers?.['retry-after']) || 0;
+                        const wait = retryAfter > 0 ? retryAfter * 1000 : this.backoff(attempt);
+                        // Empuja también la cadencia global para que las guías en cola no reboten en 429.
+                        this.nextSlot = Math.max(this.nextSlot, Date.now() + wait);
+                        await this.sleep(wait);
+                        continue;
+                    }
                 }
                 // 4xx no recuperable u otro → propaga.
                 this.logger.error(`❌ Error API DHL [${tn}] (status ${status || error.code}): ${JSON.stringify(error.response?.data || error.message).slice(0, 200)}`);
