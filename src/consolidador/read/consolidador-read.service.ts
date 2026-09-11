@@ -30,6 +30,9 @@ export class ConsolidadorReadService {
 
     const rows: AnomalyRow[] = [];
     for (const i of list) {
+      // Solo los ENVÍOS (shipment) se revisan contra estatus/FedEx. Cargas, recolecciones,
+      // traslados y manuales no tienen historial de estatus y no aplican para anomalías.
+      if (i.sourceType !== 'shipment') continue;
       const history = ((i.shipment as any)?.statusHistory ?? []).map((s: any) => ({ status: s.status, timestamp: s.timestamp }));
       const statusDate = this.latestStatusDate(history);
       const anomalies = detectAnomalies({
