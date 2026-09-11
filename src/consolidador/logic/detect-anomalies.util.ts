@@ -1,4 +1,5 @@
 import { ShipmentStatusType } from '../../common/enums/shipment-status-type.enum';
+import { deliveredByFedex } from './status-origin.util';
 
 /** Estatus terminales/cobrables (entrega o no-entrega resuelta) que justifican/anclan un cobro. */
 const TERMINAL = new Set<string>([
@@ -21,7 +22,7 @@ export interface AnomalyInput {
 }
 
 export interface Anomaly {
-  code: 'date_mismatch' | 'status_regressed' | 'income_without_support';
+  code: 'date_mismatch' | 'status_regressed' | 'income_without_support' | 'delivered_by_fedex';
   label: string;
 }
 
@@ -50,6 +51,11 @@ export function detectAnomalies(input: AnomalyInput): Anomaly[] {
 
   if (input.income && terminalEvents.length === 0) {
     out.push({ code: 'income_without_support', label: 'Ingreso sin evento de estatus que lo respalde' });
+  }
+
+  // Cobro de una entrega que hizo FedEx, no nosotros: ENTREGADO_POR_FEDEX no debe generar ingreso.
+  if (input.income && deliveredByFedex(input.currentStatus, input.history)) {
+    out.push({ code: 'delivered_by_fedex', label: 'Entregado por FedEx (no por nosotros) — revisar cobro' });
   }
 
   return out;

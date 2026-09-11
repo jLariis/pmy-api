@@ -12,6 +12,7 @@ import { IncomeSourceType } from '../../common/enums/income-source-type.enum';
 import { deriveStatusCorrection } from '../logic/status-correction.util';
 import { deriveRepairIncome } from '../logic/repair-income.util';
 import { detectAnomalies } from '../logic/detect-anomalies.util';
+import { statusOrigin } from '../logic/status-origin.util';
 import { mapIncomeToRow } from '../read/consolidador-row.mapper';
 import { ConsolidadorRow } from '../consolidador.types';
 import { ConsolidadorAuditService } from '../audit/consolidador-audit.service';
@@ -62,7 +63,12 @@ export class ConsolidadorStatusService {
     }
 
     for (const s of (shipment as any).statusHistory ?? []) {
-      events.push({ kind: 'estatus', label: String(s.status ?? '').replace(/_/g, ' '), date: iso(s.timestamp) });
+      const origin = statusOrigin(s.status);
+      events.push({
+        kind: origin === 'fedex' ? 'estatus_fedex' : 'estatus_interno',
+        label: String(s.status ?? '').replace(/_/g, ' '),
+        date: iso(s.timestamp),
+      });
     }
 
     const income = await this.incomeRepo.findOne({
