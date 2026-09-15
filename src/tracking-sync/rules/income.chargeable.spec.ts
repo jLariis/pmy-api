@@ -33,6 +33,19 @@ describe('deriveChargeableIncomes', () => {
     const nuevo = [ev({ k: 'a', ec: '08', status: ShipmentStatusType.CLIENTE_NO_DISPONIBLE, t: '2026-08-31T10:00:00Z' })];
     expect(deriveChargeableIncomes(nuevo, sem35)).toHaveLength(0);
   });
+  it('varios 08 el MISMO día no cuentan como 3 visitas (anti "cobra con 1")', () => {
+    // 2 filas 08 del mismo día 18 en historial + 1 nuevo día 20 → solo 2 días distintos.
+    const dupDia18 = [new Date('2026-08-18T09:00:00Z'), new Date('2026-08-18T18:00:00Z')];
+    const nuevo = [ev({ k: 'a', ec: '08', status: ShipmentStatusType.CLIENTE_NO_DISPONIBLE, t: '2026-08-20T10:00:00Z' })];
+    expect(deriveChargeableIncomes(nuevo, dupDia18)).toHaveLength(0);
+    // 3 eventos nuevos el mismo día (re-escaneos) → 1 sola visita → no cobra.
+    const tresMismoDia = [
+      ev({ k: 'a', ec: '08', status: ShipmentStatusType.CLIENTE_NO_DISPONIBLE, t: '2026-08-20T09:00:00Z' }),
+      ev({ k: 'b', ec: '08', status: ShipmentStatusType.CLIENTE_NO_DISPONIBLE, t: '2026-08-20T14:00:00Z' }),
+      ev({ k: 'c', ec: '08', status: ShipmentStatusType.CLIENTE_NO_DISPONIBLE, t: '2026-08-20T20:00:00Z' }),
+    ];
+    expect(deriveChargeableIncomes(tresMismoDia, [])).toHaveLength(0);
+  });
   it('estatus no cobrable → nada', () => {
     expect(deriveChargeableIncomes([ev({ k: 'x', status: ShipmentStatusType.EN_RUTA })], [])).toHaveLength(0);
   });

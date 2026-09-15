@@ -38,11 +38,19 @@ export interface ExtraHoliday {
  * que capturó el usuario? Los `extra` complementan la lista fija (no la reemplazan).
  */
 export function isSundayOrMexHoliday(input: string | Date, extra: ExtraHoliday[] = []): boolean {
-  const d = input instanceof Date ? input : new Date(input);
-  if (isNaN(d.getTime())) return false;
-
-  // Día calendario en Hermosillo, p.ej. '2026-08-16'.
-  const ymd = formatInTimeZone(d, TZ, 'yyyy-MM-dd');
+  // Fecha-sola 'YYYY-MM-DD' (sin hora): es un DÍA calendario, no un instante, así que se
+  // toma literal SIN anclar a Hermosillo. Si se desplazara, la medianoche UTC del lunes
+  // (p.ej. `new Date('2026-09-14')` = lunes 00:00Z) caería en domingo 17:00 Hermosillo y
+  // marcaría domingo por error (sobreprecio a cargas subidas el lunes).
+  let ymd: string;
+  if (typeof input === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(input.trim())) {
+    ymd = input.trim();
+  } else {
+    const d = input instanceof Date ? input : new Date(input);
+    if (isNaN(d.getTime())) return false;
+    // Día calendario en Hermosillo, p.ej. '2026-08-16'.
+    ymd = formatInTimeZone(d, TZ, 'yyyy-MM-dd');
+  }
   const [year, month, day] = ymd.split('-').map(Number);
   // getUTCDay sobre la medianoche UTC de ese día calendario: 0=Dom .. 6=Sáb.
   const dow = new Date(Date.UTC(year, month - 1, day)).getUTCDay();

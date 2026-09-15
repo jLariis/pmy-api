@@ -47,6 +47,26 @@ describe('isSundayOrMexHoliday', () => {
     expect(isSundayOrMexHoliday('2026-05-01T12:00:00.000Z')).toBe(true);
   });
 
+  describe('fecha-sola YYYY-MM-DD (día calendario literal, NO se ancla a Hermosillo)', () => {
+    it('un LUNES bare NO cuenta como domingo (bug carga subida el lunes)', () => {
+      // 2026-09-13 = domingo, 2026-09-14 = lunes. Como Date da lunes 00:00Z → Hermosillo
+      // domingo 17:00; en cambio como fecha-sola se toma literal = lunes.
+      expect(isSundayOrMexHoliday('2026-09-14')).toBe(false);
+      // Y el domingo bare sí cuenta.
+      expect(isSundayOrMexHoliday('2026-09-13')).toBe(true);
+    });
+
+    it('feriado fijo como fecha-sola cuenta (2026-09-16 Independencia)', () => {
+      expect(isSundayOrMexHoliday('2026-09-16')).toBe(true);
+    });
+
+    it('regresión del bug: la MISMA fecha como Date UTC-midnight sí se desplazaba', () => {
+      // Documenta por qué los callers pasan la fecha-sola: el Date sí ancla a Hermosillo.
+      expect(isSundayOrMexHoliday(new Date('2026-09-14T00:00:00.000Z'))).toBe(true); // domingo Hmo
+      expect(isSundayOrMexHoliday('2026-09-14')).toBe(false); // lunes literal
+    });
+  });
+
   describe('festivos adicionales del usuario', () => {
     it('festivo extra de FECHA EXACTA cuenta solo ese día', () => {
       const extra = [{ date: '2026-08-25', recurring: false }];

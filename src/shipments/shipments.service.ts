@@ -898,7 +898,12 @@ export class ShipmentsService {
       // Sobreprecio si la carga se trabaja en domingo/festivo (fecha del consolidado).
       // Festivos = lista fija Art. 74 (código) + los adicionales del usuario (tabla holiday).
       const extraHolidays = await this.holidaysService.getHolidayInputs();
-      const chargeIsSundayHoliday = isSundayOrMexHoliday(consDate || new Date(), extraHolidays);
+      // consDate es el DÍA de la carga (fecha-sola, guardada como medianoche UTC del día
+      // elegido). Se pasa como día calendario literal para que el chequeo domingo/festivo NO
+      // lo desplace 7h a Hermosillo (una carga subida el LUNES se marcaba como domingo).
+      const chargeDayForHoliday =
+        consDate && !isNaN(consDate.getTime()) ? consDate.toISOString().slice(0, 10) : new Date();
+      const chargeIsSundayHoliday = isSundayOrMexHoliday(chargeDayForHoliday, extraHolidays);
       const chargeCostToUse = resolveChargeCost(chargeSubsidiary, isHalfTon, chargeIsSundayHoliday, secondAbord);
       const chargeSecondAbordOn = chargeSecondAbordApplied(chargeSubsidiary, isHalfTon, chargeIsSundayHoliday, secondAbord);
 
@@ -1223,7 +1228,11 @@ export class ShipmentsService {
           // Sobreprecio si la carga se trabaja en domingo/festivo (fecha del consolidado).
           // Festivos = lista fija Art. 74 (código) + los adicionales del usuario (tabla holiday).
           const extraHolidays = await this.holidaysService.getHolidayInputs();
-          const chargeIsSundayHolidayAdd = isSundayOrMexHoliday(consDate || new Date(), extraHolidays);
+          // consDate = día de la carga (fecha-sola, medianoche UTC). Día literal para no
+          // desplazarlo a Hermosillo (subida del lunes se marcaba domingo). Ver processFileF2.
+          const chargeDayForHolidayAdd =
+            consDate && !isNaN(consDate.getTime()) ? consDate.toISOString().slice(0, 10) : new Date();
+          const chargeIsSundayHolidayAdd = isSundayOrMexHoliday(chargeDayForHolidayAdd, extraHolidays);
           const chargeCostToUse = resolveChargeCost(chargeSubsidiary, isHalfTon, chargeIsSundayHolidayAdd, secondAbord);
           const chargeSecondAbordOnAdd = chargeSecondAbordApplied(chargeSubsidiary, isHalfTon, chargeIsSundayHolidayAdd, secondAbord);
 

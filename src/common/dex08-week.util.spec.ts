@@ -54,3 +54,40 @@ describe('weeklyDex08ChargeIndexes — 3 en la MISMA semana', () => {
     expect(weeklyDex08ChargeIndexes([], nuevos).sort((a, b) => a - b)).toEqual([0, 5]);
   });
 });
+
+describe('weeklyDex08ChargeIndexes — cuenta DÍAS distintos (anti-duplicado)', () => {
+  it('3 eventos 08 el MISMO día → NO cobra (1 sola visita re-escaneada)', () => {
+    const nuevos = [
+      D('2026-08-25T09:00:00Z'),
+      D('2026-08-25T15:00:00Z'),
+      D('2026-08-25T20:00:00Z'),
+    ]; // mismo día 25 → 1 visita
+    expect(weeklyDex08ChargeIndexes([], nuevos)).toEqual([]);
+  });
+
+  it('BUG "cobra con 1": 2 filas 08 del MISMO día en historial + 1 nuevo día → NO cobra (solo 2 días distintos)', () => {
+    const previos = [D('2026-08-25T09:00:00Z'), D('2026-08-25T18:00:00Z')]; // duplicado del día 25
+    const nuevos = [D('2026-08-26T10:00:00Z')]; // día 26
+    expect(weeklyDex08ChargeIndexes(previos, nuevos)).toEqual([]); // {25,26} = 2 días
+  });
+
+  it('2 días distintos + un re-escaneo de uno de ellos + un 3er día → cobra en el 3er DÍA distinto', () => {
+    const nuevos = [
+      D('2026-08-24T10:00:00Z'), // día 24 (1)
+      D('2026-08-25T10:00:00Z'), // día 25 (2)
+      D('2026-08-25T22:00:00Z'), // re-escaneo día 25 → no suma
+      D('2026-08-26T10:00:00Z'), // día 26 (3) → dispara aquí (idx 3)
+    ];
+    expect(weeklyDex08ChargeIndexes([], nuevos)).toEqual([3]);
+  });
+
+  it('1 día previo + re-escaneo del mismo día + 2 días nuevos → cobra en el 3er día distinto', () => {
+    const previos = [D('2026-08-24T10:00:00Z')]; // día 24 (1)
+    const nuevos = [
+      D('2026-08-24T23:00:00Z'), // re-escaneo día 24 → no suma
+      D('2026-08-25T10:00:00Z'), // día 25 (2)
+      D('2026-08-26T10:00:00Z'), // día 26 (3) → dispara (idx 2)
+    ];
+    expect(weeklyDex08ChargeIndexes(previos, nuevos)).toEqual([2]);
+  });
+});
