@@ -69,8 +69,17 @@ export class TransferService {
       const savedTransfer = await queryRunner.manager.save(transfer);
       
       // 5. Save Income
+      // Regla de negocio: un traslado ESPECIAL (no tyco/aeropuerto) que va hacia una
+      // sucursal real registra su ingreso en la sucursal DESTINO, no en la de origen.
+      // Si el destino es externo (texto libre, sin `destinationId`) o el traslado es
+      // tyco/aeropuerto, el ingreso se queda en la sucursal de origen como siempre.
+      const incomeSubsidiaryId =
+        sourceType === IncomeSourceType.SPECIAL_TRANSFER && createTransferDto.destinationId
+          ? createTransferDto.destinationId
+          : createTransferDto.originId;
+
       const newIncome = queryRunner.manager.create(Income, {
-        subsidiary: { id: createTransferDto.originId }, 
+        subsidiary: { id: incomeSubsidiaryId },
         shipmentType: ShipmentType.OTHER, 
         cost: createTransferDto.totalAmount, 
         incomeType: incomeType,
