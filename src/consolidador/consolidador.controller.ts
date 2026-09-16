@@ -5,6 +5,7 @@ import { ConsolidadorReadService } from './read/consolidador-read.service';
 import { ConsolidadorIncomeService } from './income/consolidador-income.service';
 import { ConsolidadorStatusService } from './status/consolidador-status.service';
 import { ConsolidadorAuditService } from './audit/consolidador-audit.service';
+import { CobrosAuditService } from './audit/cobros-audit.service';
 import { ConsolidadorQueryDto } from './dto/consolidador-query.dto';
 import { EditCostDto } from './dto/edit-cost.dto';
 import { EditDateDto } from './dto/edit-date.dto';
@@ -26,6 +27,7 @@ export class ConsolidadorController {
     private readonly income: ConsolidadorIncomeService,
     private readonly status: ConsolidadorStatusService,
     private readonly audit: ConsolidadorAuditService,
+    private readonly cobrosAudit: CobrosAuditService,
   ) {}
 
   /** Ingresos con anomalías de la semana (panel de revisión). */
@@ -38,6 +40,21 @@ export class ConsolidadorController {
     const from = new Date(`${fromDate}T00:00:00.000`);
     const to = new Date(`${toDate}T23:59:59.999`);
     return this.read.getWeekAnomalies(subsidiaryId, from, to);
+  }
+
+  /**
+   * Auditoría de cobros de la semana (FedEx envío): detecta paquetes que deberían cobrar y
+   * no cobran, y los que cobran y no deberían (p. ej. DEX08 sin 3 visitas), por regla.
+   */
+  @Get(':subsidiaryId/:fromDate/:toDate/cobros-audit')
+  cobrosAuditWeek(
+    @Param('subsidiaryId') subsidiaryId: string,
+    @Param('fromDate') fromDate: string,
+    @Param('toDate') toDate: string,
+  ) {
+    const from = new Date(`${fromDate}T00:00:00.000`);
+    const to = new Date(`${toDate}T23:59:59.999`);
+    return this.cobrosAudit.audit(subsidiaryId, from, to);
   }
 
   /** Historial de cambios de un ingreso (más reciente primero). */

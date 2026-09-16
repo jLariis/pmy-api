@@ -6,11 +6,12 @@ import { ConsolidadorReadService } from './read/consolidador-read.service';
 import { ConsolidadorIncomeService } from './income/consolidador-income.service';
 import { ConsolidadorStatusService } from './status/consolidador-status.service';
 import { ConsolidadorAuditService } from './audit/consolidador-audit.service';
+import { CobrosAuditService } from './audit/cobros-audit.service';
 import { FedexStatusModule } from '../fedex-status/fedex-status.module';
 
 @Module({
   imports: [TypeOrmModule.forFeature([Income, Shipment, Subsidiary, IncomeChangeLog]), FedexStatusModule],
   controllers: [ConsolidadorController],
-  providers: [ConsolidadorReadService, ConsolidadorIncomeService, ConsolidadorStatusService, ConsolidadorAuditService],
+  providers: [ConsolidadorReadService, ConsolidadorIncomeService, ConsolidadorStatusService, ConsolidadorAuditService, CobrosAuditService],
 })
 export class ConsolidadorModule {}
