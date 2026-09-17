@@ -38,9 +38,15 @@ export class ConsolidadorStatusService {
     if (!shipment) return { events: [] as any[] };
 
     const iso = (d: Date | string | null | undefined) => (d ? new Date(d).toISOString() : null);
-    const events: Array<{ kind: string; label: string; date: string | null; meta?: any }> = [];
+    // `granularity` distingue INSTANTE (fecha+hora reales, p.ej. createdAt/evento FedEx) de
+    // DÍA de negocio guardado como medianoche UTC (consolidado, carga). El FE pinta los 'day'
+    // como fecha por su día UTC (sin hora ni desplazar a Hermosillo), evitando que un día-solo
+    // 00:00Z se corra 7h al día anterior con una hora falsa.
+    type Granularity = 'instant' | 'day';
+    const events: Array<{ kind: string; label: string; date: string | null; granularity: Granularity; meta?: any }> = [];
 
-    if (shipment.createdAt) events.push({ kind: 'recibido', label: 'Registrado en el sistema', date: iso(shipment.createdAt) });
+    if (shipment.createdAt)
+      events.push({ kind: 'recibido', label: 'Registrado en el sistema', date: iso(shipment.createdAt), granularity: 'instant' });
 
     if ((shipment as any).consolidatedId) {
       const cons = await this.shipmentRepo.manager
@@ -51,6 +57,7 @@ export class ConsolidadorStatusService {
           kind: 'consolidado',
           label: cons.consNumber ? `Consolidado ${cons.consNumber}` : 'Consolidado',
           date: iso(cons.date ?? cons.createdAt),
+          granularity: 'day', // consolidated.date = día de negocio (00:00Z)
         });
       }
     }
@@ -59,7 +66,13 @@ export class ConsolidadorStatusService {
       const pd = await this.shipmentRepo.manager
         .getRepository(PackageDispatch)
         .findOne({ where: { id: (shipment as any).routeId } });
-      if (pd) events.push({ kind: 'salida_ruta', label: 'Salió a ruta', date: iso((pd as any).routeDate ?? (pd as any).createdAt) });
+      if (pd)
+        events.push({
+          kind: 'salida_ruta',
+          label: 'Salió a ruta',
+          date: iso((pd as any).routeDate ?? (pd as any).createdAt),
+          granularity: 'day', // routeDate = día de la ruta
+        });
     }
 
     for (const s of (shipment as any).statusHistory ?? []) {
@@ -68,6 +81,7 @@ export class ConsolidadorStatusService {
         kind: origin === 'fedex' ? 'estatus_fedex' : 'estatus_interno',
         label: String(s.status ?? '').replace(/_/g, ' '),
         date: iso(s.timestamp),
+        granularity: 'instant', // timestamp real del evento
       });
     }
 
@@ -76,10 +90,13 @@ export class ConsolidadorStatusService {
       relations: ['subsidiary'],
     });
     if (income) {
+      // Ingreso de carga (grouped) usa el día del consolidado; el de envío ancla al evento.
+      const isChargeIncome = income.sourceType === IncomeSourceType.CHARGE;
       events.push({
         kind: 'ingreso',
         label: `Ingreso (${income.incomeType})`,
         date: iso(income.date),
+        granularity: isChargeIncome ? 'day' : 'instant',
         meta: { cost: Number(income.cost), subsidiary: (income.subsidiary as any)?.name ?? null },
       });
     }
