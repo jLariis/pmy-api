@@ -131,6 +131,12 @@ export class ConsolidadorController {
     return this.status.repairIncome(id, dto.reason, req.user?.userId);
   }
 
+  /** KPI de paquetes en bodega (44/67) sin ingreso: dinero potencial + antigüedad (estado vivo). */
+  @Get(':subsidiaryId/warehouse-kpi')
+  warehouseKpi(@Param('subsidiaryId') subsidiaryId: string) {
+    return this.groups.warehouseKpi(subsidiaryId);
+  }
+
   /** Grupos de la semana POR RUTA: KPIs (entregados/no entregados/ingresos/descuadre) + guías con veredicto. */
   @Get(':subsidiaryId/:fromDate/:toDate/by-route')
   byRoute(

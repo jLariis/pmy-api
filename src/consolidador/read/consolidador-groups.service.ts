@@ -13,7 +13,7 @@ import { CobrosAuditService } from '../audit/cobros-audit.service';
 import { computeVerdict, Verdict } from '../logic/package-verdict.util';
 import { buildGroups } from '../logic/consolidador-groups.util';
 import { mapIncomeToRow } from './consolidador-row.mapper';
-import { ChargeIssue, ConsolidadorGroupsResult, ConsolidadorRow, GroupInputRow } from '../consolidador.types';
+import { ChargeIssue, ConsolidadorGroupsResult, ConsolidadorRow, GroupInputRow, WarehouseKpi } from '../consolidador.types';
 
 const NEUTRAL_OK: Verdict = { code: 'no_income_ok', level: 'ok', title: '', evidence: [], suggestedAction: { kind: 'none' } };
 
@@ -263,6 +263,42 @@ export class ConsolidadorGroupsService {
     });
     for (const i of incomes) if (i.shipment?.id) map.set(i.shipment.id, mapIncomeToRow(i));
     return map;
+  }
+
+  /**
+   * KPI de paquetes en bodega (44/67) SIN ingreso: cuántos hay, el dinero potencial si se cobraran
+   * (conteo × fedexCostPackage) y su antigüedad desde la recepción (createdAt) en buckets 3-5 / 6+.
+   * Estado vivo (no acotado a la semana): es una alerta de "dinero parado en bodega".
+   */
+  async warehouseKpi(subsidiaryId: string): Promise<WarehouseKpi> {
+    const sub = await this.incomeRepo.manager
+      .getRepository(Subsidiary)
+      .findOne({ where: { id: subsidiaryId }, select: ['fedexCostPackage'] });
+    const packageCost = Number((sub as any)?.fedexCostPackage ?? 0);
+
+    const rows = await this.incomeRepo.manager
+      .getRepository(Shipment)
+      .createQueryBuilder('s')
+      .leftJoin('income', 'i', 'i.shipmentId = s.id AND i.active = 1')
+      .select('s.createdAt', 'createdAt')
+      .where('s.subsidiaryId = :subsidiaryId', { subsidiaryId })
+      .andWhere('LOWER(s.status) IN (:...st)', { st: ['en_bodega', 'recibido_en_bodega'] })
+      .andWhere('i.id IS NULL')
+      .getRawMany<{ createdAt: Date | string | null }>();
+
+    const now = Date.now();
+    const DAY = 24 * 60 * 60 * 1000;
+    let d3to5 = 0;
+    let d6plus = 0;
+    for (const r of rows) {
+      if (!r.createdAt) continue;
+      const days = Math.floor((now - new Date(r.createdAt).getTime()) / DAY);
+      if (days >= 6) d6plus += 1;
+      else if (days >= 3) d3to5 += 1;
+    }
+
+    const count = rows.length;
+    return { count, packageCost, potentialAmount: count * packageCost, aging: { d3to5, d6plus } };
   }
 
   private async secondAbordAmount(subsidiaryId: string): Promise<number> {

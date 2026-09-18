@@ -102,6 +102,15 @@ export interface ConsolidadorGroupsResult {
   groups: ConsolidadorGroup[];
 }
 
+/** KPI de paquetes atorados en bodega (44/67) sin ingreso: dinero potencial + antigüedad. */
+export interface WarehouseKpi {
+  count: number;
+  packageCost: number;
+  potentialAmount: number;
+  /** Antigüedad desde la recepción (createdAt): buckets para la nota. */
+  aging: { d3to5: number; d6plus: number };
+}
+
 /** Fila normalizada de entrada para agrupar (una por envío de la ruta/consolidado + una por carga con ingreso). */
 export interface GroupInputRow {
   tracking: string | null;
