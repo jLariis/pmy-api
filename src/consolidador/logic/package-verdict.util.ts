@@ -14,6 +14,7 @@ export type VerdictCode =
   | 'fedex_delivery_doubtful' // entregado por fedex, sin ruta ese día → cobro dudoso
   | 'our_delivery_ok' // entrega nuestra normal, respaldada
   | 'no_income_ok' // sin ingreso, sin problema
+  | 'income_missing' // lo entregamos nosotros pero NO se cobró → falta cobrar
   | 'date_mismatch' // ingreso fechado en día sin evento
   | 'income_without_support' // cobro sin evento terminal que lo respalde
   | 'status_regressed' // tuvo estatus final y volvió a tránsito
@@ -22,6 +23,7 @@ export type VerdictCode =
 export type SuggestedAction =
   | { kind: 'none' }
   | { kind: 'fix_status'; to: ShipmentStatusType }
+  | { kind: 'repair_income' }
   | { kind: 'delete_income' };
 
 export interface Verdict {
@@ -45,6 +47,12 @@ export interface VerdictInput {
   /** ¿Se pudo confirmar el estatus contra FedEx? false degrada el veredicto a "sin verificar". */
   fedexVerified: boolean;
 }
+
+/** Entregas HECHAS POR NOSOTROS: si no tienen ingreso, es un cobro que probablemente falta. */
+const OUR_DELIVERY = new Set<string>([
+  ShipmentStatusType.ENTREGADO,
+  ShipmentStatusType.ENTREGADO_EN_BODEGA,
+]);
 
 /** Estatus terminales (entrega o no-entrega resuelta) que justifican/anclan un cobro. */
 const TERMINAL = new Set<string>([
@@ -148,5 +156,17 @@ export function computeVerdict(i: VerdictInput): Verdict {
   if (hasIncome) {
     return { code: 'our_delivery_ok', level: 'ok', title: 'Entrega respaldada', evidence: [], suggestedAction: { kind: 'none' } };
   }
+
+  // Sin ingreso: si LO ENTREGAMOS NOSOTROS, probablemente falta cobrarlo (el "qué podría faltar").
+  if (i.currentStatus && OUR_DELIVERY.has(String(i.currentStatus))) {
+    return {
+      code: 'income_missing',
+      level: 'warn',
+      title: 'Falta cobrar — entregado sin ingreso',
+      evidence: ['El paquete se entregó pero no tiene ingreso registrado. Genera el cobro si corresponde.'],
+      suggestedAction: { kind: 'repair_income' },
+    };
+  }
+
   return { code: 'no_income_ok', level: 'ok', title: 'Sin cobro', evidence: [], suggestedAction: { kind: 'none' } };
 }

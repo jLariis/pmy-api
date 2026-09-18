@@ -91,9 +91,26 @@ describe('computeVerdict', () => {
     expect(v.level).toBe('danger');
   });
 
-  it('sin ingreso → no_income_ok (ok)', () => {
+  it('sin ingreso y en tránsito → no_income_ok (ok)', () => {
     const v = computeVerdict({ ...base, currentStatus: ShipmentStatusType.EN_RUTA });
     expect(v.code).toBe('no_income_ok');
     expect(v.level).toBe('ok');
+  });
+
+  it('entregado por nosotros SIN ingreso → income_missing (warn, generar cobro)', () => {
+    const v = computeVerdict({
+      ...base,
+      currentStatus: ShipmentStatusType.ENTREGADO,
+      history: [{ status: ShipmentStatusType.ENTREGADO, timestamp: '2026-09-17T15:00:00.000Z' }],
+      incomeDate: null,
+    });
+    expect(v.code).toBe('income_missing');
+    expect(v.level).toBe('warn');
+    expect(v.suggestedAction).toEqual({ kind: 'repair_income' });
+  });
+
+  it('entregado POR FEDEX sin ingreso → no_income_ok (no lo cobramos nosotros)', () => {
+    const v = computeVerdict({ ...base, currentStatus: ShipmentStatusType.ENTREGADO_POR_FEDEX, incomeDate: null });
+    expect(v.code).toBe('no_income_ok');
   });
 });

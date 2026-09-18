@@ -76,41 +76,45 @@ export class ConsolidadorGroupsService {
     const consolidados = await this.incomeRepo.manager
       .getRepository(Consolidated)
       .find({ where: { date: Between(from, to) } });
-    const consByNumber = new Map<string, Date | null>();
-    const consIds: string[] = [];
+    // Agrupamos por el consolidado (id) — así ningún paquete cae en "Sin consolidado".
+    const consMetaById = new Map<string, { label: string; date: Date | null; consNumber: string | null }>();
+    const consByNumber = new Map<string, Date | null>(); // para cruzar cargas por consNumber
     for (const c of consolidados) {
-      consIds.push(c.id);
+      consMetaById.set(c.id, {
+        label: c.consNumber ? `Consolidado ${c.consNumber}` : `Consolidado …${String(c.id).slice(-6)}`,
+        date: c.date ?? null,
+        consNumber: c.consNumber ?? null,
+      });
       if (c.consNumber) consByNumber.set(c.consNumber, c.date ?? null);
     }
+    const consIds = [...consMetaById.keys()];
     if (consIds.length === 0) return { groups: [] };
 
     // Envíos de la sucursal en esos consolidados.
     const shipments = await this.loadShipments('consolidatedId', consIds, subsidiaryId);
     const incomeByShipment = await this.incomesByShipment(shipments.map((s) => s.id));
     const discrepancy = await this.discrepancyByTracking(subsidiaryId, from, to);
-    const consNumberByShipmentId = new Map<string, string | null>();
-    // Recupera el consNumber por el consolidatedId del envío.
-    const consNumberById = new Map<string, string | null>(consolidados.map((c) => [c.id, c.consNumber ?? null]));
-    for (const s of shipments) consNumberByShipmentId.set(s.id, consNumberById.get((s as any).consolidatedId) ?? null);
-
     const routeDateById = await this.loadRouteDates(shipments.map((s) => (s as any).routeId).filter(Boolean));
 
     const rows: GroupInputRow[] = shipments.map((s) => {
-      const consNumber = consNumberByShipmentId.get(s.id) ?? null;
+      const consId = (s as any).consolidatedId as string;
+      const meta = consMetaById.get(consId);
       return this.shipmentRow(
         s,
         incomeByShipment.get(s.id) ?? null,
-        consNumber ?? '__nocons__',
-        consNumber ? `Consolidado ${consNumber}` : 'Sin consolidado',
-        consNumber ? consByNumber.get(consNumber) ?? null : null,
+        consId,
+        meta?.label ?? `Consolidado …${String(consId).slice(-6)}`,
+        meta?.date ?? null,
         null,
         routeDateById,
       );
     });
 
     // Cargas (F2) de la semana cuyo consNumber pertenece a un consolidado de la semana.
-    const weekConsNumbers = [...consByNumber.keys()];
-    if (weekConsNumbers.length) {
+    // Se anexan al grupo de su consolidado (por consNumber → consId).
+    const consIdByNumber = new Map<string, string>();
+    for (const [id, m] of consMetaById) if (m.consNumber) consIdByNumber.set(m.consNumber, id);
+    if (consByNumber.size) {
       const secondAbordAmount = await this.secondAbordAmount(subsidiaryId);
       const charges = await this.incomeRepo
         .createQueryBuilder('income')
@@ -123,7 +127,9 @@ export class ConsolidadorGroupsService {
         .getMany();
       for (const c of charges) {
         const consNumber = (c.charge as any)?.consNumber ?? null;
-        if (!consNumber || !consByNumber.has(consNumber)) continue;
+        const consId = consNumber ? consIdByNumber.get(consNumber) : undefined;
+        if (!consId) continue;
+        const meta = consMetaById.get(consId)!;
         const row = mapIncomeToRow(c);
         row.secondAbordAmount = secondAbordAmount;
         rows.push({
@@ -132,9 +138,9 @@ export class ConsolidadorGroupsService {
           status: null,
           isShipment: false,
           income: row,
-          groupKey: consNumber,
-          groupLabel: `Consolidado ${consNumber}`,
-          groupDate: consByNumber.get(consNumber) ? new Date(consByNumber.get(consNumber)!).toISOString() : null,
+          groupKey: consId,
+          groupLabel: meta.label,
+          groupDate: meta.date ? new Date(meta.date).toISOString() : null,
           driver: null,
           owner: null,
           verdict: NEUTRAL_OK,
