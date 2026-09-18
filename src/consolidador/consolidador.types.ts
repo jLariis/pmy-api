@@ -46,6 +46,16 @@ export interface ConsolidadorReadResult {
   buckets: ConsolidadorBuckets;
 }
 
+/** Un descuadre de cobro concreto (con su razón), para explicar el KPI "Descuadre". */
+export interface ChargeIssue {
+  tracking: string;
+  discrepancy: 'missing' | 'extra'; // falta cobrar / cobra de más
+  reason: string;
+  amount: number;
+  subCode: '07' | '08' | null;
+  rule: string;
+}
+
 /** Fila de una tarjeta de ruta/consolidado: la fila de ingreso completa (para editar/historial) + veredicto. */
 export interface ConsolidadorGroupRow {
   tracking: string | null;
@@ -56,6 +66,8 @@ export interface ConsolidadorGroupRow {
   /** Fila de ingreso completa (null cuando el envío aún no tiene ingreso). */
   income: ConsolidadorRow | null;
   verdict: Verdict;
+  /** Descuadres de cobro de esta guía (para el chip por fila). */
+  chargeIssues: ChargeIssue[];
 }
 
 /** KPIs de una ruta/consolidado en la semana. */
@@ -64,7 +76,11 @@ export interface ConsolidadorGroupKpis {
   notDelivered: number;
   incomeAmount: number;
   incomeCount: number;
+  /** Suma total de descuadres (falta + de más), para el número del KPI. */
   chargeDiscrepancy: number;
+  /** Desglose del descuadre por dirección. */
+  chargeMissing: number;
+  chargeExtra: number;
   anomalyCount: number;
 }
 
@@ -75,6 +91,8 @@ export interface ConsolidadorGroup {
   date: string | null;
   meta: { driver?: string | null; owner?: string | null; shipmentCount: number };
   kpis: ConsolidadorGroupKpis;
+  /** Detalle del descuadre (por guía + razón) para el desglose del KPI. */
+  discrepancyItems: ChargeIssue[];
   rows: ConsolidadorGroupRow[];
 }
 

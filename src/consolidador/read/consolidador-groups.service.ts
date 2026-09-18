@@ -13,7 +13,7 @@ import { CobrosAuditService } from '../audit/cobros-audit.service';
 import { computeVerdict, Verdict } from '../logic/package-verdict.util';
 import { buildGroups } from '../logic/consolidador-groups.util';
 import { mapIncomeToRow } from './consolidador-row.mapper';
-import { ConsolidadorGroupsResult, ConsolidadorRow, GroupInputRow } from '../consolidador.types';
+import { ChargeIssue, ConsolidadorGroupsResult, ConsolidadorRow, GroupInputRow } from '../consolidador.types';
 
 const NEUTRAL_OK: Verdict = { code: 'no_income_ok', level: 'ok', title: '', evidence: [], suggestedAction: { kind: 'none' } };
 
@@ -270,14 +270,24 @@ export class ConsolidadorGroupsService {
     return Number(sub?.secondAbordAmount ?? 0);
   }
 
-  /** Descuadre de cobros por guía (missing + extra) de la semana, para sumar por grupo. */
-  private async discrepancyByTracking(subsidiaryId: string, from: Date, to: Date): Promise<Map<string, number>> {
+  /** Descuadre de cobros por guía (con razón) de la semana, para explicar el KPI y el chip por fila. */
+  private async discrepancyByTracking(subsidiaryId: string, from: Date, to: Date): Promise<Map<string, ChargeIssue[]>> {
     const report = await this.cobrosAudit.audit(subsidiaryId, from, to);
-    const map = new Map<string, number>();
+    const map = new Map<string, ChargeIssue[]>();
     for (const rule of report.rules) {
       for (const r of [...rule.missing, ...rule.extra]) {
         const amount = (r.cost ?? 0) * (r.discrepancy === 'extra' ? r.count : 1);
-        map.set(r.trackingNumber, (map.get(r.trackingNumber) ?? 0) + amount);
+        const item: ChargeIssue = {
+          tracking: r.trackingNumber,
+          discrepancy: r.discrepancy,
+          reason: r.reason,
+          amount,
+          subCode: r.subCode,
+          rule: r.rule,
+        };
+        const list = map.get(r.trackingNumber);
+        if (list) list.push(item);
+        else map.set(r.trackingNumber, [item]);
       }
     }
     return map;

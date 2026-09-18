@@ -73,12 +73,20 @@ describe('buildGroups', () => {
     expect(groups.map((g) => g.id)).toEqual(['r1', 'r10', 'r2']);
   });
 
-  it('suma el descuadre de cobros por guía dentro del grupo', () => {
+  it('suma y desglosa el descuadre de cobros por guía dentro del grupo', () => {
     const { groups } = buildGroups(
       [row({ tracking: 'A' }), row({ tracking: 'B' })],
-      new Map([['A', 140], ['B', 85]]),
+      new Map([
+        ['A', [{ tracking: 'A', discrepancy: 'missing', reason: 'Rechazo 07 sin ingreso', amount: 140, subCode: '07', rule: 'no_entregado' }]],
+        ['B', [{ tracking: 'B', discrepancy: 'extra', reason: 'DEX08 sin 3 visitas', amount: 85, subCode: '08', rule: 'no_entregado' }]],
+      ]),
     );
     expect(groups[0].kpis.chargeDiscrepancy).toBe(225);
+    expect(groups[0].kpis.chargeMissing).toBe(140);
+    expect(groups[0].kpis.chargeExtra).toBe(85);
+    expect(groups[0].discrepancyItems).toHaveLength(2);
+    const rowA = groups[0].rows.find((r) => r.tracking === 'A');
+    expect(rowA?.chargeIssues[0].reason).toContain('Rechazo 07');
   });
 
   it('un envío sin ingreso aparece en rows con income null', () => {

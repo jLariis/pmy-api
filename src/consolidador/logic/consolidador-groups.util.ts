@@ -1,5 +1,6 @@
 import { ShipmentStatusType } from '../../common/enums/shipment-status-type.enum';
 import {
+  ChargeIssue,
   ConsolidadorGroup,
   ConsolidadorGroupsResult,
   GroupInputRow,
@@ -23,7 +24,7 @@ const DELIVERED = new Set<string>([
  */
 export function buildGroups(
   rows: GroupInputRow[],
-  discrepancyByTracking: Map<string, number>,
+  discrepancyByTracking: Map<string, ChargeIssue[]>,
 ): ConsolidadorGroupsResult {
   const byKey = new Map<string, ConsolidadorGroup>();
 
@@ -35,7 +36,8 @@ export function buildGroups(
         label: r.groupLabel,
         date: r.groupDate,
         meta: { driver: r.driver, owner: r.owner, shipmentCount: 0 },
-        kpis: { delivered: 0, notDelivered: 0, incomeAmount: 0, incomeCount: 0, chargeDiscrepancy: 0, anomalyCount: 0 },
+        kpis: { delivered: 0, notDelivered: 0, incomeAmount: 0, incomeCount: 0, chargeDiscrepancy: 0, chargeMissing: 0, chargeExtra: 0, anomalyCount: 0 },
+        discrepancyItems: [],
         rows: [],
       };
       byKey.set(r.groupKey, g);
@@ -50,8 +52,13 @@ export function buildGroups(
       g.kpis.incomeAmount += r.income.cost;
       g.kpis.incomeCount += 1;
     }
-    if (r.tracking && discrepancyByTracking.has(r.tracking)) {
-      g.kpis.chargeDiscrepancy += discrepancyByTracking.get(r.tracking) ?? 0;
+
+    const issues = r.tracking ? discrepancyByTracking.get(r.tracking) ?? [] : [];
+    for (const it of issues) {
+      g.discrepancyItems.push(it);
+      g.kpis.chargeDiscrepancy += it.amount;
+      if (it.discrepancy === 'missing') g.kpis.chargeMissing += it.amount;
+      else g.kpis.chargeExtra += it.amount;
     }
 
     if (r.isShipment) {
@@ -70,6 +77,7 @@ export function buildGroups(
         isShipment: r.isShipment,
         income: r.income,
         verdict: r.verdict,
+        chargeIssues: issues,
       });
     }
   }
