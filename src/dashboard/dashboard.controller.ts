@@ -52,13 +52,15 @@ export class DashboardController {
         // ni siquiera por la red). Los gastos sí se permiten.
         if (elevated) return metrics;
 
+        const ZERO_BREAKDOWN = { fedex: 0, dhl: 0, cargas: 0, collections: 0, transfers: 0 };
         return (metrics as any[]).map((m) => ({
             ...m,
             totalRevenue: 0,
             totalProfit: 0,
             averageRevenuePerPackage: 0,
+            revenueBreakdown: ZERO_BREAKDOWN,
             generalSummary: m.generalSummary
-                ? { totalExpenses: m.generalSummary.totalExpenses, totalIncome: 0, totalProfit: 0 }
+                ? { totalExpenses: m.generalSummary.totalExpenses, totalIncome: 0, totalProfit: 0, revenueBreakdown: ZERO_BREAKDOWN, expenseBreakdown: m.generalSummary.expenseBreakdown }
                 : m.generalSummary,
         }));
     }

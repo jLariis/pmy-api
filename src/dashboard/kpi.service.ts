@@ -5,6 +5,7 @@ import { ShipmentStatusType } from 'src/common/enums/shipment-status-type.enum';
 import { ChargeShipment, Expense, Income, Shipment, Subsidiary } from 'src/entities';
 import { ChargeRule } from 'src/entities/charge-rule.entity';
 import { proratedAmountInRange } from 'src/common/expense-proration.util';
+import { effectiveLocalDaySql, rawUtcBounds } from 'src/common/income-window.util';
 import { ConsolidatedService } from 'src/consolidated/consolidated.service';
 import {
   rollupConsolidatedPackageStats,
@@ -24,20 +25,38 @@ const CHARGE_RULE_SUB_JOIN = `crs.subsidiaryId = income.subsidiaryId AND crs.car
 const CHARGE_RULE_GLOBAL_JOIN = `crg.subsidiaryId IS NULL AND crg.carrier = income.shipmentType AND crg.code = ${RULE_CODE_EXPR}`;
 
 /**
- * Ingreso "contable" según las reglas de la sucursal (regla ÚNICA, espejo SQL de
+ * Condición "contable" según las reglas de la sucursal (regla ÚNICA, espejo SQL de
  * `isCountableIncome`): traslados solo si countTransfersAsIncome; recolecciones
  * siempre; envíos/cargas según `charge_rule` (override de sucursal → global →
  * fallback 1); manual u otros fuera. Requiere `leftJoin('income.subsidiary','sub')`
  * + los JOINs `crs`/`crg` a charge_rule (ver CHARGE_RULE_*_JOIN).
  */
-const COUNTABLE_REVENUE_SQL = `SUM(CASE WHEN (
+const COUNTABLE_COND = `(
   CASE
     WHEN income.sourceType IN ('tyco','aeropuerto','special_transfer') THEN sub.countTransfersAsIncome
     WHEN income.sourceType = 'collection' THEN 1
     WHEN income.sourceType IN ('shipment','charge') THEN COALESCE(crs.chargeable, crg.chargeable, 1)
     ELSE 0
   END
-) = 1 THEN income.cost ELSE 0 END)`;
+) = 1`;
+
+/** Suma del `cost` contable acotada a un predicado de tipo (para el desglose por tipo). */
+const countableRevenue = (extra?: string) =>
+  `SUM(CASE WHEN ${COUNTABLE_COND}${extra ? ` AND (${extra})` : ''} THEN income.cost ELSE 0 END)`;
+
+/** Ingreso contable TOTAL (todos los tipos). */
+const COUNTABLE_REVENUE_SQL = countableRevenue();
+
+/**
+ * Desglose de ingreso contable por tipo — MISMOS buckets que la tabla de ingresos
+ * (`formatIncomesNew`): fedex/dhl = solo envíos; cargas = charge; recolecciones;
+ * traslados = tyco/aeropuerto/especial. La suma de los cinco == totalRevenue.
+ */
+const REVENUE_FEDEX_SQL = countableRevenue(`income.sourceType = 'shipment' AND income.shipmentType = 'fedex'`);
+const REVENUE_DHL_SQL = countableRevenue(`income.sourceType = 'shipment' AND income.shipmentType = 'dhl'`);
+const REVENUE_CARGAS_SQL = countableRevenue(`income.sourceType = 'charge'`);
+const REVENUE_COLLECTIONS_SQL = countableRevenue(`income.sourceType = 'collection'`);
+const REVENUE_TRANSFERS_SQL = countableRevenue(`income.sourceType IN ('tyco','aeropuerto','special_transfer')`);
 
 @Injectable()
 export class KpiService {
@@ -208,6 +227,10 @@ export class KpiService {
       throw new Error('Invalid date format. Please use ISO 8601 format (e.g., YYYY-MM-DD).');
     }
 
+    // Cotas UTC generosas para el prefiltro por índice de la query de ingresos (el corte
+    // fino por día local lo hace `effectiveLocalDaySql`).
+    const { rawStart, rawEnd } = rawUtcBounds(baseStartDate, baseEndDate);
+
     this.logger.log(`Fetching KPIs: ${baseStartDate} to ${baseEndDate} (conteos desde consolidados)`);
 
     // 1. Obtener las sucursales base
@@ -250,7 +273,9 @@ export class KpiService {
     // 3. FINANCIEROS (SIN CAMBIO): gastos (C) e ingresos (D) en paralelo.
     const [expenseStats, incomeStats] = await Promise.all([
       // -- C. GASTOS (entidades que traslapan el rango; se prorratean en JS por periodo) --
+      // Join a categoría para el desglose de gastos por categoría (mismo prorrateo que el total).
       this.expenseRepository.createQueryBuilder('expense')
+        .leftJoinAndSelect('expense.category', 'category')
         .where(new Brackets(qb => {
           qb.where('expense.periodStart IS NOT NULL AND expense.periodEnd IS NOT NULL AND expense.periodStart <= :endDay AND expense.periodEnd >= :startDay', { startDay: baseStartDate, endDay: baseEndDate })
             .orWhere('(expense.periodStart IS NULL OR expense.periodEnd IS NULL) AND expense.date BETWEEN :startDay AND :endDay', { startDay: baseStartDate, endDay: baseEndDate });
@@ -258,14 +283,25 @@ export class KpiService {
         .andWhere(subsidiaryCondition('expense'), { subsidiaryIds })
         .getMany(),
 
-      // -- D. INGRESOS TOTALES --
+      // -- D. INGRESOS (total + desglose por tipo) --
+      // Ventana por DÍA LOCAL canónico (mismo criterio que la tabla de ingresos y el
+      // dashboard financiero): cargas a 00:00Z y traslados a 07:00Z caen en su día correcto.
+      // El prefiltro crudo por `income.date` conserva el uso de índice; el corte fino lo hace
+      // la expresión de día local. Se excluyen los ingresos anulados (`active = 1`).
       this.incomeRepository.createQueryBuilder('income')
         .leftJoin('income.subsidiary', 'sub')
         .leftJoin(ChargeRule, 'crs', CHARGE_RULE_SUB_JOIN)
         .leftJoin(ChargeRule, 'crg', CHARGE_RULE_GLOBAL_JOIN)
         .select('income.subsidiaryId', 'subsidiaryId')
         .addSelect(COUNTABLE_REVENUE_SQL, 'totalRevenue')
-        .where('income.date BETWEEN :startDate AND :endDate', { startDate: startDateObj, endDate: endDateObj })
+        .addSelect(REVENUE_FEDEX_SQL, 'revenueFedex')
+        .addSelect(REVENUE_DHL_SQL, 'revenueDhl')
+        .addSelect(REVENUE_CARGAS_SQL, 'revenueCargas')
+        .addSelect(REVENUE_COLLECTIONS_SQL, 'revenueCollections')
+        .addSelect(REVENUE_TRANSFERS_SQL, 'revenueTransfers')
+        .where('income.active = 1')
+        .andWhere('income.date BETWEEN :rawStart AND :rawEnd', { rawStart, rawEnd })
+        .andWhere(`${effectiveLocalDaySql('income')} BETWEEN :startDay AND :endDay`, { startDay: baseStartDate, endDay: baseEndDate })
         .andWhere(subsidiaryCondition('income'), { subsidiaryIds })
         .groupBy('income.subsidiaryId')
         .getRawMany(),
@@ -283,16 +319,30 @@ export class KpiService {
       const totalUndelivered = pkg.undeliveredPackages;
       const totalCharges = pkg.totalCharges;
       const totalRevenue = Number(iStats.totalRevenue || 0);
+      // Desglose por tipo (mismos buckets que la tabla de ingresos). La suma == totalRevenue.
+      const revenueBreakdown = {
+        fedex: Number(iStats.revenueFedex || 0),
+        dhl: Number(iStats.revenueDhl || 0),
+        cargas: Number(iStats.revenueCargas || 0),
+        collections: Number(iStats.revenueCollections || 0),
+        transfers: Number(iStats.revenueTransfers || 0),
+      };
 
       const subExpenses = expenseStats.filter(e => e.subsidiaryId === subsidiary.id);
-      const totalExpenses = subExpenses.reduce(
-        (sum, e) => sum + proratedAmountInRange(
+      // Desglose de gastos por categoría (mismo prorrateo que el total → cuadra con totalExpenses).
+      const expenseBreakdown: Record<string, number> = {};
+      let totalExpenses = 0;
+      for (const e of subExpenses) {
+        const prorated = proratedAmountInRange(
           { amount: e.amount, date: e.date, periodStart: e.periodStart, periodEnd: e.periodEnd },
           baseStartDate,
           baseEndDate,
-        ),
-        0,
-      );
+        );
+        if (!prorated) continue;
+        totalExpenses += prorated;
+        const cat = (e as any).category?.name || 'Sin categoría';
+        expenseBreakdown[cat] = (expenseBreakdown[cat] || 0) + prorated;
+      }
 
       const averageRevenuePerPackage = totalPackages > 0 ? totalRevenue / totalPackages : 0;
       const averageEfficiency = totalPackages > 0 ? (deliveredPackages * 100) / totalPackages : 0;
@@ -326,7 +376,9 @@ export class KpiService {
         },
         averageRevenuePerPackage,
         totalRevenue,
+        revenueBreakdown,
         totalExpenses,
+        expenseBreakdown,
         averageEfficiency,
         totalProfit,
       };
@@ -338,6 +390,22 @@ export class KpiService {
     const generalTotalIncome = sortedSubsidiaries.reduce((sum, sub) => sum + sub.totalRevenue, 0);
     const generalTotalExpenses = sortedSubsidiaries.reduce((sum, sub) => sum + sub.totalExpenses, 0);
     const generalTotalProfit = generalTotalIncome - generalTotalExpenses;
+    const sumBucket = (k: keyof (typeof sortedSubsidiaries)[number]['revenueBreakdown']) =>
+      sortedSubsidiaries.reduce((sum, sub) => sum + (sub.revenueBreakdown?.[k] || 0), 0);
+    const generalRevenueBreakdown = {
+      fedex: sumBucket('fedex'),
+      dhl: sumBucket('dhl'),
+      cargas: sumBucket('cargas'),
+      collections: sumBucket('collections'),
+      transfers: sumBucket('transfers'),
+    };
+    // Desglose general de gastos por categoría (suma de todas las sucursales).
+    const generalExpenseBreakdown: Record<string, number> = {};
+    for (const sub of sortedSubsidiaries) {
+      for (const [cat, amount] of Object.entries(sub.expenseBreakdown || {})) {
+        generalExpenseBreakdown[cat] = (generalExpenseBreakdown[cat] || 0) + amount;
+      }
+    }
 
     // 6. REGRESAMOS EL ARREGLO COMO ANTES, PERO INYECTAMOS EL SUMARIO EN CADA ELEMENTO
     return sortedSubsidiaries.map(sub => ({
@@ -345,7 +413,9 @@ export class KpiService {
       generalSummary: {
         totalIncome: generalTotalIncome,
         totalExpenses: generalTotalExpenses,
-        totalProfit: generalTotalProfit
+        totalProfit: generalTotalProfit,
+        revenueBreakdown: generalRevenueBreakdown,
+        expenseBreakdown: generalExpenseBreakdown,
       }
     }));
   }

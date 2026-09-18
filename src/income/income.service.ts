@@ -3,6 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Expense, Income, Shipment, Subsidiary } from 'src/entities';
 import { formatCurrency } from 'src/utils/format.util';
 import { CountableOptions, isCountableIncome } from 'src/common/income-rules.util';
+import { effectiveLocalInstant, rawUtcBounds } from 'src/common/income-window.util';
 import { ChargeRulesService } from 'src/charge-rules/charge-rules.service';
 import { toHermosilloDateString } from 'src/common/utils';
 import { Between, Repository } from 'typeorm';
@@ -47,31 +48,22 @@ export class IncomeService {
         };
     }
 
-    private async getTotalShipmentsIncome(subsidiaryId: string, fromDate: Date, toDate: Date){
-        // Traemos TODOS los ingresos del rango (incluye traslados) y aplicamos la
-        // REGLA ÚNICA por sucursal — así el dashboard cuadra con la tabla y los KPIs.
-        const [incomes, ctx] = await Promise.all([
-          this.incomeRepository.find({
-            where: {
-              subsidiary: { id: subsidiaryId },
-              date: Between(fromDate, toDate),
-            },
-            relations: ['subsidiary'],
-          }),
-          this.getCountContext(subsidiaryId),
-        ]);
-
-        const billable = incomes.filter((i) => isCountableIncome(i, ctx));
-
-        const totalShipmentIncome = billable.reduce(
-          (acc, income) => acc + parseFloat(income.cost.toString()),
-          0
-        );
-
-        return {
-          totalIncome: totalShipmentIncome,
-          incomes: billable,
-        };
+    /**
+     * Carga los ingresos ACTIVOS de la sucursal dentro de cotas UTC generosas (crudas),
+     * con el envío enlazado. Es la fuente ÚNICA de filas para la tabla (`getIncome`) y el
+     * dashboard financiero (`getFinantialDataForDashboard`): mismo `active = 1`, mismo join
+     * y misma ventana — así ambos cuadran. La clasificación FINA por día local la hace la
+     * regla canónica (`effectiveLocalInstant` / `formatIncomesNew`).
+     */
+    private async loadActiveIncomeRows(subsidiaryId: string, rawStart: Date, rawEnd: Date): Promise<Income[]> {
+        return this.incomeRepository.createQueryBuilder('income')
+            .leftJoinAndSelect('income.shipment', 'shipment')
+            .where('income.subsidiaryId = :subsidiaryId', { subsidiaryId })
+            .andWhere('income.date BETWEEN :start AND :end', { start: rawStart, end: rawEnd })
+            // Excluye ingresos eliminados/anulados (soft-delete): dejan de contar.
+            .andWhere('income.active = 1')
+            .orderBy('income.date', 'ASC')
+            .getMany();
     }
 
     private async getTotalExpenses(
@@ -129,40 +121,34 @@ export class IncomeService {
 
 
     async getFinantialDataForDashboard(subsidiaryId: string, startDay: Date, endDay: Date){
-      //const today = new Date();
-      
-      //Obtener primer y último día del mes
-      //const { start, end } = getStartAndEndOfMonth(today);
-
-      // Incluir toda la fecha final (hasta las 23:59:59.999 del día 22)
-      const adjustedToDate = new Date(endDay);
-      adjustedToDate.setHours(23, 59, 59, 999);
-
-      const incomes = await this.incomeRepository.find({
-        where: {
-          subsidiary: { id: subsidiaryId},
-          date: Between(startDay, adjustedToDate),
-        },
-        order: {
-          date: 'ASC',
-        },
-      });
-
-      const income = await this.getTotalShipmentsIncome(subsidiaryId, startDay, adjustedToDate)
-
       const ctx = await this.getCountContext(subsidiaryId);
-      const formattedIncome = await this.formatIncomesNew(incomes, startDay, adjustedToDate, ctx);
+
+      // Cotas UTC generosas por DÍA LOCAL (mismo criterio canónico que `getIncome` y KPIs):
+      // el prefiltro no pierde filas en frontera y `formatIncomesNew` hace el corte fino por día.
+      const startDayStr = toHermosilloDateString(startDay.toISOString());
+      const endDayStr = toHermosilloDateString(endDay.toISOString());
+      const { rawStart, rawEnd } = rawUtcBounds(startDayStr, endDayStr);
+
+      const incomes = await this.loadActiveIncomeRows(subsidiaryId, rawStart, rawEnd);
+      const formattedIncome = await this.formatIncomesNew(incomes, startDay, endDay, ctx);
+
+      // El total del dashboard se DERIVA del desglose diario ya facturado → cuadra por
+      // construcción con la tabla de ingresos (misma regla, mismas filas activas).
+      const totalIncome = formattedIncome.reduce(
+        (acc, day) => acc + this.parseCurrency(day.totalIncome), 0
+      );
+
       const { totalExpenses, daily } = await this.getTotalExpenses(subsidiaryId, startDay, endDay)
-      const balance = income.totalIncome - totalExpenses;
+      const balance = totalIncome - totalExpenses;
 
       return {
         incomes: formattedIncome,
         expenses: daily,
         finantial: {
-          income: income.totalIncome,
+          income: totalIncome,
           expenses: totalExpenses,
           balance: balance,
-          period: `${format(startDay, 'dd/MM/yyyy')} - ${format(adjustedToDate, 'dd/MM/yyyy')}`
+          period: `${format(startDay, 'dd/MM/yyyy')} - ${format(endDay, 'dd/MM/yyyy')}`
         }
       }
     }
@@ -180,30 +166,22 @@ export class IncomeService {
         //    por sourceType que `formatIncomesNew` (si no, una carga fechada el primer
         //    día del rango caía en la franja 00:00–07:00 y se iba a "semana pasada",
         //    desapareciendo de la tabla).
-        const toLocalInstant = (i: Income) =>
-            i.sourceType === 'charge' ? dayjs(i.date) : dayjs(i.date).subtract(7, 'hour');
+        const toLocalInstant = (i: Income) => dayjs(effectiveLocalInstant(i));
 
         const startCurrentLocal = dayjs(fromDate).startOf('day');
         const endCurrentLocal = dayjs(toDate).endOf('day');
         const startLastWeekLocal = startCurrentLocal.subtract(7, 'day');
         const endLastWeekLocal = endCurrentLocal.subtract(7, 'day');
 
-        // 2. UNA SOLA CONSULTA a la BD. Los límites SQL son GENEROSOS para no perder filas
-        //    en frontera: límite inferior = medianoche local del primer día (semana pasada)
-        //    expresada en UTC (== 00:00Z para cargas); límite superior con +7h de holgura
-        //    para envíos cercanos a la medianoche local del último día.
-        // Quitamos 'statusHistory' para ganar velocidad.
-        const allIncomes = await this.incomeRepository.createQueryBuilder('income')
-            .leftJoinAndSelect('income.shipment', 'shipment')
-            .where('income.subsidiaryId = :subsidiaryId', { subsidiaryId })
-            .andWhere('income.date BETWEEN :start AND :end', {
-                start: startLastWeekLocal.toDate(),
-                end: endCurrentLocal.add(7, 'hour').toDate()
-            })
-            // Excluye ingresos eliminados/anulados (soft-delete): dejan de contar en el panel.
-            .andWhere('income.active = 1')
-            .orderBy('income.date', 'ASC')
-            .getMany();
+        // 2. UNA SOLA CONSULTA a la BD (loader compartido con el dashboard financiero). Los
+        //    límites son GENEROSOS para no perder filas en frontera: límite inferior =
+        //    medianoche local del primer día (semana pasada) == 00:00Z para cargas; límite
+        //    superior con +7h de holgura para envíos cercanos a la medianoche local.
+        const allIncomes = await this.loadActiveIncomeRows(
+            subsidiaryId,
+            startLastWeekLocal.toDate(),
+            endCurrentLocal.add(7, 'hour').toDate(),
+        );
 
         // 3. Separar los datos en memoria por DÍA LOCAL (mismo criterio que el agrupado).
         const inLocalRange = (i: Income, start: dayjs.Dayjs, end: dayjs.Dayjs) => {
@@ -262,16 +240,8 @@ export class IncomeService {
           //    conteo de "qué cuenta" lo decide isCountableIncome con las reglas
           //    de la sucursal — DEX03 fuera por default, etc.).
           const grouped = incomes.reduce((acc, income) => {
-            let hermDate;
-
-            if (income.sourceType === 'charge') {
-                // REGLA ESPECIAL: Las cargas ya están en hora local
-                // Solo las parseamos sin restar horas
-                hermDate = dayjs(income.date);
-            } else {
-                // Los envíos y recolecciones sí vienen en UTC
-                hermDate = dayjs(income.date).subtract(7, 'hour');
-            }
+            // Día local canónico por sourceType (charge = tal cual; resto = -7h).
+            const hermDate = dayjs(effectiveLocalInstant(income));
 
             const dateKey = hermDate.format('YYYY-MM-DD');
             
