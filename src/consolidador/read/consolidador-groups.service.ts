@@ -56,12 +56,14 @@ export class ConsolidadorGroupsService {
     const routeDateById = new Map([...routeMeta].map(([id, m]) => [id, m.date] as [string, Date | null]));
 
     const rows: GroupInputRow[] = shipments.map((s) => {
-      const meta = routeMeta.get((s as any).routeId);
+      const routeId = String((s as any).routeId);
+      const meta = routeMeta.get(routeId);
+      // Partimos de las rutas de la semana, así que SIEMPRE hay ruta: nunca "Sin ruta" aquí.
       return this.shipmentRow(
         s,
         incomeByShipment.get(s.id) ?? null,
-        (s as any).routeId ?? '__noroute__',
-        meta ? `Ruta ${meta.number ?? `…${String((s as any).routeId).slice(-6)}`}` : 'Sin ruta',
+        routeId,
+        `Ruta ${meta?.number ?? `…${routeId.slice(-6)}`}`,
         meta?.date ?? null,
         meta?.driver ?? null,
         routeDateById,
