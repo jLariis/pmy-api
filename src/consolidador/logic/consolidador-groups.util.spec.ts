@@ -60,15 +60,17 @@ describe('buildGroups', () => {
     expect(g.rows).toHaveLength(2); // envío + carga con ingreso
   });
 
-  it('agrupa por groupKey y ordena por fecha desc', () => {
+  it('ordena por día (cronológico) y desempata por folio numérico', () => {
     const { groups } = buildGroups(
       [
-        row({ groupKey: 'r1', groupLabel: 'Ruta r1', groupDate: '2026-09-16' }),
-        row({ groupKey: 'r2', groupLabel: 'Ruta r2', groupDate: '2026-09-18' }),
+        row({ groupKey: 'r2', groupLabel: 'Ruta 2', groupDate: '2026-09-18' }),
+        row({ groupKey: 'r1', groupLabel: 'Ruta 1', groupDate: '2026-09-16' }),
+        row({ groupKey: 'r10', groupLabel: 'Ruta 10', groupDate: '2026-09-16' }),
       ],
       new Map(),
     );
-    expect(groups.map((g) => g.id)).toEqual(['r2', 'r1']);
+    // 16 (Ruta 1, luego Ruta 10 por orden numérico) antes que 18 (Ruta 2)
+    expect(groups.map((g) => g.id)).toEqual(['r1', 'r10', 'r2']);
   });
 
   it('suma el descuadre de cobros por guía dentro del grupo', () => {

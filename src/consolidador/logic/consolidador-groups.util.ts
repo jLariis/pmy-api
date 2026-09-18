@@ -74,8 +74,12 @@ export function buildGroups(
     }
   }
 
-  const groups = [...byKey.values()].sort(
-    (a, b) => new Date(b.date ?? 0).getTime() - new Date(a.date ?? 0).getTime(),
-  );
+  // Orden determinista: por día (más antiguo primero); empata por folio/etiqueta (numérico).
+  const groups = [...byKey.values()].sort((a, b) => {
+    const da = a.date ? new Date(a.date).getTime() : Number.POSITIVE_INFINITY;
+    const db = b.date ? new Date(b.date).getTime() : Number.POSITIVE_INFINITY;
+    if (da !== db) return da - db;
+    return a.label.localeCompare(b.label, undefined, { numeric: true });
+  });
   return { groups };
 }
