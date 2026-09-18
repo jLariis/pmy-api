@@ -12,6 +12,7 @@ import { IncomeSourceType } from '../../common/enums/income-source-type.enum';
 import { deriveStatusCorrection } from '../logic/status-correction.util';
 import { deriveRepairIncome } from '../logic/repair-income.util';
 import { detectAnomalies } from '../logic/detect-anomalies.util';
+import { computeVerdict, Verdict } from '../logic/package-verdict.util';
 import { statusOrigin } from '../logic/status-origin.util';
 import { mapIncomeToRow } from '../read/consolidador-row.mapper';
 import { ConsolidadorRow } from '../consolidador.types';
@@ -125,6 +126,33 @@ export class ConsolidadorStatusService {
     return max ? max.toISOString() : null;
   }
 
+  /** routeDate de la salida a ruta del shipment (día de negocio), o null si no salió a ruta. */
+  private async routeDateOf(shipment: Shipment | null): Promise<Date | null> {
+    const routeId = (shipment as any)?.routeId;
+    if (!routeId) return null;
+    const pd = await this.shipmentRepo.manager
+      .getRepository(PackageDispatch)
+      .findOne({ where: { id: routeId } });
+    return (pd as any)?.routeDate ?? (pd as any)?.createdAt ?? null;
+  }
+
+  /** Compone el veredicto del paquete cruzando estatus + consolidado + ruta + fecha del ingreso. */
+  private buildVerdict(
+    shipment: Shipment | null,
+    income: Income | null,
+    routeDate: Date | null,
+    fedexVerified: boolean,
+  ): Verdict {
+    return computeVerdict({
+      currentStatus: shipment?.status ?? null,
+      history: (shipment as any)?.statusHistory ?? [],
+      hasConsolidado: !!(shipment as any)?.consolidatedId,
+      routeDate,
+      incomeDate: income?.date ?? null,
+      fedexVerified,
+    });
+  }
+
   /** Busca un paquete y compone estatus interno vs FedEx canónico + income ligado (activo). */
   async search(tracking: string) {
     const shipment = await this.shipmentRepo.findOne({ where: { trackingNumber: tracking }, relations: ['statusHistory'] });
@@ -138,6 +166,7 @@ export class ConsolidadorStatusService {
     const suggestion = shipment ? deriveStatusCorrection(shipment.status, fedex.status) : null;
     // ¿Se puede reparar el ingreso? Solo si hay shipment, NO tiene ingreso activo y su estatus es cobrable.
     const repair = shipment && !income ? deriveRepairIncome(shipment.status) : { create: false, incomeType: null };
+    const routeDate = await this.routeDateOf(shipment);
     return {
       shipment: shipment ? { id: shipment.id, trackingNumber: shipment.trackingNumber, status: shipment.status } : null,
       internalStatus: shipment?.status ?? null,
@@ -154,6 +183,7 @@ export class ConsolidadorStatusService {
         income: income ? { date: income.date } : null,
         statusDate: this.latestStatusDate(shipment),
       }),
+      verdict: this.buildVerdict(shipment, income, routeDate, !!fedex.found && !fedex.error),
       statusHistory: this.statusHistoryOf(shipment),
     };
   }
@@ -175,6 +205,15 @@ export class ConsolidadorStatusService {
       ? await this.incomeRepo.find({ where: { shipment: { id: In(shipmentIds) }, active: true }, relations: ['shipment', 'charge', 'subsidiary'] })
       : [];
     const incomeByShipmentId = new Map(incomes.map((i) => [i.shipment?.id, i]));
+
+    // Precarga las salidas a ruta (routeDate) de todas las guías en un solo query.
+    const routeIds = [...new Set(shipments.map((s) => (s as any).routeId).filter(Boolean))];
+    const dispatches = routeIds.length
+      ? await this.shipmentRepo.manager.getRepository(PackageDispatch).find({ where: { id: In(routeIds) } })
+      : [];
+    const routeDateById = new Map<string, Date | null>(
+      dispatches.map((pd) => [pd.id, ((pd as any).routeDate ?? (pd as any).createdAt ?? null) as Date | null]),
+    );
 
     const results = unique.map((tn) => {
       const shipment = shipmentByTn.get(tn) ?? null;
@@ -200,6 +239,12 @@ export class ConsolidadorStatusService {
           income: income ? { date: income.date } : null,
           statusDate: this.latestStatusDate(shipment),
         }),
+        verdict: this.buildVerdict(
+          shipment,
+          income ?? null,
+          (shipment && (shipment as any).routeId ? routeDateById.get((shipment as any).routeId) : null) ?? null,
+          !!fedex.found && !fedex.error,
+        ),
         statusHistory: this.statusHistoryOf(shipment),
       };
     });

@@ -1,11 +1,26 @@
 import { ConsolidadorStatusService } from './consolidador-status.service';
 import { ShipmentStatusType } from '../../common/enums/shipment-status-type.enum';
 
+// Mock de `manager.getRepository(PackageDispatch)`: findOne/find devuelven la ruta con su routeDate.
+function makeManager(routeById: Record<string, Date | string> = {}) {
+  return {
+    getRepository: () => ({
+      findOne: async ({ where }: any) => {
+        const id = where?.id;
+        return id != null && routeById[id] != null ? { id, routeDate: routeById[id] } : null;
+      },
+      find: async () =>
+        Object.entries(routeById).map(([id, routeDate]) => ({ id, routeDate })),
+    }),
+  };
+}
+
 function makeService(opts: {
   shipment?: any;
   fedex?: any;
   income?: any;
   saveSpy?: (s: any) => void;
+  routeById?: Record<string, Date | string>;
 }) {
   const shipmentRepo: any = {
     findOne: async () => opts.shipment ?? null,
@@ -13,6 +28,7 @@ function makeService(opts: {
       opts.saveSpy?.(s);
       return s;
     },
+    manager: makeManager(opts.routeById),
   };
   const incomeRepo: any = {
     findOne: async () => opts.income ?? null,
@@ -22,8 +38,13 @@ function makeService(opts: {
   return new ConsolidadorStatusService(shipmentRepo, incomeRepo, resolver, { record: async () => undefined } as any);
 }
 
-function makeBatchService(opts: { shipments: any[]; fedexList: any[]; incomes?: any[] }) {
-  const shipmentRepo: any = { find: async () => opts.shipments };
+function makeBatchService(opts: {
+  shipments: any[];
+  fedexList: any[];
+  incomes?: any[];
+  routeById?: Record<string, Date | string>;
+}) {
+  const shipmentRepo: any = { find: async () => opts.shipments, manager: makeManager(opts.routeById) };
   const incomeRepo: any = { find: async () => opts.incomes ?? [] };
   const resolver: any = { getLatestStatusBatch: async () => opts.fedexList };
   return new ConsolidadorStatusService(shipmentRepo, incomeRepo, resolver, { record: async () => undefined } as any);
@@ -40,6 +61,26 @@ describe('ConsolidadorStatusService.search', () => {
     expect(r.internalStatus).toBe(ShipmentStatusType.EN_RUTA);
     expect(r.fedex.status).toBe(ShipmentStatusType.ENTREGADO);
     expect(r.suggestion?.newStatus).toBe(ShipmentStatusType.ENTREGADO);
+  });
+
+  it('marca delivered_by_us cuando la ruta cae el mismo día del ingreso', async () => {
+    const day = '2026-09-17T15:00:00.000Z';
+    const svc = makeService({
+      shipment: {
+        id: 's1',
+        trackingNumber: 'T1',
+        status: ShipmentStatusType.ENTREGADO_POR_FEDEX,
+        routeId: 'pd1',
+        consolidatedId: 'c1',
+        statusHistory: [],
+      },
+      fedex: { found: true, status: ShipmentStatusType.ENTREGADO_POR_FEDEX, error: undefined },
+      income: { id: 'i1', date: new Date(day), cost: '85', shipment: { id: 's1' }, charge: null },
+      routeById: { pd1: '2026-09-17T00:00:00.000Z' },
+    });
+    const r = await svc.search('T1');
+    expect(r.verdict.code).toBe('delivered_by_us');
+    expect(r.verdict.suggestedAction).toEqual({ kind: 'fix_status', to: ShipmentStatusType.ENTREGADO });
   });
 });
 
