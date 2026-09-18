@@ -2,6 +2,7 @@ import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Req, UseGuard
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { ConsolidadorAccessGuard } from '../auth/guards/consolidador-access.guard';
 import { ConsolidadorReadService } from './read/consolidador-read.service';
+import { ConsolidadorGroupsService } from './read/consolidador-groups.service';
 import { ConsolidadorIncomeService } from './income/consolidador-income.service';
 import { ConsolidadorStatusService } from './status/consolidador-status.service';
 import { ConsolidadorAuditService } from './audit/consolidador-audit.service';
@@ -24,6 +25,7 @@ import { ReassignSubsidiaryDto } from './dto/reassign-subsidiary.dto';
 export class ConsolidadorController {
   constructor(
     private readonly read: ConsolidadorReadService,
+    private readonly groups: ConsolidadorGroupsService,
     private readonly income: ConsolidadorIncomeService,
     private readonly status: ConsolidadorStatusService,
     private readonly audit: ConsolidadorAuditService,
@@ -127,6 +129,30 @@ export class ConsolidadorController {
   @Patch('package/:shipmentId/repair-income')
   repairIncome(@Param('shipmentId') id: string, @Body() dto: RepairIncomeDto, @Req() req: any) {
     return this.status.repairIncome(id, dto.reason, req.user?.userId);
+  }
+
+  /** Grupos de la semana POR RUTA: KPIs (entregados/no entregados/ingresos/descuadre) + guías con veredicto. */
+  @Get(':subsidiaryId/:fromDate/:toDate/by-route')
+  byRoute(
+    @Param('subsidiaryId') subsidiaryId: string,
+    @Param('fromDate') fromDate: string,
+    @Param('toDate') toDate: string,
+  ) {
+    const from = new Date(`${fromDate}T00:00:00.000`);
+    const to = new Date(`${toDate}T23:59:59.999`);
+    return this.groups.getByRoute(subsidiaryId, from, to);
+  }
+
+  /** Grupos de la semana POR CONSOLIDADO: mismos KPIs + guías con veredicto. */
+  @Get(':subsidiaryId/:fromDate/:toDate/by-consolidado')
+  byConsolidado(
+    @Param('subsidiaryId') subsidiaryId: string,
+    @Param('fromDate') fromDate: string,
+    @Param('toDate') toDate: string,
+  ) {
+    const from = new Date(`${fromDate}T00:00:00.000`);
+    const to = new Date(`${toDate}T23:59:59.999`);
+    return this.groups.getByConsolidado(subsidiaryId, from, to);
   }
 
   /**

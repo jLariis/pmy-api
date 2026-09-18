@@ -1,6 +1,7 @@
 import { IncomeSourceType } from '../common/enums/income-source-type.enum';
 import { IncomeStatus } from '../common/enums/income-status.enum';
 import { ShipmentStatusType } from '../common/enums/shipment-status-type.enum';
+import { Verdict } from './logic/package-verdict.util';
 
 /** Fila del consolidador: un `income` enriquecido para la vista/edición. */
 export interface ConsolidadorRow {
@@ -43,4 +44,55 @@ export interface ConsolidadorBuckets {
 export interface ConsolidadorReadResult {
   rows: ConsolidadorRow[];
   buckets: ConsolidadorBuckets;
+}
+
+/** Fila de guía dentro de una tarjeta de ruta/consolidado (solo envíos, con veredicto). */
+export interface ConsolidadorGroupRow {
+  tracking: string | null;
+  shipmentId: string | null;
+  status: ShipmentStatusType | null;
+  income: { id: string; cost: number } | null;
+  verdict: Verdict;
+}
+
+/** KPIs de una ruta/consolidado en la semana. */
+export interface ConsolidadorGroupKpis {
+  delivered: number;
+  notDelivered: number;
+  incomeAmount: number;
+  incomeCount: number;
+  chargeDiscrepancy: number;
+  anomalyCount: number;
+}
+
+/** Una ruta o un consolidado de la semana con sus KPIs y el detalle de guías. */
+export interface ConsolidadorGroup {
+  id: string;
+  label: string;
+  date: string | null;
+  meta: { driver?: string | null; owner?: string | null; shipmentCount: number };
+  kpis: ConsolidadorGroupKpis;
+  rows: ConsolidadorGroupRow[];
+}
+
+export interface ConsolidadorGroupsResult {
+  groups: ConsolidadorGroup[];
+}
+
+/** Fila normalizada de entrada para agrupar (una por income de la semana). */
+export interface GroupInputRow {
+  tracking: string | null;
+  shipmentId: string | null;
+  status: ShipmentStatusType | null;
+  /** true = income de envío (aplica veredicto/entrega); false = carga/recolección/traslado/manual. */
+  isShipment: boolean;
+  cost: number;
+  incomeId: string | null;
+  /** Clave del grupo ya resuelta por el caller (routeId/consNumber o sintética "Sin ruta"). */
+  groupKey: string;
+  groupLabel: string;
+  groupDate: string | null;
+  driver: string | null;
+  owner: string | null;
+  verdict: Verdict;
 }
