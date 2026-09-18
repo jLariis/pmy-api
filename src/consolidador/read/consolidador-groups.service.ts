@@ -4,6 +4,7 @@ import { Between, In, Repository } from 'typeorm';
 import { Income } from '../../entities/income.entity';
 import { Shipment } from '../../entities/shipment.entity';
 import { PackageDispatch } from '../../entities/package-dispatch.entity';
+import { PackageDispatchHistory } from '../../entities/package-dispatch-history.entity';
 import { Consolidated } from '../../entities/consolidated.entity';
 import { Subsidiary } from '../../entities/subsidiary.entity';
 import { IncomeSourceType } from '../../common/enums/income-source-type.enum';
@@ -32,8 +33,9 @@ export class ConsolidadorGroupsService {
     private readonly cobrosAudit: CobrosAuditService,
   ) {}
 
-  // ---- POR RUTA: rutas de la semana (routeDate) ----
+  // ---- POR RUTA: rutas de la semana (routeDate) → paquetes vía package_dispatch_history ----
   async getByRoute(subsidiaryId: string, from: Date, to: Date): Promise<ConsolidadorGroupsResult> {
+    // 1) Todas las rutas de la semana de la sucursal, por su fecha de ruta (no createdAt).
     const routes = await this.incomeRepo.manager
       .getRepository(PackageDispatch)
       .createQueryBuilder('pd')
@@ -50,25 +52,42 @@ export class ConsolidadorGroupsService {
     const routeIds = [...routeMeta.keys()];
     if (routeIds.length === 0) return { groups: [] };
 
-    const shipments = await this.loadShipments('routeId', routeIds);
-    const incomeByShipment = await this.incomesByShipment(shipments.map((s) => s.id));
-    const discrepancy = await this.discrepancyByTracking(subsidiaryId, from, to);
-    const routeDateById = new Map([...routeMeta].map(([id, m]) => [id, m.date] as [string, Date | null]));
+    // 2) Los paquetes de cada ruta salen del HISTORIAL (dispatchId → shipmentId), no de shipment.routeId.
+    const histRows = await this.incomeRepo.manager
+      .getRepository(PackageDispatchHistory)
+      .createQueryBuilder('h')
+      .select('h.dispatchId', 'dispatchId')
+      .addSelect('h.shipmentId', 'shipmentId')
+      .where('h.dispatchId IN (:...routeIds)', { routeIds })
+      .andWhere('h.shipmentId IS NOT NULL')
+      .getRawMany<{ dispatchId: string; shipmentId: string }>();
 
-    const rows: GroupInputRow[] = shipments.map((s) => {
-      const routeId = String((s as any).routeId);
-      const meta = routeMeta.get(routeId);
-      // Partimos de las rutas de la semana, así que SIEMPRE hay ruta: nunca "Sin ruta" aquí.
-      return this.shipmentRow(
-        s,
-        incomeByShipment.get(s.id) ?? null,
-        routeId,
-        `Ruta ${meta?.number ?? `…${routeId.slice(-6)}`}`,
-        meta?.date ?? null,
-        meta?.driver ?? null,
-        routeDateById,
-      );
-    });
+    const shipmentIdsByRoute = new Map<string, Set<string>>();
+    const allShipmentIds = new Set<string>();
+    for (const r of histRows) {
+      if (!routeMeta.has(r.dispatchId)) continue;
+      if (!shipmentIdsByRoute.has(r.dispatchId)) shipmentIdsByRoute.set(r.dispatchId, new Set());
+      shipmentIdsByRoute.get(r.dispatchId)!.add(r.shipmentId);
+      allShipmentIds.add(r.shipmentId);
+    }
+    if (allShipmentIds.size === 0) return { groups: [] };
+
+    // 3) Carga los envíos y mapea sus ingresos por shipmentId.
+    const shipments = await this.loadShipmentsByIds([...allShipmentIds]);
+    const shipmentById = new Map(shipments.map((s) => [s.id, s]));
+    const incomeByShipment = await this.incomesByShipment([...allShipmentIds]);
+    const discrepancy = await this.discrepancyByTracking(subsidiaryId, from, to);
+
+    const rows: GroupInputRow[] = [];
+    for (const [routeId, sids] of shipmentIdsByRoute) {
+      const meta = routeMeta.get(routeId)!;
+      const label = `Ruta ${meta.number ?? `…${routeId.slice(-6)}`}`;
+      for (const sid of sids) {
+        const s = shipmentById.get(sid);
+        if (!s) continue;
+        rows.push(this.shipmentRow(s, incomeByShipment.get(sid) ?? null, routeId, label, meta.date, meta.driver, meta.date));
+      }
+    }
 
     return buildGroups(rows, discrepancy);
   }
@@ -96,7 +115,8 @@ export class ConsolidadorGroupsService {
     const shipments = await this.loadShipments('consolidatedId', consIds, subsidiaryId);
     const incomeByShipment = await this.incomesByShipment(shipments.map((s) => s.id));
     const discrepancy = await this.discrepancyByTracking(subsidiaryId, from, to);
-    const routeDateById = await this.loadRouteDates(shipments.map((s) => (s as any).routeId).filter(Boolean));
+    // La ruta del envío (para el veredicto) también sale del historial, no de shipment.routeId.
+    const routeDateByShipmentId = await this.routeDateByShipment(shipments.map((s) => s.id));
 
     const rows: GroupInputRow[] = shipments.map((s) => {
       const consId = (s as any).consolidatedId as string;
@@ -108,7 +128,7 @@ export class ConsolidadorGroupsService {
         meta?.label ?? `Consolidado …${String(consId).slice(-6)}`,
         meta?.date ?? null,
         null,
-        routeDateById,
+        routeDateByShipmentId.get(s.id) ?? null,
       );
     });
 
@@ -161,15 +181,13 @@ export class ConsolidadorGroupsService {
     groupLabel: string,
     groupDate: Date | null,
     driver: string | null,
-    routeDateById: Map<string, Date | null>,
+    routeDateForVerdict: Date | null,
   ): GroupInputRow {
-    const routeId = (s as any).routeId ?? null;
-    const routeDate = routeId ? routeDateById.get(routeId) ?? null : null;
     const verdict = computeVerdict({
       currentStatus: s.status ?? null,
       history: (s as any).statusHistory ?? [],
       hasConsolidado: !!(s as any).consolidatedId,
-      routeDate,
+      routeDate: routeDateForVerdict,
       incomeDate: incomeRow ? incomeRow.date : null,
       fedexVerified: true, // el estatus ya viene resuelto por el cron; no llamamos a FedEx aquí
     });
@@ -188,8 +206,8 @@ export class ConsolidadorGroupsService {
     };
   }
 
-  /** Envíos por una columna FK (routeId/consolidatedId) con historial de estatus. */
-  private async loadShipments(fkColumn: 'routeId' | 'consolidatedId', ids: string[], subsidiaryId?: string): Promise<Shipment[]> {
+  /** Envíos por consolidatedId (para la vista por consolidado) con historial de estatus. */
+  private async loadShipments(fkColumn: 'consolidatedId', ids: string[], subsidiaryId?: string): Promise<Shipment[]> {
     const qb = this.incomeRepo.manager
       .getRepository(Shipment)
       .createQueryBuilder('s')
@@ -197,6 +215,40 @@ export class ConsolidadorGroupsService {
       .where(`s.${fkColumn} IN (:...ids)`, { ids });
     if (subsidiaryId) qb.andWhere('s.subsidiaryId = :subsidiaryId', { subsidiaryId });
     return qb.getMany();
+  }
+
+  /** Envíos por id (para la vista por ruta, cuyos ids vienen del historial) con historial de estatus. */
+  private async loadShipmentsByIds(ids: string[]): Promise<Shipment[]> {
+    if (ids.length === 0) return [];
+    return this.incomeRepo.manager
+      .getRepository(Shipment)
+      .createQueryBuilder('s')
+      .leftJoinAndSelect('s.statusHistory', 'sh')
+      .where('s.id IN (:...ids)', { ids })
+      .getMany();
+  }
+
+  /** routeDate por shipmentId vía historial (la ruta a la que perteneció el envío). */
+  private async routeDateByShipment(shipmentIds: string[]): Promise<Map<string, Date | null>> {
+    const map = new Map<string, Date | null>();
+    const ids = [...new Set(shipmentIds)];
+    if (ids.length === 0) return map;
+    const rows = await this.incomeRepo.manager
+      .getRepository(PackageDispatchHistory)
+      .createQueryBuilder('h')
+      .innerJoin(PackageDispatch, 'pd', 'pd.id = h.dispatchId')
+      .select('h.shipmentId', 'shipmentId')
+      .addSelect('pd.routeDate', 'routeDate')
+      .where('h.shipmentId IN (:...ids)', { ids })
+      .getRawMany<{ shipmentId: string; routeDate: Date | null }>();
+    // Toma la fecha de ruta más reciente por envío (si estuvo en varias rutas).
+    for (const r of rows) {
+      if (!r.shipmentId) continue;
+      const prev = map.get(r.shipmentId);
+      const cur = r.routeDate ? new Date(r.routeDate) : null;
+      if (!map.has(r.shipmentId) || (cur && (!prev || cur > prev))) map.set(r.shipmentId, cur);
+    }
+    return map;
   }
 
   /** Ingresos activos de envío por shipmentId → fila de consolidador completa. */
@@ -208,16 +260,6 @@ export class ConsolidadorGroupsService {
       relations: ['shipment', 'charge', 'subsidiary'],
     });
     for (const i of incomes) if (i.shipment?.id) map.set(i.shipment.id, mapIncomeToRow(i));
-    return map;
-  }
-
-  /** routeDate por routeId (para el veredicto). */
-  private async loadRouteDates(routeIds: string[]): Promise<Map<string, Date | null>> {
-    const map = new Map<string, Date | null>();
-    const unique = [...new Set(routeIds)];
-    if (unique.length === 0) return map;
-    const dispatches = await this.incomeRepo.manager.getRepository(PackageDispatch).find({ where: { id: In(unique) } });
-    for (const pd of dispatches) map.set(pd.id, (pd as any).routeDate ?? (pd as any).createdAt ?? null);
     return map;
   }
 
