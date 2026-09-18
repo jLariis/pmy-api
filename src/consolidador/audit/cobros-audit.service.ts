@@ -8,10 +8,20 @@ import {
   CobroRule,
 } from '../logic/cobros-audit.util';
 
+/** Ruta a la que perteneció la guía (folio + fecha de ruta). */
+export interface CobroRouteRef {
+  label: string;
+  date: string | null;
+}
+
 /** Fila de descuadre para la pantalla (una por guía + regla + dirección). */
 export interface CobrosAuditRow extends CobroFinding {
   currentStatus: string | null;
   cost: number | null; // costo esperado del cobro (fedexCostPackage de la sucursal)
+  shipmentId: string | null;
+  incomeId: string | null; // ingreso activo ligado (para eliminar/historial)
+  consNumber: string | null;
+  routes: CobroRouteRef[];
 }
 
 export interface CobrosAuditRuleBucket {
@@ -57,11 +67,13 @@ export class CobrosAuditService {
 
     // Eventos FedEx relevantes de la semana (entregado / rechazado / 07 / 08).
     const eventRows = await this.dataSource.query(
-      `SELECT s.trackingNumber AS trackingNumber, s.status AS currentStatus,
+      `SELECT s.trackingNumber AS trackingNumber, s.id AS shipmentId, s.status AS currentStatus,
+              s.consolidatedId AS consolidatedId, c.consNumber AS consNumber,
               ss.status AS evStatus, ss.exceptionCode AS exceptionCode, ss.timestamp AS ts,
               (SELECT 1 FROM charge_shipment cs WHERE cs.trackingNumber = s.trackingNumber LIMIT 1) AS isF2
          FROM shipment s
          JOIN shipment_status ss ON ss.shipmentId = s.id
+         LEFT JOIN consolidated c ON c.id = s.consolidatedId
         WHERE s.subsidiaryId = ?
           AND LOWER(s.shipmentType) = 'fedex'
           AND ss.timestamp BETWEEN ? AND ?
@@ -71,11 +83,13 @@ export class CobrosAuditService {
 
     // Ingresos activos de envío de la semana (entregado / no_entregado).
     const incomeRows = await this.dataSource.query(
-      `SELECT s.trackingNumber AS trackingNumber, s.status AS currentStatus,
-              i.incomeType AS incomeType, i.nonDeliveryStatus AS nonDeliveryStatus, i.date AS date,
+      `SELECT s.trackingNumber AS trackingNumber, s.id AS shipmentId, s.status AS currentStatus,
+              s.consolidatedId AS consolidatedId, c.consNumber AS consNumber,
+              i.id AS incomeId, i.incomeType AS incomeType, i.nonDeliveryStatus AS nonDeliveryStatus, i.date AS date,
               (SELECT 1 FROM charge_shipment cs WHERE cs.trackingNumber = s.trackingNumber LIMIT 1) AS isF2
          FROM income i
          JOIN shipment s ON s.id = i.shipmentId
+         LEFT JOIN consolidated c ON c.id = s.consolidatedId
         WHERE s.subsidiaryId = ?
           AND i.active = 1
           AND i.sourceType = 'shipment'
@@ -85,11 +99,19 @@ export class CobrosAuditService {
     );
 
     // Agrupa por guía.
-    type Bag = { currentStatus: string | null; isF2: boolean; events: AuditEvent[]; incomes: AuditIncome[] };
+    type Bag = {
+      currentStatus: string | null;
+      isF2: boolean;
+      shipmentId: string | null;
+      consNumber: string | null;
+      incomeId: string | null;
+      events: AuditEvent[];
+      incomes: AuditIncome[];
+    };
     const byTn = new Map<string, Bag>();
     const bag = (tn: string, currentStatus: string | null, isF2: boolean): Bag => {
       let b = byTn.get(tn);
-      if (!b) { b = { currentStatus, isF2, events: [], incomes: [] }; byTn.set(tn, b); }
+      if (!b) { b = { currentStatus, isF2, shipmentId: null, consNumber: null, incomeId: null, events: [], incomes: [] }; byTn.set(tn, b); }
       if (isF2) b.isF2 = true;
       if (currentStatus != null) b.currentStatus = currentStatus; // el estatus vivo del shipment
       return b;
@@ -97,11 +119,40 @@ export class CobrosAuditService {
 
     for (const r of eventRows) {
       const b = bag(String(r.trackingNumber), r.currentStatus ?? null, Number(r.isF2) === 1);
+      if (r.shipmentId) b.shipmentId = String(r.shipmentId);
+      if (r.consNumber) b.consNumber = String(r.consNumber);
       b.events.push({ status: r.evStatus ?? null, exceptionCode: r.exceptionCode ?? null, timestamp: new Date(r.ts) });
     }
     for (const r of incomeRows) {
       const b = bag(String(r.trackingNumber), r.currentStatus ?? null, Number(r.isF2) === 1);
+      if (r.shipmentId) b.shipmentId = String(r.shipmentId);
+      if (r.consNumber) b.consNumber = String(r.consNumber);
+      if (r.incomeId) b.incomeId = String(r.incomeId);
       b.incomes.push({ incomeType: r.incomeType ?? null, nonDeliveryStatus: r.nonDeliveryStatus ?? null, date: new Date(r.date) });
+    }
+
+    // Rutas por envío (folio + fecha de ruta) vía package_dispatch_history.
+    const shipmentIds = [...new Set([...byTn.values()].map((b) => b.shipmentId).filter(Boolean))] as string[];
+    const routesByShipment = new Map<string, CobroRouteRef[]>();
+    if (shipmentIds.length) {
+      const placeholders = shipmentIds.map(() => '?').join(',');
+      const routeRows = await this.dataSource.query(
+        `SELECT h.shipmentId AS shipmentId, pd.trackingNumber AS folio, pd.routeDate AS routeDate
+           FROM package_dispatch_history h
+           JOIN package_dispatch pd ON pd.id = h.dispatchId
+          WHERE h.shipmentId IN (${placeholders})`,
+        shipmentIds,
+      );
+      for (const r of routeRows) {
+        const sid = String(r.shipmentId);
+        const list = routesByShipment.get(sid) ?? [];
+        const label = r.folio ? `Ruta ${r.folio}` : 'Ruta';
+        // Evita duplicados exactos (misma ruta repetida en el historial).
+        if (!list.some((x) => x.label === label && x.date === (r.routeDate ? new Date(r.routeDate).toISOString() : null))) {
+          list.push({ label, date: r.routeDate ? new Date(r.routeDate).toISOString() : null });
+        }
+        routesByShipment.set(sid, list);
+      }
     }
 
     // Clasifica por guía y arma las filas.
@@ -116,7 +167,15 @@ export class CobrosAuditService {
       });
       for (const f of findings) {
         const bk = buckets.get(f.rule)!;
-        const row: CobrosAuditRow = { ...f, currentStatus: b.currentStatus, cost };
+        const row: CobrosAuditRow = {
+          ...f,
+          currentStatus: b.currentStatus,
+          cost,
+          shipmentId: b.shipmentId,
+          incomeId: b.incomeId,
+          consNumber: b.consNumber,
+          routes: b.shipmentId ? routesByShipment.get(b.shipmentId) ?? [] : [],
+        };
         const amount = (cost ?? 0) * (f.discrepancy === 'extra' ? f.count : 1);
         if (f.discrepancy === 'missing') {
           bk.missingCount += 1; bk.missingAmount += amount;
