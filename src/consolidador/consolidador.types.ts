@@ -46,12 +46,15 @@ export interface ConsolidadorReadResult {
   buckets: ConsolidadorBuckets;
 }
 
-/** Fila de guía dentro de una tarjeta de ruta/consolidado (solo envíos, con veredicto). */
+/** Fila de una tarjeta de ruta/consolidado: la fila de ingreso completa (para editar/historial) + veredicto. */
 export interface ConsolidadorGroupRow {
   tracking: string | null;
   shipmentId: string | null;
   status: ShipmentStatusType | null;
-  income: { id: string; cost: number } | null;
+  /** true = envío (cuenta como entrega y aplica veredicto); false = carga/recolección/etc. */
+  isShipment: boolean;
+  /** Fila de ingreso completa (null cuando el envío aún no tiene ingreso). */
+  income: ConsolidadorRow | null;
   verdict: Verdict;
 }
 
@@ -79,15 +82,15 @@ export interface ConsolidadorGroupsResult {
   groups: ConsolidadorGroup[];
 }
 
-/** Fila normalizada de entrada para agrupar (una por income de la semana). */
+/** Fila normalizada de entrada para agrupar (una por envío de la ruta/consolidado + una por carga con ingreso). */
 export interface GroupInputRow {
   tracking: string | null;
   shipmentId: string | null;
   status: ShipmentStatusType | null;
-  /** true = income de envío (aplica veredicto/entrega); false = carga/recolección/traslado/manual. */
+  /** true = envío (cuenta como entrega/no-entrega y aplica veredicto); false = carga/recolección/etc. */
   isShipment: boolean;
-  cost: number;
-  incomeId: string | null;
+  /** Fila de ingreso completa (null cuando el envío no tiene ingreso). */
+  income: ConsolidadorRow | null;
   /** Clave del grupo ya resuelta por el caller (routeId/consNumber o sintética "Sin ruta"). */
   groupKey: string;
   groupLabel: string;

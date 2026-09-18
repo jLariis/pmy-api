@@ -16,9 +16,9 @@ const DELIVERED = new Set<string>([
  * Pliega las filas normalizadas de la semana en grupos (ruta o consolidado) con sus KPIs.
  * Puro y testeable — el caller ya resolvió `groupKey`/`groupLabel`/`groupDate` y el veredicto.
  *  - delivered/notDelivered: SOLO envíos (isShipment).
- *  - incomeAmount/Count: TODOS los ingresos del grupo (envíos + cargas + …).
+ *  - incomeAmount/Count: TODAS las filas con ingreso (envíos + cargas + …).
  *  - anomalyCount: envíos con veredicto `level !== 'ok'`.
- *  - rows: SOLO envíos (el detalle de guías; cargas no tienen estatus ni veredicto útil).
+ *  - rows: todos los envíos + las cargas que tienen ingreso (todas con su fila para editar/historial).
  *  - chargeDiscrepancy: suma de descuadres de cobro por guía dentro del grupo.
  */
 export function buildGroups(
@@ -46,9 +46,12 @@ export function buildGroups(
   for (const r of rows) {
     const g = ensure(r);
 
-    if (r.incomeId) {
-      g.kpis.incomeAmount += r.cost;
+    if (r.income) {
+      g.kpis.incomeAmount += r.income.cost;
       g.kpis.incomeCount += 1;
+    }
+    if (r.tracking && discrepancyByTracking.has(r.tracking)) {
+      g.kpis.chargeDiscrepancy += discrepancyByTracking.get(r.tracking) ?? 0;
     }
 
     if (r.isShipment) {
@@ -56,18 +59,18 @@ export function buildGroups(
       if (r.status && DELIVERED.has(String(r.status))) g.kpis.delivered += 1;
       else g.kpis.notDelivered += 1;
       if (r.verdict.level !== 'ok') g.kpis.anomalyCount += 1;
+    }
+
+    // Detalle: todos los envíos + las cargas que traen ingreso (todas editables/con historial).
+    if (r.isShipment || r.income) {
       g.rows.push({
         tracking: r.tracking,
         shipmentId: r.shipmentId,
         status: r.status,
-        income: r.incomeId ? { id: r.incomeId, cost: r.cost } : null,
+        isShipment: r.isShipment,
+        income: r.income,
         verdict: r.verdict,
       });
-      if (r.tracking && discrepancyByTracking.has(r.tracking)) {
-        g.kpis.chargeDiscrepancy += discrepancyByTracking.get(r.tracking) ?? 0;
-      }
-    } else if (r.tracking && discrepancyByTracking.has(r.tracking)) {
-      g.kpis.chargeDiscrepancy += discrepancyByTracking.get(r.tracking) ?? 0;
     }
   }
 
