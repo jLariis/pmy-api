@@ -19,7 +19,7 @@ function income(cost: number): ConsolidadorRow {
 
 function row(over: Partial<GroupInputRow>): GroupInputRow {
   return {
-    tracking: 'T1', shipmentId: 's1', status: ShipmentStatusType.ENTREGADO, isShipment: true,
+    tracking: 'T1', shipmentId: 's1', status: ShipmentStatusType.ENTREGADO, isShipment: true, commitDateTime: null,
     income: income(100), groupKey: 'r1', groupLabel: 'Ruta r1', groupDate: '2026-09-17',
     driver: 'Juan', owner: null, verdict: okVerdict, ...over,
   };

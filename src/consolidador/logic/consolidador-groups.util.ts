@@ -75,6 +75,7 @@ export function buildGroups(
         shipmentId: r.shipmentId,
         status: r.status,
         isShipment: r.isShipment,
+        commitDateTime: r.commitDateTime,
         income: r.income,
         verdict: r.verdict,
         chargeIssues: issues,

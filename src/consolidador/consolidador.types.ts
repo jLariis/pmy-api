@@ -63,6 +63,8 @@ export interface ConsolidadorGroupRow {
   status: ShipmentStatusType | null;
   /** true = envío (cuenta como entrega y aplica veredicto); false = carga/recolección/etc. */
   isShipment: boolean;
+  /** Fecha de vencimiento (compromiso de entrega FedEx, commitDateTime). */
+  commitDateTime: string | null;
   /** Fila de ingreso completa (null cuando el envío aún no tiene ingreso). */
   income: ConsolidadorRow | null;
   verdict: Verdict;
@@ -107,6 +109,8 @@ export interface GroupInputRow {
   status: ShipmentStatusType | null;
   /** true = envío (cuenta como entrega/no-entrega y aplica veredicto); false = carga/recolección/etc. */
   isShipment: boolean;
+  /** Fecha de vencimiento (compromiso de entrega FedEx, commitDateTime). */
+  commitDateTime: string | null;
   /** Fila de ingreso completa (null cuando el envío no tiene ingreso). */
   income: ConsolidadorRow | null;
   /** Clave del grupo ya resuelta por el caller (routeId/consNumber o sintética "Sin ruta"). */
