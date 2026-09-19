@@ -8,9 +8,7 @@ import { proratedAmountInRange } from 'src/common/expense-proration.util';
 import { effectiveLocalDaySql, rawUtcBounds } from 'src/common/income-window.util';
 import { ConsolidatedService } from 'src/consolidated/consolidated.service';
 import {
-  rollupConsolidatedPackageStats,
   emptyPackageStats,
-  ConsolidatedRollupInput,
   SubsidiaryPackageStats,
 } from './consolidated-package-rollup';
 
@@ -56,7 +54,23 @@ const REVENUE_FEDEX_SQL = countableRevenue(`income.sourceType = 'shipment' AND i
 const REVENUE_DHL_SQL = countableRevenue(`income.sourceType = 'shipment' AND income.shipmentType = 'dhl'`);
 const REVENUE_CARGAS_SQL = countableRevenue(`income.sourceType = 'charge'`);
 const REVENUE_COLLECTIONS_SQL = countableRevenue(`income.sourceType = 'collection'`);
-const REVENUE_TRANSFERS_SQL = countableRevenue(`income.sourceType IN ('tyco','aeropuerto','special_transfer')`);
+// Traslados DESGLOSADOS (nada de "otros" genérico): tyco / aéreo / especial por separado.
+const REVENUE_TYCO_SQL = countableRevenue(`income.sourceType = 'tyco'`);
+const REVENUE_AEROPUERTO_SQL = countableRevenue(`income.sourceType = 'aeropuerto'`);
+const REVENUE_SPECIAL_SQL = countableRevenue(`income.sourceType = 'special_transfer'`);
+
+/**
+ * Paquetes FACTURADOS: # de ingresos contables (los que suman al total), con su desglose
+ * por desenlace. Sirve para explicar el dinero en la tarjeta: total$ = Σ costos de estos
+ * N paquetes (anclados a la fecha de COBRO, no al mes del consolidado — por eso puede
+ * diferir de "entregados" del conteo operativo por consolidado).
+ */
+const billedCount = (extra?: string) =>
+  `SUM(CASE WHEN ${COUNTABLE_COND}${extra ? ` AND (${extra})` : ''} THEN 1 ELSE 0 END)`;
+const BILLED_TOTAL_SQL = billedCount();
+const BILLED_DELIVERED_SQL = billedCount(`income.incomeType = 'entregado'`);
+const BILLED_DEX07_SQL = billedCount(`income.incomeType = 'no_entregado' AND income.nonDeliveryStatus = '07'`);
+const BILLED_DEX08_SQL = billedCount(`income.incomeType = 'no_entregado' AND income.nonDeliveryStatus = '08'`);
 
 @Injectable()
 export class KpiService {
@@ -246,29 +260,15 @@ export class KpiService {
     const subsidiaryCondition = (alias: string) =>
       hasSubsidiaryFilter ? `${alias}.subsidiaryId IN (:...subsidiaryIds)` : '1=1';
 
-    // 2. CONTEOS DE PAQUETES: fuente unica = consolidados (mismo motor que la pantalla
-    //    de Consolidados). Fechas construidas igual que el controller de consolidados
-    //    (new Date('YYYY-MM-DD') -> medianoche UTC) para dar identico.
+    // 2. CONTEOS DE PAQUETES: por sucursal OPERATIVA (considera traspasos entre sucursales).
+    //    El total sale del `numberOfPackages` declarado por dueño y se AJUSTA por traspaso;
+    //    POD/DEX/en proceso/cargas se cuentan donde físicamente está la guía; los
+    //    consolidados (ordinario/aéreo) quedan con el dueño. NO se filtra por dueño (los
+    //    traspasos cruzan sucursales); abajo el `result.map` acota a las sucursales visibles.
+    //    Fechas como el controller de consolidados (new Date('YYYY-MM-DD') -> medianoche UTC).
     const consFrom = new Date(baseStartDate);
     const consTo = new Date(baseEndDate);
-    const consolidatedDtos = await this.consolidatedService.findAll(
-      hasSubsidiaryFilter ? { subsidiaryIds } : {},
-      consFrom,
-      consTo,
-      { summaryOnly: true },
-    );
-    const rollupRows: ConsolidatedRollupInput[] = consolidatedDtos.map((c) => ({
-      subsidiaryId: c.subsidiary?.id,
-      type: c.type,
-      numberOfPackages: c.numberOfPackages,
-      entregado: c.shipmentCounts?.entregado ?? 0,
-      dex03: c.shipmentCounts?.dex03 ?? 0,
-      dex07: c.shipmentCounts?.dex07 ?? 0,
-      dex08: c.shipmentCounts?.dex08 ?? 0,
-      guiasPendientesDeMov: c.shipmentCounts?.guiasPendientesDeMov ?? 0,
-      countF2: c.shipmentCounts?.countF2 ?? 0,
-    }));
-    const packageStatsBySub = rollupConsolidatedPackageStats(rollupRows);
+    const packageStatsBySub = await this.consolidatedService.getOperationalPackageStats(consFrom, consTo);
 
     // 3. FINANCIEROS (SIN CAMBIO): gastos (C) e ingresos (D) en paralelo.
     const [expenseStats, incomeStats] = await Promise.all([
@@ -298,7 +298,13 @@ export class KpiService {
         .addSelect(REVENUE_DHL_SQL, 'revenueDhl')
         .addSelect(REVENUE_CARGAS_SQL, 'revenueCargas')
         .addSelect(REVENUE_COLLECTIONS_SQL, 'revenueCollections')
-        .addSelect(REVENUE_TRANSFERS_SQL, 'revenueTransfers')
+        .addSelect(REVENUE_TYCO_SQL, 'revenueTyco')
+        .addSelect(REVENUE_AEROPUERTO_SQL, 'revenueAeropuerto')
+        .addSelect(REVENUE_SPECIAL_SQL, 'revenueSpecial')
+        .addSelect(BILLED_TOTAL_SQL, 'billedTotal')
+        .addSelect(BILLED_DELIVERED_SQL, 'billedDelivered')
+        .addSelect(BILLED_DEX07_SQL, 'billedDex07')
+        .addSelect(BILLED_DEX08_SQL, 'billedDex08')
         .where('income.active = 1')
         .andWhere('income.date BETWEEN :rawStart AND :rawEnd', { rawStart, rawEnd })
         .andWhere(`${effectiveLocalDaySql('income')} BETWEEN :startDay AND :endDay`, { startDay: baseStartDate, endDay: baseEndDate })
@@ -319,13 +325,28 @@ export class KpiService {
       const totalUndelivered = pkg.undeliveredPackages;
       const totalCharges = pkg.totalCharges;
       const totalRevenue = Number(iStats.totalRevenue || 0);
-      // Desglose por tipo (mismos buckets que la tabla de ingresos). La suma == totalRevenue.
+      // Desglose por tipo EXPLÍCITO (la suma == totalRevenue). Traslados separados.
       const revenueBreakdown = {
         fedex: Number(iStats.revenueFedex || 0),
         dhl: Number(iStats.revenueDhl || 0),
         cargas: Number(iStats.revenueCargas || 0),
         collections: Number(iStats.revenueCollections || 0),
-        transfers: Number(iStats.revenueTransfers || 0),
+        tyco: Number(iStats.revenueTyco || 0),
+        aeropuerto: Number(iStats.revenueAeropuerto || 0),
+        especial: Number(iStats.revenueSpecial || 0),
+      };
+      // Paquetes FACTURADOS (explican el dinero): total = # ingresos contables; el resto
+      // del desglose por desenlace. `otros` = facturados que no son entregado/DEX07/DEX08.
+      const billedTotal = Number(iStats.billedTotal || 0);
+      const billedDelivered = Number(iStats.billedDelivered || 0);
+      const billedDex07 = Number(iStats.billedDex07 || 0);
+      const billedDex08 = Number(iStats.billedDex08 || 0);
+      const billed = {
+        total: billedTotal,
+        delivered: billedDelivered,
+        dex07: billedDex07,
+        dex08: billedDex08,
+        other: Math.max(0, billedTotal - billedDelivered - billedDex07 - billedDex08),
       };
 
       const subExpenses = expenseStats.filter(e => e.subsidiaryId === subsidiary.id);
@@ -377,6 +398,7 @@ export class KpiService {
         averageRevenuePerPackage,
         totalRevenue,
         revenueBreakdown,
+        billed,
         totalExpenses,
         expenseBreakdown,
         averageEfficiency,
@@ -397,7 +419,9 @@ export class KpiService {
       dhl: sumBucket('dhl'),
       cargas: sumBucket('cargas'),
       collections: sumBucket('collections'),
-      transfers: sumBucket('transfers'),
+      tyco: sumBucket('tyco'),
+      aeropuerto: sumBucket('aeropuerto'),
+      especial: sumBucket('especial'),
     };
     // Desglose general de gastos por categoría (suma de todas las sucursales).
     const generalExpenseBreakdown: Record<string, number> = {};
@@ -406,6 +430,16 @@ export class KpiService {
         generalExpenseBreakdown[cat] = (generalExpenseBreakdown[cat] || 0) + amount;
       }
     }
+    const generalBilled = sortedSubsidiaries.reduce(
+      (acc, sub) => ({
+        total: acc.total + (sub.billed?.total || 0),
+        delivered: acc.delivered + (sub.billed?.delivered || 0),
+        dex07: acc.dex07 + (sub.billed?.dex07 || 0),
+        dex08: acc.dex08 + (sub.billed?.dex08 || 0),
+        other: acc.other + (sub.billed?.other || 0),
+      }),
+      { total: 0, delivered: 0, dex07: 0, dex08: 0, other: 0 },
+    );
 
     // 6. REGRESAMOS EL ARREGLO COMO ANTES, PERO INYECTAMOS EL SUMARIO EN CADA ELEMENTO
     return sortedSubsidiaries.map(sub => ({
@@ -416,6 +450,7 @@ export class KpiService {
         totalProfit: generalTotalProfit,
         revenueBreakdown: generalRevenueBreakdown,
         expenseBreakdown: generalExpenseBreakdown,
+        billed: generalBilled,
       }
     }));
   }

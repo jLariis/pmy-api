@@ -82,3 +82,104 @@ export function rollupConsolidatedPackageStats(
   }
   return map;
 }
+
+// ============================================================================
+// Conteo OPERATIVO (con traspasos entre sucursales)
+// ============================================================================
+
+/** Consolidado con su DUEÑO (sucursal a la que se subió) y su total declarado. */
+export interface OperationalConsolidatedRow {
+  id: string;
+  ownerId: string;
+  numberOfPackages: number | string | null;
+  type: string; // 'ordinario' | 'aereo' | 'carga'
+}
+
+/** Conteo de guías agrupado por (dueño del consolidado, sucursal OPERATIVA actual). */
+export interface OperationalGroupRow {
+  ownerId: string;
+  /** Sucursal operativa = shipment.subsidiaryId (o el dueño si la guía no tiene sucursal). */
+  opSub: string;
+  total: number | string;
+  entregado: number | string;
+  dex03: number | string;
+  dex07: number | string;
+  dex08: number | string;
+  /** Aún sin desenlace: pendiente + en_ruta + en_bodega. */
+  pendienteMov: number | string;
+}
+
+/**
+ * Rollup OPERATIVO: reparte los conteos considerando los traspasos entre sucursales.
+ *
+ * - `totalPackages`: base = SUM(numberOfPackages) DECLARADO por DUEÑO; luego se AJUSTA por
+ *   traspaso: cada guía cuya sucursal operativa ≠ dueño sale del dueño y entra al destino.
+ * - `deliveredPackages` / DEX / `inProcessPackages` / `totalCharges`: SIEMPRE por sucursal
+ *   OPERATIVA (donde físicamente está la guía), sumando shipment + charge.
+ * - `consolidations` (ordinario/aéreo/total): por DUEÑO (el consolidado no se mueve).
+ *
+ * Así, p. ej., paquetes traspasados de Bodega Hermosillo a Caborca cuentan en Caborca,
+ * pero el consolidado sigue perteneciendo a Bodega Hermosillo.
+ */
+export function rollupOperationalPackageStats(
+  consolidados: OperationalConsolidatedRow[],
+  shipmentGroups: OperationalGroupRow[],
+  chargeGroups: OperationalGroupRow[],
+): Map<string, SubsidiaryPackageStats> {
+  const map = new Map<string, SubsidiaryPackageStats>();
+  const ensure = (id: string): SubsidiaryPackageStats => {
+    let s = map.get(id);
+    if (!s) { s = emptyPackageStats(); map.set(id, s); }
+    return s;
+  };
+
+  // 1) Base declarada + consolidations por DUEÑO.
+  for (const c of consolidados) {
+    if (!c?.ownerId) continue;
+    const s = ensure(c.ownerId);
+    s.totalPackages += num(c.numberOfPackages);
+    const type = String(c.type || '').toLowerCase();
+    if (type.includes('aereo')) s.consolidations.air += 1;
+    else if (type.includes('ordinar')) s.consolidations.ordinary += 1;
+    s.consolidations.total += 1;
+  }
+
+  // 2) Desglose (POD/DEX/en proceso) por sucursal OPERATIVA (shipment + charge).
+  for (const g of [...shipmentGroups, ...chargeGroups]) {
+    if (!g?.opSub) continue;
+    const s = ensure(g.opSub);
+    const dex03 = num(g.dex03), dex07 = num(g.dex07), dex08 = num(g.dex08);
+    s.deliveredPackages += num(g.entregado);
+    s.byExceptionCode.code07 += dex07;
+    s.byExceptionCode.code08 += dex08;
+    s.byExceptionCode.code03 += dex03;
+    s.undeliveredPackages += dex03 + dex07 + dex08;
+    s.inProcessPackages += num(g.pendienteMov);
+  }
+
+  // 3) Cargas (F2) por sucursal OPERATIVA.
+  for (const g of chargeGroups) {
+    if (!g?.opSub) continue;
+    ensure(g.opSub).totalCharges += num(g.total);
+  }
+
+  // 4) Ajuste de traspaso al TOTAL (guías normales): las que cambiaron de sucursal salen
+  //    del dueño y entran a la operativa. Conserva el gran total declarado.
+  for (const g of shipmentGroups) {
+    if (!g?.opSub || !g?.ownerId || g.opSub === g.ownerId) continue;
+    const moved = num(g.total);
+    if (moved <= 0) continue;
+    ensure(g.ownerId).totalPackages -= moved;
+    ensure(g.opSub).totalPackages += moved;
+  }
+
+  // 5) Otros = residual que cuadra contra el total.
+  for (const s of map.values()) {
+    if (s.totalPackages < 0) s.totalPackages = 0; // salvaguarda si declarado < traspasos
+    s.otherPackages = Math.max(
+      0,
+      s.totalPackages - s.deliveredPackages - s.undeliveredPackages - s.inProcessPackages,
+    );
+  }
+  return map;
+}

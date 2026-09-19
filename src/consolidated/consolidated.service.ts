@@ -8,6 +8,12 @@ import { ShipmentConsolidatedDto } from './dto/shipment.dto';
 import { ConsolidatedDto } from './dto/consolidated.dto';
 import { ShipmentsService } from 'src/shipments/shipments.service';
 import { ShipmentStatusType, TERMINAL_SHIPMENT_STATUSES } from 'src/common/enums/shipment-status-type.enum';
+import {
+  rollupOperationalPackageStats,
+  SubsidiaryPackageStats,
+  OperationalConsolidatedRow,
+  OperationalGroupRow,
+} from 'src/dashboard/consolidated-package-rollup';
 
 @Injectable()
 export class ConsolidatedService {
@@ -301,6 +307,73 @@ export class ConsolidatedService {
         shipments: [],
       } as ConsolidatedDto;
     });
+  }
+
+  /**
+   * Conteo OPERATIVO de paquetes por sucursal para el dashboard. A diferencia de `findAll`
+   * (que atribuye todo al DUEÑO del consolidado), aquí:
+   *  - el total sale del `numberOfPackages` DECLARADO por dueño y se AJUSTA por traspaso
+   *    (las guías cuya sucursal operativa ≠ dueño se mueven al destino);
+   *  - POD/DEX/en proceso/cargas se cuentan por sucursal OPERATIVA (`shipment.subsidiaryId`);
+   *  - los consolidados (ordinario/aéreo) se quedan con el dueño.
+   *
+   * NO se filtra por sucursal dueña (los traspasos cruzan sucursales); el llamador acota la
+   * salida a las sucursales que muestra. Ver `rollupOperationalPackageStats`.
+   */
+  async getOperationalPackageStats(
+    fromDate?: Date,
+    toDate?: Date,
+  ): Promise<Map<string, SubsidiaryPackageStats>> {
+    let utcFromDate: Date | undefined;
+    let utcToDate: Date | undefined;
+    if (fromDate && toDate) {
+      utcFromDate = new Date(Date.UTC(fromDate.getUTCFullYear(), fromDate.getUTCMonth(), fromDate.getUTCDate(), 0, 0, 0));
+      utcToDate = new Date(Date.UTC(toDate.getUTCFullYear(), toDate.getUTCMonth(), toDate.getUTCDate(), 23, 59, 59));
+    }
+
+    const consQB = this.consolidatedRepository
+      .createQueryBuilder('c')
+      .select(['c.id AS id', 'c.subsidiaryId AS ownerId', 'c.numberOfPackages AS numberOfPackages', 'c.type AS type'])
+      .where('c.active = :active', { active: true });
+    if (utcFromDate && utcToDate) {
+      consQB.andWhere('c.date BETWEEN :fromDate AND :toDate', { fromDate: utcFromDate, toDate: utcToDate });
+    }
+    const consolidados = (await consQB.getRawMany()) as OperationalConsolidatedRow[];
+    if (!consolidados.length) return new Map();
+    const consolidatedIds = consolidados.map((c) => c.id);
+
+    // Misma definición de "pendiente de movimiento" que findAll / pantalla de Consolidados.
+    const PENDING_MOV_STATUSES = ['pendiente', 'en_ruta', 'en_transito', 'en_bodega', 'recibido_en_bodega'];
+    const PENDIENTE_MOV_SQL = PENDING_MOV_STATUSES.map((s) => `'${s}'`).join(',');
+
+    // Agrega por (dueño, sucursal operativa). La operativa = t.subsidiaryId, o el dueño si la
+    // guía no tiene sucursal (COALESCE) — así una guía "en casa" no se cuenta como traspaso.
+    const groupAgg = (tableName: string): Promise<OperationalGroupRow[]> =>
+      this.consolidatedRepository.manager
+        .createQueryBuilder()
+        .select('c.subsidiaryId', 'ownerId')
+        .addSelect('COALESCE(t.subsidiaryId, c.subsidiaryId)', 'opSub')
+        .addSelect('COUNT(t.id)', 'total')
+        .addSelect(`SUM(CASE WHEN LOWER(t.status) IN ('entregado', 'entregada', 'pod') THEN 1 ELSE 0 END)`, 'entregado')
+        .addSelect(`SUM(CASE WHEN LOWER(t.status) IN ('dex03', 'direccion_incorrecta') THEN 1 ELSE 0 END)`, 'dex03')
+        .addSelect(`SUM(CASE WHEN LOWER(t.status) IN ('dex07', 'rechazado') THEN 1 ELSE 0 END)`, 'dex07')
+        .addSelect(`SUM(CASE WHEN LOWER(t.status) IN ('dex08', 'cliente_no_disponible') THEN 1 ELSE 0 END)`, 'dex08')
+        .addSelect(`SUM(CASE WHEN LOWER(t.status) IN (${PENDIENTE_MOV_SQL}) THEN 1 ELSE 0 END)`, 'pendienteMov')
+        .from(tableName, 't')
+        .innerJoin('consolidated', 'c', 'c.id = t.consolidatedId')
+        .where('t.consolidatedId IN (:...ids)', { ids: consolidatedIds })
+        .andWhere('t.status != :cancel', { cancel: 'cancelado' })
+        .andWhere('t.active = :active', { active: true })
+        .groupBy('c.subsidiaryId')
+        .addGroupBy('COALESCE(t.subsidiaryId, c.subsidiaryId)')
+        .getRawMany();
+
+    const [shipmentGroups, chargeGroups] = await Promise.all([
+      groupAgg('shipment'),
+      groupAgg('charge_shipment'),
+    ]);
+
+    return rollupOperationalPackageStats(consolidados, shipmentGroups, chargeGroups);
   }
 
   async findAll(

@@ -1,7 +1,10 @@
 import {
   rollupConsolidatedPackageStats,
+  rollupOperationalPackageStats,
   emptyPackageStats,
   ConsolidatedRollupInput,
+  OperationalConsolidatedRow,
+  OperationalGroupRow,
 } from './consolidated-package-rollup';
 
 const row = (o: Partial<ConsolidatedRollupInput>): ConsolidatedRollupInput => ({
@@ -114,5 +117,67 @@ describe('paridad dashboard vs pantalla Consolidados', () => {
       // Cuadre exacto en cada sucursal
       expect(s.deliveredPackages + s.undeliveredPackages + s.inProcessPackages + s.otherPackages).toBe(s.totalPackages);
     }
+  });
+});
+
+describe('rollupOperationalPackageStats — traspasos entre sucursales', () => {
+  const cons = (o: Partial<OperationalConsolidatedRow>): OperationalConsolidatedRow => ({
+    id: 'c1', ownerId: 'bodega-hmo', numberOfPackages: 0, type: 'ordinario', ...o,
+  });
+  const grp = (o: Partial<OperationalGroupRow>): OperationalGroupRow => ({
+    ownerId: 'bodega-hmo', opSub: 'bodega-hmo', total: 0,
+    entregado: 0, dex03: 0, dex07: 0, dex08: 0, pendienteMov: 0, ...o,
+  });
+
+  it('mueve las guías traspasadas al DESTINO y las descuenta del dueño; consolidado se queda con el dueño', () => {
+    // Consolidado de Bodega Hermosillo declara 10 guías; 4 se traspasaron a Caborca.
+    const consolidados = [cons({ id: 'c1', ownerId: 'bodega-hmo', numberOfPackages: 10, type: 'ordinario' })];
+    const shipmentGroups: OperationalGroupRow[] = [
+      // 6 se quedaron en Bodega Hermosillo (operativa = dueño)
+      grp({ ownerId: 'bodega-hmo', opSub: 'bodega-hmo', total: 6, entregado: 3, dex07: 1, pendienteMov: 2 }),
+      // 4 traspasadas a Caborca (operativa ≠ dueño)
+      grp({ ownerId: 'bodega-hmo', opSub: 'caborca', total: 4, entregado: 2, dex08: 1, pendienteMov: 1 }),
+    ];
+    const map = rollupOperationalPackageStats(consolidados, shipmentGroups, []);
+
+    const hmo = map.get('bodega-hmo')!;
+    const caborca = map.get('caborca')!;
+
+    // Total: 10 declarado − 4 traspasadas = 6 en el dueño; 4 en el destino.
+    expect(hmo.totalPackages).toBe(6);
+    expect(caborca.totalPackages).toBe(4);
+    // El gran total se conserva.
+    expect(hmo.totalPackages + caborca.totalPackages).toBe(10);
+
+    // Desglose por sucursal OPERATIVA.
+    expect(hmo.deliveredPackages).toBe(3);
+    expect(caborca.deliveredPackages).toBe(2);
+    expect(caborca.byExceptionCode.code08).toBe(1);
+    expect(caborca.inProcessPackages).toBe(1);
+
+    // El consolidado (ordinario) se queda con el DUEÑO; Caborca no suma consolidados.
+    expect(hmo.consolidations).toEqual({ ordinary: 1, air: 0, total: 1 });
+    expect(caborca.consolidations).toEqual({ ordinary: 0, air: 0, total: 0 });
+  });
+
+  it('cargas (F2) traspasadas cuentan en el destino', () => {
+    const consolidados = [cons({ id: 'c1', ownerId: 'bodega-obregon', numberOfPackages: 0, type: 'carga' })];
+    const chargeGroups: OperationalGroupRow[] = [
+      grp({ ownerId: 'bodega-obregon', opSub: 'huatabampo', total: 5, entregado: 5 }),
+    ];
+    const map = rollupOperationalPackageStats(consolidados, [], chargeGroups);
+    expect(map.get('huatabampo')!.totalCharges).toBe(5);
+    expect(map.get('huatabampo')!.deliveredPackages).toBe(5);
+  });
+
+  it('sin traspasos: se comporta como el conteo por dueño', () => {
+    const consolidados = [cons({ id: 'c1', ownerId: 's1', numberOfPackages: 8, type: 'ordinario' })];
+    const shipmentGroups: OperationalGroupRow[] = [
+      grp({ ownerId: 's1', opSub: 's1', total: 8, entregado: 6, dex07: 1, pendienteMov: 1 }),
+    ];
+    const s = rollupOperationalPackageStats(consolidados, shipmentGroups, []).get('s1')!;
+    expect(s.totalPackages).toBe(8);
+    expect(s.deliveredPackages).toBe(6);
+    expect(s.deliveredPackages + s.undeliveredPackages + s.inProcessPackages + s.otherPackages).toBe(8);
   });
 });
