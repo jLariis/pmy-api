@@ -1,4 +1,4 @@
-import { resolveChargeCost, chargeSecondAbordApplied } from './charge-cost';
+import { resolveChargeCost, chargeSecondAbordApplied, chargeDayRangeUtc, shouldSkipSameDayCharge } from './charge-cost';
 
 describe('resolveChargeCost (carga 1.5 toneladas)', () => {
   it('usa chargeCostHalfTon cuando isHalfTon y la sucursal lo tiene configurado', () => {
@@ -121,6 +121,40 @@ describe('resolveChargeCost (carga 1.5 toneladas)', () => {
     });
     it('false sobre sobreprecio domingo/festivo', () => {
       expect(chargeSecondAbordApplied({ chargeCost: 4878, chargeCostSundayHoliday: 6660, chargeSecondAbord: true }, false, true)).toBe(false);
+    });
+  });
+});
+
+describe('regla "solo la primera carga del día"', () => {
+  describe('chargeDayRangeUtc', () => {
+    it('acota al día calendario UTC de la fecha del consolidado (rango [inicio, +1 día))', () => {
+      const { dayStart, dayEnd } = chargeDayRangeUtc(new Date('2026-09-18T00:00:00.000Z'));
+      expect(dayStart.toISOString()).toBe('2026-09-18T00:00:00.000Z');
+      expect(dayEnd.toISOString()).toBe('2026-09-19T00:00:00.000Z');
+    });
+
+    it('normaliza cualquier instante del día al mismo rango (no importa la hora)', () => {
+      const { dayStart, dayEnd } = chargeDayRangeUtc(new Date('2026-09-18T23:59:59.000Z'));
+      expect(dayStart.toISOString()).toBe('2026-09-18T00:00:00.000Z');
+      expect(dayEnd.toISOString()).toBe('2026-09-19T00:00:00.000Z');
+    });
+
+    it('fecha inválida cae al día de hoy sin reventar', () => {
+      const { dayStart, dayEnd } = chargeDayRangeUtc(new Date('no-es-fecha'));
+      expect(dayEnd.getTime() - dayStart.getTime()).toBe(24 * 60 * 60 * 1000);
+    });
+  });
+
+  describe('shouldSkipSameDayCharge', () => {
+    it('la PRIMERA carga del día cobra normal (no hay otra hoy)', () => {
+      expect(shouldSkipSameDayCharge(true, false)).toBe(false);
+    });
+    it('la 2ª+ carga del día se registra en $0 cuando el flag está activo', () => {
+      expect(shouldSkipSameDayCharge(true, true)).toBe(true);
+    });
+    it('con el flag apagado NUNCA se salta el cobro, aunque ya haya cargas hoy', () => {
+      expect(shouldSkipSameDayCharge(false, true)).toBe(false);
+      expect(shouldSkipSameDayCharge(false, false)).toBe(false);
     });
   });
 });

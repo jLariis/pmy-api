@@ -46,6 +46,26 @@ export function chargeSecondAbordApplied(
   return secondAbordOn && !useHalfTon && !usePremium;
 }
 
+/**
+ * Rango [inicio, fin) del DÍA operativo de una carga en UTC, a partir de la fecha del consolidado
+ * (`consDate`). Los ingresos de carga guardan `income.date` como medianoche local (00:00Z) del día,
+ * así que se compara por el día calendario UTC de `consDate`. Fecha inválida → día de hoy.
+ */
+export function chargeDayRangeUtc(consDate: Date): { dayStart: Date; dayEnd: Date } {
+  const d = consDate && !isNaN(consDate.getTime()) ? consDate : new Date();
+  const dayStart = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 0, 0, 0, 0));
+  const dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
+  return { dayStart, dayEnd };
+}
+
+/**
+ * Regla "solo la primera carga del día": ¿esta carga se registra SIN cobro (cost=0)? Solo cuando el
+ * flag de la sucursal (`chargeOnlyFirstOfDay`) está activo Y ya existe otra carga cobrada hoy.
+ */
+export function shouldSkipSameDayCharge(flagOn: boolean, alreadyChargedToday: boolean): boolean {
+  return Boolean(flagOn) && Boolean(alreadyChargedToday);
+}
+
 export function resolveChargeCost(
   subsidiary: ChargeSubsidiary,
   isHalfTon: boolean,

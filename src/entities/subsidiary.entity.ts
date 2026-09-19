@@ -271,6 +271,16 @@ export class Subsidiary {
   @Column({ default: false })
   chargeSecondAbord: boolean;
 
+  /**
+   * Cobros: si está activo, para los consolidados de tipo CARGA solo la PRIMERA carga del día
+   * operativo (fecha del consolidado, zona Hermosillo) genera cobro; las cargas 2ª+ del mismo día
+   * se registran igual (carga y paquetes) pero con ingreso `cost = 0` (marcadas con
+   * `income.chargeNotChargedSameDay`). Default false = comportamiento histórico (todas cobran).
+   * Se siembra en true solo para La Paz (migración 1786000000072).
+   */
+  @Column({ default: false })
+  chargeOnlyFirstOfDay: boolean;
+
   @BeforeInsert()
   setCreatedAt() {
     this.createdAt = new Date(); // Fecha en UTC

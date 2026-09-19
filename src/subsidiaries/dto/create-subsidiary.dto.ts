@@ -110,4 +110,7 @@ export class CreateSubsidiaryDto {
 
   // Cobros: sumar el segundo abordo (secondAbordAmount) al costo de cargas F2/31.5 normales.
   @IsBoolean() @IsOptional() chargeSecondAbord?: boolean;
+
+  // Cobros: solo la primera carga del día operativo genera cobro; las demás se registran en $0.
+  @IsBoolean() @IsOptional() chargeOnlyFirstOfDay?: boolean;
 }

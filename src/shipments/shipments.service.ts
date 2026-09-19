@@ -1,6 +1,6 @@
 import { BadRequestException, forwardRef, HttpStatus, Inject, Injectable, InternalServerErrorException, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { resolveChargeCost, chargeSecondAbordApplied } from './charge-cost';
+import { resolveChargeCost, chargeSecondAbordApplied, chargeDayRangeUtc, shouldSkipSameDayCharge } from './charge-cost';
 import { isSundayOrMexHoliday } from './sunday-holiday.util';
 import { HolidaysService } from 'src/holidays/holidays.service';
 import { Between, Brackets, EntityManager, In, Repository } from 'typeorm';
@@ -1015,17 +1015,25 @@ export class ShipmentsService {
       // 4. Generar Ingreso Global (Income) SOLO si la Charge es nueva (primer load de este
       //    consNumber). En re-subidas la Charge se reutiliza → no se duplica el ingreso.
       if (chargeCreated && (migrated.length > 0 || createdFromScratch.length > 0)) {
+        // Regla "solo la primera carga del día" (por sucursal): si ya hubo un cobro de carga hoy,
+        // esta 2ª+ carga se registra igual pero con cost=0 (marcada para trazabilidad).
+        const incomeDate = consDate || new Date();
+        const chargeFlagOn = Boolean(chargeSubsidiary?.chargeOnlyFirstOfDay);
+        const alreadyChargedToday =
+          chargeFlagOn && (await this.chargeIncomeExistsForDay(queryRunner.manager, subsidiaryId, incomeDate));
+        const skipCharge = shouldSkipSameDayCharge(chargeFlagOn, alreadyChargedToday);
         const newIncome = this.incomeRepository.create({
           subsidiary: chargeSubsidiary,
           shipmentType: ShipmentType.FEDEX,
           incomeType: IncomeStatus.ENTREGADO,
-          cost: chargeCostToUse || 0,
+          cost: skipCharge ? 0 : (chargeCostToUse || 0),
           isGrouped: true,
           sourceType: IncomeSourceType.CHARGE,
           charge: savedCharge,
-          date: consDate || new Date(),
+          date: incomeDate,
           createdById: userId ?? null,
-          secondAbordApplied: chargeSecondAbordOn,
+          secondAbordApplied: skipCharge ? false : chargeSecondAbordOn,
+          chargeNotChargedSameDay: skipCharge,
         });
         await queryRunner.manager.save(newIncome);
       }
@@ -1236,19 +1244,28 @@ export class ShipmentsService {
           const chargeCostToUse = resolveChargeCost(chargeSubsidiary, isHalfTon, chargeIsSundayHolidayAdd, secondAbord);
           const chargeSecondAbordOnAdd = chargeSecondAbordApplied(chargeSubsidiary, isHalfTon, chargeIsSundayHolidayAdd, secondAbord);
 
-          console.log("💵 Creating income with cost:", chargeCostToUse, "| isHalfTon:", isHalfTon);
+          // Regla "solo la primera carga del día" (por sucursal): si ya hubo un cobro de carga hoy,
+          // esta 2ª+ carga se registra igual pero con cost=0 (marcada para trazabilidad).
+          const incomeDate = consDate ? consDate : new Date();
+          const chargeFlagOn = Boolean(chargeSubsidiary?.chargeOnlyFirstOfDay);
+          const alreadyChargedToday =
+            chargeFlagOn && (await this.chargeIncomeExistsForDay(this.dataSource.manager, subsidiaryId, incomeDate));
+          const skipCharge = shouldSkipSameDayCharge(chargeFlagOn, alreadyChargedToday);
+
+          console.log("💵 Creating income with cost:", skipCharge ? 0 : chargeCostToUse, "| isHalfTon:", isHalfTon, "| skipCharge:", skipCharge);
 
           const newIncome = this.incomeRepository.create({
             subsidiary: chargeSubsidiary,
             shipmentType: ShipmentType.FEDEX,
             incomeType: IncomeStatus.ENTREGADO,
-            cost: chargeCostToUse || 0,
+            cost: skipCharge ? 0 : (chargeCostToUse || 0),
             isGrouped: true,
             sourceType: IncomeSourceType.CHARGE,
             charge: { id: savedCharge.id },
-            date: consDate ? consDate : new Date(),
+            date: incomeDate,
             createdById: userId ?? null,
-            secondAbordApplied: chargeSecondAbordOnAdd,
+            secondAbordApplied: skipCharge ? false : chargeSecondAbordOnAdd,
+            chargeNotChargedSameDay: skipCharge,
           });
 
           console.log("💾 Saving income...");
@@ -1404,6 +1421,32 @@ export class ShipmentsService {
       createdById: opts.userId ?? null,
     });
     return manager.save(Consolidated, created);
+  }
+
+  /**
+   * Regla "solo la primera carga del día" (`subsidiary.chargeOnlyFirstOfDay`): ¿ya existe un
+   * ingreso de carga ACTIVO para esta sucursal en el MISMO día operativo del consolidado?
+   *
+   * El día se define por la fecha del consolidado (`consDate`), que en los ingresos de carga se
+   * guarda tal cual (medianoche local, 00:00Z, del día operativo). Se compara por rango
+   * [inicio, +1 día) para ser robusto e indexable. Corre con el `manager` del llamador para ver
+   * (dentro de la misma transacción) las cargas insertadas antes en el mismo request.
+   */
+  private async chargeIncomeExistsForDay(
+    manager: EntityManager,
+    subsidiaryId: string,
+    consDate: Date,
+  ): Promise<boolean> {
+    const { dayStart, dayEnd } = chargeDayRangeUtc(consDate);
+    const count = await manager
+      .getRepository(Income)
+      .createQueryBuilder('i')
+      .where('i.subsidiaryId = :sid', { sid: subsidiaryId })
+      .andWhere('i.sourceType = :st', { st: IncomeSourceType.CHARGE })
+      .andWhere('i.active = 1')
+      .andWhere('i.date >= :s AND i.date < :e', { s: dayStart, e: dayEnd })
+      .getCount();
+    return count > 0;
   }
 
   /**

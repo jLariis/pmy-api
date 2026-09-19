@@ -118,6 +118,15 @@ export class Income {
   @Column({ type: 'tinyint', width: 1, nullable: true })
   secondAbordApplied?: boolean | null;
 
+  /**
+   * Trazabilidad de la regla "solo la primera carga del día" (`subsidiary.chargeOnlyFirstOfDay`):
+   * true = este ingreso de carga se registró con `cost = 0` porque YA existía otra carga cobrada
+   * ese mismo día operativo para la sucursal. Distingue un $0 por-regla de un $0 por configuración.
+   * Default false (comportamiento histórico: la carga cobra su costo normal).
+   */
+  @Column({ default: false })
+  chargeNotChargedSameDay: boolean;
+
   @BeforeInsert()
   setDefaults() {
     this.createdAt = new Date(); // Fecha en UTC
