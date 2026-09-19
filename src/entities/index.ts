@@ -60,3 +60,5 @@ export * from './email-attachment.entity';
 export * from './holiday.entity';
 export * from './import-job.entity';
 export * from './cobros-reconciliation-report.entity';
+export * from './server-power-schedule.entity';
+export * from './server-power-day.entity';
