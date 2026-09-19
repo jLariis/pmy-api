@@ -58,12 +58,14 @@ export class ServerPowerService {
     } catch {
       days = [];
     }
+    const tz = this.config.get<string>('POWER_TZ') || process.env.POWER_TZ || 'America/Hermosillo';
     const { nextSuspend, nextWake } = computeNextEvents(
       new Date(),
       days,
       row.suspendTime,
       row.wakeTime,
       row.enabled,
+      tz,
     );
     const timerActive = await this.runner.isTimerActive().catch(() => false);
     return {

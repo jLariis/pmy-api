@@ -64,6 +64,26 @@ describe('power-schedule.util', () => {
     });
   });
 
+  it('nextOccurrence/computeNextEvents anclados a zona (America/Hermosillo, UTC-7 fijo)', () => {
+    // 2026-09-18T08:00:00Z = 01:00 del viernes en Hermosillo (MST).
+    const now = new Date('2026-09-18T08:00:00.000Z');
+    // 21:30 MST del viernes = 04:30Z del sábado.
+    expect(
+      nextOccurrence(now, [1, 2, 3, 4, 5, 6], '21:30', 'America/Hermosillo')?.toISOString(),
+    ).toBe('2026-09-19T04:30:00.000Z');
+    const { nextSuspend, nextWake } = computeNextEvents(
+      now,
+      [1, 2, 3, 4, 5, 6],
+      '21:30',
+      '06:00',
+      true,
+      'America/Hermosillo',
+    );
+    expect(nextSuspend?.toISOString()).toBe('2026-09-19T04:30:00.000Z');
+    // 06:00 MST del sábado = 13:00Z.
+    expect(nextWake?.toISOString()).toBe('2026-09-19T13:00:00.000Z');
+  });
+
   it('buildDesired normaliza días', () => {
     expect(
       buildDesired({ enabled: true, suspendTime: '21:30', wakeTime: '06:00', days: [6, 1, 1] }),
