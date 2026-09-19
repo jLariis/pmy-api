@@ -27,6 +27,13 @@ export class ServerPowerController {
     return this.svc.update(dto, req.user?.id);
   }
 
+  /** Suspende el servidor de inmediato — solo superadmin. */
+  @Post('suspend-now')
+  @UseGuards(SuperAdminGuard)
+  suspendNow() {
+    return this.svc.suspendNow();
+  }
+
   /** Correo de prueba — solo superadmin. */
   @Post('test-email')
   @UseGuards(SuperAdminGuard)

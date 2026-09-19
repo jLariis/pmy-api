@@ -127,6 +127,7 @@ controlador `server` existente (`@UseGuards(SuperAdminGuard)`).
 |--------|------|-------|-------------|
 | `GET`  | `/server/power/schedule` | SuperAdmin | Devuelve la config de BD + estado (`nextSuspend`, `nextWake` derivados; `timerActive` leyendo `systemctl is-active`), `lastAppliedAt`, `lastApplyError`. |
 | `PUT`  | `/server/power/schedule` | SuperAdmin (auditado) | Valida, **guarda en BD**, deriva `desired.json`, corre `sudo pmy-power-apply`; si falla → `500` con stderr y guarda `lastApplyError` (nunca finge éxito). |
+| `POST` | `/server/power/suspend-now` | SuperAdmin | Suspende el servidor **de inmediato** (`sudo pmy-power-suspend-now`): arma el RTC al próximo `wakeTime` (nunca duerme sin despertador), ignora el flag `enabled`. El correo "se suspendió" lo dispara el hook. UI con confirmación doble. |
 | `POST` | `/server/power/test-email` | SuperAdmin | Manda correo de prueba a los recipients actuales. |
 | `POST` | `/server/power/internal/notify` | **PowerSecretGuard** (header `X-Power-Secret`, estilo `backup-secret.guard.ts`) — **no** SuperAdmin | Body `{event:'suspend'\|'wake'}`. Lee recipients de BD y manda el correo. Solo localhost. |
 
@@ -163,8 +164,11 @@ simples (suspend/wake) con hostname, hora local MX y próximo evento.
 `deploy/setup-power-schedule.sh` (idempotente, se corre una vez con `sudo`; parametrizado por
 `APP_USER`, `APP_PORT`, y genera/lee `POWER_SECRET`). Instala:
 
-- `/usr/local/sbin/pmy-power-suspend` — arma RTC (`rtcwake -m no -t`) al próximo `wakeTime`
-  leído de `schedule.env`; si OK → `systemctl suspend`; si no hay RTC → aborta y loguea.
+- `/usr/local/sbin/pmy-power-suspend-now` — núcleo: arma RTC (`rtcwake -m no -t`) al próximo
+  `wakeTime` de `schedule.env`; si OK → `systemctl suspend`; si no hay RTC → aborta y loguea.
+  Lo usa el botón "Suspender ahora" (vía `sudo`) e, indirectamente, el timer.
+- `/usr/local/sbin/pmy-power-suspend` — vía del timer: respeta `ENABLED` y delega en
+  `pmy-power-suspend-now`.
 - `/usr/local/sbin/pmy-power-apply` — lee `desired.json`, **revalida estricto** (HH:MM, días
   1..7), reescribe el drop-in `OnCalendar` del timer + `/etc/pmy-power/schedule.env`,
   `systemctl daemon-reload`, `systemctl reenable --now pmy-power-suspend.timer` (o lo detiene
@@ -173,7 +177,7 @@ simples (suspend/wake) con hostname, hora local MX y próximo evento.
   al endpoint `internal/notify`; en `post` reintenta hasta tener red.
 - `/etc/systemd/system/pmy-power-suspend.{service,timer}`.
 - `/etc/pmy-power/` (root) y `/var/lib/pmy-power/` (chown `APP_USER`).
-- `/etc/sudoers.d/pmy-power`: `APP_USER ALL=(root) NOPASSWD: /usr/local/sbin/pmy-power-apply`
+- `/etc/sudoers.d/pmy-power`: `APP_USER ALL=(root) NOPASSWD: /usr/local/sbin/pmy-power-apply, /usr/local/sbin/pmy-power-suspend-now`
   (validado con `visudo -c`).
 - Añade `POWER_SECRET`/`POWER_NOTIFY_PORT` al `.env` de la app si no existen.
 
@@ -192,6 +196,7 @@ House rules: `AppLayout` + `withAuth` + `OperationHeader`, **solo** shadcn (`@/c
 - Botón **Guardar** (solo superadmin) → `PUT`.
 - Estado: próximo apagado / próximo encendido, última aplicación, y error si lo hubo.
 - Botón "Enviar correo de prueba".
+- Botón **"Suspender ahora"** (destructivo) con diálogo de confirmación doble → `POST /server/power/suspend-now`.
 
 ## 9. Manejo de errores
 

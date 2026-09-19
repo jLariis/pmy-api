@@ -5,6 +5,7 @@ import { dirname } from 'path';
 
 const DESIRED_PATH = process.env.POWER_DESIRED_PATH || '/var/lib/pmy-power/desired.json';
 const APPLY_BIN = process.env.POWER_APPLY_BIN || '/usr/local/sbin/pmy-power-apply';
+const SUSPEND_NOW_BIN = process.env.POWER_SUSPEND_NOW_BIN || '/usr/local/sbin/pmy-power-suspend-now';
 
 @Injectable()
 export class PowerApplyRunner {
@@ -15,6 +16,11 @@ export class PowerApplyRunner {
 
   apply(): Promise<{ ok: boolean; stdout: string; stderr: string; code: number }> {
     return this.run('sudo', ['-n', APPLY_BIN]);
+  }
+
+  /** Suspende YA (arma RTC al próximo wake e ignora el flag enabled). */
+  suspendNow(): Promise<{ ok: boolean; stdout: string; stderr: string; code: number }> {
+    return this.run('sudo', ['-n', SUSPEND_NOW_BIN]);
   }
 
   async isTimerActive(): Promise<boolean> {

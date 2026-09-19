@@ -84,15 +84,14 @@ echo "aplicado: ${DAYSTR} ${SUSPEND} (wake ${WAKE}, enabled=${ENABLED})"
 APPLY
 chmod 0755 /usr/local/sbin/pmy-power-apply
 
-# ---- pmy-power-suspend: arma RTC y suspende (por vía systemd, para disparar hooks) ----
-cat > /usr/local/sbin/pmy-power-suspend <<'SUSP'
+# ---- pmy-power-suspend-now: arma RTC y suspende YA (ignora ENABLED). Núcleo compartido. ----
+cat > /usr/local/sbin/pmy-power-suspend-now <<'NOW'
 #!/usr/bin/env bash
 set -euo pipefail
 source /etc/pmy-power/schedule.env
-[ "${ENABLED:-1}" = "1" ] || { echo "deshabilitado; no suspende"; exit 0; }
 [ -e /sys/class/rtc/rtc0 ] || { echo "sin RTC (/sys/class/rtc/rtc0); NO se suspende" >&2; exit 1; }
 
-# Próxima ocurrencia de WAKE_TIME (hoy si aún no pasa, si no mañana).
+# Próxima ocurrencia de WAKE_TIME (hoy si aún no pasa, si no mañana): nunca dormir sin despertador.
 WAKE_EPOCH=$(date -d "today ${WAKE_TIME}" +%s)
 [ "$WAKE_EPOCH" -le "$(date +%s)" ] && WAKE_EPOCH=$(date -d "tomorrow ${WAKE_TIME}" +%s)
 
@@ -103,6 +102,16 @@ if ! rtcwake -m no -t "$WAKE_EPOCH"; then
 fi
 # Suspende por systemd (dispara /usr/lib/systemd/system-sleep/*).
 systemctl suspend
+NOW
+chmod 0755 /usr/local/sbin/pmy-power-suspend-now
+
+# ---- pmy-power-suspend: vía del timer; respeta ENABLED y delega en suspend-now ----
+cat > /usr/local/sbin/pmy-power-suspend <<'SUSP'
+#!/usr/bin/env bash
+set -euo pipefail
+source /etc/pmy-power/schedule.env
+[ "${ENABLED:-1}" = "1" ] || { echo "deshabilitado; no suspende"; exit 0; }
+exec /usr/local/sbin/pmy-power-suspend-now
 SUSP
 chmod 0755 /usr/local/sbin/pmy-power-suspend
 
@@ -156,9 +165,9 @@ Persistent=false
 WantedBy=timers.target
 UNIT
 
-# ---- sudoers acotado: la app solo puede correr pmy-power-apply ----
+# ---- sudoers acotado: la app solo puede aplicar el horario o suspender ya ----
 cat > /etc/sudoers.d/pmy-power <<EOF
-${APP_USER} ALL=(root) NOPASSWD: /usr/local/sbin/pmy-power-apply
+${APP_USER} ALL=(root) NOPASSWD: /usr/local/sbin/pmy-power-apply, /usr/local/sbin/pmy-power-suspend-now
 EOF
 chmod 0440 /etc/sudoers.d/pmy-power
 visudo -cf /etc/sudoers.d/pmy-power

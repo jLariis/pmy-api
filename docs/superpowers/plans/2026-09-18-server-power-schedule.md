@@ -1285,7 +1285,8 @@ Expected: crea `server_power_schedule` (1 fila) y `server_power_day` (7 filas).
 
 La pantalla **Configuración → Servidor** (switch, time pickers, checkboxes de días L–S,
 lista editable de correos, botón Guardar solo-superadmin, estado próximo suspend/wake, botón
-"Enviar correo de prueba") se implementa en el repo `app-pmy` con su propio plan, respetando
-las house rules (AppLayout + withAuth + OperationHeader, solo shadcn + Tailwind, lenguaje llano)
-y consumiendo `GET/PUT /server/power/schedule` y `POST /server/power/test-email`.
+"Enviar correo de prueba", y botón **"Suspender ahora"** con confirmación doble) se implementa
+en el repo `app-pmy` con su propio plan, respetando las house rules (AppLayout + withAuth +
+OperationHeader, solo shadcn + Tailwind, lenguaje llano) y consumiendo
+`GET/PUT /server/power/schedule`, `POST /server/power/test-email` y `POST /server/power/suspend-now`.
 ```

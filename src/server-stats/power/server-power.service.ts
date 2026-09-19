@@ -145,6 +145,17 @@ export class ServerPowerService {
     await this.mail.sendEmailNotification({ to: recipients, subject, htmlContent });
   }
 
+  async suspendNow(): Promise<{ message: string }> {
+    const result = await this.runner.suspendNow();
+    if (!result.ok) {
+      const msg = (result.stderr || result.stdout || `exit ${result.code}`).trim();
+      this.logger.error(`suspend-now falló: ${msg}`);
+      throw new InternalServerErrorException(`No se pudo suspender el servidor: ${msg}`);
+    }
+    // El correo "se suspendió" lo dispara el hook de systemd-sleep (pre).
+    return { message: 'El servidor se está suspendiendo. Despertará a la hora configurada.' };
+  }
+
   async sendTestEmail(): Promise<void> {
     const row = await this.getRow();
     const recipients = row.recipients ?? [];

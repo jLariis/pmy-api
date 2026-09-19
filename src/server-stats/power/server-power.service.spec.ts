@@ -41,6 +41,7 @@ async function build(overrides: {
   const runner = {
     writeDesired: jest.fn().mockResolvedValue(undefined),
     apply: jest.fn().mockResolvedValue({ ok: true, stdout: '', stderr: '', code: 0 }),
+    suspendNow: jest.fn().mockResolvedValue({ ok: true, stdout: '', stderr: '', code: 0 }),
     isTimerActive: jest.fn().mockResolvedValue(true),
     ...(overrides.runner || {}),
   };
@@ -100,6 +101,20 @@ describe('ServerPowerService', () => {
         'user-9',
       ),
     ).rejects.toThrow(/boom/);
+  });
+
+  it('suspendNow() invoca el runner y devuelve mensaje', async () => {
+    const { svc, runner } = await build({});
+    const res = await svc.suspendNow();
+    expect(runner.suspendNow).toHaveBeenCalled();
+    expect(res.message).toMatch(/suspend/i);
+  });
+
+  it('suspendNow() propaga error del runner', async () => {
+    const { svc } = await build({
+      runner: { suspendNow: jest.fn().mockResolvedValue({ ok: false, stdout: '', stderr: 'sin RTC', code: 1 }) },
+    });
+    await expect(svc.suspendNow()).rejects.toThrow(/sin RTC/);
   });
 
   it('notify() manda correo a los recipients de BD', async () => {
