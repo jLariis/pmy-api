@@ -183,4 +183,17 @@ else
 fi
 
 systemctl daemon-reload
+
+# Deja el timer ACTIVO desde el arranque con los defaults (L–S 21:30, wake 06:00).
+# La UI (pmy-power-apply) luego reescribe el OnCalendar cuando el superadmin guarda.
+# shellcheck disable=SC1091
+source /etc/pmy-power/schedule.env
+if [ "${ENABLED:-1}" = "1" ]; then
+  systemctl enable --now pmy-power-suspend.timer
+  echo "→ Timer ACTIVO: ${DAYS:-Mon..Sat} ${SUSPEND_TIME:-21:30} (despierta ${WAKE_TIME:-06:00})"
+else
+  systemctl disable --now pmy-power-suspend.timer || true
+  echo "→ Timer instalado pero deshabilitado (ENABLED=0)"
+fi
+
 echo "OK. Instalado. jq requerido (apt-get install -y jq si falta)."
