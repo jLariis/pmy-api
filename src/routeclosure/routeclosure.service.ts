@@ -1,4 +1,5 @@
-import { Injectable, Logger, BadRequestException, InternalServerErrorException  } from '@nestjs/common';
+import { Injectable, Logger, BadRequestException, InternalServerErrorException, Optional } from '@nestjs/common';
+import { VehicleKmsService } from 'src/maintenance/vehicle-kms.service';
 import { CreateRouteclosureDto } from './dto/create-routeclosure.dto';
 import { InjectRepository } from '@nestjs/typeorm';
 import { RouteClosure } from 'src/entities/route-closure.entity';
@@ -41,6 +42,7 @@ export class RouteclosureService {
     private readonly dataSource: DataSource,
     private readonly templateService: TemplateService,
     private readonly trackingCompare: TrackingCompareService,
+    @Optional() private readonly vehicleKms?: VehicleKmsService,
   ) {}
 
   /**
@@ -613,6 +615,8 @@ export class RouteclosureService {
       // 6. Finalizar transacción
       await queryRunner.commitTransaction();
       this.logger.log(`✅ [RouteClosure] Cierre de ruta completado con éxito: ${savedClosure.id}`);
+      // Km vivo del vehículo con el km final (no bloquea el cierre si falla).
+      await this.vehicleKms?.bumpFromDispatch(packageDispatch.id, createRouteclosureDto.actualKms, 'closure');
 
       return savedClosure;
 

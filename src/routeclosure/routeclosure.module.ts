@@ -1,3 +1,4 @@
+import { VehicleKmsModule } from 'src/maintenance/vehicle-kms.module';
 import { Module } from '@nestjs/common';
 import { RouteclosureService } from './routeclosure.service';
 import { RouteclosureController } from './routeclosure.controller';
@@ -11,7 +12,7 @@ import { DocumentsModule } from 'src/documents/documents.module';
 import { TrackingSyncModule } from 'src/tracking-sync/tracking-sync.module';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([RouteClosure, PackageDispatch, Income]), DocumentsModule, TrackingSyncModule],
+  imports: [TypeOrmModule.forFeature([RouteClosure, PackageDispatch, Income]), DocumentsModule, TrackingSyncModule, VehicleKmsModule],
   controllers: [RouteclosureController],
   providers: [RouteclosureService, MailService, FedexService],
 })
