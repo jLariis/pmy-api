@@ -10,6 +10,8 @@ import { CatalogController } from './catalog/catalog.controller';
 import { VehicleKmsModule } from './vehicle-kms.module';
 import { SuppliersService } from './suppliers/suppliers.service';
 import { SuppliersController } from './suppliers/suppliers.controller';
+import { ScheduleService } from './schedule/schedule.service';
+import { ScheduleController } from './schedule/schedule.controller';
 
 /** Mantenimiento de vehículos: catálogos, solicitudes/cotizaciones, órdenes de compra, programación e historial. */
 @Module({
@@ -20,7 +22,7 @@ import { SuppliersController } from './suppliers/suppliers.controller';
     ]),
     VehicleKmsModule,
   ],
-  controllers: [CatalogController, SuppliersController],
-  providers: [FolioService, CatalogService, SuppliersService],
+  controllers: [CatalogController, SuppliersController, ScheduleController],
+  providers: [FolioService, CatalogService, SuppliersService, ScheduleService],
 })
 export class MaintenanceModule {}
