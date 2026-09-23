@@ -20,7 +20,8 @@ import { AuthorizeDto, CompleteDto, UpdatePurchaseOrderDto } from './dto/purchas
 /** Categoría de gastos existente (grupo "Vehículos y Operación") donde caen los servicios. */
 export const MAINTENANCE_EXPENSE_CATEGORY = 'Mantenimiento';
 
-export const poLink = (id: string) => `/mtto/ordenes/detalle?id=${id}`;
+/** Las notificaciones abren el expediente (la orden vive dentro). */
+export const poLink = (po: { requestId: string }) => `/mtto/expediente?id=${po.requestId}`;
 
 /** Órdenes de compra: edición, envío a autorización, autorización exclusiva, rechazo, cancelación y baja. */
 @Injectable()
@@ -259,7 +260,7 @@ export class PurchaseOrdersService {
         audience: ids.length ? { userIds: ids } : { role: 'superadmin' },
         title: `Orden por autorizar: ${po.folio}`,
         body: `${po.vehicle?.name || po.vehicle?.plateNumber || 'Unidad'} · ${po.supplier?.name ?? ''} · $${Number(po.total).toFixed(2)}`,
-        link: poLink(po.id),
+        link: poLink(po),
         entityId: po.id,
         subsidiaryId: po.subsidiaryId,
         actor: { id: user?.userId, name: userDisplayName(user) },
@@ -273,7 +274,7 @@ export class PurchaseOrdersService {
     if (!po.createdById) return;
     try {
       await this.notifier.emit({
-        type, audience: { userId: po.createdById }, title, body, link: poLink(po.id), entityId: po.id,
+        type, audience: { userId: po.createdById }, title, body, link: poLink(po), entityId: po.id,
         subsidiaryId: po.subsidiaryId, actor: { id: user?.userId, name: userDisplayName(user) },
       });
     } catch (e: any) {

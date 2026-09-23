@@ -11,13 +11,25 @@ import { MTTO } from '../maintenance.permissions';
 import { RequestsService } from './requests.service';
 import { QUOTE_ATTACHMENT_MAX_BYTES, QuotesService } from './quotes.service';
 import { CreateRequestDto, QuoteDto, UpdateRequestDto } from './dto/request.dto';
+import { PurchaseOrdersService } from '../purchase-orders/purchase-orders.service';
 
 @ApiTags('maintenance')
 @ApiBearerAuth()
 @Controller('maintenance/requests')
 @UseGuards(PermissionsGuard)
 export class RequestsController {
-  constructor(private readonly requests: RequestsService, private readonly quotes: QuotesService) {}
+  constructor(
+    private readonly requests: RequestsService,
+    private readonly quotes: QuotesService,
+    private readonly orders: PurchaseOrdersService,
+  ) {}
+
+  @Get('board/:subsidiaryId')
+  @UseGuards(SubsidiaryScopeGuard)
+  @RequirePermission(MTTO.solicitudes, MTTO.ordenes, MTTO.autorizar)
+  board(@Param('subsidiaryId') subsidiaryId: string) {
+    return this.requests.board(subsidiaryId);
+  }
 
   @Get('subsidiary/:subsidiaryId')
   @UseGuards(SubsidiaryScopeGuard)
@@ -101,7 +113,9 @@ export class RequestsController {
 
   @Post('quotes/:quoteId/convert')
   @RequirePermission(MTTO.solicitudes)
-  convert(@Param('quoteId') quoteId: string, @Req() req: any) {
-    return this.quotes.convert(quoteId, req.user);
+  async convert(@Param('quoteId') quoteId: string, @Query('submit') submit: string | undefined, @Req() req: any) {
+    const po = await this.quotes.convert(quoteId, req.user);
+    // "Elegir y mandar a autorizar": un solo clic crea la orden y la manda a autorización.
+    return submit === 'true' ? this.orders.submit(po.id, req.user) : po;
   }
 }

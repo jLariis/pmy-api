@@ -8,6 +8,8 @@ import { FolioService } from '../folio.service';
 import { VehicleKmsService } from '../vehicle-kms.service';
 import { assertSubsidiaryScope, ScopeUser } from '../maintenance-scope.util';
 import { CreateRequestDto, UpdateRequestDto } from './dto/request.dto';
+import { expedienteStage } from '../utils/expediente-stage.util';
+import { userDisplayName } from '../maintenance-scope.util';
 
 /** Solicitudes de mantenimiento (contenedor de cotizaciones comparables). */
 @Injectable()
@@ -40,6 +42,53 @@ export class RequestsService {
       minTotal: quotes?.length ? Math.min(...quotes.map((q) => Number(q.total))) : null,
       purchaseOrder: orders.get(r.id) ?? null,
     }));
+  }
+
+  /**
+   * Tablero: un expediente (mantenimiento) por solicitud, con su etapa, paso activo, siguiente paso y
+   * resumen de la orden. Terminados/cancelados se limitan a los últimos 60 días para no inflar el tablero.
+   */
+  async board(subsidiaryId: string) {
+    const since = new Date(Date.now() - 60 * 86_400_000);
+    const list = await this.requests
+      .createQueryBuilder('r')
+      .leftJoinAndSelect('r.vehicle', 'vehicle')
+      .leftJoinAndSelect('r.quotes', 'quote')
+      .leftJoin('r.createdBy', 'createdBy')
+      .addSelect(['createdBy.id', 'createdBy.name', 'createdBy.lastName'])
+      .where('r.subsidiaryId = :subsidiaryId', { subsidiaryId })
+      .andWhere("(r.status NOT IN ('completada','cancelada') OR COALESCE(r.updatedAt, r.createdAt) >= :since)", { since })
+      .orderBy('r.createdAt', 'DESC')
+      .getMany();
+    const pos = list.length
+      ? await this.orders.find({
+          where: { requestId: In(list.map((r) => r.id)) },
+          select: ['id', 'folio', 'status', 'total', 'finalAmount', 'rejectionReason', 'requestId', 'updatedAt', 'supplierId'],
+          relations: ['supplier'],
+        })
+      : [];
+    const poByRequest = new Map(pos.map((p) => [p.requestId, p]));
+    return list.map((r) => {
+      const po = poByRequest.get(r.id) ?? null;
+      const quotes = r.quotes ?? [];
+      return {
+        id: r.id,
+        folio: r.folio,
+        vehicle: r.vehicle,
+        description: r.description,
+        priority: r.priority,
+        status: r.status,
+        createdAt: r.createdAt,
+        updatedAt: po?.updatedAt ?? r.updatedAt ?? r.createdAt,
+        createdByName: r.createdBy ? userDisplayName(r.createdBy) : null,
+        quotesCount: quotes.length,
+        bestTotal: quotes.length ? Math.min(...quotes.map((q) => Number(q.total))) : null,
+        purchaseOrder: po
+          ? { id: po.id, folio: po.folio, status: po.status, total: Number(po.finalAmount ?? po.total), supplierName: po.supplier?.name ?? null }
+          : null,
+        ...expedienteStage({ requestStatus: r.status, quotesCount: quotes.length, po }),
+      };
+    });
   }
 
   /** Bandeja: solicitudes en cotización con ≥1 cotización, con partidas para comparar. */
@@ -75,7 +124,12 @@ export class RequestsService {
     if (!r) throw new NotFoundException('Solicitud no encontrada');
     assertSubsidiaryScope(user, r.subsidiaryId);
     const orders = await this.ordersByRequest([r.id]);
-    return { ...r, purchaseOrder: orders.get(r.id) ?? null };
+    const purchaseOrder = orders.get(r.id) ?? null;
+    return {
+      ...r,
+      purchaseOrder,
+      ...expedienteStage({ requestStatus: r.status, quotesCount: r.quotes?.length ?? 0, po: purchaseOrder }),
+    };
   }
 
   async create(dto: CreateRequestDto, user: ScopeUser) {
@@ -85,7 +139,7 @@ export class RequestsService {
     assertSubsidiaryScope(user, vehicle.subsidiary.id);
 
     const saved = await this.dataSource.transaction(async (m) => {
-      const folio = await this.folios.next(m, 'SM');
+      const folio = await this.folios.next(m, 'MT');
       return m.save(MaintenanceRequest, m.create(MaintenanceRequest, {
         folio,
         vehicleId: vehicle.id,
@@ -140,10 +194,10 @@ export class RequestsService {
   }
 
   private async ordersByRequest(requestIds: string[]) {
-    const map = new Map<string, { id: string; folio: string; status: string }>();
+    const map = new Map<string, { id: string; folio: string; status: string; rejectionReason: string | null }>();
     if (!requestIds.length) return map;
-    const list = await this.orders.find({ where: { requestId: In(requestIds) }, select: ['id', 'folio', 'status', 'requestId'] });
-    for (const o of list) map.set(o.requestId, { id: o.id, folio: o.folio, status: o.status });
+    const list = await this.orders.find({ where: { requestId: In(requestIds) }, select: ['id', 'folio', 'status', 'requestId', 'rejectionReason'] });
+    for (const o of list) map.set(o.requestId, { id: o.id, folio: o.folio, status: o.status, rejectionReason: o.rejectionReason });
     return map;
   }
 }
