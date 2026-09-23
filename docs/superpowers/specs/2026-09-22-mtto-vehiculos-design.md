@@ -128,3 +128,18 @@ Sidebar (`lib/constants.ts`) y `allowed-page-roles.ts` con los nuevos ítems/có
 ## Fuera de alcance
 
 Inventario de refacciones, facturas/pagos a proveedor, recordatorios automáticos por correo, portal del proveedor.
+
+---
+
+## Rediseño v2 (2026-09-23) — tras revisión del usuario
+
+**Problema:** el proceso quedó repartido en pantallas sueltas (Solicitudes, Bandeja, Órdenes); no se entendía qué va primero ni qué sigue, la solicitud "no aparecía" (bug de collation, corregido con mig 076) y el estilo no se sentía profesional.
+
+**Decisiones aprobadas:**
+- **Un expediente por mantenimiento** (folio `MT-000001`, la solicitud existente). Avanza por pasos: **Solicitud → Cotizaciones → Autorización → Envío al proveedor → Cierre**. La página del expediente (`/mtto/expediente?id=`) muestra un stepper, el contenido del paso activo, el **siguiente paso** con un solo botón principal, y a la derecha resumen + actividad.
+- **Tablero** como pantalla principal (`/mtto/tablero`), estilo Tablero de Soporte: columnas con píldora de color y conteo, tarjetas (sucursal + folio arriba, unidad, necesidad, badges, pie con creador y "quién lo tiene"), interruptor Kanban/Lista, rail de vistas. Columnas: **1 Cotizando · 2 Por autorizar · 3 En taller · 4 Terminado** (cancelados en una vista aparte). Sin arrastrar: la etapa cambia solo con las acciones del expediente.
+- **Elegir cotización = mandar a autorización** en un clic (se quita el borrador visible). Si Edgardo rechaza, el expediente vuelve a *Cotizando* con el motivo: se puede corregir la orden y reenviar, o elegir otra cotización.
+- **Menú (4):** Tablero · Unidades (programación por km) · Historial · Proveedores y servicios. Íconos: grupo `Wrench`, Tablero `KanbanSquare`, Unidades `Gauge`, Historial `History`, Proveedores y servicios `Store`.
+- Se eliminan las pantallas sueltas `/mtto/solicitudes*`, `/mtto/cotizaciones`, `/mtto/ordenes*`; `/programacion-mtto` y `/historial-mtto` se reestilizan; catálogos pasa a `/mtto/proveedores`.
+
+**Backend:** `GET maintenance/board/subsidiary/:id` (tarjetas con etapa y siguiente paso calculados por función pura `expedienteStage`), `POST requests/quotes/:id/convert?submit=true` (crea OC y la manda a autorizar), prefijo de folio `MT` (mig 077), enlaces de notificación al expediente.

@@ -580,3 +580,14 @@ Specs: complete actualiza vehículo, crea gasto con monto final, marca request; 
 - [ ] `graphify update .` en ambos repos.
 - [ ] Actualizar memoria (proyecto: módulo mtto, migraciones 074/075 pendientes en prod).
 - [ ] Commit final y resumen al usuario (pendiente: correr 074/075 en prod, vincular WhatsApp, confirmar usuario de Edgardo).
+
+---
+
+## Rediseño v2 — tareas (2026-09-23)
+
+- [ ] **V1 Backend:** `expedienteStage()` puro + spec; endpoint board; convert con `submit`; folio `MT` (mig 077); `poLink` → expediente. Tests.
+- [ ] **V2 Front base:** tipos/servicios del board; menú de 4 con íconos elegidos; stepper + tarjeta de expediente.
+- [ ] **V3 Tablero:** Kanban/Lista + rail de vistas + "Nuevo mantenimiento".
+- [ ] **V4 Expediente:** stepper, paso activo (cotizaciones+comparativo / autorización por partidas / envío / cierre), resumen y actividad.
+- [ ] **V5 Unidades, Historial, Proveedores y servicios** con el mismo lenguaje visual; borrar pantallas sueltas; tray y links al expediente.
+- [ ] **V6 Verificación** en navegador + tests + graphify.
