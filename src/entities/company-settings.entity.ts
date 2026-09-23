@@ -1,4 +1,5 @@
 import { Column, Entity, PrimaryGeneratedColumn } from 'typeorm';
+import { decimalTransformer } from 'src/common/transformers/decimal.transformer';
 
 /**
  * Datos de la empresa (singleton: una sola fila). Antes estaban hardcodeados en
@@ -28,6 +29,10 @@ export class CompanySettings {
 
   @Column({ default: '' })
   website: string;
+
+  /** % de desviación vs precio de referencia a partir del cual se avisa en cotizaciones de mantenimiento. */
+  @Column('decimal', { precision: 5, scale: 2, default: 15, transformer: decimalTransformer })
+  maintenanceDeviationPct: number;
 
   @Column({ type: 'datetime', nullable: true })
   updatedAt: Date;

@@ -97,6 +97,7 @@ const PREFIX_MODULE: Record<string, AuditModule> = {
   reports: AuditModule.REPORTES,
   audit: AuditModule.AUDITORIA,
   notifications: AuditModule.OTRO,
+  maintenance: AuditModule.MANTENIMIENTO,
 };
 
 const moduleFromPath = (path: string): AuditModule => {
@@ -629,6 +630,7 @@ const MODULE_LABEL: Partial<Record<AuditModule, string>> = {
   [AuditModule.USUARIOS]: 'usuario',
   [AuditModule.GASTOS]: 'gasto',
   [AuditModule.INGRESOS]: 'ingreso',
+  [AuditModule.MANTENIMIENTO]: 'mantenimiento',
 };
 
 /** Quita /api, query y slash final para igualar las reglas. */

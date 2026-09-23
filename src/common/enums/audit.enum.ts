@@ -23,6 +23,7 @@ export enum AuditModule {
   CIERRE_RUTA = 'cierre_ruta',
   REPORTES = 'reportes',
   AUDITORIA = 'auditoria',
+  MANTENIMIENTO = 'mantenimiento',
   OTRO = 'otro',
 }
 
