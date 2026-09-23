@@ -34,6 +34,7 @@ export class HistoryService {
 
     const rows = list.map((po) => ({
       poId: po.id,
+      requestId: po.requestId,
       folio: po.folio,
       completedAt: po.completedAt,
       completedKms: po.completedKms,
