@@ -25,7 +25,9 @@ export class CreateMaintenanceModule1786000000074 implements MigrationInterface 
   }
 
   public async up(qr: QueryRunner): Promise<void> {
-    const T = 'ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci';
+    // Sin COLLATE explícito: hereda el default de la BD (utf8mb4_0900_ai_ci) igual que vehicle/subsidiary/user;
+    // forzar unicode_ci rompía los JOIN ("Illegal mix of collations").
+    const T = 'ENGINE=InnoDB DEFAULT CHARSET=utf8mb4';
 
     await qr.query(`
       CREATE TABLE IF NOT EXISTS \`maintenance_service_category\` (
