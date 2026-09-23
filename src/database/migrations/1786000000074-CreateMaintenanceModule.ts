@@ -8,7 +8,8 @@ import { randomUUID } from 'crypto';
  *  - `maintenance_folio_counter` (SM/OC) para folios sin duplicados.
  *  - `vehicle.lastMaintenanceKms`, `vehicle.maintenanceIntervalKms` (default 5000).
  *  - `company_settings.maintenanceDeviationPct` (default 15).
- *  - Backfill: `vehicle.kms` = mayor km capturado en salidas a ruta / cierres (hasta hoy nadie lo actualizaba).
+ *  - SIN backfill de `vehicle.kms`: el histórico de capturas es basura en varias sucursales ("1 → 2", "00000",
+ *    "1234556"); el km vivo arranca con las capturas nuevas (regla plausible) y se corrige a mano en Programación.
  * Sin FKs duras hacia tablas legacy (evita choques de collation, ver 016); solo índices.
  */
 export class CreateMaintenanceModule1786000000074 implements MigrationInterface {
@@ -237,26 +238,6 @@ export class CreateMaintenanceModule1786000000074 implements MigrationInterface 
     if (!(await this.columnExists(qr, 'company_settings', 'maintenanceDeviationPct'))) {
       await qr.query('ALTER TABLE `company_settings` ADD COLUMN `maintenanceDeviationPct` decimal(5,2) NOT NULL DEFAULT 15');
     }
-
-    // Backfill del km vivo: mayor km numérico registrado por vehículo (salida a ruta o cierre).
-    await qr.query(`
-      UPDATE \`vehicle\` v
-      JOIN (
-        SELECT x.vehicleId, MAX(CAST(x.d AS UNSIGNED)) AS maxK FROM (
-          SELECT pd.vehicleId AS vehicleId, REGEXP_REPLACE(pd.kms, '[^0-9]', '') AS d
-          FROM \`package_dispatch\` pd WHERE pd.vehicleId IS NOT NULL
-          UNION ALL
-          SELECT pd.vehicleId, REGEXP_REPLACE(rc.actualKms, '[^0-9]', '')
-          FROM \`route_closure\` rc
-          JOIN \`package_dispatch\` pd ON pd.id = rc.package_dispatch_id
-          WHERE pd.vehicleId IS NOT NULL
-        ) x
-        -- Solo capturas plausibles (1–7 dígitos, < 2,000,000 km): hay basura histórica de 40 dígitos.
-        WHERE CHAR_LENGTH(x.d) BETWEEN 1 AND 7 AND CAST(x.d AS UNSIGNED) < 2000000
-        GROUP BY x.vehicleId
-      ) m ON m.vehicleId = v.id
-      SET v.kms = GREATEST(COALESCE(v.kms, 0), m.maxK)
-    `);
   }
 
   public async down(qr: QueryRunner): Promise<void> {
