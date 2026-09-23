@@ -82,6 +82,22 @@ export const MODULE_DIRECTORY: ModuleEntry[] = [
     match: ['sucursales', 'sucursal', 'subsidiaries', 'subsidiary'],
     frontend: ['app/sucursales', 'components/subsidiary'], backend: ['src/subsidiaries'] },
 
+  // ---- Mtto. Vehículos ----
+  { key: 'mtto/programacion', label: 'Programación de mantenimiento',
+    match: ['programacion', 'programacion-mtto', 'programación'],
+    frontend: ['app/programacion-mtto', 'components/maintenance/schedule'], backend: ['src/maintenance/schedule'] },
+  { key: 'mtto/historial', label: 'Historial de mantenimiento',
+    match: ['historial', 'historial-mtto'],
+    frontend: ['app/historial-mtto', 'components/maintenance/history'], backend: ['src/maintenance/schedule'] },
+  { key: 'mtto/solicitudes', label: 'Solicitudes y cotizaciones',
+    match: ['solicitudes', 'cotizaciones', 'bandeja de cotizaciones', 'maintenance-request', 'quotes'],
+    frontend: ['app/mtto/solicitudes', 'app/mtto/cotizaciones', 'components/maintenance/requests'], backend: ['src/maintenance/requests'] },
+  { key: 'mtto/ordenes', label: 'Órdenes de compra',
+    match: ['ordenes', 'órdenes de compra', 'ordenes-de-compra', 'purchase-orders', 'purchase-order'],
+    frontend: ['app/mtto/ordenes', 'components/maintenance/orders'], backend: ['src/maintenance/purchase-orders', 'src/maintenance/dispatch'] },
+  { key: 'mtto/catalogos', label: 'Catálogos de mantenimiento',
+    match: ['catalogos', 'proveedores', 'servicios', 'suppliers', 'maintenance'],
+    frontend: ['app/mtto/catalogos', 'components/maintenance/catalog'], backend: ['src/maintenance/catalog', 'src/maintenance/suppliers'] },
   // ---- Configuración ----
   { key: 'configuracion/usuarios', label: 'Usuarios',
     match: ['usuarios', 'usuario', 'users', 'user'],

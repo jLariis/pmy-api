@@ -25,6 +25,10 @@ const CATALOG: Record<string, Partial<Presentation>> = {
   'ticket.rechazado_aprobacion': { category: 'soporte', icon: 'x-circle', severity: 'warning', channels: ['bell', 'email'] },
   'ticket.confirmado': { category: 'soporte', icon: 'badge-check',   severity: 'info',    channels: ['bell', 'email'] },
   'ticket.reabierto':  { category: 'soporte', icon: 'rotate-ccw',    severity: 'warning', channels: ['bell', 'email'] },
+  // ---- Mantenimiento ----
+  'mtto.oc_por_autorizar': { category: 'operacion', icon: 'gavel',        severity: 'warning', channels: ['bell', 'email'] },
+  'mtto.oc_autorizada':    { category: 'operacion', icon: 'check-circle', severity: 'info',    channels: ['bell'] },
+  'mtto.oc_rechazada':     { category: 'operacion', icon: 'x-circle',     severity: 'warning', channels: ['bell'] },
   // ---- Sesión ----
   'auth.login':        { category: 'sesion', icon: 'log-in',  severity: 'info', channels: ['bell'] },
   'auth.logout':       { category: 'sesion', icon: 'log-out', severity: 'info', channels: ['bell'] },
