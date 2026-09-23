@@ -8,6 +8,8 @@ import { FolioService } from './folio.service';
 import { CatalogService } from './catalog/catalog.service';
 import { CatalogController } from './catalog/catalog.controller';
 import { VehicleKmsModule } from './vehicle-kms.module';
+import { SuppliersService } from './suppliers/suppliers.service';
+import { SuppliersController } from './suppliers/suppliers.controller';
 
 /** Mantenimiento de vehículos: catálogos, solicitudes/cotizaciones, órdenes de compra, programación e historial. */
 @Module({
@@ -18,7 +20,7 @@ import { VehicleKmsModule } from './vehicle-kms.module';
     ]),
     VehicleKmsModule,
   ],
-  controllers: [CatalogController],
-  providers: [FolioService, CatalogService],
+  controllers: [CatalogController, SuppliersController],
+  providers: [FolioService, CatalogService, SuppliersService],
 })
 export class MaintenanceModule {}
