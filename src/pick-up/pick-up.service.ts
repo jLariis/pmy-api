@@ -1,8 +1,13 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Between, DataSource, Like, Repository } from 'typeorm';
 import { ChargeShipment } from 'src/entities/charge-shipment.entity';
-import { Shipment, ShipmentStatus } from 'src/entities';
+import { Income, Shipment, ShipmentStatus, Subsidiary } from 'src/entities';
+import { IncomeSourceType } from 'src/common/enums/income-source-type.enum';
+import { IncomeStatus } from 'src/common/enums/income-status.enum';
+import { ShipmentType } from 'src/common/enums/shipment-type.enum';
+import { hermosilloDayStartFromInstant } from 'src/common/utils';
+import { warehouseDeliveryCost, warehouseDeliveryIncomeAction } from './warehouse-delivery-income.util';
 import { ForPickUp } from 'src/entities/for-pick-up.entity';
 import { WarehouseDelivery } from 'src/entities/warehouse-delivery.entity';
 import { ShipmentStatusType } from 'src/common/enums/shipment-status-type.enum';
@@ -18,6 +23,8 @@ const TYPE_TO_STATUS: Record<string, ShipmentStatusType> = {
 
 @Injectable()
 export class PickUpService {
+  private readonly logger = new Logger(PickUpService.name);
+
   constructor(
     @InjectRepository(Shipment)
     private shipmentRepository: Repository<Shipment>,
@@ -55,6 +62,10 @@ export class PickUpService {
     try {
       const now = new Date();
       const saved: any[] = [];
+      let incomeCreated = 0;
+      let incomeSuperseded = 0;
+      // Sucursal que entrega (dueña del ingreso, igual que el cierre de ruta usa la sucursal de la salida).
+      let deliverySubsidiary: Subsidiary | null | undefined;
 
       for (const item of items) {
         const trackingNumber = (item.trackingNumber || '').trim();
@@ -132,10 +143,66 @@ export class PickUpService {
           chargeShipmentId,
         });
         saved.push(await queryRunner.manager.save(Target, record));
+
+        // 4. Ingreso: "Entregado en bodega" es entrega final → cobra como ENTREGADO.
+        //    REGLA DE NEGOCIO: las cargas (ChargeShipment) NO generan ingreso por paquete.
+        if (type === 'entrega_bodega' && shipmentId) {
+          if (deliverySubsidiary === undefined) {
+            deliverySubsidiary = await queryRunner.manager.findOne(Subsidiary, { where: { id: subsidiaryId } });
+          }
+          const shipment = await queryRunner.manager.findOne(Shipment, {
+            where: { id: shipmentId },
+            select: ['id', 'trackingNumber', 'shipmentType'],
+          });
+          const existing = await queryRunner.manager.find(Income, {
+            where: { trackingNumber: shipment.trackingNumber, sourceType: IncomeSourceType.SHIPMENT, active: true },
+            select: ['id', 'incomeType'],
+          });
+          const action = warehouseDeliveryIncomeAction(existing);
+          const incomeDate = hermosilloDayStartFromInstant(now);
+
+          if (action.type === 'create') {
+            const shipmentType = shipment.shipmentType ?? ShipmentType.FEDEX;
+            const cost = warehouseDeliveryCost(shipmentType, deliverySubsidiary);
+            if (cost <= 0) {
+              this.logger.error(
+                `❌ FINANCE_ERROR: La sucursal "${deliverySubsidiary?.name ?? subsidiaryId}" no tiene costo por paquete ` +
+                `(${shipmentType}); el ingreso de la guía ${shipment.trackingNumber} (entregado en bodega) se registró en $0.`,
+              );
+            }
+            await queryRunner.manager.save(
+              Income,
+              queryRunner.manager.create(Income, {
+                trackingNumber: shipment.trackingNumber,
+                subsidiary: { id: subsidiaryId } as Subsidiary,
+                shipmentType,
+                cost,
+                incomeType: IncomeStatus.ENTREGADO,
+                nonDeliveryStatus: null,
+                isGrouped: false,
+                sourceType: IncomeSourceType.SHIPMENT,
+                shipment: { id: shipment.id } as Shipment,
+                date: incomeDate,
+                createdById: userId ?? null,
+              }),
+            );
+            incomeCreated++;
+          } else if (action.type === 'supersede') {
+            await queryRunner.manager.update(Income, action.incomeId, {
+              incomeType: IncomeStatus.ENTREGADO,
+              nonDeliveryStatus: null,
+              date: incomeDate,
+            });
+            incomeSuperseded++;
+          }
+        }
       }
 
       await queryRunner.commitTransaction();
-      return { success: true, count: saved.length };
+      if (incomeCreated || incomeSuperseded) {
+        this.logger.log(`💰 [PickUp] Entregados en bodega: ${incomeCreated} ingresos creados, ${incomeSuperseded} reemplazados.`);
+      }
+      return { success: true, count: saved.length, incomeCreated, incomeSuperseded };
     } catch (error) {
       await queryRunner.rollbackTransaction();
       throw error;
