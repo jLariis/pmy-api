@@ -303,6 +303,18 @@ export class WhatsappGatewayService implements OnModuleInit, OnModuleDestroy {
     return { ok: true, to: jid };
   }
 
+  /** Envía un documento (PDF u otro) desde memoria a un contacto/grupo. */
+  async sendDocument(to: string, buffer: Buffer, fileName: string, caption?: string, mimetype = 'application/pdf') {
+    if (this.status !== 'connected' || !this.sock) {
+      throw new ServiceUnavailableException('WhatsApp no está conectado. Vincula un número en Configuración → WhatsApp.');
+    }
+    const jid = to.endsWith('@g.us') || to.endsWith('@s.whatsapp.net')
+      ? to
+      : `${String(to).replace(/\D/g, '')}@s.whatsapp.net`;
+    await this.sock.sendMessage(jid, { document: buffer, fileName, mimetype, caption });
+    return { ok: true, to: jid };
+  }
+
   private async clearSession() {
     try { await fs.promises.rm(this.authDir, { recursive: true, force: true }); } catch { /* noop */ }
   }

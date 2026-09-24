@@ -1,4 +1,5 @@
-import { BadRequestException, forwardRef, Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { BadRequestException, forwardRef, Inject, Injectable, Logger, NotFoundException, Optional } from '@nestjs/common';
+import { VehicleKmsService } from 'src/maintenance/vehicle-kms.service';
 import { CreatePackageDispatchDto } from './dto/create-package-dispatch.dto';
 import { UpdatePackageDispatchDto } from './dto/update-package-dispatch.dto';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -66,7 +67,7 @@ export class PackageDispatchService {
     private readonly dataSource: DataSource,
     private readonly templateService: TemplateService,
     private readonly emailLogService: EmailLogService,
-
+    @Optional() private readonly vehicleKms?: VehicleKmsService,
   ){ }
 
   /**
@@ -249,6 +250,8 @@ export class PackageDispatchService {
       await queryRunner.manager.save(PackageDispatchHistory, dispatchHistoryRecords);
 
       await queryRunner.commitTransaction();
+      // Km vivo del vehículo (no bloquea la salida si falla).
+      await this.vehicleKms?.bump((dto.vehicle as any)?.id ?? (dto.vehicle as any), dto.kms, 'dispatch');
       return savedDispatch;
 
     } catch (error) {
@@ -1738,7 +1741,7 @@ export class PackageDispatchService {
     driverId: string,
     startDate: string,
     endDate: string,
-    subsidiaryId: string
+    subsidiaryId: string,
   ) {
     const dispatches = await this.findByDriverAndDateRange(
       driverId,

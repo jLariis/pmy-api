@@ -8,6 +8,7 @@ import { UNLOADING_PDF_HTML } from './templates/unloading.pdf.html';
 import { INVENTORY_PDF_HTML } from './templates/inventory.pdf.html';
 import { ROUTE_CLOSURE_PDF_HTML } from './templates/route-closure.pdf.html';
 import { RETURNING_PDF_HTML } from './templates/returning.pdf.html';
+import { PURCHASE_ORDER_PDF_HTML } from './templates/purchase-order.pdf.html';
 
 export interface PdfSeedVar { name: string; label: string; dataType?: string; }
 export interface PdfSeed { code: string; name: string; doc: PdfDoc; variables: PdfSeedVar[]; }
@@ -67,6 +68,12 @@ const routeClosure: PdfDoc = {
 const returning: PdfDoc = {
   page: { size: 'A4', orientation: 'portrait', margins: '15px' },
   html: RETURNING_PDF_HTML,
+};
+
+/** purchase_order_pdf — Orden de compra de mantenimiento (institucional). LETTER portrait. */
+const purchaseOrder: PdfDoc = {
+  page: { size: 'LETTER', orientation: 'portrait', margins: '24px' },
+  html: PURCHASE_ORDER_PDF_HTML,
 };
 
 export const PDF_TEMPLATE_SEEDS: PdfSeed[] = [
@@ -129,6 +136,16 @@ export const PDF_TEMPLATE_SEEDS: PdfSeed[] = [
       { name: 'totalGeneral', label: 'Total general', dataType: 'number' },
       { name: 'devolucionRowsPdf', label: 'Filas de devoluciones (con relleno a 15)' },
       { name: 'recoleccionRowsPdf', label: 'Filas de recolecciones (con relleno a 15)' },
+    ] },
+  { code: 'purchase_order_pdf', name: 'Orden de Compra de Mantenimiento (PDF)', doc: purchaseOrder,
+    variables: [
+      { name: 'folio', label: 'Folio (OC-000001)' }, { name: 'date', label: 'Fecha' },
+      { name: 'isDraft', label: 'Es borrador', dataType: 'boolean' }, { name: 'subsidiaryName', label: 'Sucursal' },
+      { name: 'requestFolio', label: 'Folio de la solicitud' }, { name: 'supplier', label: 'Proveedor (name, rfc, address)' },
+      { name: 'contact', label: 'Contacto (name, email, phone)' }, { name: 'vehicle', label: 'Unidad (label, plates, brandModel, kms)' },
+      { name: 'rows', label: 'Partidas aprobadas' }, { name: 'subtotal', label: 'Subtotal' }, { name: 'tax', label: 'IVA' },
+      { name: 'total', label: 'Total' }, { name: 'totalInWords', label: 'Importe con letra' },
+      { name: 'notes', label: 'Observaciones' }, { name: 'authorizedBy', label: 'Autorizó' }, { name: 'authorizedAt', label: 'Fecha de autorización' },
     ] },
 ];
 

@@ -68,6 +68,14 @@ export class Vehicle {
   @Column({ nullable: true})
   nextMaintenanceDate: Date;
 
+  /** Km del último servicio (ancla del próximo por km). */
+  @Column({ type: 'int', nullable: true })
+  lastMaintenanceKms: number | null;
+
+  /** Cada cuántos km toca servicio (5,000–10,000 según la unidad). */
+  @Column({ type: 'int', default: 5000 })
+  maintenanceIntervalKms: number;
+
   @ManyToOne(() => Subsidiary, { nullable: true })
   @JoinColumn({ name: 'subsidiaryId' })
   subsidiary: Subsidiary;

@@ -75,6 +75,11 @@ export const RBAC_PERMISSIONS: RbacPermissionDef[] = [
   // Mtto. Vehículos
   { code: 'mttoVehiculos.programacion', name: 'Programación Mtto.', groupName: 'Mtto. Vehículos', roles: ['admin', 'superadmin'] },
   { code: 'mttoVehiculos.historial', name: 'Historial Mtto.', groupName: 'Mtto. Vehículos', roles: ['admin', 'superadmin'] },
+  { code: 'mttoVehiculos.solicitudes', name: 'Solicitudes y cotizaciones Mtto.', groupName: 'Mtto. Vehículos', roles: ['admin', 'superadmin'] },
+  { code: 'mttoVehiculos.ordenes', name: 'Órdenes de compra Mtto.', groupName: 'Mtto. Vehículos', roles: ['admin', 'superadmin'] },
+  { code: 'mttoVehiculos.catalogos', name: 'Catálogos Mtto. (servicios, proveedores)', groupName: 'Mtto. Vehículos', roles: ['admin', 'superadmin'] },
+  // Sin roles: se concede por usuario (user_permission) — Edgardo Lugo. Superadmin pasa por bypass.
+  { code: 'mttoVehiculos.autorizar', name: 'Autorizar órdenes de compra', groupName: 'Mtto. Vehículos', roles: [] },
   // Sistema
   { code: 'configuracion', name: 'Configuración (acceso)', groupName: 'Sistema', roles: ['superadmin'] },
   { code: 'configuracion.empresa', name: 'Configuración · Empresa', groupName: 'Sistema', roles: ['superadmin'] },

@@ -129,6 +129,29 @@ export class MailService {
     return phone;
   };
 
+  /**
+   * Orden de compra de mantenimiento al proveedor (PDF adjunto). Resultado estructurado para la
+   * bitácora; relanza si falla el SMTP (PoDispatchService lo registra como error).
+   */
+  async sendPurchaseOrderEmail(opts: {
+    to: string;
+    cc?: string | string[];
+    subject: string;
+    html: string;
+    attachments?: { filename: string; content: Buffer }[];
+  }): Promise<MailSendResult> {
+    const { to, cc } = this.applyDevFilters(opts.to, opts.cc ? this.recipientsToString(opts.cc) ?? undefined : undefined);
+    const info: any = await this.dispatch({ to, cc, subject: opts.subject, html: opts.html, attachments: opts.attachments });
+    return {
+      to: this.recipientsToString(to) ?? '',
+      cc: this.recipientsToString(cc),
+      subject: opts.subject,
+      accepted: this.infoAddresses(info?.accepted),
+      rejected: this.infoAddresses(info?.rejected),
+      messageId: info?.messageId,
+    };
+  }
+
   /** Enviar correo de Envios priotitarios */
   async sendHighPriorityShipmentsEmail(options: { to: string | string[], cc?: string | string[], htmlContent: string }) {
     const { to, cc } = this.applyDevFilters(options.to, options.cc);
