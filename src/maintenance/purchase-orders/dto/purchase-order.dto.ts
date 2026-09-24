@@ -5,23 +5,29 @@ import {
 } from 'class-validator';
 import { CONTACT_CHANNELS, ContactChannel } from 'src/entities/supplier-contact.entity';
 
+const QTY = { message: 'La cantidad debe ser mayor a 0' };
+const PRICE = { message: 'El precio no puede ser negativo' };
+const TAX = { message: 'IVA no válido' };
+const KMS = { message: 'El km no es válido' };
+
 export class PoItemDto {
-  @IsOptional() @IsUUID()
+  @IsOptional() @IsUUID('all', { message: 'Concepto no reconocido' })
   id?: string;
 
-  @IsOptional() @ValidateIf((o) => o.serviceId !== null) @IsUUID()
+  @IsOptional() @ValidateIf((o) => o.serviceId !== null) @IsUUID('all', { message: 'Servicio del catálogo no reconocido' })
   serviceId?: string | null;
 
-  @IsString() @MinLength(2) @MaxLength(300)
+  @IsString({ message: 'Describe el concepto' }) @MinLength(2, { message: 'Describe el concepto' })
+  @MaxLength(300, { message: 'La descripción es demasiado larga' })
   description: string;
 
-  @IsNumber() @Min(0.01)
+  @IsNumber({}, QTY) @Min(0.01, QTY)
   quantity: number;
 
-  @IsNumber() @Min(0)
+  @IsNumber({}, PRICE) @Min(0, PRICE)
   unitPrice: number;
 
-  @IsOptional() @IsNumber() @Min(0) @Max(1)
+  @IsOptional() @IsNumber({}, TAX) @Min(0, TAX) @Max(1, TAX)
   taxRate?: number;
 
   @IsOptional() @IsBoolean()
@@ -32,28 +38,29 @@ export class UpdatePurchaseOrderDto {
   @IsOptional() @IsString()
   notes?: string | null;
 
-  @IsOptional() @ValidateIf((o) => o.contactId !== null) @IsUUID()
+  @IsOptional() @ValidateIf((o) => o.contactId !== null) @IsUUID('all', { message: 'Elige a qué contacto se envía' })
   contactId?: string | null;
 
-  @IsOptional() @IsUUID()
+  @IsOptional() @IsUUID('all', { message: 'Proveedor no reconocido' })
   supplierId?: string;
 
-  @IsOptional() @IsArray() @ArrayMinSize(1, { message: 'La orden debe tener al menos una partida' })
+  @IsOptional() @IsArray({ message: 'La orden debe tener al menos un concepto' })
+  @ArrayMinSize(1, { message: 'La orden debe tener al menos un concepto' })
   @ValidateNested({ each: true }) @Type(() => PoItemDto)
   items?: PoItemDto[];
 }
 
 export class AuthorizeItemDto {
-  @IsUUID()
+  @IsUUID('all', { message: 'Concepto no reconocido' })
   id: string;
 
-  @IsBoolean()
+  @IsBoolean({ message: 'Indica si apruebas el concepto' })
   approved: boolean;
 
-  @IsOptional() @IsNumber() @Min(0.01)
+  @IsOptional() @IsNumber({}, QTY) @Min(0.01, QTY)
   quantity?: number;
 
-  @IsOptional() @IsNumber() @Min(0)
+  @IsOptional() @IsNumber({}, PRICE) @Min(0, PRICE)
   unitPrice?: number;
 }
 
@@ -63,7 +70,7 @@ export class AuthorizeDto {
 }
 
 export class ReasonDto {
-  @IsString() @MinLength(3, { message: 'Escribe el motivo' })
+  @IsString({ message: 'Escribe el motivo' }) @MinLength(3, { message: 'Escribe el motivo' })
   reason: string;
 }
 
@@ -73,23 +80,23 @@ export class CancelDto extends ReasonDto {
 }
 
 export class SendDto {
-  @IsOptional() @IsIn(CONTACT_CHANNELS as unknown as string[])
+  @IsOptional() @IsIn(CONTACT_CHANNELS as unknown as string[], { message: 'Elige correo o WhatsApp' })
   channel?: ContactChannel;
 
-  @IsOptional() @IsUUID()
+  @IsOptional() @IsUUID('all', { message: 'Elige a qué contacto se envía' })
   contactId?: string;
 }
 
 export class CompleteDto {
-  @IsDateString()
+  @IsDateString({}, { message: 'Indica la fecha en que se hizo el servicio' })
   completedAt: string;
 
-  @IsInt() @Min(0) @Max(1_000_000)
+  @IsInt(KMS) @Min(0, KMS) @Max(1_000_000, KMS)
   completedKms: number;
 
-  @IsOptional() @IsNumber() @Min(0)
+  @IsOptional() @IsNumber({}, { message: 'El monto no es válido' }) @Min(0, { message: 'El monto no puede ser negativo' })
   finalAmount?: number;
 
-  @IsOptional() @ValidateIf((o) => o.nextMaintenanceDate !== null) @IsDateString()
+  @IsOptional() @ValidateIf((o) => o.nextMaintenanceDate !== null) @IsDateString({}, { message: 'La fecha del próximo servicio no es válida' })
   nextMaintenanceDate?: string | null;
 }
