@@ -75,6 +75,8 @@ export function diagnoseGuide(manual: Mark | null, f: GuideFacts, ctx: DiagnoseC
   const fromHistory = f.systemOutcome !== null;
   const systemSays: DayOutcome = fromHistory ? f.systemOutcome : outcomeFromStatus(f.systemStatus);
   const truth: DayOutcome = fedexOk ? f.fedex!.outcome : systemSays;
+  /** Lo que tiene el sistema, con el estatus real cuando no es un desenlace (p. ej. "en_ruta"). */
+  const systemTxt = systemSays === 'OTRO' && f.systemStatus ? `"${f.systemStatus.replace(/_/g, ' ')}"` : label(systemSays);
   const dayIncomes = f.incomes.filter((i) => i.active && i.day === day);
   const charged = dayIncomes.map((i) => i.mark).filter((m): m is Mark => !!m);
 
@@ -142,14 +144,14 @@ export function diagnoseGuide(manual: Mark | null, f: GuideFacts, ctx: DiagnoseC
   if (!f.kind) push(5, 'FedEx en vivo', null, 'No aplica.');
   else if (!fedexOk) push(5, 'FedEx en vivo', null, 'FedEx no respondió; se usa el estatus del sistema.');
   else if (fromHistory && isMark(truth) && systemSays !== truth) {
-    push(5, 'FedEx en vivo', false, `FedEx dice ${label(truth)}, el sistema tiene ${label(systemSays)}.`);
-    breakAt('ESTATUS_DESFASADO', `Nuestro estatus está desfasado: FedEx dice ${label(truth)} y el sistema tiene ${label(systemSays)}.`);
+    push(5, 'FedEx en vivo', false, `FedEx dice ${label(truth)}, el sistema tiene ${systemTxt}.`);
+    breakAt('ESTATUS_DESFASADO', `Nuestro estatus está desfasado: FedEx dice ${label(truth)} y el sistema tiene ${systemTxt}.`);
   } else if (!fromHistory && isMark(f.fedex!.latestOutcome) && systemSays !== f.fedex!.latestOutcome) {
     // Sin historial del día, el estatus vivo solo se puede comparar con lo ÚLTIMO de FedEx
     // (p. ej. un 08 del día y entregada después es correcto, no desfase).
     const latest = f.fedex!.latestOutcome;
-    push(5, 'FedEx en vivo', false, `Lo último de FedEx es ${label(latest)}, el estatus actual de la guía es ${label(systemSays)}.`);
-    breakAt('ESTATUS_DESFASADO', `Nuestro estatus está desfasado: lo último de FedEx es ${label(latest)} y la guía tiene ${label(systemSays)}.`);
+    push(5, 'FedEx en vivo', false, `Lo último de FedEx es ${label(latest)}, el estatus actual de la guía es ${systemTxt}.`);
+    breakAt('ESTATUS_DESFASADO', `Nuestro estatus está desfasado: lo último de FedEx es ${label(latest)} y la guía tiene ${systemTxt}.`);
   } else {
     push(5, 'FedEx en vivo', true, `FedEx dice ${label(fedexSays)}.${fromHistory || !isMark(truth) ? '' : ' (Sin historial del día; el estatus actual de la guía coincide con FedEx.)'}`);
   }
