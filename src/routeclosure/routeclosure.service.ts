@@ -26,6 +26,7 @@ import { ApplyActor } from 'src/tracking-sync/sinks/persistent-sync.sink';
 import { TrackableKind } from 'src/tracking-sync/tracking-sync.types';
 import { ApplyOutcome } from 'src/tracking-sync/compare.types';
 import { reconcileShipmentIncomeAction, ExistingShipmentIncome } from './income-reconcile.util';
+import { selectLatestGeneration } from 'src/consolidador/logic/fedex-day-outcome.util';
 
 @Injectable()
 export class RouteclosureService {
@@ -822,15 +823,7 @@ export class RouteclosureService {
     if (results.length === 0) return null;
 
     // 2. Selección de la generación (UniqueID): la secuencia más alta = generación más reciente.
-    if (results.length > 1) {
-      results.sort((a, b) => {
-        const seqA = parseInt(a.trackingNumberInfo?.trackingNumberUniqueId?.split('~')[0] || '0');
-        const seqB = parseInt(b.trackingNumberInfo?.trackingNumberUniqueId?.split('~')[0] || '0');
-        return seqB - seqA;
-      });
-    }
-
-    return results[0];
+    return selectLatestGeneration(results);
   }
 
   /**
