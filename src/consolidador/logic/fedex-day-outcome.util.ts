@@ -32,7 +32,7 @@ function markOf(scan: any): Mark | null {
  */
 export function extractFedexDayOutcome(trackResult: any, day: string): FedexLive {
   const scans: any[] = trackResult?.scanEvents ?? [];
-  if (!trackResult) return { ok: false, outcome: null, outcomeAt: null, dex08Dates: [], lastCode: null };
+  if (!trackResult) return { ok: false, outcome: null, outcomeAt: null, dex08Dates: [], lastCode: null, latestOutcome: null };
 
   const dated = scans
     .filter((s) => s?.date && !Number.isNaN(new Date(s.date).getTime()))
@@ -57,5 +57,7 @@ export function extractFedexDayOutcome(trackResult: any, day: string): FedexLive
   const latest = [...dated].sort((a, b) => b.at.getTime() - a.at.getTime())[0]?.s;
   const lastCode = latest ? `${latest.eventType ?? ''}${latest.exceptionCode ? ` ${latest.exceptionCode}` : ''}`.trim() : null;
 
-  return { ok: true, outcome, outcomeAt, dex08Dates, lastCode };
+  const latestOutcome: DayOutcome = latest ? markOf(latest) ?? 'OTRO' : null;
+
+  return { ok: true, outcome, outcomeAt, dex08Dates, lastCode, latestOutcome };
 }

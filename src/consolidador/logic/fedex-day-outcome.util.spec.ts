@@ -37,6 +37,11 @@ describe('extractFedexDayOutcome', () => {
     expect(r.outcome).toBe('OTRO');
   });
 
+  it('latestOutcome = desenlace del último evento de FedEx (cualquier día)', () => {
+    const r = extractFedexDayOutcome(track([ev('DE', '2026-09-14T12:00:00-07:00', '08'), ev('DL', '2026-09-16T12:00:00-07:00')]), '2026-09-14');
+    expect(r).toMatchObject({ outcome: '08', latestOutcome: 'POD' });
+  });
+
   it('sin eventos del día → null', () => {
     const r = extractFedexDayOutcome(track([ev('DL', '2026-09-23T12:00:00-07:00')]), '2026-09-22');
     expect(r).toMatchObject({ ok: true, outcome: null });

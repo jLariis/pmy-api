@@ -17,6 +17,7 @@ export interface FedexLive {
   outcomeAt: string | null; // ISO del evento elegido
   dex08Dates: string[]; // TODOS los 08 que reporta FedEx (cualquier día)
   lastCode: string | null; // último eventType + código, informativo
+  latestOutcome: DayOutcome; // desenlace del ÚLTIMO evento de FedEx (cualquier día)
 }
 
 export interface RouteRef {

@@ -43,6 +43,16 @@ export function dex08WeekStatus(dates: string[], day: string): { visitsToDay: nu
   return { visitsToDay: days.filter((d) => d <= day).length, chargeDay: days[2] ?? null };
 }
 
+/** Estatus vivo de la guía → desenlace (para cuando no hay historial del día). */
+function outcomeFromStatus(status: string | null): DayOutcome {
+  const st = String(status ?? '').toLowerCase();
+  if (!st) return null;
+  if (st === 'entregado') return 'POD';
+  if (st === 'rechazado') return '07';
+  if (st === 'cliente_no_disponible') return '08';
+  return 'OTRO';
+}
+
 export function diagnoseGuide(manual: Mark | null, f: GuideFacts, ctx: DiagnoseContext): DiagnosisRow {
   const { day } = ctx;
   const chain: ChainStep[] = [];
@@ -60,7 +70,11 @@ export function diagnoseGuide(manual: Mark | null, f: GuideFacts, ctx: DiagnoseC
 
   const fedexOk = !!f.fedex?.ok;
   const fedexSays: DayOutcome = fedexOk ? f.fedex!.outcome : null;
-  const truth: DayOutcome = fedexOk ? f.fedex!.outcome : f.systemOutcome;
+  // Sin historial del día (p. ej. shipment_status recortado o un hueco) se usa el estatus
+  // vivo de la guía: solo es desfase si de verdad contradice a FedEx.
+  const fromHistory = f.systemOutcome !== null;
+  const systemSays: DayOutcome = fromHistory ? f.systemOutcome : outcomeFromStatus(f.systemStatus);
+  const truth: DayOutcome = fedexOk ? f.fedex!.outcome : systemSays;
   const dayIncomes = f.incomes.filter((i) => i.active && i.day === day);
   const charged = dayIncomes.map((i) => i.mark).filter((m): m is Mark => !!m);
 
@@ -85,7 +99,7 @@ export function diagnoseGuide(manual: Mark | null, f: GuideFacts, ctx: DiagnoseC
     const counted = manual === truth || (!manual && !isMark(truth));
     push(8, 'Conteo del usuario', counted, counted ? 'El conteo coincide.' : `Contó ${manual ? MARK_LABEL[manual] : 'nada'}, el desenlace es ${label(truth)}.`);
     return {
-      trackingNumber: f.trackingNumber, manual, fedexSays, systemSays: f.systemOutcome, charged: [], expected: null,
+      trackingNumber: f.trackingNumber, manual, fedexSays, systemSays, charged: [], expected: null,
       verdict: counted ? 'CUADRA' : 'ERROR_CONTEO', cause: counted ? null : 'F2_INFORMATIVO', subCause: null,
       explanation: counted ? 'Carga F2: el conteo coincide (el cobro es por carga).' : `Carga F2: contó ${manual ? MARK_LABEL[manual] : 'nada'} pero el desenlace es ${label(truth)}.`,
       chain, cost: null, incomeIds: [],
@@ -111,7 +125,8 @@ export function diagnoseGuide(manual: Mark | null, f: GuideFacts, ctx: DiagnoseC
   } else if (!f.routes.length) {
     push(3, 'Salió a ruta', false, 'La guía nunca estuvo en una salida a ruta.');
     push(4, 'Ruta del mismo día', null, 'Sin ruta.');
-    breakAt('SIN_RUTA', `FedEx reporta ${label(truth)} pero la guía nunca salió a ruta con nosotros.`);
+    const cobrado = charged.length ? ` y aun así se cobró ${charged.map((m) => MARK_LABEL[m]).join(' + ')}` : '';
+    breakAt('SIN_RUTA', `FedEx reporta ${label(truth)} pero la guía nunca salió a ruta con nosotros ni se entregó en bodega${cobrado}.`);
   } else if (!routesToday.length) {
     const other = f.routes.map((r) => `${r.folio ?? 'ruta'} (${r.routeDay ?? '—'})`).join(', ');
     push(3, 'Salió a ruta', true, `Rutas: ${other}.`);
@@ -126,10 +141,18 @@ export function diagnoseGuide(manual: Mark | null, f: GuideFacts, ctx: DiagnoseC
   // 5. FedEx en vivo vs nuestro estatus.
   if (!f.kind) push(5, 'FedEx en vivo', null, 'No aplica.');
   else if (!fedexOk) push(5, 'FedEx en vivo', null, 'FedEx no respondió; se usa el estatus del sistema.');
-  else if (isMark(truth) && f.systemOutcome !== truth) {
-    push(5, 'FedEx en vivo', false, `FedEx dice ${label(truth)}, el sistema tiene ${label(f.systemOutcome)}.`);
-    breakAt('ESTATUS_DESFASADO', `Nuestro estatus está desfasado: FedEx dice ${label(truth)} y el sistema tiene ${label(f.systemOutcome)}.`);
-  } else push(5, 'FedEx en vivo', true, `FedEx dice ${label(fedexSays)}.`);
+  else if (fromHistory && isMark(truth) && systemSays !== truth) {
+    push(5, 'FedEx en vivo', false, `FedEx dice ${label(truth)}, el sistema tiene ${label(systemSays)}.`);
+    breakAt('ESTATUS_DESFASADO', `Nuestro estatus está desfasado: FedEx dice ${label(truth)} y el sistema tiene ${label(systemSays)}.`);
+  } else if (!fromHistory && isMark(f.fedex!.latestOutcome) && systemSays !== f.fedex!.latestOutcome) {
+    // Sin historial del día, el estatus vivo solo se puede comparar con lo ÚLTIMO de FedEx
+    // (p. ej. un 08 del día y entregada después es correcto, no desfase).
+    const latest = f.fedex!.latestOutcome;
+    push(5, 'FedEx en vivo', false, `Lo último de FedEx es ${label(latest)}, el estatus actual de la guía es ${label(systemSays)}.`);
+    breakAt('ESTATUS_DESFASADO', `Nuestro estatus está desfasado: lo último de FedEx es ${label(latest)} y la guía tiene ${label(systemSays)}.`);
+  } else {
+    push(5, 'FedEx en vivo', true, `FedEx dice ${label(fedexSays)}.${fromHistory || !isMark(truth) ? '' : ' (Sin historial del día; el estatus actual de la guía coincide con FedEx.)'}`);
+  }
 
   // 6. Reglas de cobro → qué se esperaba cobrar ese día.
   let expected: Mark | null = null;
@@ -173,7 +196,10 @@ export function diagnoseGuide(manual: Mark | null, f: GuideFacts, ctx: DiagnoseC
     breakAt('DUPLICADO', `La guía tiene ${dup[1]} ingresos de ${MARK_LABEL[dup[0]]} el mismo día.`);
   } else if (!expected && charged.length) {
     incomeOk = false;
-    breakAt('COBRO_DE_MAS', `Se cobró ${chargedTxt} pero no debía cobrar: ${noChargeWhy}.`, capitalize(noChargeWhy));
+    // Si la misma guía ya tiene ese cobro en otro día, además es un cobro doble.
+    const twin = f.incomes.find((i) => i.active && i.day !== day && i.mark && charged.includes(i.mark));
+    const doble = twin ? `; además ya tiene ${MARK_LABEL[twin.mark!]} cobrado el ${twin.day} (cobro doble)` : '';
+    breakAt('COBRO_DE_MAS', `Se cobró ${chargedTxt} pero no debía cobrar: ${noChargeWhy}${doble}.`, capitalize(`${noChargeWhy}${doble}`));
   } else if (expected && charged.length && !charged.includes(expected)) {
     incomeOk = false;
     breakAt('COBRO_DE_MAS', `Se cobró ${chargedTxt} pero debía cobrar ${MARK_LABEL[expected]}.`, `Cobró ${chargedTxt}, debía ${MARK_LABEL[expected]}`);
@@ -223,7 +249,7 @@ export function diagnoseGuide(manual: Mark | null, f: GuideFacts, ctx: DiagnoseC
     trackingNumber: f.trackingNumber,
     manual,
     fedexSays,
-    systemSays: f.systemOutcome,
+    systemSays,
     charged,
     expected,
     verdict,

@@ -7,6 +7,7 @@ import { effectiveLocalDay } from 'src/common/income-window.util';
 import { toHermosilloDateString } from 'src/common/utils';
 import { extractFedexDayOutcome, selectLatestGeneration } from '../logic/fedex-day-outcome.util';
 import { diagnoseGuide, summarize } from '../logic/manual-count-diagnose.util';
+import { pickShipmentRowForDay } from '../logic/manual-count-facts.util';
 import { buildManualCountPrompt } from '../logic/manual-count-prompt.util';
 import {
   Cause,
@@ -86,7 +87,7 @@ export class ManualCountService {
       const c = this.cached(tn);
       const live: FedexLive = c?.ok
         ? extractFedexDayOutcome(selectLatestGeneration(c.results), day)
-        : { ok: false, outcome: null, outcomeAt: null, dex08Dates: [], lastCode: null };
+        : { ok: false, outcome: null, outcomeAt: null, dex08Dates: [], lastCode: null, latestOutcome: null };
       if (!live.ok) fedexFailures++;
       f.fedex = live;
     }
@@ -174,25 +175,29 @@ export class ManualCountService {
       [...tns, ...tns],
     );
 
-    const chosen = new Map<string, any>();
-    const rank = (r: any) => (r.subsidiaryId === subsidiaryId ? 2 : 0) + (r.kind === 'shipment' ? 1 : 0);
+    // Varias filas por guía (reingreso / reciclada / F2): se usa la vigente ese día, pero
+    // las rutas y eventos se juntan de TODAS sus filas.
+    const rowsByTn = new Map<string, any[]>();
     for (const r of shipRows) {
       const tn = String(r.tn);
-      const prev = chosen.get(tn);
-      if (!prev || rank(r) > rank(prev) || (rank(r) === rank(prev) && new Date(r.createdAt) > new Date(prev.createdAt))) chosen.set(tn, r);
+      const consDay = r.consDay ? toDayString(r.consDay) : null;
+      rowsByTn.set(tn, [...(rowsByTn.get(tn) ?? []), { ...r, id: String(r.id), consDay }]);
     }
+    const chosen = new Map<string, any>();
+    for (const [tn, rows] of rowsByTn) chosen.set(tn, pickShipmentRowForDay(rows, subsidiaryId, day));
     for (const [tn, r] of chosen) {
       const f = out.get(tn)!;
       f.kind = r.kind;
       f.subsidiaryId = r.subsidiaryId ?? null;
       f.systemStatus = r.status ?? null;
       // Envío: el consolidado registrado. Carga F2: la carga misma hace de constancia.
-      f.consolidado = r.consId ? { consNumber: r.consNumber ?? null, day: r.consDay ? toDayString(r.consDay) : null } : null;
+      f.consolidado = r.consId ? { consNumber: r.consNumber ?? null, day: r.consDay } : null;
     }
 
-    const shipmentIds = [...chosen.values()].filter((r) => r.kind === 'shipment').map((r) => String(r.id));
-    const chargeIds = [...chosen.values()].filter((r) => r.kind === 'charge').map((r) => String(r.id));
-    const tnByShipment = new Map([...chosen.entries()].map(([tn, r]) => [String(r.id), tn]));
+    const allRows = [...rowsByTn.values()].flat();
+    const shipmentIds = allRows.filter((r) => r.kind === 'shipment').map((r) => r.id);
+    const chargeIds = allRows.filter((r) => r.kind === 'charge').map((r) => r.id);
+    const tnByShipment = new Map(allRows.map((r) => [r.id, String(r.tn)]));
 
     // Rutas (historial, no la relación viva).
     if (shipmentIds.length || chargeIds.length) {

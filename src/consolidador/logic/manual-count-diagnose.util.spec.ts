@@ -32,7 +32,7 @@ const facts = (outcome: Mark | 'OTRO' | null, over: Partial<GuideFacts> = {}): G
   systemStatus: 'entregado',
   systemOutcome: outcome,
   systemDex08Dates: [],
-  fedex: { ok: true, outcome, outcomeAt: null, dex08Dates: [], lastCode: null },
+  fedex: { ok: true, outcome, outcomeAt: null, dex08Dates: [], lastCode: null, latestOutcome: outcome },
   incomes: [],
   returned: false,
   warehouseDelivered: false,
@@ -41,7 +41,7 @@ const facts = (outcome: Mark | 'OTRO' | null, over: Partial<GuideFacts> = {}): G
 
 const d08 = (...isos: string[]) => ({
   systemDex08Dates: isos,
-  fedex: { ok: true, outcome: '08' as const, outcomeAt: null, dex08Dates: isos, lastCode: 'DE 08' },
+  fedex: { ok: true, outcome: '08' as const, outcomeAt: null, dex08Dates: isos, lastCode: 'DE 08', latestOutcome: '08' as const },
 });
 
 describe('diagnoseGuide — casos reales Hermosillo 22-09', () => {
@@ -117,6 +117,12 @@ describe('diagnoseGuide — cadena de validaciones', () => {
     expect(diagnoseGuide('POD', facts('POD', { routes: [] }), ctx())).toMatchObject({ cause: 'SIN_RUTA' });
   });
 
+  it('nunca salió a ruta y aun así se cobró → lo dice', () => {
+    const r = diagnoseGuide('POD', facts('POD', { routes: [], incomes: [income('POD')] }), ctx());
+    expect(r.cause).toBe('SIN_RUTA');
+    expect(r.explanation).toContain('se cobró POD');
+  });
+
   it('salió en una ruta de otro día', () => {
     const routes = [{ dispatchId: 'd0', folio: 'R-0', routeDay: '2026-09-21', is315: false, closed: true }];
     expect(diagnoseGuide('POD', facts('POD', { routes }), ctx())).toMatchObject({ cause: 'RUTA_OTRO_DIA' });
@@ -127,8 +133,31 @@ describe('diagnoseGuide — cadena de validaciones', () => {
     expect(diagnoseGuide('POD', f, ctx())).toMatchObject({ verdict: 'ERROR_SISTEMA', cause: 'ESTATUS_DESFASADO' });
   });
 
+  it('sin historial del día pero el estatus actual coincide con FedEx → no es desfase (383562744818)', () => {
+    const f = facts('POD', { systemOutcome: null, systemStatus: 'entregado', incomes: [income('POD')] });
+    const r = diagnoseGuide('POD', f, ctx());
+    expect(r).toMatchObject({ verdict: 'CUADRA', systemSays: 'POD' });
+    expect(r.chain.find((s) => s.step === 5)?.ok).toBe(true);
+  });
+
+  it('sin historial del día y el estatus actual contradice a FedEx → desfase', () => {
+    const f = facts('POD', { systemOutcome: null, systemStatus: 'en_ruta', incomes: [income('POD')] });
+    expect(diagnoseGuide('POD', f, ctx())).toMatchObject({ verdict: 'ERROR_SISTEMA', cause: 'ESTATUS_DESFASADO' });
+  });
+
+  it('sin historial: 08 del día y entregada después → no es desfase (876670278138)', () => {
+    const f = facts('08', {
+      systemOutcome: null,
+      systemStatus: 'entregado',
+      fedex: { ok: true, outcome: '08', outcomeAt: null, dex08Dates: ['2026-09-22T18:00:00Z'], lastCode: 'DL', latestOutcome: 'POD' },
+    });
+    const r = diagnoseGuide('08', f, ctx());
+    expect(r.cause).not.toBe('ESTATUS_DESFASADO');
+    expect(r.chain.find((s) => s.step === 5)?.ok).toBe(true);
+  });
+
   it('FedEx caído → usa el desenlace del sistema', () => {
-    const f = facts('POD', { fedex: { ok: false, outcome: null, outcomeAt: null, dex08Dates: [], lastCode: null }, incomes: [income('POD')] });
+    const f = facts('POD', { fedex: { ok: false, outcome: null, outcomeAt: null, dex08Dates: [], lastCode: null, latestOutcome: null }, incomes: [income('POD')] });
     const r = diagnoseGuide('POD', f, ctx());
     expect(r).toMatchObject({ verdict: 'CUADRA', fedexSays: null });
     expect(r.chain.find((s) => s.step === 5)?.ok).toBeNull();
@@ -144,6 +173,16 @@ describe('diagnoseGuide — cadena de validaciones', () => {
   it('charge_rule de la sucursal no cobra el código → cobro de más', () => {
     const r = diagnoseGuide('07', facts('07', { incomes: [income('07')] }), ctx({ isChargeable: (c) => c !== '07' }));
     expect(r).toMatchObject({ cause: 'COBRO_DE_MAS' });
+  });
+
+  it('cobro de más que además duplica un ingreso de otro día → lo dice (876670278138)', () => {
+    const f = facts('08', {
+      ...d08('2026-09-23T01:17:00Z'),
+      incomes: [income('POD'), income('POD', { id: 'inc-15', day: '2026-09-23' })],
+    });
+    const r = diagnoseGuide(null, f, ctx());
+    expect(r.cause).toBe('COBRO_DE_MAS');
+    expect(r.subCause).toContain('2026-09-23');
   });
 
   it('cobró con otro código', () => {
