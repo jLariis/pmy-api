@@ -69,3 +69,12 @@ export function weeklyDex08ChargeIndexes(existing08Dates: Date[], new08Dates: Da
   }
   return out;
 }
+
+/**
+ * ¿Hay alguna semana ISO con ≥3 DÍAS distintos con 08? Es la regla completa de cobro
+ * DEX08 cuando no hay historial "ya cobrado" que distinguir (p. ej. el cierre de ruta, que
+ * solo crea el ingreso si la guía aún no tiene uno).
+ */
+export function hasWeekWithThreeDex08Days(dex08Dates: Date[]): boolean {
+  return weeklyDex08ChargeIndexes([], dex08Dates).length > 0;
+}
