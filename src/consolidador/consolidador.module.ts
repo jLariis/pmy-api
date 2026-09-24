@@ -9,10 +9,13 @@ import { ConsolidadorStatusService } from './status/consolidador-status.service'
 import { ConsolidadorAuditService } from './audit/consolidador-audit.service';
 import { CobrosAuditService } from './audit/cobros-audit.service';
 import { FedexStatusModule } from '../fedex-status/fedex-status.module';
+import { ChargeRulesModule } from '../charge-rules/charge-rules.module';
+import { FedexService } from '../shipments/fedex.service';
+import { ManualCountService } from './audit/manual-count.service';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Income, Shipment, Subsidiary, IncomeChangeLog]), FedexStatusModule],
+  imports: [TypeOrmModule.forFeature([Income, Shipment, Subsidiary, IncomeChangeLog]), FedexStatusModule, ChargeRulesModule],
   controllers: [ConsolidadorController],
-  providers: [ConsolidadorReadService, ConsolidadorGroupsService, ConsolidadorIncomeService, ConsolidadorStatusService, ConsolidadorAuditService, CobrosAuditService],
+  providers: [ConsolidadorReadService, ConsolidadorGroupsService, ConsolidadorIncomeService, ConsolidadorStatusService, ConsolidadorAuditService, CobrosAuditService, ManualCountService, FedexService],
 })
 export class ConsolidadorModule {}

@@ -107,10 +107,12 @@ const outcomeTxt = (o: DiagnosisRow['fedexSays']) =>
   o === 'POD' || o === '07' || o === '08' ? MARK_LABEL[o] : o === 'OTRO' ? 'otro' : '—';
 
 function exampleLine(r: DiagnosisRow): string {
-  const broken = r.chain.filter((s) => s.ok === false).map((s) => `${s.label}: ${s.detail}`).join(' · ');
+  // El eslabón 8 (conteo del usuario) no es parte del error del sistema.
+  const broken = r.chain.filter((s) => s.ok === false && s.step !== 8).map((s) => `${s.label}: ${s.detail}`).join(' · ');
+  const sub = r.subCause && !r.explanation.toLowerCase().includes(r.subCause.toLowerCase()) ? ` (${r.subCause})` : '';
   return [
     `- \`${r.trackingNumber}\` — contó ${r.manual ? MARK_LABEL[r.manual] : 'nada'}, FedEx ${outcomeTxt(r.fedexSays)}, sistema ${outcomeTxt(r.systemSays)}, cobrado ${r.charged.map((m) => MARK_LABEL[m]).join('+') || 'nada'}.`,
-    `  ${r.explanation}${r.subCause ? ` (${r.subCause})` : ''}${broken ? `\n  Eslabones rotos: ${broken}` : ''}${r.incomeIds.length ? `\n  income.id: ${r.incomeIds.join(', ')}` : ''}`,
+    `  ${r.explanation}${sub}${broken ? `\n  Eslabones rotos: ${broken}` : ''}${r.incomeIds.length ? `\n  income.id: ${r.incomeIds.join(', ')}` : ''}`,
   ].join('\n');
 }
 
