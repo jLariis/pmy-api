@@ -27,6 +27,7 @@ import { ApplyActor } from 'src/tracking-sync/sinks/persistent-sync.sink';
 import { TrackableKind } from 'src/tracking-sync/tracking-sync.types';
 import { ApplyOutcome } from 'src/tracking-sync/compare.types';
 import { reconcileShipmentIncomeAction, ExistingShipmentIncome } from './income-reconcile.util';
+import { selectLatestGeneration } from 'src/consolidador/logic/fedex-day-outcome.util';
 
 @Injectable()
 export class RouteclosureService {
@@ -132,7 +133,7 @@ export class RouteclosureService {
   ];
 
   /** Deriva el outcome FedEx (para noVanIncomeDecision) desde el estatus reconciliado. */
-  private buildOutcomeForIncome(o: ApplyOutcome): NoVanFedexOutcome {
+  private buildOutcomeForIncome(o: ApplyOutcome, dex08Dates: Date[] = []): NoVanFedexOutcome {
     const status = o.toStatus;
     const delivered = status === ShipmentStatusType.ENTREGADO;
     const isChargeableDex =
@@ -142,7 +143,17 @@ export class RouteclosureService {
       delivered,
       dexCode: isChargeableDex ? (o.exceptionCode || null) : null,
       resolved: !!status,
+      dex08Dates,
     };
+  }
+
+  /** Instantes de los eventos 08 guardados de un shipment (para la regla de 3 visitas). */
+  private async loadDex08Dates(shipmentId: string): Promise<Date[]> {
+    const rows = await this.dataSource.getRepository(ShipmentStatus).find({
+      select: { timestamp: true },
+      where: { shipment: { id: shipmentId }, exceptionCode: '08' },
+    });
+    return rows.map((r) => new Date(r.timestamp));
   }
 
   /**
@@ -168,7 +179,10 @@ export class RouteclosureService {
 
     for (const o of shipmentOutcomes) {
       try {
-        const decision = noVanIncomeDecision(this.buildOutcomeForIncome(o));
+        // DEX08 solo cobra con 3 días distintos con 08 en la misma semana: se leen TODOS los
+        // 08 guardados de la guía (ya incluye los que acaba de persistir la reconciliación).
+        const dex08Dates = o.exceptionCode === '08' ? await this.loadDex08Dates(o.shipmentId) : [];
+        const decision = noVanIncomeDecision(this.buildOutcomeForIncome(o, dex08Dates));
         if (!decision) continue;
 
         const instant = o.eventAt
@@ -813,15 +827,7 @@ export class RouteclosureService {
     if (results.length === 0) return null;
 
     // 2. Selección de la generación (UniqueID): la secuencia más alta = generación más reciente.
-    if (results.length > 1) {
-      results.sort((a, b) => {
-        const seqA = parseInt(a.trackingNumberInfo?.trackingNumberUniqueId?.split('~')[0] || '0');
-        const seqB = parseInt(b.trackingNumberInfo?.trackingNumberUniqueId?.split('~')[0] || '0');
-        return seqB - seqA;
-      });
-    }
-
-    return results[0];
+    return selectLatestGeneration(results);
   }
 
   /**
@@ -855,7 +861,11 @@ export class RouteclosureService {
         const specificCode = latestScan?.exceptionCode
           || winner.latestStatusDetail?.ancillaryDetails?.[0]?.reason
           || null;
-        return { trackingNumber, delivered: false, dexCode: specificCode, resolved: true };
+        // Todos los 08 que reporta FedEx (para la regla de 3 visitas en la misma semana).
+        const dex08Dates = scans
+          .filter((s) => s.eventType === 'DE' && s.exceptionCode === '08' && s.date)
+          .map((s) => new Date(s.date));
+        return { trackingNumber, delivered: false, dexCode: specificCode, resolved: true, dex08Dates };
       }
 
       // Otro estatus: resuelto pero sin código que aplicar.
