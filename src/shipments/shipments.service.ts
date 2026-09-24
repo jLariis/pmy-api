@@ -1,3 +1,4 @@
+import { isOurRouteDelivery, routeDaysOf } from 'src/common/our-route-delivery.util';
 import { BadRequestException, forwardRef, HttpStatus, Inject, Injectable, InternalServerErrorException, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { resolveChargeCost, chargeSecondAbordApplied, chargeDayRangeUtc, shouldSkipSameDayCharge } from './charge-cost';
@@ -8587,6 +8588,17 @@ export class ShipmentsService {
                     lsdHeader?.code === 'OD'
                 );
 
+                // 🚚 ENTREGA NUESTRA (regla 2026-09-24): consolidado nuestro + ruta nuestra el MISMO día
+                // del DL ⇒ la entregamos nosotros. Nunca ENTREGADO_POR_FEDEX (el 005 de FedEx = "trusted
+                // third-party vendor" somos nosotros). Manda sobre el blindaje anti-cobro.
+                const ourRouteDays = routeDaysOf(await queryRunner.manager.query(
+                    `SELECT pd.routeDate, pd.createdAt FROM package_dispatch_history h
+                       JOIN package_dispatch pd ON pd.id = h.dispatchId WHERE h.shipmentId = ?`,
+                    [mainShipment.id],
+                ));
+                const isOurDelivery = (at: Date | null) =>
+                    isOurRouteDelivery({ deliveredAt: at, routeDays: ourRouteDays, hasConsolidado: !!mainShipment.consolidatedId });
+
                 for (const event of newEvents) {
                     const eventDate = new Date(event.date);
                     const dCode = event.derivedStatusCode || '';
@@ -8607,8 +8619,11 @@ export class ShipmentsService {
                         preRegResolvedStatus = eventStatus;
                     }
 
-                    // 🛡️ BLINDAJE ANTI-COBROS FALSOS
-                    if (hasODInHistory && (event.eventType === 'DL' || dCode === 'DL' || eCode === '005')) {
+                    // 🛡️ BLINDAJE ANTI-COBROS FALSOS (salvo entrega en ruta nuestra ese día → ENTREGADO)
+                    const isDeliveryEvent = event.eventType === 'DL' || dCode === 'DL' || eCode === '005';
+                    if (isDeliveryEvent && isOurDelivery(eventDate)) {
+                        eventStatus = ShipmentStatusType.ENTREGADO;
+                    } else if (hasODInHistory && isDeliveryEvent) {
                         eventStatus = ShipmentStatusType.ENTREGADO_POR_FEDEX;
                     } else if (eCode === '005') {
                         eventStatus = ShipmentStatusType.ENTREGADO_POR_FEDEX;
@@ -8684,8 +8699,9 @@ export class ShipmentsService {
 
                 // 🚨 SAFETY NET: RESPALDO FINANCIERO (Header Backup)
                 const isDeliveredGlobal = (lsdHeader?.code === 'DL' || lsdHeader?.derivedCode === 'DL');
-                if (isDeliveredGlobal && !hasODInHistory) {
-                    const actualDeliveryDateStr = trackResult.dateAndTimes?.find(d => d.type === 'ACTUAL_DELIVERY')?.dateTime;
+                const headerDeliveryStr = trackResult.dateAndTimes?.find(d => d.type === 'ACTUAL_DELIVERY')?.dateTime;
+                if (isDeliveredGlobal && (!hasODInHistory || isOurDelivery(headerDeliveryStr ? new Date(headerDeliveryStr) : null))) {
+                    const actualDeliveryDateStr = headerDeliveryStr;
                     if (actualDeliveryDateStr) {
                         const deliveryDate = new Date(actualDeliveryDateStr);
                         const mDate = dayjs(deliveryDate);
@@ -8781,6 +8797,16 @@ export class ShipmentsService {
                         finalStatus = ShipmentStatusType.ACARGO_DE_FEDEX;
                     } else if (finalStatus === ShipmentStatusType.ENTREGADO && hasODInHistory) {
                         finalStatus = ShipmentStatusType.ENTREGADO_POR_FEDEX;
+                    }
+                }
+
+                // 6.1 Entrega en ruta nuestra el mismo día ⇒ ENTREGADO (manda sobre cualquier "por FedEx").
+                if (finalStatus === ShipmentStatusType.ENTREGADO_POR_FEDEX) {
+                    const lastDl = sortedScanEvents.find(e => e.eventType === 'DL' || e.derivedStatusCode === 'DL');
+                    const deliveredAt = lastDl ? new Date(lastDl.date) : headerDeliveryStr ? new Date(headerDeliveryStr) : null;
+                    if (isOurDelivery(deliveredAt)) {
+                        this.logger.log(`🚚 [${tn}] Entrega en ruta nuestra el mismo día: ENTREGADO_POR_FEDEX → ENTREGADO`);
+                        finalStatus = ShipmentStatusType.ENTREGADO;
                     }
                 }
 
@@ -9111,6 +9137,15 @@ export class ShipmentsService {
                     lsdHeader?.code === 'OD'
                 );
 
+                // 🚚 ENTREGA NUESTRA (regla 2026-09-24): carga en ruta nuestra el mismo día del DL ⇒ ENTREGADO.
+                const ourRouteDays = routeDaysOf(await queryRunner.manager.query(
+                    `SELECT pd.routeDate, pd.createdAt FROM package_dispatch_history h
+                       JOIN package_dispatch pd ON pd.id = h.dispatchId WHERE h.chargeShipmentId = ?`,
+                    [mainCharge.id],
+                ));
+                const isOurDelivery = (at: Date | null) =>
+                    isOurRouteDelivery({ deliveredAt: at, routeDays: ourRouteDays, hasConsolidado: !!((mainCharge as any).chargeId || (mainCharge as any).consolidatedId) });
+
                 // ¿Algún evento nuevo es "cambio de fecha solicitada" (FedEx 17/84)?
                 let sawDateChange = false;
 
@@ -9125,7 +9160,10 @@ export class ShipmentsService {
                     if (eventStatus === ShipmentStatusType.CAMBIO_FECHA_SOLICITADO) sawDateChange = true;
 
                     // 🛡️ BLINDAJE ANTI-COBROS FALSOS
-                    if (hasODInHistory && (event.eventType === 'DL' || dCode === 'DL' || eCode === '005')) {
+                    const isDeliveryEvent = event.eventType === 'DL' || dCode === 'DL' || eCode === '005';
+                    if (isDeliveryEvent && isOurDelivery(eventDate)) {
+                        eventStatus = ShipmentStatusType.ENTREGADO;
+                    } else if (hasODInHistory && isDeliveryEvent) {
                         eventStatus = ShipmentStatusType.ENTREGADO_POR_FEDEX;
                     } else if (eCode === '005') {
                         eventStatus = ShipmentStatusType.ENTREGADO_POR_FEDEX;
@@ -9217,6 +9255,12 @@ export class ShipmentsService {
                     } else if (finalStatus === ShipmentStatusType.ENTREGADO && hasODInHistory) {
                         finalStatus = ShipmentStatusType.ENTREGADO_POR_FEDEX;
                     }
+                }
+
+                // Entrega en ruta nuestra el mismo día ⇒ ENTREGADO (manda sobre cualquier "por FedEx").
+                if (finalStatus === ShipmentStatusType.ENTREGADO_POR_FEDEX) {
+                    const lastDl = sortedScanEvents.find((e: any) => e.eventType === 'DL' || e.derivedStatusCode === 'DL');
+                    if (isOurDelivery(lastDl ? new Date(lastDl.date) : null)) finalStatus = ShipmentStatusType.ENTREGADO;
                 }
 
                 // =================================================================================
@@ -9649,6 +9693,15 @@ export class ShipmentsService {
                   const matchedKey = subId ? Object.keys(this.SUBSIDIARY_CONFIG).find(key => key.toLowerCase() === subId) : null;
                   const subConfig = matchedKey ? this.SUBSIDIARY_CONFIG[matchedKey] : { trackExternalDelivery: false };
 
+                  // 🚚 Entrega en ruta nuestra el mismo día ⇒ ENTREGADO (regla 2026-09-24).
+                  const ourRouteDays = routeDaysOf(await queryRunner.manager.query(
+                      `SELECT pd.routeDate, pd.createdAt FROM package_dispatch_history h
+                         JOIN package_dispatch pd ON pd.id = h.dispatchId WHERE ${isShipment ? 'h.shipmentId' : 'h.chargeShipmentId'} = ?`,
+                      [entity.id],
+                  ));
+                  const isOurDelivery = (at: Date | null) =>
+                      isOurRouteDelivery({ deliveredAt: at, routeDays: ourRouteDays, hasConsolidado: !!((entity as any).consolidatedId || (entity as any).chargeId) });
+
                   for (const event of chronologicalEvents) {
                       const evtTime = new Date(event.date).getTime();
                       // 🛑 Ignorar eventos previos a la creación del paquete (Anti-Reciclaje)
@@ -9658,7 +9711,7 @@ export class ShipmentsService {
                       const evtDate = new Date(event.date);
                       let evtStatus: any = mapFedexStatusToLocalStatus(event.derivedStatusCode || '', evtCode);
 
-                      if (evtCode === '005') evtStatus = ShipmentStatusType.ENTREGADO_POR_FEDEX;
+                      if (evtCode === '005') evtStatus = isOurDelivery(evtDate) ? ShipmentStatusType.ENTREGADO : ShipmentStatusType.ENTREGADO_POR_FEDEX;
                       if (isShipment && subConfig.trackExternalDelivery && event.eventType === 'OD' && evtTime > lastOpTime) {
                           evtStatus = ShipmentStatusType.ACARGO_DE_FEDEX;
                       }
@@ -9751,6 +9804,11 @@ export class ShipmentsService {
                   if (isShipment && hasOD) {
                       if (targetStatus === ShipmentStatusType.ENTREGADO) targetStatus = ShipmentStatusType.ENTREGADO_POR_FEDEX;
                       else targetStatus = ShipmentStatusType.ACARGO_DE_FEDEX;
+                  }
+                  if (targetStatus === ShipmentStatusType.ENTREGADO_POR_FEDEX) {
+                      const lastDl = [...scanEvents].sort((a: any, b: any) => new Date(b.date).getTime() - new Date(a.date).getTime())
+                          .find((e: any) => e.eventType === 'DL' || e.derivedStatusCode === 'DL');
+                      if (isOurDelivery(lastDl ? new Date(lastDl.date) : null)) targetStatus = ShipmentStatusType.ENTREGADO;
                   }
 
                   // Escudo de Oro (No degradar)

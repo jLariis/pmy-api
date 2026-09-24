@@ -284,8 +284,21 @@ describe('diagnoseGuide — estatus exacto (no "otro estatus")', () => {
     expect(r.explanation).toContain('Devuelto a FedEx');
   });
 
-  it('"Entregado por FedEx" no es desfase: es entrega de FedEx y por regla no cobra (383519245821)', () => {
-    const r = diagnoseGuide('POD', facts('POD', { systemOutcome: null, systemStatus: 'entregado_por_fedex' }), ctx());
+  it('"Entregado por FedEx" pero salió en nuestra ruta ese día → es nuestra: falta el cobro (383519245821)', () => {
+    const r = diagnoseGuide('POD', facts('POD', { shipmentId: 's1', systemOutcome: null, systemStatus: 'entregado_por_fedex' }), ctx());
+    expect(r).toMatchObject({ verdict: 'ERROR_SISTEMA', cause: 'COBRO_FALTANTE', expected: 'POD', shipmentId: 's1' });
+    expect(r.subCause).toContain('nuestra ruta');
+    expect(r.systemLabel).toBe('Entregado por FedEx');
+  });
+
+  it('"Entregado por FedEx" en nuestra ruta y ya cobrado → solo el estatus está mal', () => {
+    const r = diagnoseGuide('POD', facts('POD', { systemOutcome: null, systemStatus: 'entregado_por_fedex', incomes: [income('POD')] }), ctx());
+    expect(r).toMatchObject({ verdict: 'ERROR_SISTEMA', cause: 'ESTATUS_DESFASADO' });
+  });
+
+  it('"Entregado por FedEx" SIN ruta nuestra ese día: es entrega de FedEx y por regla no cobra', () => {
+    const routes = [{ dispatchId: 'd0', folio: 'R-0', routeDay: '2026-09-20', is315: false, closed: true }];
+    const r = diagnoseGuide('POD', facts('POD', { systemOutcome: null, systemStatus: 'entregado_por_fedex', routes }), ctx());
     expect(r.cause).not.toBe('ESTATUS_DESFASADO');
     expect(r).toMatchObject({ verdict: 'REGLA', expected: null, systemLabel: 'Entregado por FedEx' });
     expect(r.explanation).toContain('FedEx');
@@ -297,8 +310,8 @@ describe('diagnoseGuide — estatus exacto (no "otro estatus")', () => {
     expect(r.verdict).toBe('REGLA');
   });
 
-  it('"Entregado por FedEx" con ingreso → cobro de más', () => {
-    const r = diagnoseGuide('POD', facts('POD', { systemOutcome: null, systemStatus: 'entregado_por_fedex', incomes: [income('POD')] }), ctx());
+  it('"Entregado por FedEx" sin ruta nuestra y con ingreso → cobro de más', () => {
+    const r = diagnoseGuide('POD', facts('POD', { systemOutcome: null, systemStatus: 'entregado_por_fedex', routes: [], incomes: [income('POD')] }), ctx());
     expect(r.cause).toBe('COBRO_DE_MAS');
   });
 

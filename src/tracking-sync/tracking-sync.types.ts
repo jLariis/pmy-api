@@ -74,6 +74,8 @@ export interface NormalizedTracking {
 export interface ExistingState {
   lastOpTime: number;   // ms del último evento OPERATIVO interno (pendiente/en_bodega/en_ruta)
   count08: number;      // nº de exceptionCode='08' ya persistidos
+  /** Días (YYYY-MM-DD) de las salidas a ruta NUESTRAS de la guía (regla de entrega propia). */
+  ourRouteDays?: string[];
 }
 
 export interface ReconcileResult {

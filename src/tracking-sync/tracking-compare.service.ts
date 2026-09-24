@@ -16,6 +16,7 @@ import { buildShadowKey } from './event-key.util';
 import { NormalizedEvent, SyncContext, Trackable, TrackableKind } from './tracking-sync.types';
 import { ApplyOutcome, CompareResult, NormalizedEventDto } from './compare.types';
 import { computeEffectiveLastOpTime, DispatchAnchor } from './route-op-time.util';
+import { routeDaysOf } from 'src/common/our-route-delivery.util';
 import { selectRouteDayFedexEvent, shouldForceFedexAtClosure } from './closure-stuck-resolver.util';
 
 interface CompareItem {
@@ -337,7 +338,7 @@ export class TrackingCompareService {
     const lastOpTime = computeEffectiveLastOpTime(rows, dispatches);
     let count08 = 0;
     for (const r of rows) if ((r.exceptionCode ?? '').trim() === '08') count08++;
-    const existing = { lastOpTime, count08 };
+    const existing = { lastOpTime, count08, ourRouteDays: routeDaysOf(dispatches) };
 
     const reconcile = this.reconciler.reconcile(
       normalized, knownKeys, entity.status, (e: NormalizedEvent) => e.shadowKey,

@@ -6,6 +6,7 @@ import { PackageDispatchHistory } from 'src/entities/package-dispatch-history.en
 import { buildShadowKey } from './event-key.util';
 import { ExistingState, TrackableKind } from './tracking-sync.types';
 import { computeEffectiveLastOpTime, DispatchAnchor } from './route-op-time.util';
+import { routeDaysOf } from 'src/common/our-route-delivery.util';
 
 /**
  * Lee (READ-ONLY) el historial existente de shipment_status y construye el set de
@@ -47,7 +48,7 @@ export class ExistingEventLoader {
     // (caso 383295956902). El shadow lo usa para que la paridad refleje el motor mejorado.
     const dispatches = await this.loadDispatchAnchors(id, kind);
     const lastOpTime = computeEffectiveLastOpTime(rows, dispatches);
-    return { keys, existing: { lastOpTime, count08 } };
+    return { keys, existing: { lastOpTime, count08, ourRouteDays: routeDaysOf(dispatches) } };
   }
 
   private async loadDispatchAnchors(id: string, kind: TrackableKind): Promise<DispatchAnchor[]> {
