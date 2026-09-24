@@ -267,6 +267,65 @@ describe('diagnoseGuide — entregado en otro día', () => {
   });
 });
 
+describe('diagnoseGuide — estatus exacto (no "otro estatus")', () => {
+  it('Sistema muestra el estatus real del día y FedEx el evento real', () => {
+    const f = facts('OTRO', {
+      systemDayStatus: 'en_ruta',
+      fedex: { ok: true, outcome: 'OTRO', outcomeAt: null, dex08Dates: [], lastCode: 'OD', latestOutcome: 'OTRO', deliveredDay: null, dayEventLabel: 'OD · En vehículo de FedEx para entrega' },
+    });
+    const r = diagnoseGuide(null, f, ctx());
+    expect(r.systemLabel).toBe('En ruta');
+    expect(r.fedexLabel).toBe('OD · En vehículo de FedEx para entrega');
+  });
+
+  it('sin historial del día usa el estatus vivo', () => {
+    const r = diagnoseGuide('POD', facts('POD', { systemOutcome: null, systemStatus: 'devuelto_a_fedex', incomes: [income('POD')] }), ctx());
+    expect(r.systemLabel).toBe('Devuelto a FedEx');
+    expect(r.explanation).toContain('Devuelto a FedEx');
+  });
+
+  it('"Entregado por FedEx" no es desfase: es entrega de FedEx y por regla no cobra (383519245821)', () => {
+    const r = diagnoseGuide('POD', facts('POD', { systemOutcome: null, systemStatus: 'entregado_por_fedex' }), ctx());
+    expect(r.cause).not.toBe('ESTATUS_DESFASADO');
+    expect(r).toMatchObject({ verdict: 'REGLA', expected: null, systemLabel: 'Entregado por FedEx' });
+    expect(r.explanation).toContain('FedEx');
+  });
+
+  it('"Entregado por FedEx" sin ruta nuestra no es "nunca salió a ruta"', () => {
+    const r = diagnoseGuide('POD', facts('POD', { systemOutcome: null, systemStatus: 'entregado_por_fedex', routes: [] }), ctx());
+    expect(r.cause).not.toBe('SIN_RUTA');
+    expect(r.verdict).toBe('REGLA');
+  });
+
+  it('"Entregado por FedEx" con ingreso → cobro de más', () => {
+    const r = diagnoseGuide('POD', facts('POD', { systemOutcome: null, systemStatus: 'entregado_por_fedex', incomes: [income('POD')] }), ctx());
+    expect(r.cause).toBe('COBRO_DE_MAS');
+  });
+
+  it('"Entregado en bodega" cuenta como POD', () => {
+    const r = diagnoseGuide('POD', facts('POD', { systemOutcome: null, systemStatus: 'entregado_en_bodega', routes: [], warehouseDelivered: true, incomes: [income('POD')] }), ctx());
+    expect(r.verdict).toBe('CUADRA');
+  });
+
+  it('POD/DEX se muestran con su código', () => {
+    const r = diagnoseGuide('POD', facts('POD', { incomes: [income('POD')] }), ctx());
+    expect(r).toMatchObject({ systemLabel: 'POD', fedexLabel: 'POD' });
+  });
+
+  it('FedEx sin movimiento ese día dice cuál fue su último evento', () => {
+    const f = facts(null, {
+      systemOutcome: null,
+      fedex: { ok: true, outcome: null, outcomeAt: null, dex08Dates: [], lastCode: 'DL', latestOutcome: 'POD', deliveredDay: '2026-09-23', latestEventLabel: 'DL · Entregado' },
+    });
+    expect(diagnoseGuide('POD', f, ctx()).fedexLabel).toBe('Sin movimiento ese día (último: DL · Entregado)');
+  });
+
+  it('FedEx no respondió', () => {
+    const f = facts('POD', { fedex: { ok: false, outcome: null, outcomeAt: null, dex08Dates: [], lastCode: null, latestOutcome: null, deliveredDay: null } });
+    expect(diagnoseGuide('POD', f, ctx()).fedexLabel).toBe('FedEx no respondió');
+  });
+});
+
 describe('summarize', () => {
   it('cuenta contado / FedEx / cobrado por Mark y por veredicto', () => {
     const rows = [

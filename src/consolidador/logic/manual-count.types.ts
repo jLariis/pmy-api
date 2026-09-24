@@ -19,6 +19,8 @@ export interface FedexLive {
   lastCode: string | null; // último eventType + código, informativo
   latestOutcome: DayOutcome; // desenlace del ÚLTIMO evento de FedEx (cualquier día)
   deliveredDay: string | null; // día Hermosillo en que FedEx la entregó (DL), si ya se entregó
+  dayEventLabel?: string | null; // evento de FedEx del día en llano (el elegido o el último del día)
+  latestEventLabel?: string | null; // último evento de FedEx en llano (cualquier día)
 }
 
 export interface RouteRef {
@@ -45,6 +47,7 @@ export interface GuideFacts {
   consolidado: { consNumber: string | null; day: string | null } | null;
   routes: RouteRef[];
   systemStatus: string | null; // estatus vivo guardado
+  systemDayStatus?: string | null; // estatus del último evento guardado ESE día (shipment_status)
   systemOutcome: DayOutcome; // desenlace del día según shipment_status
   systemDex08Dates: string[];
   fedex: FedexLive | null;
@@ -92,6 +95,10 @@ export interface DiagnosisRow {
   manual: Mark | null;
   fedexSays: DayOutcome;
   systemSays: DayOutcome;
+  /** Qué dice FedEx, exacto y en llano (p. ej. "OD · En vehículo de FedEx para entrega"). */
+  fedexLabel: string;
+  /** Qué tiene el sistema, exacto y en llano (p. ej. "En ruta", "Devuelto a FedEx"). */
+  systemLabel: string;
   charged: Mark[];
   expected: Mark | null;
   deliveredDay: string | null; // día real de entrega según FedEx (o el ingreso POD), si ya se entregó

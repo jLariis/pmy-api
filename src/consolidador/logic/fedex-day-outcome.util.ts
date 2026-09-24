@@ -1,5 +1,6 @@
 import { toHermosilloDateString } from 'src/common/utils';
 import { DayOutcome, FedexLive, Mark } from './manual-count.types';
+import { fedexEventLabel } from './status-labels.util';
 
 /**
  * De los `trackResults` de FedEx, la generación más reciente (secuencia del UniqueID más
@@ -45,11 +46,13 @@ export function extractFedexDayOutcome(trackResult: any, day: string): FedexLive
   const ofDay = dated.filter(({ at }) => toHermosilloDateString(at) === day);
   let outcome: DayOutcome = ofDay.length ? 'OTRO' : null;
   let outcomeAt: string | null = null;
+  let dayScan: any = [...ofDay].sort((a, b) => b.at.getTime() - a.at.getTime())[0]?.s ?? null;
   for (const mark of PRIORITY) {
     const hit = ofDay.filter(({ s }) => markOf(s) === mark).sort((a, b) => b.at.getTime() - a.at.getTime())[0];
     if (hit) {
       outcome = mark;
       outcomeAt = hit.at.toISOString();
+      dayScan = hit.s;
       break;
     }
   }
@@ -61,5 +64,9 @@ export function extractFedexDayOutcome(trackResult: any, day: string): FedexLive
   const lastDelivery = dated.filter(({ s }) => markOf(s) === 'POD').sort((a, b) => b.at.getTime() - a.at.getTime())[0];
   const deliveredDay = lastDelivery ? toHermosilloDateString(lastDelivery.at) : null;
 
-  return { ok: true, outcome, outcomeAt, dex08Dates, lastCode, latestOutcome, deliveredDay };
+  return {
+    ok: true, outcome, outcomeAt, dex08Dates, lastCode, latestOutcome, deliveredDay,
+    dayEventLabel: dayScan ? fedexEventLabel(dayScan) : null,
+    latestEventLabel: latest ? fedexEventLabel(latest) : null,
+  };
 }

@@ -238,6 +238,7 @@ export class ManualCountService {
         [...shipmentIds, start, end],
       );
       const dayMarks = new Map<string, Set<string>>();
+      const dayLast = new Map<string, { at: number; status: string }>();
       for (const r of evRows) {
         const tn = tnByShipment.get(String(r.shipmentId));
         if (!tn) continue;
@@ -248,11 +249,14 @@ export class ManualCountService {
         if (ts >= start && ts < end) {
           const st = String(r.status ?? '').toLowerCase();
           const m = st === 'entregado' ? 'POD' : code === '07' || st === 'rechazado' ? '07' : code === '08' ? '08' : 'OTRO';
+          const prev = dayLast.get(tn);
+          if (!prev || ts.getTime() >= prev.at) dayLast.set(tn, { at: ts.getTime(), status: String(r.status ?? '') });
           const set = dayMarks.get(tn) ?? new Set<string>();
           set.add(m);
           dayMarks.set(tn, set);
         }
       }
+      for (const [tn, last] of dayLast) out.get(tn)!.systemDayStatus = last.status || null;
       for (const [tn, set] of dayMarks) {
         out.get(tn)!.systemOutcome = (['POD', '07', '08', 'OTRO'] as const).find((m) => set.has(m)) ?? null;
       }

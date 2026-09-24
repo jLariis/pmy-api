@@ -1,5 +1,6 @@
 import { isoWeekKey } from 'src/common/dex08-week.util';
 import { toHermosilloDateString } from 'src/common/utils';
+import { systemStatusLabel } from './status-labels.util';
 import {
   Cause,
   ChainStep,
@@ -47,7 +48,8 @@ export function dex08WeekStatus(dates: string[], day: string): { visitsToDay: nu
 function outcomeFromStatus(status: string | null): DayOutcome {
   const st = String(status ?? '').toLowerCase();
   if (!st) return null;
-  if (st === 'entregado') return 'POD';
+  // Entregado en bodega y entregado por FedEx también son entregas (POD); el segundo no cobra.
+  if (st === 'entregado' || st === 'entregado_en_bodega' || st === 'entregado_por_fedex') return 'POD';
   if (st === 'rechazado') return '07';
   if (st === 'cliente_no_disponible') return '08';
   return 'OTRO';
@@ -74,9 +76,26 @@ export function diagnoseGuide(manual: Mark | null, f: GuideFacts, ctx: DiagnoseC
   // vivo de la guía: solo es desfase si de verdad contradice a FedEx.
   const fromHistory = f.systemOutcome !== null;
   const systemSays: DayOutcome = fromHistory ? f.systemOutcome : outcomeFromStatus(f.systemStatus);
+  // FedEx la entregó directamente (no nuestra ruta): es entrega real, pero NO genera ingreso.
+  const deliveredByFedex = [f.systemDayStatus, f.systemStatus].some((s) => String(s ?? '').toLowerCase() === 'entregado_por_fedex');
   const truth: DayOutcome = fedexOk ? f.fedex!.outcome : systemSays;
-  /** Lo que tiene el sistema, con el estatus real cuando no es un desenlace (p. ej. "en_ruta"). */
-  const systemTxt = systemSays === 'OTRO' && f.systemStatus ? `"${f.systemStatus.replace(/_/g, ' ')}"` : label(systemSays);
+  // Texto EXACTO de lo que tiene el sistema y de lo que dice FedEx (nunca "otro estatus").
+  const liveStatus = fromHistory ? f.systemDayStatus ?? f.systemStatus : f.systemStatus;
+  const systemLabel = isMark(systemSays) && !(deliveredByFedex || String(liveStatus ?? '') === 'entregado_en_bodega')
+    ? MARK_LABEL[systemSays]
+    : systemStatusLabel(liveStatus);
+  const systemTxt = `"${systemLabel}"`;
+  const fedexLabel = !f.fedex
+    ? 'No consultado'
+    : !f.fedex.ok
+      ? 'FedEx no respondió'
+      : isMark(f.fedex.outcome)
+        ? MARK_LABEL[f.fedex.outcome]
+        : f.fedex.outcome === 'OTRO'
+          ? f.fedex.dayEventLabel ?? 'Otro evento'
+          : `Sin movimiento ese día${f.fedex.latestEventLabel ? ` (último: ${f.fedex.latestEventLabel})` : ''}`;
+  /** El desenlace que se toma como verdad, en texto exacto (FedEx si respondió; si no, el sistema). */
+  const truthTxt = fedexOk ? fedexLabel : systemLabel;
   const dayIncomes = f.incomes.filter((i) => i.active && i.day === day);
   const charged = dayIncomes.map((i) => i.mark).filter((m): m is Mark => !!m);
 
@@ -96,14 +115,14 @@ export function diagnoseGuide(manual: Mark | null, f: GuideFacts, ctx: DiagnoseC
     for (const [s, l] of [[2, 'Consolidado registrado'], [3, 'Salió a ruta'], [4, 'Ruta del mismo día'], [6, 'Reglas de cobro'], [7, 'Ingreso registrado']] as const) {
       push(s, l, null, 'Carga F2: se cobra por carga, no por guía.');
     }
-    push(5, 'FedEx en vivo', fedexOk ? true : null, fedexOk ? `FedEx dice ${label(fedexSays)}.` : 'FedEx no respondió.');
+    push(5, 'FedEx en vivo', fedexOk ? true : null, fedexOk ? `FedEx dice ${fedexLabel}.` : 'FedEx no respondió.');
     chain.sort((a, b) => a.step - b.step);
     const counted = manual === truth || (!manual && !isMark(truth));
-    push(8, 'Conteo del usuario', counted, counted ? 'El conteo coincide.' : `Contó ${manual ? MARK_LABEL[manual] : 'nada'}, el desenlace es ${label(truth)}.`);
+    push(8, 'Conteo del usuario', counted, counted ? 'El conteo coincide.' : `Contó ${manual ? MARK_LABEL[manual] : 'nada'}, el desenlace es ${truthTxt}.`);
     return {
-      trackingNumber: f.trackingNumber, manual, fedexSays, systemSays, charged: [], expected: null, deliveredDay: f.fedex?.deliveredDay ?? null,
+      trackingNumber: f.trackingNumber, manual, fedexSays, systemSays, fedexLabel, systemLabel, charged: [], expected: null, deliveredDay: f.fedex?.deliveredDay ?? null,
       verdict: counted ? 'CUADRA' : 'ERROR_CONTEO', cause: counted ? null : 'F2_INFORMATIVO', subCause: null,
-      explanation: counted ? 'Carga F2: el conteo coincide (el cobro es por carga).' : `Carga F2: contó ${manual ? MARK_LABEL[manual] : 'nada'} pero el desenlace es ${label(truth)}.`,
+      explanation: counted ? 'Carga F2: el conteo coincide (el cobro es por carga).' : `Carga F2: contó ${manual ? MARK_LABEL[manual] : 'nada'} pero el desenlace es ${truthTxt}.`,
       chain, cost: null, incomeIds: [],
     };
   }
@@ -124,16 +143,19 @@ export function diagnoseGuide(manual: Mark | null, f: GuideFacts, ctx: DiagnoseC
   } else if (f.warehouseDelivered && truth === 'POD') {
     push(3, 'Salió a ruta', null, 'Entregado en bodega: no necesita ruta.');
     push(4, 'Ruta del mismo día', null, 'Entregado en bodega.');
+  } else if (deliveredByFedex && truth === 'POD') {
+    push(3, 'Salió a ruta', null, 'La entregó FedEx directamente: no pasa por nuestra ruta.');
+    push(4, 'Ruta del mismo día', null, 'Entregado por FedEx.');
   } else if (!f.routes.length) {
     push(3, 'Salió a ruta', false, 'La guía nunca estuvo en una salida a ruta.');
     push(4, 'Ruta del mismo día', null, 'Sin ruta.');
     const cobrado = charged.length ? ` y aun así se cobró ${charged.map((m) => MARK_LABEL[m]).join(' + ')}` : '';
-    breakAt('SIN_RUTA', `FedEx reporta ${label(truth)} pero la guía nunca salió a ruta con nosotros ni se entregó en bodega${cobrado}.`);
+    breakAt('SIN_RUTA', `FedEx reporta ${truthTxt} pero la guía nunca salió a ruta con nosotros ni se entregó en bodega${cobrado}.`);
   } else if (!routesToday.length) {
     const other = f.routes.map((r) => `${r.folio ?? 'ruta'} (${r.routeDay ?? '—'})`).join(', ');
     push(3, 'Salió a ruta', true, `Rutas: ${other}.`);
     push(4, 'Ruta del mismo día', false, `Ninguna ruta es del ${day}.`);
-    breakAt('RUTA_OTRO_DIA', `El desenlace ${label(truth)} es del ${day} pero la ruta salió otro día: ${other}.`);
+    breakAt('RUTA_OTRO_DIA', `El desenlace ${truthTxt} es del ${day} pero la ruta salió otro día: ${other}.`);
   } else {
     const r = routesToday.map((x) => x.folio ?? 'ruta').join(', ');
     push(3, 'Salió a ruta', true, `Ruta ${r}.`);
@@ -144,16 +166,17 @@ export function diagnoseGuide(manual: Mark | null, f: GuideFacts, ctx: DiagnoseC
   if (!f.kind) push(5, 'FedEx en vivo', null, 'No aplica.');
   else if (!fedexOk) push(5, 'FedEx en vivo', null, 'FedEx no respondió; se usa el estatus del sistema.');
   else if (fromHistory && isMark(truth) && systemSays !== truth) {
-    push(5, 'FedEx en vivo', false, `FedEx dice ${label(truth)}, el sistema tiene ${systemTxt}.`);
-    breakAt('ESTATUS_DESFASADO', `Nuestro estatus está desfasado: FedEx dice ${label(truth)} y el sistema tiene ${systemTxt}.`);
+    push(5, 'FedEx en vivo', false, `FedEx dice ${truthTxt}, el sistema tiene ${systemTxt}.`);
+    breakAt('ESTATUS_DESFASADO', `Nuestro estatus está desfasado: FedEx dice ${truthTxt} y el sistema tiene ${systemTxt}.`);
   } else if (!fromHistory && isMark(f.fedex!.latestOutcome) && systemSays !== f.fedex!.latestOutcome) {
     // Sin historial del día, el estatus vivo solo se puede comparar con lo ÚLTIMO de FedEx
     // (p. ej. un 08 del día y entregada después es correcto, no desfase).
     const latest = f.fedex!.latestOutcome;
-    push(5, 'FedEx en vivo', false, `Lo último de FedEx es ${label(latest)}, el estatus actual de la guía es ${systemTxt}.`);
-    breakAt('ESTATUS_DESFASADO', `Nuestro estatus está desfasado: lo último de FedEx es ${label(latest)} y la guía tiene ${systemTxt}.`);
+    const latestTxt = f.fedex!.latestEventLabel ?? label(latest);
+    push(5, 'FedEx en vivo', false, `Lo último de FedEx es ${latestTxt}, el estatus actual de la guía es ${systemTxt}.`);
+    breakAt('ESTATUS_DESFASADO', `Nuestro estatus está desfasado: lo último de FedEx es ${latestTxt} y la guía tiene ${systemTxt}.`);
   } else {
-    push(5, 'FedEx en vivo', true, `FedEx dice ${label(fedexSays)}.${fromHistory || !isMark(truth) ? '' : ' (Sin historial del día; el estatus actual de la guía coincide con FedEx.)'}`);
+    push(5, 'FedEx en vivo', true, `FedEx dice ${fedexLabel}.${fromHistory || !isMark(truth) ? '' : ' (Sin historial del día; el estatus actual de la guía coincide con FedEx.)'}`);
   }
 
   // 6. Reglas de cobro → qué se esperaba cobrar ese día.
@@ -165,7 +188,8 @@ export function diagnoseGuide(manual: Mark | null, f: GuideFacts, ctx: DiagnoseC
   } else if (route315) {
     noChargeWhy = 'la ruta es 31.5 (no cobra por guía)';
   } else if (truth === 'POD') {
-    if (f.returned) noChargeWhy = 'la devolución anula el ingreso de entregado';
+    if (deliveredByFedex) noChargeWhy = 'la entregó FedEx directamente, no nuestra ruta';
+    else if (f.returned) noChargeWhy = 'la devolución anula el ingreso de entregado';
     else if (!ctx.isChargeable('DELIVERED')) noChargeWhy = 'la regla de cobro de la sucursal no cobra entregados';
     else expected = 'POD';
   } else if (truth === '07') {
@@ -255,7 +279,7 @@ export function diagnoseGuide(manual: Mark | null, f: GuideFacts, ctx: DiagnoseC
     cause = 'ERROR_CONTEO';
     explanation = !manual
       ? `El usuario no la contó, pero corresponde ${MARK_LABEL[expected!]} y así está cobrada.`
-      : `Contó ${MARK_LABEL[manual]} pero FedEx dice ${label(truth)}${expected ? ` y se cobró ${MARK_LABEL[expected]}` : ''}.`;
+      : `Contó ${MARK_LABEL[manual]} pero FedEx dice ${truthTxt}${expected ? ` y se cobró ${MARK_LABEL[expected]}` : ''}.`;
   }
 
   return {
@@ -263,6 +287,8 @@ export function diagnoseGuide(manual: Mark | null, f: GuideFacts, ctx: DiagnoseC
     manual,
     fedexSays,
     systemSays,
+    fedexLabel,
+    systemLabel,
     charged,
     expected,
     deliveredDay,

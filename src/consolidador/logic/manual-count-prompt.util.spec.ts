@@ -6,6 +6,8 @@ const row = (tn: string, over: Partial<DiagnosisRow> = {}): DiagnosisRow => ({
   manual: '08',
   fedexSays: '08',
   systemSays: '08',
+  fedexLabel: 'DEX08',
+  systemLabel: 'DEX08',
   charged: ['08'],
   expected: null,
   deliveredDay: null,
