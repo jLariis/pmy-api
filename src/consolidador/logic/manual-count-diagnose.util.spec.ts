@@ -32,7 +32,7 @@ const facts = (outcome: Mark | 'OTRO' | null, over: Partial<GuideFacts> = {}): G
   systemStatus: 'entregado',
   systemOutcome: outcome,
   systemDex08Dates: [],
-  fedex: { ok: true, outcome, outcomeAt: null, dex08Dates: [], lastCode: null, latestOutcome: outcome },
+  fedex: { ok: true, outcome, outcomeAt: null, dex08Dates: [], lastCode: null, latestOutcome: outcome, deliveredDay: outcome === 'POD' ? DAY : null },
   incomes: [],
   returned: false,
   warehouseDelivered: false,
@@ -41,7 +41,7 @@ const facts = (outcome: Mark | 'OTRO' | null, over: Partial<GuideFacts> = {}): G
 
 const d08 = (...isos: string[]) => ({
   systemDex08Dates: isos,
-  fedex: { ok: true, outcome: '08' as const, outcomeAt: null, dex08Dates: isos, lastCode: 'DE 08', latestOutcome: '08' as const },
+  fedex: { ok: true, outcome: '08' as const, outcomeAt: null, dex08Dates: isos, lastCode: 'DE 08', latestOutcome: '08' as const, deliveredDay: null },
 });
 
 describe('diagnoseGuide — casos reales Hermosillo 22-09', () => {
@@ -149,7 +149,7 @@ describe('diagnoseGuide — cadena de validaciones', () => {
     const f = facts('08', {
       systemOutcome: null,
       systemStatus: 'entregado',
-      fedex: { ok: true, outcome: '08', outcomeAt: null, dex08Dates: ['2026-09-22T18:00:00Z'], lastCode: 'DL', latestOutcome: 'POD' },
+      fedex: { ok: true, outcome: '08', outcomeAt: null, dex08Dates: ['2026-09-22T18:00:00Z'], lastCode: 'DL', latestOutcome: 'POD', deliveredDay: '2026-09-23' },
     });
     const r = diagnoseGuide('08', f, ctx());
     expect(r.cause).not.toBe('ESTATUS_DESFASADO');
@@ -157,7 +157,7 @@ describe('diagnoseGuide — cadena de validaciones', () => {
   });
 
   it('FedEx caído → usa el desenlace del sistema', () => {
-    const f = facts('POD', { fedex: { ok: false, outcome: null, outcomeAt: null, dex08Dates: [], lastCode: null, latestOutcome: null }, incomes: [income('POD')] });
+    const f = facts('POD', { fedex: { ok: false, outcome: null, outcomeAt: null, dex08Dates: [], lastCode: null, latestOutcome: null, deliveredDay: null }, incomes: [income('POD')] });
     const r = diagnoseGuide('POD', f, ctx());
     expect(r).toMatchObject({ verdict: 'CUADRA', fedexSays: null });
     expect(r.chain.find((s) => s.step === 5)?.ok).toBeNull();
@@ -235,6 +235,38 @@ describe('diagnoseGuide — cadena de validaciones', () => {
   });
 });
 
+describe('diagnoseGuide — entregado en otro día', () => {
+  const otherDay = (over: Partial<GuideFacts> = {}) =>
+    facts('08', {
+      fedex: { ok: true, outcome: '08', outcomeAt: null, dex08Dates: ['2026-09-23T01:17:00Z'], lastCode: 'DL', latestOutcome: 'POD', deliveredDay: '2026-09-23' },
+      systemDex08Dates: ['2026-09-23T01:17:00Z'],
+      ...over,
+    });
+
+  it('contó POD pero FedEx la entregó otro día (y ese día sí se cobró) → resultado propio', () => {
+    const r = diagnoseGuide('POD', otherDay({ incomes: [income('POD', { day: '2026-09-23' })] }), ctx());
+    expect(r).toMatchObject({ verdict: 'OTRO_DIA', cause: 'ENTREGADO_OTRO_DIA', deliveredDay: '2026-09-23' });
+    expect(r.explanation).toContain('2026-09-23');
+    expect(r.explanation).toContain('sí se cobró');
+  });
+
+  it('entregada otro día y ese día NO se cobró → lo avisa', () => {
+    const r = diagnoseGuide('POD', otherDay(), ctx());
+    expect(r.verdict).toBe('OTRO_DIA');
+    expect(r.explanation).toContain('no se cobró');
+  });
+
+  it('si además hay error del sistema ese día, gana el error del sistema', () => {
+    const r = diagnoseGuide('POD', otherDay({ incomes: [income('POD'), income('POD', { id: 'i2', day: '2026-09-23' })] }), ctx());
+    expect(r.verdict).toBe('ERROR_SISTEMA');
+    expect(r.deliveredDay).toBe('2026-09-23');
+  });
+
+  it('entregada el mismo día → no aplica', () => {
+    expect(diagnoseGuide('POD', facts('POD', { incomes: [income('POD')] }), ctx())).toMatchObject({ verdict: 'CUADRA' });
+  });
+});
+
 describe('summarize', () => {
   it('cuenta contado / FedEx / cobrado por Mark y por veredicto', () => {
     const rows = [
@@ -245,6 +277,6 @@ describe('summarize', () => {
     expect(t.manual).toEqual({ POD: 1, '07': 0, '08': 1 });
     expect(t.fedex).toEqual({ POD: 1, '07': 0, '08': 1 });
     expect(t.charged).toEqual({ POD: 1, '07': 0, '08': 1 });
-    expect(t.byVerdict).toEqual({ CUADRA: 1, ERROR_SISTEMA: 1, ERROR_CONTEO: 0, REGLA: 0 });
+    expect(t.byVerdict).toEqual({ CUADRA: 1, ERROR_SISTEMA: 1, ERROR_CONTEO: 0, REGLA: 0, OTRO_DIA: 0 });
   });
 });

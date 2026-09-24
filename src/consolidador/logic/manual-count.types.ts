@@ -18,6 +18,7 @@ export interface FedexLive {
   dex08Dates: string[]; // TODOS los 08 que reporta FedEx (cualquier día)
   lastCode: string | null; // último eventType + código, informativo
   latestOutcome: DayOutcome; // desenlace del ÚLTIMO evento de FedEx (cualquier día)
+  deliveredDay: string | null; // día Hermosillo en que FedEx la entregó (DL), si ya se entregó
 }
 
 export interface RouteRef {
@@ -59,8 +60,8 @@ export interface DiagnoseContext {
   isChargeable(code: 'DELIVERED' | '07' | '08'): boolean;
 }
 
-export type Verdict = 'CUADRA' | 'ERROR_SISTEMA' | 'ERROR_CONTEO' | 'REGLA';
-export const VERDICTS: Verdict[] = ['CUADRA', 'ERROR_SISTEMA', 'ERROR_CONTEO', 'REGLA'];
+export type Verdict = 'CUADRA' | 'ERROR_SISTEMA' | 'ERROR_CONTEO' | 'REGLA' | 'OTRO_DIA';
+export const VERDICTS: Verdict[] = ['CUADRA', 'ERROR_SISTEMA', 'ERROR_CONTEO', 'REGLA', 'OTRO_DIA'];
 
 export type Cause =
   | 'NO_EXISTE'
@@ -76,7 +77,8 @@ export type Cause =
   | 'MONTO_INCORRECTO'
   | 'ERROR_CONTEO'
   | 'REGLA_NO_COBRA'
-  | 'F2_INFORMATIVO';
+  | 'F2_INFORMATIVO'
+  | 'ENTREGADO_OTRO_DIA';
 
 export interface ChainStep {
   step: number;
@@ -92,6 +94,7 @@ export interface DiagnosisRow {
   systemSays: DayOutcome;
   charged: Mark[];
   expected: Mark | null;
+  deliveredDay: string | null; // día real de entrega según FedEx (o el ingreso POD), si ya se entregó
   verdict: Verdict;
   cause: Cause | null;
   subCause: string | null;

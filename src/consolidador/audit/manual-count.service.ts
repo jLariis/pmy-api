@@ -87,7 +87,7 @@ export class ManualCountService {
       const c = this.cached(tn);
       const live: FedexLive = c?.ok
         ? extractFedexDayOutcome(selectLatestGeneration(c.results), day)
-        : { ok: false, outcome: null, outcomeAt: null, dex08Dates: [], lastCode: null, latestOutcome: null };
+        : { ok: false, outcome: null, outcomeAt: null, dex08Dates: [], lastCode: null, latestOutcome: null, deliveredDay: null };
       if (!live.ok) fedexFailures++;
       f.fedex = live;
     }

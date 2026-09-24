@@ -97,7 +97,7 @@ export const CAUSE_CODE_MAP: Partial<Record<Cause, CauseCodeInfo>> = {
   },
 };
 
-const SYSTEM_EXCLUDED: Cause[] = ['ERROR_CONTEO', 'REGLA_NO_COBRA', 'F2_INFORMATIVO'];
+const SYSTEM_EXCLUDED: Cause[] = ['ERROR_CONTEO', 'REGLA_NO_COBRA', 'F2_INFORMATIVO', 'ENTREGADO_OTRO_DIA'];
 const MAX_EXAMPLES = 10;
 
 const markLine = (label: string, rec: Record<Mark, number>) =>

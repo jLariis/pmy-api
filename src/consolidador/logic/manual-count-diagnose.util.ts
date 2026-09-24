@@ -101,7 +101,7 @@ export function diagnoseGuide(manual: Mark | null, f: GuideFacts, ctx: DiagnoseC
     const counted = manual === truth || (!manual && !isMark(truth));
     push(8, 'Conteo del usuario', counted, counted ? 'El conteo coincide.' : `Contó ${manual ? MARK_LABEL[manual] : 'nada'}, el desenlace es ${label(truth)}.`);
     return {
-      trackingNumber: f.trackingNumber, manual, fedexSays, systemSays, charged: [], expected: null,
+      trackingNumber: f.trackingNumber, manual, fedexSays, systemSays, charged: [], expected: null, deliveredDay: f.fedex?.deliveredDay ?? null,
       verdict: counted ? 'CUADRA' : 'ERROR_CONTEO', cause: counted ? null : 'F2_INFORMATIVO', subCause: null,
       explanation: counted ? 'Carga F2: el conteo coincide (el cobro es por carga).' : `Carga F2: contó ${manual ? MARK_LABEL[manual] : 'nada'} pero el desenlace es ${label(truth)}.`,
       chain, cost: null, incomeIds: [],
@@ -229,11 +229,22 @@ export function diagnoseGuide(manual: Mark | null, f: GuideFacts, ctx: DiagnoseC
   const countOk = manual === expected || (!manual && !expected);
   push(8, 'Conteo del usuario', countOk, countOk ? 'El conteo coincide.' : `Contó ${manual ? MARK_LABEL[manual] : 'nada'}, se esperaba ${expected ? MARK_LABEL[expected] : 'no cobrar'}.`);
 
+  // Día real de entrega: FedEx; si no respondió, el día del ingreso POD activo.
+  const deliveredDay = f.fedex?.deliveredDay ?? f.incomes.find((i) => i.active && i.mark === 'POD')?.day ?? null;
+
   let verdict: Verdict;
   if (cause) verdict = 'ERROR_SISTEMA';
   else if (countOk) {
     verdict = 'CUADRA';
     explanation = expected ? `Cuadra: ${MARK_LABEL[expected]} contado y cobrado.` : 'Cuadra: no cobra y no se contó.';
+  } else if (manual === 'POD' && truth !== 'POD' && deliveredDay && deliveredDay !== day) {
+    // Contó POD un día en que no se entregó: FedEx la entregó otro día.
+    verdict = 'OTRO_DIA';
+    cause = 'ENTREGADO_OTRO_DIA';
+    const chargedThatDay = f.incomes.some((i) => i.active && i.mark === 'POD' && i.day === deliveredDay);
+    subCause = `Entregada el ${deliveredDay}`;
+    explanation = `FedEx la entregó el ${deliveredDay}, no el ${day}${truth === '08' || truth === '07' ? ` (ese día tuvo ${label(truth)})` : ''}; `
+      + (chargedThatDay ? `el ${deliveredDay} sí se cobró POD.` : `el ${deliveredDay} no se cobró POD: revisa ese día.`);
   } else if (manual && manual === truth && !expected) {
     verdict = 'REGLA';
     cause = 'REGLA_NO_COBRA';
@@ -254,6 +265,7 @@ export function diagnoseGuide(manual: Mark | null, f: GuideFacts, ctx: DiagnoseC
     systemSays,
     charged,
     expected,
+    deliveredDay,
     verdict,
     cause,
     subCause,

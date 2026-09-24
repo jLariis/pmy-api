@@ -32,7 +32,7 @@ function markOf(scan: any): Mark | null {
  */
 export function extractFedexDayOutcome(trackResult: any, day: string): FedexLive {
   const scans: any[] = trackResult?.scanEvents ?? [];
-  if (!trackResult) return { ok: false, outcome: null, outcomeAt: null, dex08Dates: [], lastCode: null, latestOutcome: null };
+  if (!trackResult) return { ok: false, outcome: null, outcomeAt: null, dex08Dates: [], lastCode: null, latestOutcome: null, deliveredDay: null };
 
   const dated = scans
     .filter((s) => s?.date && !Number.isNaN(new Date(s.date).getTime()))
@@ -58,6 +58,8 @@ export function extractFedexDayOutcome(trackResult: any, day: string): FedexLive
   const lastCode = latest ? `${latest.eventType ?? ''}${latest.exceptionCode ? ` ${latest.exceptionCode}` : ''}`.trim() : null;
 
   const latestOutcome: DayOutcome = latest ? markOf(latest) ?? 'OTRO' : null;
+  const lastDelivery = dated.filter(({ s }) => markOf(s) === 'POD').sort((a, b) => b.at.getTime() - a.at.getTime())[0];
+  const deliveredDay = lastDelivery ? toHermosilloDateString(lastDelivery.at) : null;
 
-  return { ok: true, outcome, outcomeAt, dex08Dates, lastCode, latestOutcome };
+  return { ok: true, outcome, outcomeAt, dex08Dates, lastCode, latestOutcome, deliveredDay };
 }

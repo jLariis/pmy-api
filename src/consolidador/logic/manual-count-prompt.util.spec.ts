@@ -8,6 +8,7 @@ const row = (tn: string, over: Partial<DiagnosisRow> = {}): DiagnosisRow => ({
   systemSays: '08',
   charged: ['08'],
   expected: null,
+  deliveredDay: null,
   verdict: 'ERROR_SISTEMA',
   cause: 'COBRO_DE_MAS',
   subCause: 'DEX08 con 1 visita en la semana',
@@ -27,7 +28,7 @@ const report = (rows: DiagnosisRow[]): ManualCountReport => ({
     manual: { POD: 60, '07': 0, '08': 2 },
     fedex: { POD: 60, '07': 0, '08': 2 },
     charged: { POD: 60, '07': 0, '08': 2 },
-    byVerdict: { CUADRA: 60, ERROR_SISTEMA: 2, ERROR_CONTEO: 0, REGLA: 0 },
+    byVerdict: { CUADRA: 60, ERROR_SISTEMA: 2, ERROR_CONTEO: 0, REGLA: 0, OTRO_DIA: 0 },
   },
   rows,
 });

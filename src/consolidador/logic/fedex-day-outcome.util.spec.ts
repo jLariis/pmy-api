@@ -42,6 +42,12 @@ describe('extractFedexDayOutcome', () => {
     expect(r).toMatchObject({ outcome: '08', latestOutcome: 'POD' });
   });
 
+  it('deliveredDay = día Hermosillo de la entrega (DL), aunque sea otro día', () => {
+    const r = extractFedexDayOutcome(track([ev('DE', '2026-09-14T18:17:00-07:00', '08'), ev('DL', '2026-09-15T12:04:00-07:00')]), '2026-09-14');
+    expect(r).toMatchObject({ outcome: '08', deliveredDay: '2026-09-15' });
+    expect(extractFedexDayOutcome(track([ev('DE', '2026-09-14T18:17:00-07:00', '08')]), '2026-09-14').deliveredDay).toBeNull();
+  });
+
   it('sin eventos del día → null', () => {
     const r = extractFedexDayOutcome(track([ev('DL', '2026-09-23T12:00:00-07:00')]), '2026-09-22');
     expect(r).toMatchObject({ ok: true, outcome: null });
