@@ -128,3 +128,35 @@ describe('auditShipmentCobros — F2 se marca', () => {
     expect(out[0]).toEqual(expect.objectContaining({ isF2: true }));
   });
 });
+
+describe('auditShipmentCobros — entregado en bodega', () => {
+  it('entregado en bodega sin ingreso → FALTA (missing entregado, dice bodega)', () => {
+    const out = auditShipmentCobros(base({
+      currentStatus: 'entregado_en_bodega',
+      events: [ev('entregado_en_bodega', null, '2026-08-25T20:00:00Z')],
+    }));
+    expect(out).toEqual([expect.objectContaining({ rule: 'entregado', discrepancy: 'missing' })]);
+    expect(out[0].reason).toContain('bodega');
+  });
+
+  it('entregado en bodega con su ingreso → OK', () => {
+    const out = auditShipmentCobros(base({
+      currentStatus: 'entregado_en_bodega',
+      events: [ev('entregado_en_bodega', null, '2026-08-25T20:00:00Z')],
+      incomes: [inc('entregado', '', '2026-08-25T07:00:00Z')],
+    }));
+    expect(out).toEqual([]);
+  });
+
+  it('entregado en bodega con un DEX08 de 1 visita cobrado → falta entregado y sobra el DEX (se reemplaza)', () => {
+    const out = auditShipmentCobros(base({
+      currentStatus: 'entregado_en_bodega',
+      events: [ev('cliente_no_disponible', '08', '2026-08-24T20:00:00Z'), ev('entregado_en_bodega', null, '2026-08-25T20:00:00Z')],
+      incomes: [inc('no_entregado', '08', '2026-08-24T07:00:00Z')],
+    }));
+    expect(out).toEqual(expect.arrayContaining([
+      expect.objectContaining({ rule: 'entregado', discrepancy: 'missing' }),
+      expect.objectContaining({ rule: 'no_entregado', discrepancy: 'extra', subCode: '08' }),
+    ]));
+  });
+});

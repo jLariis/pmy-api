@@ -55,7 +55,9 @@ export function auditShipmentCobros(input: ShipmentAuditInput): CobroFinding[] {
   const current = low(input.currentStatus);
 
   // --- Señales de la semana ---
-  const deliveredEvent = input.events.some((e) => low(e.status) === 'entregado');
+  // Entregado en bodega también es entrega final y cobra ENTREGADO (misma regla que pick-up).
+  const warehouseEvent = input.events.some((e) => low(e.status) === 'entregado_en_bodega');
+  const deliveredEvent = warehouseEvent || input.events.some((e) => low(e.status) === 'entregado');
   const rejected07 = input.events.some((e) => (e.exceptionCode ?? '').trim() === '07' || low(e.status) === 'rechazado');
   const days08 = new Set(
     input.events.filter((e) => (e.exceptionCode ?? '').trim() === '08').map((e) => dex08DayKey(e.timestamp)),
@@ -67,9 +69,9 @@ export function auditShipmentCobros(input: ShipmentAuditInput): CobroFinding[] {
   const noEntIncomes = input.incomes.filter((i) => low(i.incomeType) === 'no_entregado');
 
   // --- Regla ENTREGADO ---
-  const entregadoJustified = deliveredEvent || current === 'entregado';
+  const entregadoJustified = deliveredEvent || current === 'entregado' || current === 'entregado_en_bodega';
   if (deliveredEvent && entregadoIncomes === 0) {
-    mk('entregado', 'missing', null, 'Entregado en la semana sin ingreso');
+    mk('entregado', 'missing', null, warehouseEvent ? 'Entregado en bodega sin ingreso' : 'Entregado en la semana sin ingreso');
   }
   const entExtra = entregadoIncomes - (entregadoJustified ? 1 : 0);
   if (entExtra > 0) {

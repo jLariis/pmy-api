@@ -111,18 +111,45 @@ describe('ConsolidadorStatusService.searchBatch', () => {
 });
 
 describe('ConsolidadorStatusService.repairIncome', () => {
-  function makeRepair(opts: { shipment?: any; existingIncome?: any }) {
+  function makeRepair(opts: { shipment?: any; existingIncome?: any; warehouseDate?: string }) {
     let created: any = null;
+    let updated: any = null;
     const shipmentRepo: any = { findOne: async () => opts.shipment ?? null };
     const incomeRepo: any = {
-      findOne: async () => opts.existingIncome ?? null,
+      find: async () => (opts.existingIncome ? [opts.existingIncome] : []),
+      findOne: async () => (opts.existingIncome ? { ...opts.existingIncome, ...updated } : null),
       create: (x: any) => { created = { ...x, id: 'inc-new' }; return created; },
       save: async (x: any) => x,
+      update: async (_id: string, patch: any) => { updated = patch; },
+      manager: { query: async () => (opts.warehouseDate ? [{ date: opts.warehouseDate }] : []) },
     };
     const audit: any = { record: async () => undefined };
     const svc = new ConsolidadorStatusService(shipmentRepo, incomeRepo, { getLatestStatus: async () => ({}) } as any, audit);
-    return { svc, getCreated: () => created };
+    return { svc, getCreated: () => created, getUpdated: () => updated };
   }
+
+  it('entregado en bodega sin ingreso → crea ENTREGADO fechado al día de la entrega', async () => {
+    const { svc, getCreated } = makeRepair({
+      shipment: { id: 's1', trackingNumber: 'T1', status: ShipmentStatusType.ENTREGADO_EN_BODEGA, shipmentType: 'fedex', subsidiary: { fedexCostPackage: 113 } },
+      warehouseDate: '2026-09-22T20:00:00Z',
+    });
+    const res = await svc.repairIncome('s1', 'bodega', 'u1');
+    expect(res.created).toBe(true);
+    expect(getCreated()).toMatchObject({ incomeType: 'entregado', cost: 113 });
+    expect(new Date(getCreated().date).toISOString()).toBe('2026-09-22T07:00:00.000Z');
+  });
+
+  it('entregado en bodega con DEX previo → reemplaza el DEX por ENTREGADO (no duplica)', async () => {
+    const { svc, getCreated, getUpdated } = makeRepair({
+      shipment: { id: 's1', trackingNumber: 'T1', status: ShipmentStatusType.ENTREGADO_EN_BODEGA, shipmentType: 'fedex', subsidiary: { fedexCostPackage: 113 } },
+      existingIncome: { id: 'dex', incomeType: 'no_entregado', nonDeliveryStatus: '08', cost: '113', date: new Date(), shipment: { id: 's1' }, charge: null },
+      warehouseDate: '2026-09-22T20:00:00Z',
+    });
+    const res = await svc.repairIncome('s1', 'bodega', 'u1');
+    expect(res.created).toBe(true);
+    expect(getCreated()).toBeNull();
+    expect(getUpdated()).toMatchObject({ incomeType: 'entregado', nonDeliveryStatus: null });
+  });
 
   it('crea income con fedexCostPackage cuando el estatus es cobrable y no hay ingreso', async () => {
     const { svc, getCreated } = makeRepair({

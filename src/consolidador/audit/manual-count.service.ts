@@ -136,14 +136,17 @@ export class ManualCountService {
        UNION
        SELECT s.trackingNumber FROM shipment s JOIN shipment_status ss ON ss.shipmentId = s.id
         WHERE s.subsidiaryId = ? AND LOWER(s.shipmentType) = 'fedex' AND ss.timestamp >= ? AND ss.timestamp < ?
-          AND (LOWER(ss.status) IN ('entregado','rechazado') OR ss.exceptionCode IN ('07','08'))
+          AND (LOWER(ss.status) IN ('entregado','entregado_en_bodega','rechazado') OR ss.exceptionCode IN ('07','08'))
+       UNION
+       SELECT wd.trackingNumber FROM warehouse_delivery wd
+        WHERE wd.subsidiaryId = ? AND wd.date >= ? AND wd.date < ?
        UNION
        SELECT COALESCE(s.trackingNumber, cs.trackingNumber) FROM package_dispatch pd
          JOIN package_dispatch_history h ON h.dispatchId = pd.id
          LEFT JOIN shipment s ON s.id = h.shipmentId
          LEFT JOIN charge_shipment cs ON cs.id = h.chargeShipmentId
         WHERE pd.subsidiaryId = ? AND pd.routeDate = ?`,
-      [subsidiaryId, start, end, subsidiaryId, start, end, subsidiaryId, day],
+      [subsidiaryId, start, end, subsidiaryId, start, end, subsidiaryId, start, end, subsidiaryId, day],
     );
     return rows.map((r: any) => r.tn).filter(Boolean).map(String);
   }
@@ -188,6 +191,7 @@ export class ManualCountService {
     for (const [tn, r] of chosen) {
       const f = out.get(tn)!;
       f.kind = r.kind;
+      f.shipmentId = r.kind === 'shipment' ? r.id : null;
       f.subsidiaryId = r.subsidiaryId ?? null;
       f.systemStatus = r.status ?? null;
       // Envío: el consolidado registrado. Carga F2: la carga misma hace de constancia.
@@ -248,7 +252,7 @@ export class ManualCountService {
         if (code === '08') f.systemDex08Dates.push(ts.toISOString());
         if (ts >= start && ts < end) {
           const st = String(r.status ?? '').toLowerCase();
-          const m = st === 'entregado' ? 'POD' : code === '07' || st === 'rechazado' ? '07' : code === '08' ? '08' : 'OTRO';
+          const m = st === 'entregado' || st === 'entregado_en_bodega' ? 'POD' : code === '07' || st === 'rechazado' ? '07' : code === '08' ? '08' : 'OTRO';
           const prev = dayLast.get(tn);
           if (!prev || ts.getTime() >= prev.at) dayLast.set(tn, { at: ts.getTime(), status: String(r.status ?? '') });
           const set = dayMarks.get(tn) ?? new Set<string>();

@@ -77,7 +77,7 @@ export class CobrosAuditService {
         WHERE s.subsidiaryId = ?
           AND LOWER(s.shipmentType) = 'fedex'
           AND ss.timestamp BETWEEN ? AND ?
-          AND (LOWER(ss.status) IN ('entregado','rechazado') OR ss.exceptionCode IN ('07','08'))`,
+          AND (LOWER(ss.status) IN ('entregado','entregado_en_bodega','rechazado') OR ss.exceptionCode IN ('07','08'))`,
       [subsidiaryId, from, to],
     );
 

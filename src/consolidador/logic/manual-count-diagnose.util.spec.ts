@@ -326,6 +326,27 @@ describe('diagnoseGuide — estatus exacto (no "otro estatus")', () => {
   });
 });
 
+describe('diagnoseGuide — entregado en bodega', () => {
+  const noDlFedex = { ok: true, outcome: 'OTRO' as const, outcomeAt: null, dex08Dates: [], lastCode: 'HP', latestOutcome: 'OTRO' as const, deliveredDay: null, dayEventLabel: 'HP · Listo para recoger (ocurre)' };
+
+  it('entregada en bodega aunque FedEx no muestre DL, con su ingreso → cuadra', () => {
+    const f = facts('OTRO', { systemOutcome: 'POD', routes: [], warehouseDelivered: true, fedex: noDlFedex, incomes: [income('POD')] });
+    expect(diagnoseGuide('POD', f, ctx())).toMatchObject({ verdict: 'CUADRA', expected: 'POD' });
+  });
+
+  it('entregada en bodega sin ingreso → falta el cobro (con shipmentId para generarlo)', () => {
+    const f = facts('OTRO', { shipmentId: 'ship-1', systemOutcome: 'POD', routes: [], warehouseDelivered: true, fedex: noDlFedex });
+    const r = diagnoseGuide('POD', f, ctx());
+    expect(r).toMatchObject({ verdict: 'ERROR_SISTEMA', cause: 'COBRO_FALTANTE', expected: 'POD', shipmentId: 'ship-1' });
+    expect(r.subCause).toContain('bodega');
+  });
+
+  it('entregada en bodega con un DEX08 de 1 visita cobrado → cobro con otro código (se reemplaza)', () => {
+    const f = facts('OTRO', { systemOutcome: 'POD', routes: [], warehouseDelivered: true, fedex: noDlFedex, incomes: [income('08')] });
+    expect(diagnoseGuide('POD', f, ctx())).toMatchObject({ cause: 'COBRO_DE_MAS', expected: 'POD' });
+  });
+});
+
 describe('summarize', () => {
   it('cuenta contado / FedEx / cobrado por Mark y por veredicto', () => {
     const rows = [

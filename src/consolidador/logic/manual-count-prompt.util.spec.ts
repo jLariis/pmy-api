@@ -18,6 +18,7 @@ const row = (tn: string, over: Partial<DiagnosisRow> = {}): DiagnosisRow => ({
   chain: [{ step: 7, label: 'Ingreso registrado', ok: false, detail: 'Cobrado: DEX08.' }],
   cost: 52,
   incomeIds: ['i1'],
+  shipmentId: null,
   ...over,
 });
 

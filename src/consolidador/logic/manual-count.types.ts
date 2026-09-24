@@ -42,6 +42,7 @@ export interface IncomeRef {
 export interface GuideFacts {
   trackingNumber: string;
   kind: 'shipment' | 'charge' | null; // null = no existe en el sistema
+  shipmentId?: string | null; // fila vigente (envío) — para generar el cobro desde la pantalla
   subsidiaryId: string | null;
   transferredIn: boolean; // traspaso hacia la sucursal consultada
   consolidado: { consNumber: string | null; day: string | null } | null;
@@ -109,6 +110,8 @@ export interface DiagnosisRow {
   chain: ChainStep[];
   cost: number | null;
   incomeIds: string[];
+  /** Envío vigente de la guía (para "Generar cobro"); null en cargas F2 o si no existe. */
+  shipmentId: string | null;
 }
 
 export interface ManualCountTotals {

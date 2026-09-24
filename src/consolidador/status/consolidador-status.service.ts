@@ -10,7 +10,7 @@ import { ShipmentStatusType } from '../../common/enums/shipment-status-type.enum
 import { ShipmentType } from '../../common/enums/shipment-type.enum';
 import { IncomeSourceType } from '../../common/enums/income-source-type.enum';
 import { deriveStatusCorrection } from '../logic/status-correction.util';
-import { deriveRepairIncome } from '../logic/repair-income.util';
+import { deriveRepairIncome, planRepairIncome } from '../logic/repair-income.util';
 import { detectAnomalies } from '../logic/detect-anomalies.util';
 import { computeVerdict, Verdict } from '../logic/package-verdict.util';
 import { statusOrigin } from '../logic/status-origin.util';
@@ -329,30 +329,63 @@ export class ConsolidadorStatusService {
     const shipment = await this.shipmentRepo.findOne({ where: { id: shipmentId }, relations: ['subsidiary'] });
     if (!shipment) throw new NotFoundException('Shipment no encontrado');
 
-    const existing = await this.incomeRepo.findOne({
-      where: { shipment: { id: shipmentId }, active: true },
+    // Ingresos activos de envío de la guía + entrega en bodega (si la hubo): misma regla que pick-up.
+    const existingActive = await this.incomeRepo.find({
+      where: { trackingNumber: shipment.trackingNumber, sourceType: IncomeSourceType.SHIPMENT, active: true },
       relations: ['shipment', 'charge', 'subsidiary'],
     });
-    if (existing) {
-      return { created: false, reason: 'El paquete ya tiene un ingreso activo', income: mapIncomeToRow(existing) };
+    const wd = await this.incomeRepo.manager.query(
+      `SELECT date FROM warehouse_delivery WHERE shipmentId = ? OR trackingNumber = ? ORDER BY date DESC LIMIT 1`,
+      [shipment.id, shipment.trackingNumber],
+    );
+    const plan = planRepairIncome({
+      status: shipment.status,
+      warehouseDeliveredAt: wd?.[0]?.date ? new Date(wd[0].date) : null,
+      existingActive: existingActive.map((i) => ({ id: i.id, incomeType: i.incomeType })),
+      shipmentType: shipment.shipmentType,
+      subsidiary: shipment.subsidiary as any,
+    });
+
+    if (plan.action === 'none') {
+      const current = existingActive[0];
+      return { created: false, reason: plan.reason, income: current ? mapIncomeToRow(current) : null };
     }
 
-    const { create, incomeType } = deriveRepairIncome(shipment.status);
-    if (!create || !incomeType) {
-      return { created: false, reason: 'El estatus del paquete no genera ingreso (no es cobrable/terminal)', income: null };
+    if (plan.action === 'supersede') {
+      // Entregado en bodega reemplaza el DEX de una visita previa (no se duplica el cobro).
+      const dex = existingActive.find((i) => i.id === plan.incomeId)!;
+      const before = { incomeType: dex.incomeType, nonDeliveryStatus: dex.nonDeliveryStatus, date: dex.date };
+      await this.incomeRepo.update(dex.id, {
+        incomeType: plan.incomeType!,
+        nonDeliveryStatus: null,
+        date: plan.date!,
+        editReason: reason,
+        updatedById: userId,
+      } as any);
+      await this.audit.record({
+        incomeId: dex.id,
+        shipmentId,
+        action: 'income_repair',
+        field: 'incomeType',
+        oldValue: `${before.incomeType}${before.nonDeliveryStatus ? ` ${before.nonDeliveryStatus}` : ''}`,
+        newValue: String(plan.incomeType),
+        reason,
+        userId,
+      });
+      const updated = await this.incomeRepo.findOne({ where: { id: dex.id }, relations: ['shipment', 'charge', 'subsidiary'] });
+      return { created: true, income: updated ? mapIncomeToRow(updated) : null };
     }
 
-    const cost = Number((shipment.subsidiary as any)?.fedexCostPackage ?? 0);
     const income = this.incomeRepo.create({
       subsidiary: shipment.subsidiary,
       trackingNumber: shipment.trackingNumber,
       shipmentType: shipment.shipmentType ?? ShipmentType.FEDEX,
-      incomeType,
-      cost,
+      incomeType: plan.incomeType!,
+      cost: plan.cost,
       isGrouped: false,
       sourceType: IncomeSourceType.SHIPMENT,
       shipment: { id: shipment.id } as any,
-      date: new Date(),
+      date: plan.date ?? new Date(),
       createdById: userId,
       editReason: reason,
     });
@@ -363,7 +396,7 @@ export class ConsolidadorStatusService {
       action: 'income_repair',
       field: 'create',
       oldValue: null,
-      newValue: cost,
+      newValue: plan.cost,
       reason,
       userId,
     });

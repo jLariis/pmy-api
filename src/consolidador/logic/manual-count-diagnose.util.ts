@@ -78,7 +78,8 @@ export function diagnoseGuide(manual: Mark | null, f: GuideFacts, ctx: DiagnoseC
   const systemSays: DayOutcome = fromHistory ? f.systemOutcome : outcomeFromStatus(f.systemStatus);
   // FedEx la entregó directamente (no nuestra ruta): es entrega real, pero NO genera ingreso.
   const deliveredByFedex = [f.systemDayStatus, f.systemStatus].some((s) => String(s ?? '').toLowerCase() === 'entregado_por_fedex');
-  const truth: DayOutcome = fedexOk ? f.fedex!.outcome : systemSays;
+  // Entrega en bodega = nuestra entrega: manda sobre FedEx (que puede no mostrar DL).
+  const truth: DayOutcome = f.warehouseDelivered ? 'POD' : fedexOk ? f.fedex!.outcome : systemSays;
   // Texto EXACTO de lo que tiene el sistema y de lo que dice FedEx (nunca "otro estatus").
   const liveStatus = fromHistory ? f.systemDayStatus ?? f.systemStatus : f.systemStatus;
   const systemLabel = isMark(systemSays) && !(deliveredByFedex || String(liveStatus ?? '') === 'entregado_en_bodega')
@@ -123,7 +124,7 @@ export function diagnoseGuide(manual: Mark | null, f: GuideFacts, ctx: DiagnoseC
       trackingNumber: f.trackingNumber, manual, fedexSays, systemSays, fedexLabel, systemLabel, charged: [], expected: null, deliveredDay: f.fedex?.deliveredDay ?? null,
       verdict: counted ? 'CUADRA' : 'ERROR_CONTEO', cause: counted ? null : 'F2_INFORMATIVO', subCause: null,
       explanation: counted ? 'Carga F2: el conteo coincide (el cobro es por carga).' : `Carga F2: contó ${manual ? MARK_LABEL[manual] : 'nada'} pero el desenlace es ${truthTxt}.`,
-      chain, cost: null, incomeIds: [],
+      chain, cost: null, incomeIds: [], shipmentId: null,
     };
   }
 
@@ -164,6 +165,7 @@ export function diagnoseGuide(manual: Mark | null, f: GuideFacts, ctx: DiagnoseC
 
   // 5. FedEx en vivo vs nuestro estatus.
   if (!f.kind) push(5, 'FedEx en vivo', null, 'No aplica.');
+  else if (f.warehouseDelivered) push(5, 'FedEx en vivo', null, `Entregado en bodega (FedEx dice ${fedexLabel}).`);
   else if (!fedexOk) push(5, 'FedEx en vivo', null, 'FedEx no respondió; se usa el estatus del sistema.');
   else if (fromHistory && isMark(truth) && systemSays !== truth) {
     push(5, 'FedEx en vivo', false, `FedEx dice ${truthTxt}, el sistema tiene ${systemTxt}.`);
@@ -237,7 +239,11 @@ export function diagnoseGuide(manual: Mark | null, f: GuideFacts, ctx: DiagnoseC
     } else {
       const annulled = f.incomes.some((i) => !i.active && i.mark === expected && i.day === day);
       const openRoute = routesToday.length > 0 && routesToday.every((r) => !r.closed);
-      const sub = annulled ? 'El ingreso se anuló' : openRoute ? 'La ruta no tiene cierre' : 'El cierre no generó el ingreso';
+      const sub = annulled
+        ? 'El ingreso se anuló'
+        : f.warehouseDelivered
+          ? 'La entrega en bodega no generó el ingreso'
+          : openRoute ? 'La ruta no tiene cierre' : 'El cierre no generó el ingreso';
       breakAt('COBRO_FALTANTE', `Debía cobrar ${MARK_LABEL[expected]} y no hay ingreso: ${sub.toLowerCase()}.`, sub);
     }
   } else {
@@ -299,6 +305,7 @@ export function diagnoseGuide(manual: Mark | null, f: GuideFacts, ctx: DiagnoseC
     chain,
     cost: dayIncomes.length ? Number(dayIncomes[0].cost) : null,
     incomeIds: dayIncomes.map((i) => i.id),
+    shipmentId: f.shipmentId ?? null,
   };
 }
 
