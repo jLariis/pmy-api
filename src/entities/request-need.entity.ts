@@ -53,6 +53,10 @@ export class RequestNeed {
   @Column({ default: false })
   dismissed: boolean;
 
+  /** Partida elegida en el comparativo (como en los renglones de la solicitud). */
+  @Column({ length: 36, nullable: true })
+  selectedQuoteItemId: string | null;
+
   @Column({ default: 0 })
   sortOrder: number;
 

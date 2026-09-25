@@ -2,6 +2,8 @@ import { lineTaxes } from './money.util';
 
 export interface CmpRequestItem {
   id: string;
+  /** 'item' = renglón de la solicitud; 'need' = necesidad ("Lo que se necesita"). */
+  kind?: 'item' | 'need';
   description: string;
   productId?: string | null;
   quantity: number;
@@ -11,6 +13,7 @@ export interface CmpRequestItem {
 export interface CmpQuoteItem {
   id: string;
   requestItemId?: string | null;
+  requestNeedId?: string | null;
   productId?: string | null;
   description: string;
   quantity: number;
@@ -43,7 +46,9 @@ export interface CmpCell {
 }
 
 export interface CmpRow {
+  /** Id del renglón o de la necesidad (según `kind`). */
   requestItemId: string;
+  kind: 'item' | 'need';
   description: string;
   quantity: number;
   /** quoteId → celda (lo que cotizó ese proveedor para este renglón). */
@@ -69,9 +74,12 @@ export function compareByItem(items: CmpRequestItem[], quotes: CmpQuote[]): Comp
   const rows: CmpRow[] = items.map((ri) => {
     const cells: Record<string, CmpCell> = {};
     for (const q of quotes) {
-      const qi = q.items.find((x) => x.requestItemId === ri.id)
-        ?? (ri.productId ? q.items.find((x) => !x.requestItemId && x.productId === ri.productId) : undefined)
-        ?? q.items.find((x) => !x.requestItemId && norm(x.description) === norm(ri.description));
+      const free = (x: CmpQuoteItem) => !x.requestItemId && !x.requestNeedId;
+      const qi = ri.kind === 'need'
+        ? q.items.find((x) => x.requestNeedId === ri.id)
+        : q.items.find((x) => x.requestItemId === ri.id)
+          ?? (ri.productId ? q.items.find((x) => free(x) && x.productId === ri.productId) : undefined)
+          ?? q.items.find((x) => free(x) && norm(x.description) === norm(ri.description));
       if (!qi) continue;
       const t = lineTaxes(qi);
       cells[q.id] = {
@@ -85,7 +93,7 @@ export function compareByItem(items: CmpRequestItem[], quotes: CmpQuote[]): Comp
     const best = pool.length ? pool.reduce((a, b) => (b.unitPrice < a.unitPrice ? b : a)) : null;
     const saved = ri.selectedQuoteItemId && all.some((c) => c.quoteItemId === ri.selectedQuoteItemId) ? ri.selectedQuoteItemId : null;
     return {
-      requestItemId: ri.id, description: ri.description, quantity: Number(ri.quantity), cells,
+      requestItemId: ri.id, kind: ri.kind ?? 'item', description: ri.description, quantity: Number(ri.quantity), cells,
       bestQuoteItemId: best?.quoteItemId ?? null, selectedQuoteItemId: saved ?? best?.quoteItemId ?? null,
     };
   });

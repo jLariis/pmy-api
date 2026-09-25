@@ -2,6 +2,7 @@ import { deviationPct, lineTaxes, round2, totals } from '../utils/money.util';
 
 export interface QuoteItemInput {
   requestItemId?: string | null;
+  requestNeedId?: string | null;
   productId?: string | null;
   description: string;
   quantity: number;
@@ -18,6 +19,7 @@ export interface QuoteItemInput {
 
 export interface BuiltQuoteItem {
   requestItemId: string | null;
+  requestNeedId: string | null;
   productId: string | null;
   description: string;
   quantity: number;
@@ -48,6 +50,7 @@ export function buildQuoteItems(items: QuoteItemInput[], referencePrices: Map<st
     const availability = i.availability ?? 'si';
     return {
       requestItemId: i.requestItemId ?? null,
+      requestNeedId: i.requestNeedId ?? null,
       productId: i.productId ?? null,
       description: i.description.trim(),
       quantity,

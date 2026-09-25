@@ -9,6 +9,7 @@ import { ProductsService } from './catalog/products.service';
 import { ServiceTemplatesService } from './catalog/service-templates.service';
 import { VehicleSpecService } from './schedule/vehicle-spec.service';
 import { ComparisonService } from './requests/comparison.service';
+import { NeedsService } from './requests/needs.service';
 import { ProductsController } from './catalog/products.controller';
 import { FolioService } from './folio.service';
 import { CatalogService } from './catalog/catalog.service';
@@ -50,7 +51,7 @@ import { MailService } from 'src/mail/mail.service';
   providers: [
     FolioService, CatalogService, SuppliersService, ScheduleService, RequestsService, QuotesService,
     PurchaseOrdersService, PoDispatchService, HistoryService, MailService, ProductsService, VehicleSpecService, ComparisonService,
-    RequestDispatchService, ServiceTemplatesService,
+    RequestDispatchService, ServiceTemplatesService, NeedsService,
   ],
 })
 export class MaintenanceModule {}

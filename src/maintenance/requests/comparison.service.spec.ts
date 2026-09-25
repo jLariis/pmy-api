@@ -37,7 +37,7 @@ function make(opts: { hasOrders?: boolean; status?: string } = {}) {
   };
   const requests: any = { findOne: jest.fn(async () => ({ ...request, status: opts.status ?? request.status })) };
   const quoteRepo: any = { find: jest.fn(async () => quotes) };
-  const dataSource: any = { transaction: (fn: any) => fn(m), getRepository: () => ({ exist: jest.fn(async () => !!opts.hasOrders) }) };
+  const dataSource: any = { transaction: (fn: any) => fn(m), getRepository: () => ({ exist: jest.fn(async () => !!opts.hasOrders), find: jest.fn(async () => []) }) };
   const folios: any = { next: jest.fn().mockResolvedValueOnce('OC-000001').mockResolvedValueOnce('OC-000002') };
   const orders: any = { submit: jest.fn(async () => undefined) };
   const svc = new ComparisonService(requests, quoteRepo, dataSource, folios, orders, {} as any);

@@ -47,6 +47,7 @@ export class ComprasV4ServicesNeeds1786000000083 implements MigrationInterface {
       \`createdAt\` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
       PRIMARY KEY (\`id\`), KEY \`idx_rn_request\` (\`requestId\`)) ${T}`);
 
+    await this.addColumn(q, 'request_need', 'selectedQuoteItemId', 'varchar(36) NULL');
     await this.addColumn(q, 'product_category', 'keywords', 'text NULL');
     await this.addColumn(q, 'maintenance_quote', 'fromCatalog', 'tinyint(1) NOT NULL DEFAULT 0');
     await this.addColumn(q, 'maintenance_quote_item', 'requestNeedId', 'varchar(36) NULL');

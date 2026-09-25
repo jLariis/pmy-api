@@ -9,6 +9,7 @@ import { MaintenanceRequest } from 'src/entities/maintenance-request.entity';
 import { ProductOffer } from 'src/entities/product-offer.entity';
 import { Product } from 'src/entities/product.entity';
 import { RequestItem } from 'src/entities/request-item.entity';
+import { RequestNeed } from 'src/entities/request-need.entity';
 import { Supplier } from 'src/entities/supplier.entity';
 import { PurchaseOrder } from 'src/entities/purchase-order.entity';
 import { ScopeUser } from '../maintenance-scope.util';
@@ -47,7 +48,7 @@ export class QuotesService {
   }
 
   /** Solo Compras cotiza, con la solicitud autorizada y sin órdenes generadas. */
-  private async loadQuotable(requestId: string, user: ScopeUser) {
+  async loadQuotable(requestId: string, user: ScopeUser) {
     if (!isPurchaser(user)) throw new ForbiddenException('Solo Compras captura cotizaciones.');
     const r = await this.dataSource.getRepository(MaintenanceRequest).findOne({ where: { id: requestId } });
     if (!r) throw new NotFoundException('Solicitud no encontrada');
@@ -126,7 +127,9 @@ export class QuotesService {
       });
       // Las elecciones del comparativo que apuntaban a partidas de esta cotización se limpian (las partidas cambian).
       const oldIds = quote.items.map((i) => i.id);
-      if (oldIds.length) await m.update(RequestItem, { selectedQuoteItemId: In(oldIds) }, { selectedQuoteItemId: null });
+      await this.clearSelections(m, oldIds);
+      // Capturada/revisada a mano: ya no es "precio del catálogo por confirmar".
+      quote.fromCatalog = false;
       quote.items = built.items.map((i) => m.create(MaintenanceQuoteItem, { ...i, quoteId }));
       const saved = await m.save(MaintenanceQuote, quote);
       await this.upsertOffers(m, dto.supplierId, built.items);
@@ -139,13 +142,19 @@ export class QuotesService {
     if (!quote) throw new NotFoundException('Cotización no encontrada');
     const request = await this.loadQuotable(quote.requestId, user);
     await this.dataSource.transaction(async (m) => {
-      const ids = quote.items.map((i) => i.id);
-      if (ids.length) await m.update(RequestItem, { selectedQuoteItemId: In(ids) }, { selectedQuoteItemId: null });
+      await this.clearSelections(m, quote.items.map((i) => i.id));
       await m.softDelete(MaintenanceQuote, quoteId);
       const remaining = await m.count(MaintenanceQuote, { where: { requestId: request.id } });
       if (remaining === 0 && request.status === 'en_cotizacion') await m.update(MaintenanceRequest, request.id, { status: 'abierta', updatedAt: new Date() });
     });
     return { ok: true };
+  }
+
+  /** Quita las elecciones del comparativo (renglones y necesidades) que apuntaban a estas partidas. */
+  async clearSelections(m: EntityManager, quoteItemIds: string[]) {
+    if (!quoteItemIds.length) return;
+    await m.update(RequestItem, { selectedQuoteItemId: In(quoteItemIds) }, { selectedQuoteItemId: null });
+    await m.update(RequestNeed, { selectedQuoteItemId: In(quoteItemIds) }, { selectedQuoteItemId: null });
   }
 
   async findQuote(id: string) {

@@ -12,6 +12,7 @@ import { QUOTE_ATTACHMENT_MAX_BYTES, QuotesService } from './quotes.service';
 import { CreateRequestDto, QuoteDto, RejectRequestDto, UpdateRequestDto } from './dto/request.dto';
 import { ComparisonService, SelectionDto } from './comparison.service';
 import { RequestDispatchService, SendRfqDto } from '../dispatch/request-dispatch.service';
+import { AddNeedDto, NeedsService, PickOfferDto } from './needs.service';
 
 @ApiTags('maintenance')
 @ApiBearerAuth()
@@ -23,6 +24,7 @@ export class RequestsController {
     private readonly quotes: QuotesService,
     private readonly comparison: ComparisonService,
     private readonly dispatch: RequestDispatchService,
+    private readonly needs: NeedsService,
   ) {}
 
   /** Tablero: Compras/autorizador ven todas las sucursales (filtro opcional); los demás, una de sus sucursales. */
@@ -173,5 +175,38 @@ export class RequestsController {
   @RequirePermission(MTTO.revisar, MTTO.autorizar)
   dispatches(@Param('id') id: string) {
     return this.dispatch.history(id);
+  }
+
+  // ---------------- Lo que se necesita (sugerencias) ----------------
+
+  @Get(':id/needs')
+  @RequirePermission(MTTO.revisar, MTTO.autorizar)
+  listNeeds(@Param('id') id: string, @Req() req: any) {
+    return this.needs.list(id, req.user);
+  }
+
+  @Post(':id/needs')
+  @RequirePermission(MTTO.revisar)
+  addNeed(@Param('id') id: string, @Body() dto: AddNeedDto, @Req() req: any) {
+    return this.needs.add(id, dto, req.user);
+  }
+
+  @Post(':id/needs/recalculate')
+  @RequirePermission(MTTO.revisar)
+  recalculateNeeds(@Param('id') id: string, @Req() req: any) {
+    return this.needs.recalculate(id, req.user);
+  }
+
+  @Delete('needs/:needId')
+  @RequirePermission(MTTO.revisar)
+  dismissNeed(@Param('needId') needId: string, @Req() req: any) {
+    return this.needs.dismiss(needId, req.user);
+  }
+
+  /** Elegir una sugerencia: la pone en la cotización de ese proveedor (con precio del catálogo). */
+  @Post('needs/:needId/pick')
+  @RequirePermission(MTTO.revisar)
+  pickOffer(@Param('needId') needId: string, @Body() dto: PickOfferDto, @Req() req: any) {
+    return this.needs.pick(needId, dto, req.user);
   }
 }

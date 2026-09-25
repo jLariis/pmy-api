@@ -52,3 +52,19 @@ describe('compareByItem', () => {
     expect(g.map((x) => [x.supplierId, x.quoteItemIds])).toEqual([['sA', ['a1']], ['sB', ['b2']]]);
   });
 });
+
+describe('compareByItem con necesidades', () => {
+  it('una partida con requestNeedId cae en la fila de su necesidad y no en renglones por descripción', () => {
+    const qs = [{
+      id: 'q1', supplierId: 's1', supplierName: 'AutoZone', items: [
+        { id: 'x1', requestNeedId: 'n1', description: 'Balatas', quantity: 1, unitPrice: 500, availability: 'si' },
+        { id: 'x2', description: 'Balatas', quantity: 1, unitPrice: 700, availability: 'si' },
+      ],
+    }];
+    const out = compareByItem([
+      { id: 'r1', description: 'Balatas', quantity: 1 },
+      { id: 'n1', kind: 'need', description: 'BALATA DELANTERA', quantity: 1 },
+    ] as any, qs as any);
+    expect(out.rows.map((r) => [r.requestItemId, r.kind, r.cells.q1?.quoteItemId])).toEqual([['r1', 'item', 'x2'], ['n1', 'need', 'x1']]);
+  });
+});

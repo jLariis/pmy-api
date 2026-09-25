@@ -97,6 +97,9 @@ export class QuoteItemDto {
   @IsOptional() @ValidateIf((o) => o.requestItemId !== null) @IsUUID('all', { message: 'Renglón no reconocido' })
   requestItemId?: string | null;
 
+  @IsOptional() @ValidateIf((o) => o.requestNeedId !== null) @IsUUID('all', { message: 'Necesidad no reconocida' })
+  requestNeedId?: string | null;
+
   @IsOptional() @ValidateIf((o) => o.productId !== null) @IsUUID('all', { message: 'Producto del catálogo no reconocido' })
   productId?: string | null;
 

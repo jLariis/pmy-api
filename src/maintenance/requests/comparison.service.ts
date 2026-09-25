@@ -8,6 +8,7 @@ import { MaintenanceQuote } from 'src/entities/maintenance-quote.entity';
 import { PurchaseOrder } from 'src/entities/purchase-order.entity';
 import { PurchaseOrderItem } from 'src/entities/purchase-order-item.entity';
 import { RequestItem } from 'src/entities/request-item.entity';
+import { RequestNeed } from 'src/entities/request-need.entity';
 import { FolioService } from '../folio.service';
 import { ScopeUser } from '../maintenance-scope.util';
 import { isPurchaser } from '../maintenance.permissions';
@@ -48,24 +49,38 @@ export class ComparisonService {
     const quotes = await this.quotes.find({ where: { requestId }, relations: ['items', 'supplier', 'supplier.contacts'], order: { total: 'ASC' } });
     const cmpQuotes: CmpQuote[] = quotes.map((q) => ({ id: q.id, supplierId: q.supplierId, supplierName: q.supplier?.name ?? 'Proveedor', items: q.items as any }));
     const items = [...(r.items ?? [])].sort((a, b) => a.sortOrder - b.sortOrder);
-    return { request: r, items, quotes, cmpQuotes, comparison: compareByItem(items as any, cmpQuotes) };
+    const needs = await this.dataSource.getRepository(RequestNeed).find({
+      where: { requestId, dismissed: false }, relations: ['category', 'unit'], order: { sortOrder: 'ASC', createdAt: 'ASC' },
+    });
+    // Filas: renglones de la solicitud + "Lo que se necesita" (necesidades no descartadas).
+    const rows = [
+      ...items.map((i) => ({ id: i.id, kind: 'item' as const, description: i.description, productId: i.productId, quantity: i.quantity, selectedQuoteItemId: i.selectedQuoteItemId })),
+      ...needs.map((n) => ({ id: n.id, kind: 'need' as const, description: n.category?.name ?? 'Pieza/insumo', productId: n.productId, quantity: n.quantity, selectedQuoteItemId: n.selectedQuoteItemId })),
+    ];
+    const units: Record<string, string | null> = Object.fromEntries([
+      ...items.map((i) => [i.id, i.unit?.abbreviation ?? i.unit?.name ?? null]),
+      ...needs.map((n) => [n.id, n.unit?.abbreviation ?? n.unit?.name ?? null]),
+    ]);
+    return { request: r, items, needs, units, quotes, cmpQuotes, comparison: compareByItem(rows, cmpQuotes) };
   }
 
   async get(requestId: string, user: ScopeUser): Promise<Comparison & { units: Record<string, string | null> }> {
     await this.requestsService.findOne(requestId, user); // valida acceso
-    const { items, comparison } = await this.load(requestId);
-    return { ...comparison, units: Object.fromEntries(items.map((i) => [i.id, i.unit?.abbreviation ?? i.unit?.name ?? null])) };
+    const { units, comparison } = await this.load(requestId);
+    return { ...comparison, units };
   }
 
   async saveSelection(requestId: string, dto: SelectionDto, user: ScopeUser) {
     if (!isPurchaser(user)) throw new ForbiddenException('Solo Compras elige proveedores.');
-    const { items, quotes } = await this.load(requestId);
+    const { items, needs, quotes } = await this.load(requestId);
     const validQuoteItems = new Set(quotes.flatMap((q) => q.items.map((i) => i.id)));
     await this.dataSource.transaction(async (m) => {
       for (const s of dto.selections) {
-        if (!items.some((i) => i.id === s.requestItemId)) throw new BadRequestException('Renglón no pertenece a la solicitud.');
+        const isItem = items.some((i) => i.id === s.requestItemId);
+        const isNeed = needs.some((n) => n.id === s.requestItemId);
+        if (!isItem && !isNeed) throw new BadRequestException('Renglón no pertenece a la solicitud.');
         if (s.quoteItemId && !validQuoteItems.has(s.quoteItemId)) throw new BadRequestException('Esa partida no es de una cotización de esta solicitud.');
-        await m.update(RequestItem, s.requestItemId, { selectedQuoteItemId: s.quoteItemId });
+        await m.update(isItem ? RequestItem : RequestNeed, s.requestItemId, { selectedQuoteItemId: s.quoteItemId });
       }
     });
     return this.get(requestId, user);
@@ -107,7 +122,10 @@ export class ComparisonService {
           ...t, createdById: user?.userId ?? null, items,
         })));
         // Deja constancia de lo elegido (si fue la propuesta automática).
-        for (const qi of chosen) if (qi.requestItemId) await m.update(RequestItem, qi.requestItemId, { selectedQuoteItemId: qi.id });
+        for (const qi of chosen) {
+          if (qi.requestItemId) await m.update(RequestItem, qi.requestItemId, { selectedQuoteItemId: qi.id });
+          if (qi.requestNeedId) await m.update(RequestNeed, qi.requestNeedId, { selectedQuoteItemId: qi.id });
+        }
       }
       const winners = groups.map((g) => g.quoteId);
       await m.update(MaintenanceQuote, { requestId, id: In(winners) }, { status: 'ganadora' });
