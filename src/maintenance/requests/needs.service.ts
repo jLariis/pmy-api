@@ -1,12 +1,14 @@
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, EntityManager, In, Repository } from 'typeorm';
-import { IsNumber, IsOptional, IsUUID, Min, ValidateIf } from 'class-validator';
+import { ArrayMinSize, IsArray, IsInt, IsNumber, IsOptional, IsString, IsUUID, Max, MaxLength, Min, MinLength, ValidateIf } from 'class-validator';
 import { MaintenanceRequest } from 'src/entities/maintenance-request.entity';
 import { MaintenanceQuote } from 'src/entities/maintenance-quote.entity';
 import { MaintenanceQuoteItem } from 'src/entities/maintenance-quote-item.entity';
 import { ProductCategory } from 'src/entities/product-category.entity';
 import { ProductOffer } from 'src/entities/product-offer.entity';
+import { Product } from 'src/entities/product.entity';
+import { Supplier } from 'src/entities/supplier.entity';
 import { RequestNeed } from 'src/entities/request-need.entity';
 import { ServiceTemplate } from 'src/entities/service-template.entity';
 import { VehicleSpecItem } from 'src/entities/vehicle-spec-item.entity';
@@ -31,6 +33,30 @@ export class AddNeedDto {
 export class PickOfferDto {
   @IsUUID('all', { message: 'Sugerencia no reconocida' })
   offerId: string;
+}
+
+export class CaptureNeedPriceDto {
+  @IsUUID('all', { message: 'Elige el proveedor' })
+  supplierId: string;
+
+  @IsString({ message: 'Escribe qué producto te cotizó' })
+  @MinLength(2, { message: 'Escribe qué producto te cotizó' })
+  @MaxLength(200, { message: 'El nombre es demasiado largo' })
+  description: string;
+
+  @IsOptional() @ValidateIf((o) => o.brand !== null) @IsString() @MaxLength(80, { message: 'La marca es demasiado larga' })
+  brand?: string | null;
+
+  @IsNumber({}, { message: 'El precio debe ser un número' }) @Min(0, { message: 'El precio no puede ser negativo' })
+  unitPrice: number;
+
+  @IsOptional() @ValidateIf((o) => o.quality !== null) @IsInt() @Min(1, { message: 'La calidad va de 1 a 5 estrellas' }) @Max(5, { message: 'La calidad va de 1 a 5 estrellas' })
+  quality?: number | null;
+}
+
+export class SaveToCatalogDto {
+  @IsArray() @ArrayMinSize(1, { message: 'Elige al menos un concepto' }) @IsUUID('all', { each: true, message: 'Concepto no reconocido' })
+  quoteItemIds: string[];
 }
 
 export interface NeedView {
@@ -237,36 +263,127 @@ export class NeedsService {
    */
   async pick(needId: string, dto: PickOfferDto, user: ScopeUser) {
     this.assertPurchaser(user);
-    const n = await this.needs.findOne({ where: { id: needId } });
-    if (!n || n.dismissed) throw new NotFoundException('No se encontró ese renglón');
-    const request = await this.quotes.loadQuotable(n.requestId, user);
+    const { n, request } = await this.loadNeedQuotable(needId, user);
     const offer = await this.dataSource.getRepository(ProductOffer).findOne({ where: { id: dto.offerId }, relations: ['product', 'supplier'] });
     if (!offer) throw new BadRequestException('Esa sugerencia ya no existe; vuelve a cargar la pantalla.');
     if (offer.product?.categoryId !== n.categoryId) throw new BadRequestException('Ese producto no corresponde a esta pieza o insumo.');
+    const quoteId = await this.placeInQuote(n, request, offer.supplierId, {
+      productId: offer.productId,
+      description: [offer.product.name, offer.product.brand].filter(Boolean).join(' · '),
+      unitPrice: Number(offer.price),
+      quality: offer.quality ?? null,
+    }, true, user);
+    return { quoteId };
+  }
 
-    const quoteId = await this.dataSource.transaction(async (m) => {
+  /**
+   * "Capturar precio": lo que dijo el proveedor para esta pieza/insumo, sin que exista en el catálogo.
+   * Entra a la cotización de ese proveedor; al generar órdenes se pregunta si se guarda en el catálogo.
+   */
+  async captureManual(needId: string, dto: CaptureNeedPriceDto, user: ScopeUser) {
+    this.assertPurchaser(user);
+    const { n, request } = await this.loadNeedQuotable(needId, user);
+    if (!(await this.dataSource.getRepository(Supplier).exist({ where: { id: dto.supplierId } }))) {
+      throw new BadRequestException('El proveedor no existe.');
+    }
+    const quoteId = await this.placeInQuote(n, request, dto.supplierId, {
+      productId: null,
+      description: [dto.description.trim(), dto.brand?.trim()].filter(Boolean).join(' · '),
+      unitPrice: Math.round(Number(dto.unitPrice) * 100) / 100,
+      quality: dto.quality ?? null,
+    }, false, user);
+    return { quoteId };
+  }
+
+  private async loadNeedQuotable(needId: string, user: ScopeUser) {
+    const n = await this.needs.findOne({ where: { id: needId } });
+    if (!n || n.dismissed) throw new NotFoundException('No se encontró ese renglón');
+    const request = await this.quotes.loadQuotable(n.requestId, user);
+    return { n, request };
+  }
+
+  /** Pone la necesidad en la cotización del proveedor (la crea si no existe) y la quita de las demás. */
+  private async placeInQuote(
+    n: RequestNeed,
+    request: MaintenanceRequest,
+    supplierId: string,
+    p: { productId: string | null; description: string; unitPrice: number; quality: number | null },
+    fromCatalog: boolean,
+    user: ScopeUser,
+  ) {
+    return this.dataSource.transaction(async (m) => {
       await this.removeFromQuotes(m, n.requestId, n.id);
-      let quote = await m.findOne(MaintenanceQuote, { where: { requestId: n.requestId, supplierId: offer.supplierId }, relations: ['items'] });
+      let quote = await m.findOne(MaintenanceQuote, { where: { requestId: n.requestId, supplierId } });
       if (!quote) {
         quote = await m.save(MaintenanceQuote, m.create(MaintenanceQuote, {
-          requestId: n.requestId, supplierId: offer.supplierId, quoteDate: today(), validUntil: null, notes: CATALOG_NOTE,
-          subtotal: 0, ieps: 0, tax: 0, total: 0, status: 'capturada', fromCatalog: true, createdById: user?.userId ?? null, items: [],
+          requestId: n.requestId, supplierId, quoteDate: today(), validUntil: null, notes: fromCatalog ? CATALOG_NOTE : null,
+          subtotal: 0, ieps: 0, tax: 0, total: 0, status: 'capturada', fromCatalog, createdById: user?.userId ?? null, items: [],
         }));
-        quote.items = [];
       }
       const item = {
-        requestItemId: null, requestNeedId: n.id, productId: offer.productId, serviceId: null,
-        description: [offer.product.name, offer.product.brand].filter(Boolean).join(' · '),
-        quantity: Number(n.quantity), unitPrice: Number(offer.price), availability: 'si' as const, leadTimeDays: null,
-        ivaEnabled: true, iepsEnabled: false, iepsRate: 0, taxRate: 0.16, quality: offer.quality ?? null,
-        referencePrice: null, deviationPct: null,
+        requestItemId: null, requestNeedId: n.id, productId: p.productId, serviceId: null, description: p.description.slice(0, 300),
+        quantity: Number(n.quantity), unitPrice: p.unitPrice, availability: 'si' as const, leadTimeDays: null,
+        ivaEnabled: true, iepsEnabled: false, iepsRate: 0, taxRate: 0.16, quality: p.quality, referencePrice: null, deviationPct: null,
       };
       await m.save(MaintenanceQuoteItem, m.create(MaintenanceQuoteItem, { ...item, quoteId: quote.id, amount: lineTaxes(item).amount }));
       await this.recomputeTotals(m, quote.id);
       if (request.status === 'abierta') await m.update(MaintenanceRequest, n.requestId, { status: 'en_cotizacion', updatedAt: new Date() });
       return quote.id;
     });
-    return { quoteId };
+  }
+
+  // ---------------- Guardar en el catálogo ----------------
+
+  /**
+   * Conceptos cotizados que no están en el catálogo pero sí se sabe de qué pieza/insumo son (vienen de
+   * "Lo que se necesita" o de un renglón con categoría). Se ofrecen para guardar al generar órdenes.
+   */
+  async uncataloged(requestId: string, user: ScopeUser) {
+    this.assertPurchaser(user);
+    const rows: Array<{ quoteItemId: string; description: string; unitPrice: string; quality: number | null; supplierId: string; supplierName: string; categoryId: string; categoryName: string }> =
+      await this.dataSource.query(
+        `SELECT qi.id AS quoteItemId, qi.description, qi.unitPrice, qi.quality, q.supplierId, s.name AS supplierName,
+                COALESCE(rn.categoryId, ri.categoryId) AS categoryId, c.name AS categoryName
+           FROM maintenance_quote_item qi
+           JOIN maintenance_quote q ON q.id = qi.quoteId AND q.deletedAt IS NULL
+           JOIN supplier s ON s.id = q.supplierId
+           LEFT JOIN request_need rn ON rn.id = qi.requestNeedId
+           LEFT JOIN request_item ri ON ri.id = qi.requestItemId
+           JOIN product_category c ON c.id = COALESCE(rn.categoryId, ri.categoryId)
+          WHERE q.requestId = ? AND qi.productId IS NULL
+          ORDER BY c.name, s.name`,
+        [requestId],
+      );
+    return rows.map((r) => ({ ...r, unitPrice: Number(r.unitPrice) }));
+  }
+
+  /**
+   * Guarda en el catálogo los conceptos elegidos: producto dentro de su pieza/insumo ("Nombre · Marca") y el
+   * precio/calidad de ese proveedor. Si ya existe un producto con ese nombre en la categoría, se reutiliza.
+   */
+  async saveToCatalog(requestId: string, dto: SaveToCatalogDto, user: ScopeUser) {
+    const candidates = await this.uncataloged(requestId, user);
+    const chosen = candidates.filter((c) => dto.quoteItemIds.includes(c.quoteItemId));
+    if (!chosen.length) return { saved: 0 };
+    await this.dataSource.transaction(async (m) => {
+      for (const c of chosen) {
+        const [rawName, ...brandParts] = c.description.split(' · ');
+        const name = rawName.trim().slice(0, 200);
+        const brand = brandParts.join(' · ').trim() || null;
+        let product = await m.createQueryBuilder(Product, 'p')
+          .where('p.categoryId = :cat AND LOWER(p.name) = :n AND p.deletedAt IS NULL', { cat: c.categoryId, n: name.toLowerCase() })
+          .getOne();
+        if (!product) {
+          product = await m.save(Product, m.create(Product, { name, brand, categoryId: c.categoryId, active: true }));
+        }
+        const offer = await m.findOne(ProductOffer, { where: { productId: product.id, supplierId: c.supplierId } });
+        const patch = { price: c.unitPrice, lastQuotedAt: new Date(), updatedAt: new Date(), ...(c.quality ? { quality: c.quality } : {}) };
+        if (offer) await m.update(ProductOffer, offer.id, patch);
+        else await m.save(ProductOffer, m.create(ProductOffer, { productId: product.id, supplierId: c.supplierId, unitId: null, quality: c.quality ?? null, ...patch }));
+        await m.update(MaintenanceQuoteItem, c.quoteItemId, { productId: product.id });
+      }
+    });
+    return { saved: chosen.length };
   }
 
   /** Quita las partidas de esta necesidad de las cotizaciones; si una cotización del catálogo queda vacía, se borra. */

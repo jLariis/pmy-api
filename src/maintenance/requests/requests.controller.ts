@@ -12,7 +12,7 @@ import { QUOTE_ATTACHMENT_MAX_BYTES, QuotesService } from './quotes.service';
 import { CreateRequestDto, QuoteDto, RejectRequestDto, UpdateRequestDto } from './dto/request.dto';
 import { ComparisonService, SelectionDto } from './comparison.service';
 import { RequestDispatchService, SendRfqDto } from '../dispatch/request-dispatch.service';
-import { AddNeedDto, NeedsService, PickOfferDto } from './needs.service';
+import { AddNeedDto, CaptureNeedPriceDto, NeedsService, PickOfferDto, SaveToCatalogDto } from './needs.service';
 
 @ApiTags('maintenance')
 @ApiBearerAuth()
@@ -208,5 +208,25 @@ export class RequestsController {
   @RequirePermission(MTTO.revisar)
   pickOffer(@Param('needId') needId: string, @Body() dto: PickOfferDto, @Req() req: any) {
     return this.needs.pick(needId, dto, req.user);
+  }
+
+  /** Capturar a mano el precio que dio un proveedor para una pieza/insumo (sin catálogo). */
+  @Post('needs/:needId/manual')
+  @RequirePermission(MTTO.revisar)
+  captureNeedPrice(@Param('needId') needId: string, @Body() dto: CaptureNeedPriceDto, @Req() req: any) {
+    return this.needs.captureManual(needId, dto, req.user);
+  }
+
+  /** Conceptos cotizados que aún no están en el catálogo (para ofrecer guardarlos). */
+  @Get(':id/uncataloged')
+  @RequirePermission(MTTO.revisar)
+  uncataloged(@Param('id') id: string, @Req() req: any) {
+    return this.needs.uncataloged(id, req.user);
+  }
+
+  @Post(':id/save-to-catalog')
+  @RequirePermission(MTTO.revisar)
+  saveToCatalog(@Param('id') id: string, @Body() dto: SaveToCatalogDto, @Req() req: any) {
+    return this.needs.saveToCatalog(id, dto, req.user);
   }
 }
