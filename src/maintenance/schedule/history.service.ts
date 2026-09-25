@@ -26,11 +26,13 @@ export class HistoryService {
       .leftJoinAndSelect('po.items', 'item')
       .where('po.subsidiaryId = :subsidiaryId', { subsidiaryId })
       .andWhere("po.status = 'completada'")
+      // Historial de MANTENIMIENTO: solo órdenes de una unidad (las compras de equipo/material no llevan unidad).
+      .andWhere('po.vehicleId IS NOT NULL')
       .orderBy('po.completedAt', 'DESC');
     if (q.from) qb.andWhere('po.completedAt >= :from', { from: new Date(`${q.from.slice(0, 10)}T07:00:00.000Z`) });
     if (q.to) qb.andWhere('po.completedAt < DATE_ADD(:to, INTERVAL 1 DAY)', { to: new Date(`${q.to.slice(0, 10)}T07:00:00.000Z`) });
     if (q.vehicleId) qb.andWhere('po.vehicleId = :vehicleId', { vehicleId: q.vehicleId });
-    const list = await qb.getMany();
+    const list = (await qb.getMany()).filter((po) => po.vehicle);
 
     const rows = list.map((po) => ({
       poId: po.id,

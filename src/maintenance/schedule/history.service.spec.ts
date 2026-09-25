@@ -23,4 +23,18 @@ describe('HistoryService', () => {
     expect(r.byVehicle).toEqual([expect.objectContaining({ count: 2, total: 1500.5, lastMaintenanceKms: 90000 })]);
     expect(r.legacy.map((l) => l.vehicle.id)).toEqual(['v2']);
   });
+
+  it('las órdenes de compra sin unidad no entran al historial de mantenimiento (ni lo tiran)', async () => {
+    const v1 = { id: 'v1', name: 'Van 1' };
+    const q = qb([
+      { id: 'a', folio: 'OC-1', vehicle: v1, supplier: { name: 'T' }, finalAmount: 100, total: 100, items: [] },
+      { id: 'c', folio: 'OC-9', vehicle: null, vehicleId: null, supplier: { name: 'Office' }, finalAmount: 50, total: 50, items: [] },
+    ]);
+    const orders: any = { createQueryBuilder: jest.fn(() => q) };
+    const vehicles: any = { createQueryBuilder: jest.fn(() => qb([v1])) };
+    const r = await new HistoryService(orders, vehicles).bySubsidiary('s1');
+    expect(q.andWhere).toHaveBeenCalledWith('po.vehicleId IS NOT NULL');
+    expect(r.rows.map((x) => x.folio)).toEqual(['OC-1']);
+    expect(r.byVehicle).toHaveLength(1);
+  });
 });
