@@ -19,6 +19,16 @@ export class Supplier {
   @Column({ type: 'text', nullable: true })
   notes: string | null;
 
+  @Column({ length: 100, nullable: true })
+  bankName: string | null;
+
+  /** CLABE interbancaria (18 dígitos, validada con dígito verificador). */
+  @Column({ length: 18, nullable: true })
+  clabe: string | null;
+
+  @Column({ length: 30, nullable: true })
+  accountNumber: string | null;
+
   @Column({ default: true })
   active: boolean;
 

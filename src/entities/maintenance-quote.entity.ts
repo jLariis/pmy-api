@@ -54,6 +54,9 @@ export class MaintenanceQuote {
   tax: number;
 
   @Column('decimal', { precision: 12, scale: 2, default: 0, transformer: decimalTransformer })
+  ieps: number;
+
+  @Column('decimal', { precision: 12, scale: 2, default: 0, transformer: decimalTransformer })
   total: number;
 
   @Column({ type: 'enum', enum: QUOTE_STATUSES, default: 'capturada' })

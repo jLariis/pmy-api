@@ -6,10 +6,18 @@ export const MTTO = {
   ordenes: 'mttoVehiculos.ordenes',
   catalogos: 'mttoVehiculos.catalogos',
   autorizar: 'mttoVehiculos.autorizar',
+  /** Compras (Gerardo Robles): revisa/autoriza solicitudes, cotiza y genera órdenes. */
+  revisar: 'mttoVehiculos.revisar',
 } as const;
 
 /** Lectura de catálogos: cualquiera que trabaje en el módulo. */
-export const MTTO_READ = [MTTO.catalogos, MTTO.solicitudes, MTTO.ordenes, MTTO.autorizar];
+export const MTTO_READ = [MTTO.catalogos, MTTO.solicitudes, MTTO.ordenes, MTTO.autorizar, MTTO.revisar];
+
+/** ¿Puede revisar solicitudes y cotizar (compras)? Superadmin o permiso concedido (Gerardo Robles). */
+export function isPurchaser(user: { role?: string; permissions?: string[] } | null | undefined): boolean {
+  const role = (user?.role || '').toLowerCase();
+  return role === 'superadmin' || role === 'superamin' || (user?.permissions ?? []).includes(MTTO.revisar);
+}
 
 /** ¿Puede autorizar órdenes? Superadmin (bypass habitual) o permiso concedido (Edgardo Lugo). */
 export function isAuthorizer(user: { role?: string; permissions?: string[] } | null | undefined): boolean {

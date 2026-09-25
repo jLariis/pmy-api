@@ -89,6 +89,9 @@ export class PurchaseOrder {
   tax: number;
 
   @Column('decimal', { precision: 12, scale: 2, default: 0, transformer: decimalTransformer })
+  ieps: number;
+
+  @Column('decimal', { precision: 12, scale: 2, default: 0, transformer: decimalTransformer })
   total: number;
 
   @Column({ type: 'datetime', nullable: true })

@@ -2,8 +2,11 @@ import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import {
   MaintenanceFolioCounter, MaintenanceQuote, MaintenanceQuoteItem, MaintenanceRequest, MaintenanceService,
-  MaintenanceServiceCategory, PurchaseOrder, PurchaseOrderDispatch, PurchaseOrderItem, Supplier, SupplierContact, Vehicle,
+  MaintenanceServiceCategory, Product, ProductCategory, ProductOffer, PurchaseOrder, PurchaseOrderDispatch, PurchaseOrderItem,
+  RequestItem, Supplier, SupplierContact, UnitOfMeasure, Vehicle, VehicleSpecItem,
 } from 'src/entities';
+import { ProductsService } from './catalog/products.service';
+import { ProductsController } from './catalog/products.controller';
 import { FolioService } from './folio.service';
 import { CatalogService } from './catalog/catalog.service';
 import { CatalogController } from './catalog/catalog.controller';
@@ -31,6 +34,7 @@ import { MailService } from 'src/mail/mail.service';
     TypeOrmModule.forFeature([
       MaintenanceServiceCategory, MaintenanceService, Supplier, SupplierContact, MaintenanceRequest, MaintenanceQuote,
       MaintenanceQuoteItem, PurchaseOrder, PurchaseOrderItem, PurchaseOrderDispatch, MaintenanceFolioCounter, Vehicle,
+      UnitOfMeasure, ProductCategory, Product, ProductOffer, RequestItem, VehicleSpecItem,
     ]),
     VehicleKmsModule,
     NotificationsModule,
@@ -38,10 +42,10 @@ import { MailService } from 'src/mail/mail.service';
     EmailLogModule,
     WhatsappGatewayModule,
   ],
-  controllers: [CatalogController, SuppliersController, ScheduleController, RequestsController, PurchaseOrdersController],
+  controllers: [ProductsController, CatalogController, SuppliersController, ScheduleController, RequestsController, PurchaseOrdersController],
   providers: [
     FolioService, CatalogService, SuppliersService, ScheduleService, RequestsService, QuotesService,
-    PurchaseOrdersService, PoDispatchService, HistoryService, MailService,
+    PurchaseOrdersService, PoDispatchService, HistoryService, MailService, ProductsService,
   ],
 })
 export class MaintenanceModule {}

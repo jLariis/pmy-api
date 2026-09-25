@@ -1,8 +1,16 @@
 import { Type } from 'class-transformer';
 import {
-  ArrayMinSize, IsArray, IsBoolean, IsEmail, IsIn, IsOptional, IsString, IsUUID, MaxLength, MinLength, ValidateIf, ValidateNested,
+  ArrayMinSize, IsArray, IsBoolean, IsEmail, IsIn, IsOptional, IsString, IsUUID, MaxLength, MinLength, Validate, ValidateIf, ValidateNested,
+  ValidatorConstraint, ValidatorConstraintInterface,
 } from 'class-validator';
 import { CONTACT_CHANNELS, ContactChannel } from 'src/entities/supplier-contact.entity';
+import { isValidClabe } from '../../utils/clabe.util';
+
+@ValidatorConstraint({ name: 'isClabe' })
+export class IsClabeConstraint implements ValidatorConstraintInterface {
+  validate(v: unknown) { return isValidClabe(String(v ?? '')); }
+  defaultMessage() { return 'La CLABE no es válida (deben ser 18 dígitos y el último es de verificación)'; }
+}
 
 // Mensajes en lenguaje simple: el front los muestra tal cual (con "Contacto N:" por delante).
 export class ContactDto {
@@ -48,6 +56,16 @@ export class SupplierDto {
 
   @IsOptional() @IsString()
   notes?: string | null;
+
+  @IsOptional() @IsString() @MaxLength(100, { message: 'El nombre del banco es demasiado largo' })
+  bankName?: string | null;
+
+  @IsOptional() @ValidateIf((o) => !!o.clabe)
+  @Validate(IsClabeConstraint)
+  clabe?: string | null;
+
+  @IsOptional() @IsString() @MaxLength(30, { message: 'El número de cuenta es demasiado largo' })
+  accountNumber?: string | null;
 
   @IsOptional() @IsBoolean()
   active?: boolean;

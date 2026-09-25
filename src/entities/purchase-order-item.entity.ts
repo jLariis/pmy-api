@@ -23,8 +23,23 @@ export class PurchaseOrderItem {
   @Column({ length: 36, nullable: true })
   serviceId: string | null;
 
+  @Column({ length: 36, nullable: true })
+  requestItemId: string | null;
+
+  @Column({ length: 36, nullable: true })
+  productId: string | null;
+
   @Column({ length: 300 })
   description: string;
+
+  @Column({ default: true })
+  ivaEnabled: boolean;
+
+  @Column({ default: false })
+  iepsEnabled: boolean;
+
+  @Column('decimal', { precision: 6, scale: 4, default: 0, transformer: decimalTransformer })
+  iepsRate: number;
 
   @Column('decimal', { precision: 10, scale: 2, default: 1, transformer: decimalTransformer })
   quantity: number;

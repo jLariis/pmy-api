@@ -31,7 +31,7 @@ export class SuppliersService {
     const contacts = normalizeContacts(dto.contacts);
     const entity = this.suppliers.create({
       name: dto.name.trim(), rfc: dto.rfc?.trim().toUpperCase() || null, address: dto.address ?? null,
-      notes: dto.notes ?? null, active: dto.active ?? true,
+      notes: dto.notes ?? null, active: dto.active ?? true, bankName: dto.bankName?.trim() || null, clabe: dto.clabe?.replace(/\s/g, '') || null, accountNumber: dto.accountNumber?.trim() || null,
       contacts: contacts.map(({ id: _id, ...c }) => this.contacts.create(c)),
     });
     return this.suppliers.save(entity);
@@ -43,7 +43,7 @@ export class SuppliersService {
     const contacts = normalizeContacts(dto.contacts);
     Object.assign(s, {
       name: dto.name.trim(), rfc: dto.rfc?.trim().toUpperCase() || null, address: dto.address ?? null,
-      notes: dto.notes ?? null, active: dto.active ?? s.active, updatedAt: new Date(),
+      notes: dto.notes ?? null, active: dto.active ?? s.active, updatedAt: new Date(), bankName: dto.bankName?.trim() || null, clabe: dto.clabe?.replace(/\s/g, '') || null, accountNumber: dto.accountNumber?.trim() || null,
     });
     s.contacts = contacts.map((c) => this.contacts.create({ ...c, supplierId: s.id }));
     return this.suppliers.save(s);
