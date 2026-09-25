@@ -120,3 +120,17 @@ export function buildNeeds(input: {
   }
   return [...map.values()];
 }
+
+/** Limpia sinónimos capturados: separa por coma, recorta, quita vacíos y repetidos. null si no queda nada. */
+export function cleanKeywords(s?: string | null): string | null {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of (s ?? '').split(',')) {
+    const k = raw.trim().replace(/\s+/g, ' ');
+    if (k && !seen.has(normalize(k))) {
+      seen.add(normalize(k));
+      out.push(k);
+    }
+  }
+  return out.length ? out.join(', ').slice(0, 1000) : null;
+}

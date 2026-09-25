@@ -24,6 +24,10 @@ export class ProductCategoryDto {
   @IsIn(PRODUCT_KINDS as unknown as string[], { message: 'Tipo no válido (pieza, insumo, servicio o equipo)' })
   kind: ProductKind;
 
+  /** Sinónimos separados por coma ("frenos, rechina"). */
+  @IsOptional() @ValidateIf((o) => o.keywords !== null) @IsString() @MaxLength(1000, { message: 'Demasiados sinónimos (máx. 1000 caracteres)' })
+  keywords?: string | null;
+
   @IsOptional() @IsInt({ message: 'El orden debe ser un número entero' })
   sortOrder?: number;
 

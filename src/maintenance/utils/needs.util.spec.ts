@@ -1,4 +1,4 @@
-import { buildNeeds, matchKeywords, normalize, similar } from './needs.util';
+import { buildNeeds, cleanKeywords, matchKeywords, normalize, similar } from './needs.util';
 
 describe('normalize', () => {
   it('quita acentos, mayúsculas y signos', () => expect(normalize('¡Truena al FRENAR, líquido!')).toBe('truena al frenar liquido'));
@@ -61,5 +61,12 @@ describe('buildNeeds', () => {
 
   it('sin servicios ni coincidencias: vacío', () => {
     expect(buildNeeds({ chosen: [], text: 'hola', serviceCatalog: [], categories, spec: [] })).toEqual([]);
+  });
+});
+
+describe('cleanKeywords', () => {
+  it('recorta, quita vacíos y repetidos (sin importar acentos)', () => {
+    expect(cleanKeywords(' frenos,  Frenos , ,frenár, rechina  fuerte ')).toBe('frenos, frenár, rechina fuerte');
+    expect(cleanKeywords('  , ')).toBeNull();
   });
 });

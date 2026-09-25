@@ -6,6 +6,8 @@ import { ProductKind } from 'src/entities/product-category.entity';
 import { MTTO } from '../maintenance.permissions';
 import { ProductsService } from './products.service';
 import { ProductCategoryDto, ProductDto, UnitDto } from './dto/products.dto';
+import { ServiceTemplatesService } from './service-templates.service';
+import { ServiceTemplateDto } from './dto/service-templates.dto';
 
 /**
  * Catálogos de Compras. Lectura: cualquier usuario autenticado (todos levantan solicitudes y eligen
@@ -16,7 +18,10 @@ import { ProductCategoryDto, ProductDto, UnitDto } from './dto/products.dto';
 @Controller('maintenance/catalog')
 @UseGuards(PermissionsGuard)
 export class ProductsController {
-  constructor(private readonly products: ProductsService) {}
+  constructor(
+    private readonly products: ProductsService,
+    private readonly services: ServiceTemplatesService,
+  ) {}
 
   @Get('units')
   listUnits() {
@@ -83,5 +88,35 @@ export class ProductsController {
   @RequirePermission(MTTO.catalogos, MTTO.revisar)
   remove(@Param('id') id: string) {
     return this.products.remove(id);
+  }
+
+  // ---------------- Servicios predefinidos (Mantenimiento → Servicios) ----------------
+
+  @Get('service-templates')
+  listServices(@Query('includeInactive') includeInactive?: string) {
+    return this.services.list(includeInactive === 'true');
+  }
+
+  @Get('service-templates/:id')
+  findService(@Param('id') id: string) {
+    return this.services.findOne(id);
+  }
+
+  @Post('service-templates')
+  @RequirePermission(MTTO.catalogos, MTTO.revisar)
+  createService(@Body() dto: ServiceTemplateDto) {
+    return this.services.save(dto);
+  }
+
+  @Patch('service-templates/:id')
+  @RequirePermission(MTTO.catalogos, MTTO.revisar)
+  updateService(@Param('id') id: string, @Body() dto: ServiceTemplateDto) {
+    return this.services.save(dto, id);
+  }
+
+  @Delete('service-templates/:id')
+  @RequirePermission(MTTO.catalogos, MTTO.revisar)
+  removeService(@Param('id') id: string) {
+    return this.services.remove(id);
   }
 }

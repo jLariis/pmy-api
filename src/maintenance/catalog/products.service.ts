@@ -5,6 +5,7 @@ import { UnitOfMeasure } from 'src/entities/unit-of-measure.entity';
 import { ProductCategory, ProductKind } from 'src/entities/product-category.entity';
 import { Product } from 'src/entities/product.entity';
 import { ProductOffer } from 'src/entities/product-offer.entity';
+import { cleanKeywords } from '../utils/needs.util';
 import { OfferDto, ProductCategoryDto, ProductDto, UnitDto } from './dto/products.dto';
 
 export interface ProductQuery {
@@ -61,7 +62,13 @@ export class ProductsService {
     if (dup && dup.id !== id) throw new ConflictException(`Ya existe "${name}" en el catálogo`);
     const entity = id ? await this.categories.findOne({ where: { id } }) : this.categories.create();
     if (!entity) throw new NotFoundException('No se encontró el registro');
-    Object.assign(entity, { name, kind: dto.kind, sortOrder: dto.sortOrder ?? entity.sortOrder ?? 999, active: dto.active ?? entity.active ?? true });
+    Object.assign(entity, {
+      name,
+      kind: dto.kind,
+      keywords: dto.keywords === undefined ? entity.keywords ?? null : cleanKeywords(dto.keywords),
+      sortOrder: dto.sortOrder ?? entity.sortOrder ?? 999,
+      active: dto.active ?? entity.active ?? true,
+    });
     return this.categories.save(entity);
   }
 
