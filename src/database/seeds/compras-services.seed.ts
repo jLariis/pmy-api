@@ -11,11 +11,11 @@ export const SEED_SERVICES: Array<{ name: string; keywords: string }> = [
 
 /** Nombre de la categoría (tal como está en el catálogo) → sinónimos. */
 export const SEED_CATEGORY_KEYWORDS: Record<string, string> = {
-  'BALATA DELANTERA': 'frenos, frenar, rechina, balatas delanteras',
-  'BALATA TRASERA': 'frenos, frenar, balatas traseras',
-  'DISCO DE FRENO': 'frenos, disco, vibra al frenar',
-  'TAMBOR DE FRENOS': 'frenos, tambor',
-  'LIQUIDO DE FRENOS': 'frenos, liquido de frenos, pedal suave',
+  'BALATA DELANTERA': 'frenos, rechina, balatas',
+  'BALATA TRASERA': 'balatas traseras, rechina atras',
+  'DISCO DE FRENO': 'vibra al frenar, disco',
+  'TAMBOR DE FRENOS': 'tambor',
+  'LIQUIDO DE FRENOS': 'pedal suave, pedal se hunde',
   'ACEITE': 'aceite, cambio de aceite, lubricante, servicio',
   'FILTRO ACEITE SINTÉTICO': 'filtro de aceite, cambio de aceite',
   'FILTRO ACEITE MINERAL': 'filtro de aceite, cambio de aceite',

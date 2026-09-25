@@ -13,10 +13,16 @@ describe('rankOffers', () => {
     ]);
   });
 
-  it('una oferta puede ganar varias etiquetas (sale una sola vez)', () => {
+  it('una oferta puede ganar varias etiquetas (sale una sola vez) y se completa con otras opciones', () => {
     const out = rankOffers([c('a', 100, 5, 3), c('b', 120, 2)]);
-    expect(out).toHaveLength(1);
-    expect(out[0].labels).toEqual(['mas_comprado', 'mejor_precio', 'mejor_calidad', 'mejor_relacion']);
+    expect(out.map((o) => [o.offerId, o.labels])).toEqual([['a', ['mas_comprado', 'mejor_precio', 'mejor_calidad', 'mejor_relacion']], ['b', []]]);
+  });
+
+  it('completa hasta 4 tarjetas con las siguientes mejores en relación calidad-precio', () => {
+    // g gana todo; relleno por relación: h=4/(110/100)=3.6, i=5/(200/100)=2.5, j=3/(105/100)=2.86, k=1/(101/100)=0.99
+    const out = rankOffers([c('g', 100, 5, 2), c('h', 110, 4), c('i', 200, 5), c('j', 105, 3), c('k', 101, 1)]);
+    expect(out.map((o) => o.offerId)).toEqual(['g', 'h', 'j', 'i']);
+    expect(out.slice(1).every((o) => o.labels.length === 0)).toBe(true);
   });
 
   it('sin compras no hay "más comprado"; sin estrellas no hay "mejor calidad"; empate → preferido de la ficha', () => {

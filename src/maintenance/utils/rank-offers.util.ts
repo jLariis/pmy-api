@@ -1,6 +1,7 @@
 /**
  * Las 4 sugerencias por pieza/insumo: más comprado, mejor precio, mejor calidad y mejor relación
- * calidad-precio. Una misma oferta puede ganar varias etiquetas (sale una sola vez). Función pura.
+ * calidad-precio. Una misma oferta puede ganar varias etiquetas (sale una sola vez); si quedan menos de
+ * 4 tarjetas se completa con "otras opciones". Función pura.
  */
 
 export type OfferLabel = 'mas_comprado' | 'mejor_precio' | 'mejor_calidad' | 'mejor_relacion';
@@ -26,6 +27,8 @@ export interface RankedOffer extends OfferCandidate {
 
 /** Estrellas supuestas cuando la oferta no tiene calificación. */
 const DEFAULT_QUALITY = 3;
+/** Tarjetas por pieza/insumo. */
+const MAX_CARDS = 4;
 
 export function rankOffers(candidates: OfferCandidate[], opts: { preferredProductId?: string | null } = {}): RankedOffer[] {
   const list = candidates.filter((c) => Number(c.price) >= 0);
@@ -53,6 +56,13 @@ export function rankOffers(candidates: OfferCandidate[], opts: { preferredProduc
     const r = out.get(w.offerId) ?? { ...w, labels: [] };
     r.labels.push(label);
     out.set(w.offerId, r);
+  }
+  // Si una oferta ganó varias etiquetas quedan menos de 4 tarjetas: se completa con las siguientes mejores
+  // en relación calidad-precio, sin etiqueta ("Otra opción" en pantalla).
+  const rest = [...list].filter((c) => !out.has(c.offerId)).sort((a, b) => relation(b) - relation(a) || tie(a, b));
+  for (const c of rest) {
+    if (out.size >= MAX_CARDS) break;
+    out.set(c.offerId, { ...c, labels: [] });
   }
   return [...out.values()];
 }
