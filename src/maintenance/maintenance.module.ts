@@ -6,6 +6,7 @@ import {
   RequestItem, Supplier, SupplierContact, UnitOfMeasure, Vehicle, VehicleSpecItem,
 } from 'src/entities';
 import { ProductsService } from './catalog/products.service';
+import { VehicleSpecService } from './schedule/vehicle-spec.service';
 import { ProductsController } from './catalog/products.controller';
 import { FolioService } from './folio.service';
 import { CatalogService } from './catalog/catalog.service';
@@ -45,7 +46,7 @@ import { MailService } from 'src/mail/mail.service';
   controllers: [ProductsController, CatalogController, SuppliersController, ScheduleController, RequestsController, PurchaseOrdersController],
   providers: [
     FolioService, CatalogService, SuppliersService, ScheduleService, RequestsService, QuotesService,
-    PurchaseOrdersService, PoDispatchService, HistoryService, MailService, ProductsService,
+    PurchaseOrdersService, PoDispatchService, HistoryService, MailService, ProductsService, VehicleSpecService,
   ],
 })
 export class MaintenanceModule {}

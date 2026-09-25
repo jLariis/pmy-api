@@ -5,12 +5,11 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { Response } from 'express';
 import { PermissionsGuard } from 'src/auth/guards/permissions.guard';
-import { SubsidiaryScopeGuard } from 'src/auth/guards/subsidiary-scope.guard';
 import { RequirePermission } from 'src/auth/decorators/require-permission.decorator';
 import { MTTO } from '../maintenance.permissions';
 import { RequestsService } from './requests.service';
 import { QUOTE_ATTACHMENT_MAX_BYTES, QuotesService } from './quotes.service';
-import { CreateRequestDto, QuoteDto, UpdateRequestDto } from './dto/request.dto';
+import { CreateRequestDto, QuoteDto, RejectRequestDto, UpdateRequestDto } from './dto/request.dto';
 import { PurchaseOrdersService } from '../purchase-orders/purchase-orders.service';
 
 @ApiTags('maintenance')
@@ -24,86 +23,86 @@ export class RequestsController {
     private readonly orders: PurchaseOrdersService,
   ) {}
 
-  @Get('board/:subsidiaryId')
-  @UseGuards(SubsidiaryScopeGuard)
-  @RequirePermission(MTTO.solicitudes, MTTO.ordenes, MTTO.autorizar)
-  board(@Param('subsidiaryId') subsidiaryId: string) {
-    return this.requests.board(subsidiaryId);
+  /** Tablero: Compras/autorizador ven todas las sucursales (filtro opcional); los demás, una de sus sucursales. */
+  @Get('board')
+  board(@Query('subsidiaryId') subsidiaryId: string | undefined, @Query('type') type: string | undefined, @Req() req: any) {
+    return this.requests.board({ subsidiaryId: subsidiaryId || undefined, type: type || undefined }, req.user);
   }
 
-  @Get('subsidiary/:subsidiaryId')
-  @UseGuards(SubsidiaryScopeGuard)
-  @RequirePermission(MTTO.solicitudes, MTTO.ordenes)
-  list(@Param('subsidiaryId') subsidiaryId: string, @Query('status') status?: string) {
-    return this.requests.listBySubsidiary(subsidiaryId, status);
+  /** Mis solicitudes: cualquier usuario autenticado. */
+  @Get('mine')
+  mine(@Query('type') type: string | undefined, @Req() req: any) {
+    return this.requests.board({ mineUserId: req.user?.userId, type: type || undefined }, req.user);
   }
 
-  @Get('inbox/:subsidiaryId')
-  @UseGuards(SubsidiaryScopeGuard)
-  @RequirePermission(MTTO.solicitudes)
-  inbox(@Param('subsidiaryId') subsidiaryId: string) {
-    return this.requests.inbox(subsidiaryId);
-  }
-
+  /** Detalle: quien la levantó, Compras, el autorizador y admins de la sucursal (se valida en el servicio). */
   @Get(':id')
-  @RequirePermission(MTTO.solicitudes, MTTO.ordenes, MTTO.autorizar)
   findOne(@Param('id') id: string, @Req() req: any) {
     return this.requests.findOne(id, req.user);
   }
 
+  /** Cualquier usuario autenticado levanta solicitudes para sus sucursales. */
   @Post()
-  @RequirePermission(MTTO.solicitudes)
   create(@Body() dto: CreateRequestDto, @Req() req: any) {
     return this.requests.create(dto, req.user);
   }
 
   @Patch(':id')
-  @RequirePermission(MTTO.solicitudes)
   update(@Param('id') id: string, @Body() dto: UpdateRequestDto, @Req() req: any) {
     return this.requests.update(id, dto, req.user);
   }
 
   @Delete(':id')
-  @RequirePermission(MTTO.solicitudes)
   remove(@Param('id') id: string, @Req() req: any) {
     return this.requests.remove(id, req.user);
   }
 
   @Post(':id/cancel')
-  @RequirePermission(MTTO.solicitudes)
   cancel(@Param('id') id: string, @Req() req: any) {
     return this.requests.cancel(id, req.user);
+  }
+
+  @Post(':id/approve')
+  @RequirePermission(MTTO.revisar)
+  approve(@Param('id') id: string, @Req() req: any) {
+    return this.requests.approve(id, req.user);
+  }
+
+  @Post(':id/reject')
+  @RequirePermission(MTTO.revisar)
+  reject(@Param('id') id: string, @Body() dto: RejectRequestDto, @Req() req: any) {
+    return this.requests.reject(id, dto.reason, req.user);
   }
 
   // ---------------- Cotizaciones ----------------
 
   @Post(':id/quotes')
-  @RequirePermission(MTTO.solicitudes)
+  @RequirePermission(MTTO.revisar)
   createQuote(@Param('id') id: string, @Body() dto: QuoteDto, @Req() req: any) {
     return this.quotes.create(id, dto, req.user);
   }
 
   @Patch('quotes/:quoteId')
-  @RequirePermission(MTTO.solicitudes)
+  @RequirePermission(MTTO.revisar)
   updateQuote(@Param('quoteId') quoteId: string, @Body() dto: QuoteDto, @Req() req: any) {
     return this.quotes.update(quoteId, dto, req.user);
   }
 
   @Delete('quotes/:quoteId')
-  @RequirePermission(MTTO.solicitudes)
+  @RequirePermission(MTTO.revisar)
   removeQuote(@Param('quoteId') quoteId: string, @Req() req: any) {
     return this.quotes.remove(quoteId, req.user);
   }
 
   @Post('quotes/:quoteId/attachment')
-  @RequirePermission(MTTO.solicitudes)
+  @RequirePermission(MTTO.revisar)
   @UseInterceptors(FileInterceptor('file', { limits: { fileSize: QUOTE_ATTACHMENT_MAX_BYTES } }))
   uploadAttachment(@Param('quoteId') quoteId: string, @UploadedFile() file: Express.Multer.File, @Req() req: any) {
     return this.quotes.saveAttachment(quoteId, file, req.user);
   }
 
   @Get('quotes/:quoteId/attachment')
-  @RequirePermission(MTTO.solicitudes, MTTO.ordenes, MTTO.autorizar)
+  @RequirePermission(MTTO.revisar, MTTO.solicitudes, MTTO.ordenes, MTTO.autorizar)
   async downloadAttachment(@Param('quoteId') quoteId: string, @Req() req: any, @Res() res: Response) {
     const { buffer, name, mime } = await this.quotes.readAttachment(quoteId, req.user);
     res.setHeader('Content-Type', mime);
@@ -112,7 +111,7 @@ export class RequestsController {
   }
 
   @Post('quotes/:quoteId/convert')
-  @RequirePermission(MTTO.solicitudes)
+  @RequirePermission(MTTO.revisar)
   async convert(@Param('quoteId') quoteId: string, @Query('submit') submit: string | undefined, @Req() req: any) {
     const po = await this.quotes.convert(quoteId, req.user);
     // "Elegir y mandar a autorizar": un solo clic crea la orden y la manda a autorización.

@@ -29,6 +29,11 @@ const CATALOG: Record<string, Partial<Presentation>> = {
   'mtto.oc_por_autorizar': { category: 'operacion', icon: 'gavel',        severity: 'warning', channels: ['bell', 'email'] },
   'mtto.oc_autorizada':    { category: 'operacion', icon: 'check-circle', severity: 'info',    channels: ['bell'] },
   'mtto.oc_rechazada':     { category: 'operacion', icon: 'x-circle',     severity: 'warning', channels: ['bell'] },
+  'compras.solicitud_nueva':      { category: 'operacion', icon: 'shopping-cart', severity: 'info',    channels: ['bell', 'email'] },
+  'compras.solicitud_autorizada': { category: 'operacion', icon: 'check-circle',  severity: 'info',    channels: ['bell', 'email', 'whatsapp'] },
+  'compras.solicitud_rechazada':  { category: 'operacion', icon: 'x-circle',      severity: 'warning', channels: ['bell', 'email', 'whatsapp'] },
+  'compras.solicitud_comprada':   { category: 'operacion', icon: 'package-check', severity: 'info',    channels: ['bell', 'email', 'whatsapp'] },
+  'compras.solicitud_terminada':  { category: 'operacion', icon: 'badge-check',   severity: 'info',    channels: ['bell', 'email', 'whatsapp'] },
   // ---- Sesión ----
   'auth.login':        { category: 'sesion', icon: 'log-in',  severity: 'info', channels: ['bell'] },
   'auth.logout':       { category: 'sesion', icon: 'log-out', severity: 'info', channels: ['bell'] },

@@ -1,8 +1,8 @@
 import { Injectable } from '@nestjs/common';
 import { EntityManager } from 'typeorm';
 
-/** MT = expediente de mantenimiento (antes SM), OC = orden de compra. */
-export type FolioPrefix = 'MT' | 'SM' | 'OC';
+/** SOL = solicitud de compra (antes MT/SM), OC = orden de compra. */
+export type FolioPrefix = 'SOL' | 'MT' | 'SM' | 'OC';
 
 export const formatFolio = (prefix: string, n: number): string => `${prefix}-${String(n).padStart(6, '0')}`;
 

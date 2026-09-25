@@ -1,16 +1,15 @@
-import type { PoStatus } from './po-state.util';
-
 /** Columna del tablero. */
-export type ExpedienteStage = 'cotizando' | 'por_autorizar' | 'en_taller' | 'terminado' | 'cancelado';
+export type ExpedienteStage = 'por_revisar' | 'cotizando' | 'por_autorizar' | 'en_proceso' | 'terminado' | 'rechazada' | 'cancelado';
 /** Paso activo del expediente (stepper). */
-export type ExpedienteStep = 'solicitud' | 'cotizaciones' | 'autorizacion' | 'envio' | 'cierre' | 'terminado';
-/** Quién tiene la pelota. */
-export type WaitingOn = 'captura' | 'autorizador' | 'proveedor' | null;
+export type ExpedienteStep = 'solicitud' | 'revision' | 'cotizaciones' | 'ordenes' | 'cierre' | 'terminado';
+/** Quién tiene la pelota: compras = Gerardo; autorizador = Edgardo. */
+export type WaitingOn = 'compras' | 'autorizador' | 'proveedor' | null;
 
 export interface ExpedienteStageInput {
   requestStatus: string;
   quotesCount: number;
-  po: { status: PoStatus | string; rejectionReason?: string | null } | null;
+  /** Órdenes de compra de la solicitud (puede haber una por proveedor). */
+  orders: Array<{ status: string; rejectionReason?: string | null }>;
 }
 
 export interface ExpedienteStageResult {
@@ -22,32 +21,34 @@ export interface ExpedienteStageResult {
 }
 
 /**
- * Un mantenimiento = un expediente (solicitud + cotizaciones + orden). Deriva, a partir de los
- * estados de la solicitud y su orden, en qué columna del tablero va, cuál es el paso activo y
- * qué sigue — en lenguaje simple para el usuario.
+ * Una solicitud = un expediente (renglones + cotizaciones + N órdenes). Deriva la columna del tablero,
+ * el paso activo y qué sigue, en lenguaje simple.
  */
-export function expedienteStage({ requestStatus, quotesCount, po }: ExpedienteStageInput): ExpedienteStageResult {
+export function expedienteStage({ requestStatus, quotesCount, orders }: ExpedienteStageInput): ExpedienteStageResult {
   const r = (stage: ExpedienteStage, step: ExpedienteStep, nextStep: string, waitingOn: WaitingOn, rejected = false) =>
     ({ stage, step, nextStep, waitingOn, rejected });
 
-  if (requestStatus === 'cancelada' || po?.status === 'cancelada') return r('cancelado', 'terminado', 'Mantenimiento cancelado', null);
-  if (requestStatus === 'completada' || po?.status === 'completada') return r('terminado', 'terminado', 'Servicio terminado', null);
+  if (requestStatus === 'cancelada') return r('cancelado', 'terminado', 'Solicitud cancelada', null);
+  if (requestStatus === 'rechazada') return r('rechazada', 'terminado', 'Compras rechazó la solicitud', null);
+  if (requestStatus === 'por_revisar') return r('por_revisar', 'revision', 'Compras revisará tu solicitud', 'compras');
 
-  switch (po?.status) {
-    case 'pendiente':
-      return r('por_autorizar', 'autorizacion', 'Esperando la autorización de la orden', 'autorizador');
-    case 'autorizada':
-      return r('en_taller', 'envio', 'Envía la orden al proveedor', 'captura');
-    case 'enviada':
-      return r('en_taller', 'cierre', 'Cierra el servicio cuando la unidad salga del taller', 'proveedor');
-    case 'borrador':
-    case 'rechazada':
-      return po.rejectionReason
-        ? r('cotizando', 'cotizaciones', 'La orden fue rechazada: corrígela y vuelve a mandarla, o elige otra cotización', 'captura', true)
-        : r('cotizando', 'cotizaciones', 'Manda la orden a autorización', 'captura');
+  const active = orders.filter((o) => o.status !== 'cancelada');
+  if (active.length) {
+    if (active.every((o) => o.status === 'completada')) return r('terminado', 'terminado', 'Compra terminada', null);
+    if (active.some((o) => o.status === 'borrador' && o.rejectionReason)) {
+      return r('cotizando', 'ordenes', 'Una orden fue rechazada: corrígela y vuelve a mandarla, o elige otro proveedor', 'compras', true);
+    }
+    if (active.some((o) => o.status === 'pendiente' || o.status === 'borrador')) {
+      return r('por_autorizar', 'ordenes', active.length > 1 ? 'Esperando la autorización de las órdenes' : 'Esperando la autorización de la orden', 'autorizador');
+    }
+    if (active.some((o) => o.status === 'autorizada')) {
+      return r('en_proceso', 'ordenes', 'Envía las órdenes autorizadas a sus proveedores', 'compras');
+    }
+    return r('en_proceso', 'cierre', 'Cierra cada orden cuando se reciba lo comprado', 'proveedor');
   }
+  if (requestStatus === 'completada') return r('terminado', 'terminado', 'Compra terminada', null);
 
-  if (quotesCount === 0) return r('cotizando', 'cotizaciones', 'Captura las cotizaciones de los proveedores', 'captura');
-  if (quotesCount === 1) return r('cotizando', 'cotizaciones', 'Agrega otra cotización para comparar o elige esta', 'captura');
-  return r('cotizando', 'cotizaciones', 'Compara las cotizaciones y elige la mejor', 'captura');
+  if (quotesCount === 0) return r('cotizando', 'cotizaciones', 'Pide y captura las cotizaciones de los proveedores', 'compras');
+  if (quotesCount === 1) return r('cotizando', 'cotizaciones', 'Agrega otra cotización para comparar o genera la orden', 'compras');
+  return r('cotizando', 'cotizaciones', 'Compara por partida y genera las órdenes', 'compras');
 }
