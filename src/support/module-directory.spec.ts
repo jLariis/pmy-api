@@ -17,6 +17,16 @@ describe('module-directory', () => {
     expect(resolveModule(['inventarios', 'operaciones'])?.key).toBe('operaciones/inventarios');
   });
 
+  it('Compras y Mantenimiento resuelven a sus pantallas actuales', () => {
+    expect(resolveModule(['solicitud'])?.key).toBe('mtto/solicitudes');
+    expect(resolveModule(['tablero'])?.key).toBe('mtto/tablero');
+    expect(resolveModule(['catalogos'])?.key).toBe('mtto/catalogos');
+    expect(resolveModule(['servicios'])?.key).toBe('mtto/servicios');
+    for (const e of MODULE_DIRECTORY.filter((x) => x.key.startsWith('mtto/'))) {
+      expect(e.frontend.some((f) => f.startsWith('app/mtto/'))).toBe(false);
+    }
+  });
+
   it('devuelve null si nada coincide', () => {
     expect(resolveModule(['loquesea', 'xyz'])).toBeNull();
     expect(resolveModule([null, undefined, ''])).toBeNull();
