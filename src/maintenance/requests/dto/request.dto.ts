@@ -1,6 +1,6 @@
 import { Type } from 'class-transformer';
 import {
-  ArrayMinSize, IsArray, IsDateString, IsIn, IsInt, IsNumber, IsOptional, IsString, IsUUID, Max, MaxLength, Min, MinLength,
+  ArrayMinSize, IsArray, IsBoolean, IsDateString, IsIn, IsInt, IsNumber, IsOptional, IsString, IsUUID, Max, MaxLength, Min, MinLength,
   ValidateIf, ValidateNested,
 } from 'class-validator';
 import { REQUEST_PRIORITIES, REQUEST_TYPES, RequestPriority, RequestType } from 'src/entities/maintenance-request.entity';
@@ -86,8 +86,12 @@ export class RejectRequestDto {
 }
 
 export class QuoteItemDto {
-  @IsOptional() @ValidateIf((o) => o.serviceId !== null) @IsUUID('all', { message: 'Servicio del catálogo no reconocido' })
-  serviceId?: string | null;
+  /** Renglón de la solicitud al que responde (comparativo por partida). */
+  @IsOptional() @ValidateIf((o) => o.requestItemId !== null) @IsUUID('all', { message: 'Renglón no reconocido' })
+  requestItemId?: string | null;
+
+  @IsOptional() @ValidateIf((o) => o.productId !== null) @IsUUID('all', { message: 'Producto del catálogo no reconocido' })
+  productId?: string | null;
 
   @IsString({ message: 'Describe el concepto' })
   @MinLength(2, { message: 'Describe el concepto' })
@@ -100,7 +104,27 @@ export class QuoteItemDto {
   @IsNumber({}, { message: 'El precio debe ser un número' }) @Min(0, { message: 'El precio no puede ser negativo' })
   unitPrice: number;
 
-  @IsOptional() @IsNumber({}, { message: 'IVA no válido' }) @Min(0, { message: 'IVA no válido' }) @Max(1, { message: 'IVA no válido' })
+  @IsOptional() @IsIn(['si', 'no', 'sobre_pedido'], { message: 'Existencia no válida (sí, no o sobre pedido)' })
+  availability?: 'si' | 'no' | 'sobre_pedido';
+
+  @IsOptional() @ValidateIf((o) => o.leadTimeDays !== null) @IsInt({ message: 'Los días de entrega deben ser un número entero' })
+  @Min(0, { message: 'Los días de entrega no pueden ser negativos' }) @Max(365, { message: 'Máximo 365 días de entrega' })
+  leadTimeDays?: number | null;
+
+  @IsOptional() @IsBoolean()
+  ivaEnabled?: boolean;
+
+  @IsOptional() @IsBoolean()
+  iepsEnabled?: boolean;
+
+  @IsOptional() @IsNumber({}, { message: 'Tasa de IEPS no válida' }) @Min(0, { message: 'Tasa de IEPS no válida' }) @Max(2, { message: 'Tasa de IEPS no válida' })
+  iepsRate?: number;
+
+  @IsOptional() @ValidateIf((o) => o.quality !== null) @IsInt() @Min(1, { message: 'La calidad va de 1 a 5 estrellas' }) @Max(5, { message: 'La calidad va de 1 a 5 estrellas' })
+  quality?: number | null;
+
+  /** Compat v1/v2 (0.16 = con IVA). */
+  @IsOptional() @IsNumber() @Min(0) @Max(1)
   taxRate?: number;
 }
 

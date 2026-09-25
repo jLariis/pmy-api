@@ -1,54 +1,90 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, In, Not, Repository } from 'typeorm';
+import { DataSource, EntityManager, In, Repository } from 'typeorm';
 import { promises as fs } from 'fs';
 import { join } from 'path';
 import { MaintenanceQuote } from 'src/entities/maintenance-quote.entity';
 import { MaintenanceQuoteItem } from 'src/entities/maintenance-quote-item.entity';
 import { MaintenanceRequest } from 'src/entities/maintenance-request.entity';
-import { MaintenanceService } from 'src/entities/maintenance-service.entity';
-import { PurchaseOrder } from 'src/entities/purchase-order.entity';
-import { PurchaseOrderItem } from 'src/entities/purchase-order-item.entity';
+import { ProductOffer } from 'src/entities/product-offer.entity';
+import { Product } from 'src/entities/product.entity';
+import { RequestItem } from 'src/entities/request-item.entity';
 import { Supplier } from 'src/entities/supplier.entity';
-import { FolioService } from '../folio.service';
+import { PurchaseOrder } from 'src/entities/purchase-order.entity';
 import { ScopeUser } from '../maintenance-scope.util';
-import { totals } from '../utils/money.util';
+import { isPurchaser } from '../maintenance.permissions';
 import { RequestsService } from './requests.service';
 import { QuoteDto } from './dto/request.dto';
-import { buildQuoteItems } from './quote-items.util';
+import { buildQuoteItems, BuiltQuoteItem } from './quote-items.util';
 
 export const QUOTE_ATTACHMENT_MIMES = ['application/pdf', 'image/jpeg', 'image/png', 'image/webp'];
 export const QUOTE_ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
 
-/** Cotizaciones de una solicitud, su adjunto y la conversión de la ganadora en orden de compra. */
+/** Cotizaciones de una solicitud (una por proveedor, con partidas por renglón) y su archivo adjunto. */
 @Injectable()
 export class QuotesService {
+  private readonly logger = new Logger(QuotesService.name);
+
   constructor(
     @InjectRepository(MaintenanceQuote) private readonly quotes: Repository<MaintenanceQuote>,
-    @InjectRepository(MaintenanceService) private readonly services: Repository<MaintenanceService>,
     @InjectRepository(Supplier) private readonly suppliers: Repository<Supplier>,
+    @InjectRepository(ProductOffer) private readonly offers: Repository<ProductOffer>,
     private readonly requests: RequestsService,
     private readonly dataSource: DataSource,
-    private readonly folios: FolioService,
   ) {}
 
-  private async referencePrices(serviceIds: Array<string | null | undefined>) {
-    const ids = [...new Set(serviceIds.filter(Boolean))] as string[];
+  /** Mejor precio conocido por producto (referencia para la desviación). */
+  private async referencePrices(productIds: Array<string | null | undefined>) {
+    const ids = [...new Set(productIds.filter(Boolean))] as string[];
     const map = new Map<string, number>();
     if (!ids.length) return map;
-    const list = await this.services.find({ where: { id: In(ids) }, withDeleted: true, select: ['id', 'referencePrice'] });
-    for (const s of list) map.set(s.id, Number(s.referencePrice));
+    const rows: Array<{ productId: string; price: string }> = await this.dataSource.query(
+      `SELECT productId, MIN(price) AS price FROM product_offer WHERE productId IN (${ids.map(() => '?').join(',')}) AND price > 0 GROUP BY productId`,
+      ids,
+    );
+    for (const r of rows) map.set(r.productId, Number(r.price));
     return map;
+  }
+
+  /** Solo Compras cotiza, con la solicitud autorizada y sin órdenes generadas. */
+  private async loadQuotable(requestId: string, user: ScopeUser) {
+    if (!isPurchaser(user)) throw new ForbiddenException('Solo Compras captura cotizaciones.');
+    const r = await this.dataSource.getRepository(MaintenanceRequest).findOne({ where: { id: requestId } });
+    if (!r) throw new NotFoundException('Solicitud no encontrada');
+    if (r.status === 'por_revisar') throw new BadRequestException('Primero autoriza la solicitud para poder cotizar.');
+    if (!['abierta', 'en_cotizacion'].includes(r.status)) throw new BadRequestException('La solicitud ya no está en cotización.');
+    if (await this.dataSource.getRepository(PurchaseOrder).exist({ where: { requestId } })) {
+      throw new BadRequestException('Ya se generaron órdenes; para cambiar cotizaciones primero elimina o cancela las órdenes.');
+    }
+    return r;
   }
 
   private async assertSupplier(id: string) {
     if (!(await this.suppliers.exist({ where: { id } }))) throw new BadRequestException('El proveedor no existe');
   }
 
+  /** Actualiza el catálogo: precio y calidad de cada producto con este proveedor (y su presentación). */
+  private async upsertOffers(m: EntityManager, supplierId: string, items: BuiltQuoteItem[]) {
+    const withProduct = items.filter((i) => i.productId);
+    if (!withProduct.length) return;
+    const reqItemIds = withProduct.map((i) => i.requestItemId).filter(Boolean) as string[];
+    const reqItems = reqItemIds.length ? await m.find(RequestItem, { where: { id: In(reqItemIds) }, select: ['id', 'unitId'] }) : [];
+    const products = await m.find(Product, { where: { id: In(withProduct.map((i) => i.productId!)) }, select: ['id', 'unitId'] });
+    for (const i of withProduct) {
+      const unitId = reqItems.find((r) => r.id === i.requestItemId)?.unitId ?? products.find((p) => p.id === i.productId)?.unitId ?? null;
+      const existing = await m.createQueryBuilder(ProductOffer, 'o')
+        .where('o.productId = :p AND o.supplierId = :s AND o.unitId <=> :u', { p: i.productId, s: supplierId, u: unitId })
+        .getOne();
+      const patch = { price: i.unitPrice, lastQuotedAt: new Date(), updatedAt: new Date(), ...(i.quality ? { quality: i.quality } : {}) };
+      if (existing) await m.update(ProductOffer, existing.id, patch);
+      else await m.save(ProductOffer, m.create(ProductOffer, { productId: i.productId!, supplierId, unitId, quality: i.quality ?? null, ...patch }));
+    }
+  }
+
   async create(requestId: string, dto: QuoteDto, user: ScopeUser) {
-    const request = await this.requests.loadEditable(requestId, user);
+    const request = await this.loadQuotable(requestId, user);
     await this.assertSupplier(dto.supplierId);
-    const built = buildQuoteItems(dto.items, await this.referencePrices(dto.items.map((i) => i.serviceId)));
+    const built = buildQuoteItems(dto.items, await this.referencePrices(dto.items.map((i) => i.productId)));
     return this.dataSource.transaction(async (m) => {
       const quote = await m.save(MaintenanceQuote, m.create(MaintenanceQuote, {
         requestId,
@@ -57,12 +93,14 @@ export class QuotesService {
         validUntil: dto.validUntil?.slice(0, 10) ?? null,
         notes: dto.notes ?? null,
         subtotal: built.subtotal,
+        ieps: built.ieps,
         tax: built.tax,
         total: built.total,
         status: 'capturada',
         createdById: user?.userId ?? null,
         items: built.items.map((i) => m.create(MaintenanceQuoteItem, i)),
       }));
+      await this.upsertOffers(m, dto.supplierId, built.items);
       if (request.status === 'abierta') await m.update(MaintenanceRequest, requestId, { status: 'en_cotizacion', updatedAt: new Date() });
       return quote;
     });
@@ -71,33 +109,49 @@ export class QuotesService {
   async update(quoteId: string, dto: QuoteDto, user: ScopeUser) {
     const quote = await this.quotes.findOne({ where: { id: quoteId }, relations: ['items'] });
     if (!quote) throw new NotFoundException('Cotización no encontrada');
-    await this.requests.loadEditable(quote.requestId, user);
+    await this.loadQuotable(quote.requestId, user);
     await this.assertSupplier(dto.supplierId);
-    const built = buildQuoteItems(dto.items, await this.referencePrices(dto.items.map((i) => i.serviceId)));
-    Object.assign(quote, {
-      supplierId: dto.supplierId,
-      quoteDate: dto.quoteDate.slice(0, 10),
-      validUntil: dto.validUntil?.slice(0, 10) ?? null,
-      notes: dto.notes ?? null,
-      subtotal: built.subtotal,
-      tax: built.tax,
-      total: built.total,
-      updatedAt: new Date(),
+    const built = buildQuoteItems(dto.items, await this.referencePrices(dto.items.map((i) => i.productId)));
+    return this.dataSource.transaction(async (m) => {
+      Object.assign(quote, {
+        supplierId: dto.supplierId,
+        quoteDate: dto.quoteDate.slice(0, 10),
+        validUntil: dto.validUntil?.slice(0, 10) ?? null,
+        notes: dto.notes ?? null,
+        subtotal: built.subtotal,
+        ieps: built.ieps,
+        tax: built.tax,
+        total: built.total,
+        updatedAt: new Date(),
+      });
+      // Las elecciones del comparativo que apuntaban a partidas de esta cotización se limpian (las partidas cambian).
+      const oldIds = quote.items.map((i) => i.id);
+      if (oldIds.length) await m.update(RequestItem, { selectedQuoteItemId: In(oldIds) }, { selectedQuoteItemId: null });
+      quote.items = built.items.map((i) => m.create(MaintenanceQuoteItem, { ...i, quoteId }));
+      const saved = await m.save(MaintenanceQuote, quote);
+      await this.upsertOffers(m, dto.supplierId, built.items);
+      return saved;
     });
-    quote.items = built.items.map((i) => this.quotes.manager.create(MaintenanceQuoteItem, { ...i, quoteId }));
-    return this.quotes.save(quote);
   }
 
   async remove(quoteId: string, user: ScopeUser) {
-    const quote = await this.quotes.findOne({ where: { id: quoteId } });
+    const quote = await this.quotes.findOne({ where: { id: quoteId }, relations: ['items'] });
     if (!quote) throw new NotFoundException('Cotización no encontrada');
-    const request = await this.requests.loadEditable(quote.requestId, user);
-    await this.quotes.softDelete(quoteId);
-    const remaining = await this.quotes.count({ where: { requestId: request.id } });
-    if (remaining === 0 && request.status === 'en_cotizacion') {
-      await this.dataSource.getRepository(MaintenanceRequest).update(request.id, { status: 'abierta', updatedAt: new Date() });
-    }
+    const request = await this.loadQuotable(quote.requestId, user);
+    await this.dataSource.transaction(async (m) => {
+      const ids = quote.items.map((i) => i.id);
+      if (ids.length) await m.update(RequestItem, { selectedQuoteItemId: In(ids) }, { selectedQuoteItemId: null });
+      await m.softDelete(MaintenanceQuote, quoteId);
+      const remaining = await m.count(MaintenanceQuote, { where: { requestId: request.id } });
+      if (remaining === 0 && request.status === 'en_cotizacion') await m.update(MaintenanceRequest, request.id, { status: 'abierta', updatedAt: new Date() });
+    });
     return { ok: true };
+  }
+
+  async findQuote(id: string) {
+    const q = await this.quotes.findOne({ where: { id } });
+    if (!q) throw new NotFoundException('Cotización no encontrada');
+    return q;
   }
 
   // ---------------- Adjunto (PDF/foto original del proveedor) ----------------
@@ -112,7 +166,7 @@ export class QuotesService {
     if (file.size > QUOTE_ATTACHMENT_MAX_BYTES) throw new BadRequestException('El archivo excede 10 MB.');
     const quote = await this.quotes.findOne({ where: { id: quoteId } });
     if (!quote) throw new NotFoundException('Cotización no encontrada');
-    await this.requests.loadEditable(quote.requestId, user);
+    await this.loadQuotable(quote.requestId, user);
 
     const safeName = file.originalname.replace(/[^\w.\-áéíóúñÁÉÍÓÚÑ ]+/g, '_').slice(0, 150) || 'cotizacion';
     const dir = this.relDir(quoteId);
@@ -132,44 +186,5 @@ export class QuotesService {
       throw new NotFoundException('No se encontró el archivo en el servidor');
     });
     return { buffer, name: quote.attachmentName ?? 'cotizacion', mime: quote.attachmentMime ?? 'application/octet-stream' };
-  }
-
-  // ---------------- Convertir ganadora → orden de compra ----------------
-
-  async convert(quoteId: string, user: ScopeUser) {
-    const quote = await this.quotes.findOne({ where: { id: quoteId }, relations: ['items', 'supplier', 'supplier.contacts'] });
-    if (!quote) throw new NotFoundException('Cotización no encontrada');
-    const request = await this.requests.findOne(quote.requestId, user);
-    if (request.purchaseOrder) throw new ConflictException(`La solicitud ya tiene la orden ${request.purchaseOrder.folio}.`);
-    if (request.status === 'cancelada' || request.status === 'completada') throw new BadRequestException('La solicitud ya está cerrada.');
-
-    const contact = quote.supplier?.contacts?.find((c) => c.isDefault) ?? quote.supplier?.contacts?.[0] ?? null;
-    const items = quote.items.map((i) => ({
-      serviceId: i.serviceId, description: i.description, quantity: Number(i.quantity), unitPrice: Number(i.unitPrice),
-      taxRate: Number(i.taxRate), amount: Number(i.amount), approved: true,
-    }));
-    const t = totals(items, true);
-
-    return this.dataSource.transaction(async (m) => {
-      const folio = await this.folios.next(m, 'OC');
-      const po = await m.save(PurchaseOrder, m.create(PurchaseOrder, {
-        folio,
-        requestId: request.id,
-        quoteId: quote.id,
-        supplierId: quote.supplierId,
-        contactId: contact?.id ?? null,
-        vehicleId: request.vehicleId,
-        subsidiaryId: request.subsidiaryId,
-        status: 'borrador',
-        notes: quote.notes ?? null,
-        ...t,
-        createdById: user?.userId ?? null,
-        items: items.map((i) => m.create(PurchaseOrderItem, i)),
-      }));
-      await m.update(MaintenanceQuote, { id: quote.id }, { status: 'ganadora' });
-      await m.update(MaintenanceQuote, { requestId: request.id, id: Not(quote.id) }, { status: 'descartada' });
-      await m.update(MaintenanceRequest, request.id, { status: 'orden_generada', updatedAt: new Date() });
-      return po;
-    });
   }
 }

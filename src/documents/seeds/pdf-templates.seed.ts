@@ -9,6 +9,8 @@ import { INVENTORY_PDF_HTML } from './templates/inventory.pdf.html';
 import { ROUTE_CLOSURE_PDF_HTML } from './templates/route-closure.pdf.html';
 import { RETURNING_PDF_HTML } from './templates/returning.pdf.html';
 import { PURCHASE_ORDER_PDF_HTML } from './templates/purchase-order.pdf.html';
+import { REQUEST_QUOTE_PDF_HTML } from './templates/request-quote.pdf.html';
+import { PURCHASE_COMPARISON_PDF_HTML } from './templates/purchase-comparison.pdf.html';
 
 export interface PdfSeedVar { name: string; label: string; dataType?: string; }
 export interface PdfSeed { code: string; name: string; doc: PdfDoc; variables: PdfSeedVar[]; }
@@ -74,6 +76,18 @@ const returning: PdfDoc = {
 const purchaseOrder: PdfDoc = {
   page: { size: 'LETTER', orientation: 'portrait', margins: '24px' },
   html: PURCHASE_ORDER_PDF_HTML,
+};
+
+/** request_quote_pdf — Solicitud de cotización a proveedores (Compras). LETTER portrait. */
+const requestQuote: PdfDoc = {
+  page: { size: 'LETTER', orientation: 'portrait', margins: '24px' },
+  html: REQUEST_QUOTE_PDF_HTML,
+};
+
+/** purchase_comparison_pdf — Comparativo de cotizaciones por partida (Compras). LETTER landscape. */
+const purchaseComparison: PdfDoc = {
+  page: { size: 'LETTER', orientation: 'landscape', margins: '18px' },
+  html: PURCHASE_COMPARISON_PDF_HTML,
 };
 
 export const PDF_TEMPLATE_SEEDS: PdfSeed[] = [
@@ -146,6 +160,21 @@ export const PDF_TEMPLATE_SEEDS: PdfSeed[] = [
       { name: 'rows', label: 'Partidas aprobadas' }, { name: 'subtotal', label: 'Subtotal' }, { name: 'tax', label: 'IVA' },
       { name: 'total', label: 'Total' }, { name: 'totalInWords', label: 'Importe con letra' },
       { name: 'notes', label: 'Observaciones' }, { name: 'authorizedBy', label: 'Autorizó' }, { name: 'authorizedAt', label: 'Fecha de autorización' },
+      { name: 'ieps', label: 'IEPS' }, { name: 'hasIeps', label: 'Lleva IEPS', dataType: 'boolean' }, { name: 'requestType', label: 'Tipo de solicitud' },
+    ] },
+  { code: 'request_quote_pdf', name: 'Solicitud de Cotización a Proveedor (PDF)', doc: requestQuote,
+    variables: [
+      { name: 'folio', label: 'Folio de la solicitud' }, { name: 'date', label: 'Fecha' }, { name: 'subsidiaryName', label: 'Sucursal' },
+      { name: 'supplier', label: 'Proveedor (name)' }, { name: 'contact', label: 'Contacto (name, email, phone)' },
+      { name: 'vehicle', label: 'Unidad (label, plates, brandModel)' }, { name: 'requestType', label: 'Tipo' },
+      { name: 'description', label: 'Descripción' }, { name: 'rows', label: 'Conceptos' }, { name: 'requestedBy', label: 'Quién pide' },
+      { name: 'replyTo', label: 'Correo para responder' }, { name: 'notes', label: 'Notas' },
+    ] },
+  { code: 'purchase_comparison_pdf', name: 'Comparativo de Cotizaciones (PDF)', doc: purchaseComparison,
+    variables: [
+      { name: 'folio', label: 'Folio de la solicitud' }, { name: 'date', label: 'Fecha' }, { name: 'subsidiaryName', label: 'Sucursal' },
+      { name: 'suppliers', label: 'Proveedores (name, total, covered)' }, { name: 'rows', label: 'Renglones con celdas por proveedor' },
+      { name: 'selection', label: 'Órdenes a generar' }, { name: 'selectionTotal', label: 'Total elegido' }, { name: 'preparedBy', label: 'Elaboró' },
     ] },
 ];
 

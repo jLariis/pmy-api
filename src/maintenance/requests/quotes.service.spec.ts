@@ -1,73 +1,55 @@
-import { BadRequestException, ConflictException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException } from '@nestjs/common';
 import { QuotesService } from './quotes.service';
 import { RequestsService } from './requests.service';
 
-/** EntityManager falso que registra saves/updates dentro de la "transacción". */
-function fakeManager() {
+const gerardo = { userId: 'g1', role: 'admin', permissions: ['mttoVehiculos.revisar'] };
+const juan = { userId: 'u1', role: 'auxiliar', permissions: [] };
+
+/** EntityManager/DataSource falsos que registran lo guardado. */
+function make(opts: { request?: any; hasOrders?: boolean } = {}) {
   const saved: any[] = [];
   const updates: any[] = [];
   const m: any = {
     create: jest.fn((_e: any, x: any) => ({ ...x })),
-    save: jest.fn(async (_e: any, x: any) => { saved.push(x); return { id: 'new', ...x }; }),
+    save: jest.fn(async (e: any, x: any) => { saved.push({ entity: e?.name, ...x }); return { id: 'new', ...x }; }),
     update: jest.fn(async (e: any, where: any, patch: any) => { updates.push({ entity: e?.name, where, patch }); }),
-    query: jest.fn(async () => [{ lastValue: 6 }]),
+    find: jest.fn(async () => []),
+    createQueryBuilder: jest.fn(() => ({ where: () => ({ getOne: async () => null }) })),
   };
-  return { m, saved, updates };
+  const dataSource: any = {
+    transaction: (fn: any) => fn(m),
+    query: jest.fn(async () => [{ productId: 'p1', price: '1000' }]),
+    getRepository: jest.fn((e: any) => e?.name === 'PurchaseOrder'
+      ? { exist: jest.fn(async () => !!opts.hasOrders) }
+      : { findOne: jest.fn(async () => opts.request ?? { id: 'r1', status: 'abierta' }) }),
+  };
+  const suppliers: any = { exist: jest.fn(async () => true) };
+  const svc = new QuotesService({} as any, suppliers, {} as any, {} as unknown as RequestsService, dataSource);
+  return { svc, saved, updates, m };
 }
 
-describe('QuotesService', () => {
-  const user = { userId: 'u1', role: 'superadmin' };
+const dto = {
+  supplierId: 'sup1', quoteDate: '2026-09-24',
+  items: [{ requestItemId: 'ri1', productId: 'p1', description: 'Aceite', quantity: 1, unitPrice: 1200, quality: 4 }],
+};
 
-  it('crear cotización calcula desviación/totales y pasa la solicitud a "en cotización"', async () => {
-    const { m, saved, updates } = fakeManager();
-    const requests = { loadEditable: jest.fn(async () => ({ id: 'r1', status: 'abierta' })) } as unknown as RequestsService;
-    const services: any = { find: jest.fn(async () => [{ id: 's1', referencePrice: 1000 }]) };
-    const suppliers: any = { exist: jest.fn(async () => true) };
-    const dataSource: any = { transaction: (fn: any) => fn(m) };
-    const svc = new QuotesService({} as any, services, suppliers, requests, dataSource, { next: jest.fn() } as any);
-
-    await svc.create('r1', {
-      supplierId: 'sup1', quoteDate: '2026-09-22',
-      items: [{ serviceId: 's1', description: 'Afinación', quantity: 1, unitPrice: 1200 }],
-    }, user);
-
-    expect(saved[0]).toMatchObject({ requestId: 'r1', subtotal: 1200, tax: 192, total: 1392, status: 'capturada' });
-    expect(saved[0].items[0]).toMatchObject({ referencePrice: 1000, deviationPct: 20 });
-    expect(updates).toContainEqual(expect.objectContaining({ patch: expect.objectContaining({ status: 'en_cotizacion' }) }));
+describe('QuotesService (v3)', () => {
+  it('solo Compras cotiza', async () => {
+    await expect(make().svc.create('r1', dto, juan)).rejects.toBeInstanceOf(ForbiddenException);
   });
 
-  it('eliminar con orden de compra → 400 (lo decide loadEditable)', async () => {
-    const quotes: any = { findOne: jest.fn(async () => ({ id: 'q1', requestId: 'r1' })) };
-    const requests = { loadEditable: jest.fn(async () => { throw new BadRequestException('ya tiene orden'); }) } as unknown as RequestsService;
-    const svc = new QuotesService(quotes, {} as any, {} as any, requests, {} as any, {} as any);
-    await expect(svc.remove('q1', user)).rejects.toBeInstanceOf(BadRequestException);
+  it('no se cotiza una solicitud por revisar ni con órdenes generadas', async () => {
+    await expect(make({ request: { id: 'r1', status: 'por_revisar' } }).svc.create('r1', dto, gerardo)).rejects.toThrow(/autoriza la solicitud/);
+    await expect(make({ hasOrders: true }).svc.create('r1', dto, gerardo)).rejects.toBeInstanceOf(BadRequestException);
   });
 
-  it('convertir crea OC borrador con partidas copiadas y descarta las hermanas', async () => {
-    const { m, saved, updates } = fakeManager();
-    const quotes: any = {
-      findOne: jest.fn(async () => ({
-        id: 'q1', requestId: 'r1', supplierId: 'sup1', notes: null,
-        supplier: { contacts: [{ id: 'c1', isDefault: false }, { id: 'c2', isDefault: true }] },
-        items: [{ serviceId: 's1', description: 'Frenos', quantity: 1, unitPrice: 1000, taxRate: 0.16, amount: 1000 }],
-      })),
-    };
-    const requests = {
-      findOne: jest.fn(async () => ({ id: 'r1', vehicleId: 'v1', subsidiaryId: 'sub1', status: 'en_cotizacion', purchaseOrder: null })),
-    } as unknown as RequestsService;
-    const folios: any = { next: jest.fn(async () => 'OC-000007') };
-    const svc = new QuotesService(quotes, {} as any, {} as any, requests, { transaction: (fn: any) => fn(m) } as any, folios);
-
-    const po: any = await svc.convert('q1', user);
-    expect(po).toMatchObject({ folio: 'OC-000007', status: 'borrador', contactId: 'c2', vehicleId: 'v1', total: 1160 });
-    expect(saved[0].items[0]).toMatchObject({ description: 'Frenos', approved: true });
-    expect(updates.map((u) => u.patch.status)).toEqual(['ganadora', 'descartada', 'orden_generada']);
-  });
-
-  it('convertir si ya hay orden → 409', async () => {
-    const quotes: any = { findOne: jest.fn(async () => ({ id: 'q1', requestId: 'r1', items: [], supplier: { contacts: [] } })) };
-    const requests = { findOne: jest.fn(async () => ({ id: 'r1', purchaseOrder: { folio: 'OC-000001' } })) } as unknown as RequestsService;
-    const svc = new QuotesService(quotes, {} as any, {} as any, requests, {} as any, {} as any);
-    await expect(svc.convert('q1', user)).rejects.toBeInstanceOf(ConflictException);
+  it('guarda partidas con renglón, impuestos y desviación; actualiza el precio del catálogo y pasa a "en cotización"', async () => {
+    const { svc, saved, updates } = make();
+    await svc.create('r1', dto, gerardo);
+    const quote = saved.find((x) => x.entity === 'MaintenanceQuote');
+    expect(quote).toMatchObject({ subtotal: 1200, ieps: 0, tax: 192, total: 1392, status: 'capturada' });
+    expect(quote.items[0]).toMatchObject({ requestItemId: 'ri1', referencePrice: 1000, deviationPct: 20, ivaEnabled: true });
+    expect(saved.find((x) => x.entity === 'ProductOffer')).toMatchObject({ productId: 'p1', supplierId: 'sup1', price: 1200, quality: 4 });
+    expect(updates).toContainEqual(expect.objectContaining({ entity: 'MaintenanceRequest', patch: expect.objectContaining({ status: 'en_cotizacion' }) }));
   });
 });

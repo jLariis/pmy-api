@@ -14,6 +14,21 @@ export class PoItemDto {
   @IsOptional() @IsUUID('all', { message: 'Concepto no reconocido' })
   id?: string;
 
+  @IsOptional() @ValidateIf((o) => o.requestItemId !== null) @IsUUID('all')
+  requestItemId?: string | null;
+
+  @IsOptional() @ValidateIf((o) => o.productId !== null) @IsUUID('all')
+  productId?: string | null;
+
+  @IsOptional() @IsBoolean()
+  ivaEnabled?: boolean;
+
+  @IsOptional() @IsBoolean()
+  iepsEnabled?: boolean;
+
+  @IsOptional() @IsNumber({}, TAX) @Min(0, TAX) @Max(2, TAX)
+  iepsRate?: number;
+
   @IsOptional() @ValidateIf((o) => o.serviceId !== null) @IsUUID('all', { message: 'Servicio del catálogo no reconocido' })
   serviceId?: string | null;
 
@@ -91,8 +106,9 @@ export class CompleteDto {
   @IsDateString({}, { message: 'Indica la fecha en que se hizo el servicio' })
   completedAt: string;
 
-  @IsInt(KMS) @Min(0, KMS) @Max(1_000_000, KMS)
-  completedKms: number;
+  /** Solo aplica a unidades (mantenimiento/servicio/reparación). */
+  @IsOptional() @ValidateIf((o) => o.completedKms !== null) @IsInt(KMS) @Min(0, KMS) @Max(1_000_000, KMS)
+  completedKms?: number | null;
 
   @IsOptional() @IsNumber({}, { message: 'El monto no es válido' }) @Min(0, { message: 'El monto no puede ser negativo' })
   finalAmount?: number;

@@ -94,7 +94,12 @@ export class PurchaseOrdersController {
   @RequirePermission(MTTO.ordenes, MTTO.autorizar)
   async send(@Param('id') id: string, @Body() dto: SendDto, @Req() req: any) {
     const po = await this.orders.findOne(id, req.user);
+    const firstSend = po.status === 'autorizada';
     await this.dispatch.send(po, req.user, dto);
+    if (firstSend) {
+      await this.orders.notifyRequester(po.requestId, 'compras.solicitud_comprada', 'Ya se pidió lo de tu solicitud',
+        `Se envió la orden ${po.folio} a ${po.supplier?.name ?? 'el proveedor'}.`, req.user);
+    }
     return this.orders.findOne(id, req.user);
   }
 

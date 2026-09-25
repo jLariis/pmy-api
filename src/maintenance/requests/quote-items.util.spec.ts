@@ -1,16 +1,19 @@
 import { buildQuoteItems } from './quote-items.util';
 
-describe('buildQuoteItems', () => {
-  it('calcula importes, snapshot de referencia, desviación y totales', () => {
+describe('buildQuoteItems (v3)', () => {
+  it('importes, impuestos por partida, existencia y desviación', () => {
     const r = buildQuoteItems(
       [
-        { serviceId: 's1', description: ' Cambio de aceite ', quantity: 1, unitPrice: 1150 },
-        { serviceId: null, description: 'Filtro', quantity: 2, unitPrice: 100, taxRate: 0 },
+        { requestItemId: 'ri1', productId: 'p1', description: ' Aceite ', quantity: 1, unitPrice: 1150, iepsEnabled: true, iepsRate: 0.08 },
+        { requestItemId: 'ri2', description: 'Filtro', quantity: 2, unitPrice: 100, ivaEnabled: false, availability: 'sobre_pedido', leadTimeDays: 3 },
+        { description: 'Otro', quantity: 1, unitPrice: 10, availability: 'no', leadTimeDays: 9 },
       ],
-      new Map([['s1', 1000]]),
+      new Map([['p1', 1000]]),
     );
-    expect(r.items[0]).toMatchObject({ description: 'Cambio de aceite', amount: 1150, referencePrice: 1000, deviationPct: 15, taxRate: 0.16 });
-    expect(r.items[1]).toMatchObject({ serviceId: null, amount: 200, referencePrice: null, deviationPct: null });
-    expect({ subtotal: r.subtotal, tax: r.tax, total: r.total }).toEqual({ subtotal: 1350, tax: 184, total: 1534 });
+    expect(r.items[0]).toMatchObject({ requestItemId: 'ri1', description: 'Aceite', amount: 1150, iepsEnabled: true, iepsRate: 0.08, deviationPct: 15, availability: 'si' });
+    expect(r.items[1]).toMatchObject({ ivaEnabled: false, taxRate: 0, availability: 'sobre_pedido', leadTimeDays: 3 });
+    expect(r.items[2].leadTimeDays).toBeNull();
+    // IEPS 92; IVA (1150+92)*.16=198.72 + (10)*.16=1.6 → 200.32
+    expect({ subtotal: r.subtotal, ieps: r.ieps, tax: r.tax, total: r.total }).toEqual({ subtotal: 1360, ieps: 92, tax: 200.32, total: 1652.32 });
   });
 });

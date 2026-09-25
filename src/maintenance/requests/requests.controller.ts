@@ -1,5 +1,5 @@
 import {
-  Body, Controller, Delete, Get, Param, Patch, Post, Query, Req, Res, UploadedFile, UseGuards, UseInterceptors,
+  Body, Controller, Delete, Get, Param, Patch, Post, Put, Query, Req, Res, UploadedFile, UseGuards, UseInterceptors,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
@@ -10,7 +10,8 @@ import { MTTO } from '../maintenance.permissions';
 import { RequestsService } from './requests.service';
 import { QUOTE_ATTACHMENT_MAX_BYTES, QuotesService } from './quotes.service';
 import { CreateRequestDto, QuoteDto, RejectRequestDto, UpdateRequestDto } from './dto/request.dto';
-import { PurchaseOrdersService } from '../purchase-orders/purchase-orders.service';
+import { ComparisonService, SelectionDto } from './comparison.service';
+import { RequestDispatchService, SendRfqDto } from '../dispatch/request-dispatch.service';
 
 @ApiTags('maintenance')
 @ApiBearerAuth()
@@ -20,7 +21,8 @@ export class RequestsController {
   constructor(
     private readonly requests: RequestsService,
     private readonly quotes: QuotesService,
-    private readonly orders: PurchaseOrdersService,
+    private readonly comparison: ComparisonService,
+    private readonly dispatch: RequestDispatchService,
   ) {}
 
   /** Tablero: Compras/autorizador ven todas las sucursales (filtro opcional); los demás, una de sus sucursales. */
@@ -110,11 +112,66 @@ export class RequestsController {
     res.send(buffer);
   }
 
+  /** "Generar orden con esta cotización": todo lo que cubre ese proveedor en una sola orden. */
   @Post('quotes/:quoteId/convert')
   @RequirePermission(MTTO.revisar)
-  async convert(@Param('quoteId') quoteId: string, @Query('submit') submit: string | undefined, @Req() req: any) {
-    const po = await this.quotes.convert(quoteId, req.user);
-    // "Elegir y mandar a autorizar": un solo clic crea la orden y la manda a autorización.
-    return submit === 'true' ? this.orders.submit(po.id, req.user) : po;
+  async convert(@Param('quoteId') quoteId: string, @Req() req: any) {
+    const quote = await this.quotes.findQuote(quoteId);
+    return this.comparison.generateOrders(quote.requestId, req.user, quoteId);
+  }
+
+  // ---------------- Comparativo por partida ----------------
+
+  @Get(':id/comparison')
+  comparisonOf(@Param('id') id: string, @Req() req: any) {
+    return this.comparison.get(id, req.user);
+  }
+
+  @Put(':id/selection')
+  @RequirePermission(MTTO.revisar)
+  saveSelection(@Param('id') id: string, @Body() dto: SelectionDto, @Req() req: any) {
+    return this.comparison.saveSelection(id, dto, req.user);
+  }
+
+  /** Una orden por proveedor ganador; todas van a autorización. */
+  @Post(':id/generate-orders')
+  @RequirePermission(MTTO.revisar)
+  generateOrders(@Param('id') id: string, @Req() req: any) {
+    return this.comparison.generateOrders(id, req.user);
+  }
+
+  /** PDF del comparativo (lo elegido o la propuesta). */
+  @Get(':id/comparison-pdf')
+  async comparisonPdf(@Param('id') id: string, @Req() req: any, @Res() res: Response) {
+    const { buffer, fileName } = await this.dispatch.comparisonPdf(id, req.user);
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="${fileName}"`);
+    res.send(buffer);
+  }
+
+  // ---------------- Pedir cotización a proveedores ----------------
+
+  /** PDF de la solicitud de cotización (opcionalmente dirigido a un proveedor). */
+  @Get(':id/rfq-pdf')
+  @RequirePermission(MTTO.revisar)
+  async rfqPdf(@Param('id') id: string, @Query('supplierId') supplierId: string | undefined, @Req() req: any, @Res() res: Response) {
+    const { buffer, fileName } = await this.dispatch.rfqPdf(id, req.user, supplierId || undefined);
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="${fileName}"`);
+    res.send(buffer);
+  }
+
+  /** Manda la solicitud de cotización a los proveedores elegidos; regresa el resultado por proveedor. */
+  @Post(':id/rfq')
+  @RequirePermission(MTTO.revisar)
+  sendRfq(@Param('id') id: string, @Body() dto: SendRfqDto, @Req() req: any) {
+    return this.dispatch.sendRfq(id, dto, req.user);
+  }
+
+  /** Bitácora de envíos de la solicitud de cotización. */
+  @Get(':id/dispatches')
+  @RequirePermission(MTTO.revisar, MTTO.autorizar)
+  dispatches(@Param('id') id: string) {
+    return this.dispatch.history(id);
   }
 }

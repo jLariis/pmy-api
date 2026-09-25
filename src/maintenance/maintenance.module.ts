@@ -3,10 +3,11 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import {
   MaintenanceFolioCounter, MaintenanceQuote, MaintenanceQuoteItem, MaintenanceRequest, MaintenanceService,
   MaintenanceServiceCategory, Product, ProductCategory, ProductOffer, PurchaseOrder, PurchaseOrderDispatch, PurchaseOrderItem,
-  RequestItem, Supplier, SupplierContact, UnitOfMeasure, Vehicle, VehicleSpecItem,
+  RequestDispatch, RequestItem, Supplier, SupplierContact, UnitOfMeasure, User, Vehicle, VehicleSpecItem,
 } from 'src/entities';
 import { ProductsService } from './catalog/products.service';
 import { VehicleSpecService } from './schedule/vehicle-spec.service';
+import { ComparisonService } from './requests/comparison.service';
 import { ProductsController } from './catalog/products.controller';
 import { FolioService } from './folio.service';
 import { CatalogService } from './catalog/catalog.service';
@@ -22,6 +23,7 @@ import { RequestsController } from './requests/requests.controller';
 import { PurchaseOrdersService } from './purchase-orders/purchase-orders.service';
 import { PurchaseOrdersController } from './purchase-orders/purchase-orders.controller';
 import { PoDispatchService } from './dispatch/po-dispatch.service';
+import { RequestDispatchService } from './dispatch/request-dispatch.service';
 import { HistoryService } from './schedule/history.service';
 import { NotificationsModule } from 'src/notifications/notifications.module';
 import { DocumentsModule } from 'src/documents/documents.module';
@@ -35,7 +37,7 @@ import { MailService } from 'src/mail/mail.service';
     TypeOrmModule.forFeature([
       MaintenanceServiceCategory, MaintenanceService, Supplier, SupplierContact, MaintenanceRequest, MaintenanceQuote,
       MaintenanceQuoteItem, PurchaseOrder, PurchaseOrderItem, PurchaseOrderDispatch, MaintenanceFolioCounter, Vehicle,
-      UnitOfMeasure, ProductCategory, Product, ProductOffer, RequestItem, VehicleSpecItem,
+      UnitOfMeasure, ProductCategory, Product, ProductOffer, RequestItem, VehicleSpecItem, RequestDispatch, User,
     ]),
     VehicleKmsModule,
     NotificationsModule,
@@ -46,7 +48,8 @@ import { MailService } from 'src/mail/mail.service';
   controllers: [ProductsController, CatalogController, SuppliersController, ScheduleController, RequestsController, PurchaseOrdersController],
   providers: [
     FolioService, CatalogService, SuppliersService, ScheduleService, RequestsService, QuotesService,
-    PurchaseOrdersService, PoDispatchService, HistoryService, MailService, ProductsService, VehicleSpecService,
+    PurchaseOrdersService, PoDispatchService, HistoryService, MailService, ProductsService, VehicleSpecService, ComparisonService,
+    RequestDispatchService,
   ],
 })
 export class MaintenanceModule {}

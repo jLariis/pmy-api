@@ -31,4 +31,20 @@ describe('mapPurchaseOrderToPdf', () => {
     expect(d.statusLabel).toContain('BORRADOR');
     expect(d.authorizedBy).toBe('');
   });
+
+  it('v3: impuestos por partida (IEPS) y compra sin unidad', () => {
+    const d = mapPurchaseOrderToPdf({
+      ...po, vehicle: null, request: { folio: 'SOL-000004', type: 'compra' },
+      items: [
+        { description: 'Aceite', quantity: 1, unitPrice: 100, ivaEnabled: true, iepsEnabled: true, iepsRate: 0.08, approved: true },
+        { description: 'Flete', quantity: 1, unitPrice: 50, ivaEnabled: false, iepsEnabled: false, iepsRate: 0, approved: true },
+      ],
+    });
+    expect(d.rows.map((r) => r.taxLabel)).toEqual(['IVA + IEPS 8%', 'Sin impuestos']);
+    expect(d.hasIeps).toBe(true);
+    expect(d.ieps).toContain('8.00');
+    expect(d.total).toContain('175.28'); // 100 + 8 + 17.28 + 50
+    expect(d.vehicle.label).toBe('');
+    expect(d.requestType).toBe('Compra');
+  });
 });

@@ -1,7 +1,7 @@
 /**
  * HTML-Handlebars de la Orden de Compra de mantenimiento (LETTER portrait).
  * Datos: `mapPurchaseOrderToPdf` (src/maintenance/dispatch/po-pdf.mapper.ts) + `brand.*` (company_settings/branding).
- * Solo trae las partidas aprobadas por el autorizador.
+ * Solo trae las partidas aprobadas por el autorizador. v3: impuestos por partida (IVA/IEPS) y unidad opcional (compras).
  */
 export const PURCHASE_ORDER_PDF_HTML = `
 <style>
@@ -87,6 +87,7 @@ export const PURCHASE_ORDER_PDF_HTML = `
       </div>
     </div>
     <div class="po-card">
+      {{#if vehicle.label}}
       <div class="h">Unidad a atender</div>
       <div class="b">
         <div class="strong">{{vehicle.label}}</div>
@@ -95,6 +96,14 @@ export const PURCHASE_ORDER_PDF_HTML = `
         {{#if vehicle.kms}}<div><span class="k">Kilometraje</span> {{vehicle.kms}}</div>{{/if}}
         {{#if requestFolio}}<div><span class="k">Solicitud</span> {{requestFolio}}</div>{{/if}}
       </div>
+      {{else}}
+      <div class="h">Solicitud</div>
+      <div class="b">
+        <div class="strong">{{requestFolio}}</div>
+        {{#if requestType}}<div><span class="k">Tipo</span> {{requestType}}</div>{{/if}}
+        <div><span class="k">Sucursal</span> {{subsidiaryName}}</div>
+      </div>
+      {{/if}}
     </div>
   </div>
 
@@ -105,6 +114,7 @@ export const PURCHASE_ORDER_PDF_HTML = `
         <th class="ctr" style="width:52px">Cant.</th>
         <th>Descripción</th>
         <th class="num" style="width:95px">P. unitario</th>
+        <th class="ctr" style="width:80px">Impuestos</th>
         <th class="num" style="width:100px">Importe</th>
       </tr>
     </thead>
@@ -115,6 +125,7 @@ export const PURCHASE_ORDER_PDF_HTML = `
         <td class="ctr">{{quantity}}</td>
         <td>{{description}}</td>
         <td class="num">{{unitPrice}}</td>
+        <td class="ctr">{{taxLabel}}</td>
         <td class="num">{{amount}}</td>
       </tr>
       {{/each}}
@@ -128,6 +139,7 @@ export const PURCHASE_ORDER_PDF_HTML = `
     </div>
     <table class="po-totals">
       <tr><td>Subtotal</td><td class="num">{{subtotal}}</td></tr>
+      {{#if hasIeps}}<tr><td>IEPS</td><td class="num">{{ieps}}</td></tr>{{/if}}
       <tr><td>IVA</td><td class="num">{{tax}}</td></tr>
       <tr class="total"><td>TOTAL</td><td class="num">{{total}}</td></tr>
     </table>

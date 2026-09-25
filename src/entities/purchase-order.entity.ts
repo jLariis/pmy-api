@@ -48,12 +48,13 @@ export class PurchaseOrder {
   @Column({ length: 36, nullable: true })
   contactId: string | null;
 
-  @ManyToOne(() => Vehicle, { createForeignKeyConstraints: false })
+  /** Opcional: las compras de equipo/material no siempre son para una unidad. */
+  @ManyToOne(() => Vehicle, { createForeignKeyConstraints: false, nullable: true })
   @JoinColumn({ name: 'vehicleId' })
-  vehicle: Vehicle;
+  vehicle: Vehicle | null;
 
-  @Column({ length: 36 })
-  vehicleId: string;
+  @Column({ length: 36, nullable: true })
+  vehicleId: string | null;
 
   @ManyToOne(() => Subsidiary, { createForeignKeyConstraints: false })
   @JoinColumn({ name: 'subsidiaryId' })

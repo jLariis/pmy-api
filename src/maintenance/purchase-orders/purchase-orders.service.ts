@@ -17,11 +17,14 @@ import { isAuthorizer, MTTO } from '../maintenance.permissions';
 import { assertSubsidiaryScope, ScopeUser, userDisplayName } from '../maintenance-scope.util';
 import { AuthorizeDto, CompleteDto, UpdatePurchaseOrderDto } from './dto/purchase-order.dto';
 
-/** Categoría de gastos existente (grupo "Vehículos y Operación") donde caen los servicios. */
+/** Categoría de gastos existente (grupo "Vehículos y Operación") donde caen mantenimiento/servicio/reparación. */
 export const MAINTENANCE_EXPENSE_CATEGORY = 'Mantenimiento';
+/** Compras de equipo/material. Se crea si no existe. */
+export const PURCHASES_EXPENSE_CATEGORY = 'Compras';
+export const expenseCategoryFor = (type?: string | null) => (type === 'compra' ? PURCHASES_EXPENSE_CATEGORY : MAINTENANCE_EXPENSE_CATEGORY);
 
 /** Las notificaciones abren el expediente (la orden vive dentro). */
-export const poLink = (po: { requestId: string }) => `/mtto/expediente?id=${po.requestId}`;
+export const poLink = (po: { requestId: string }) => `/compras/solicitud?id=${po.requestId}`;
 
 /** Órdenes de compra: edición, envío a autorización, autorización exclusiva, rechazo, cancelación y baja. */
 @Injectable()
@@ -112,10 +115,15 @@ export class PurchaseOrdersService {
         ...(i.id ? { id: i.id } : {}),
         purchaseOrderId: po.id,
         serviceId: i.serviceId ?? null,
+        requestItemId: i.requestItemId ?? null,
+        productId: i.productId ?? null,
         description: i.description.trim(),
         quantity: round2(i.quantity),
         unitPrice: round2(i.unitPrice),
-        taxRate: i.taxRate ?? DEFAULT_TAX_RATE,
+        ivaEnabled: i.ivaEnabled ?? (i.taxRate !== undefined ? Number(i.taxRate) > 0 : true),
+        iepsEnabled: !!i.iepsEnabled,
+        iepsRate: i.iepsEnabled ? Number(i.iepsRate ?? 0) : 0,
+        taxRate: i.ivaEnabled === false ? 0 : i.taxRate ?? DEFAULT_TAX_RATE,
         approved: i.approved ?? true,
         amount: 0,
       }));
@@ -156,7 +164,7 @@ export class PurchaseOrdersService {
     await this.dataSource.transaction(async (m) => {
       await m.save(PurchaseOrderItem, po.items);
       await m.update(PurchaseOrder, id, {
-        status: 'autorizada', subtotal: po.subtotal, tax: po.tax, total: po.total,
+        status: 'autorizada', subtotal: po.subtotal, ieps: po.ieps, tax: po.tax, total: po.total,
         authorizedById: user?.userId ?? null, authorizedAt: new Date(), rejectionReason: null, updatedAt: new Date(),
       });
     });
@@ -180,6 +188,7 @@ export class PurchaseOrdersService {
     const po = await this.findOne(id, user);
     assertTransition(po.status, 'cancelada');
     await this.orders.update(id, { status: 'cancelada', cancelReason: reason.trim(), updatedAt: new Date() });
+    await this.afterOrderClosed(po.requestId, user);
     return { previousStatus: po.status as PoStatus, order: await this.findOne(id, user) };
   }
 
@@ -187,11 +196,8 @@ export class PurchaseOrdersService {
   async remove(id: string, user: ScopeUser) {
     const po = await this.findOne(id, user);
     if (!canDelete(po.status)) throw new BadRequestException('Solo se eliminan órdenes en borrador o rechazadas; las demás se cancelan.');
-    await this.dataSource.transaction(async (m) => {
-      await m.softDelete(PurchaseOrder, id);
-      await m.update(MaintenanceQuote, { requestId: po.requestId }, { status: 'capturada' });
-      await m.update(MaintenanceRequest, po.requestId, { status: 'en_cotizacion', updatedAt: new Date() });
-    });
+    await this.orders.softDelete(id);
+    await this.afterOrderClosed(po.requestId, user);
     return { ok: true };
   }
 
@@ -206,38 +212,63 @@ export class PurchaseOrdersService {
     const dayInstant = new Date(`${day}T07:00:00.000Z`);
     const amount = round2(dto.finalAmount ?? Number(po.total));
 
+    const reqType = po.request?.type ?? 'mantenimiento';
     await this.dataSource.transaction(async (m) => {
-      const vehicle = await m.findOne(Vehicle, { where: { id: po.vehicleId } });
-      const vehiclePatch: Partial<Vehicle> = { lastMaintenanceDate: dayInstant, lastMaintenanceKms: dto.completedKms };
-      const kms = nextVehicleKms(vehicle?.kms, dto.completedKms);
-      if (kms.changed) vehiclePatch.kms = kms.kms!;
-      if (dto.nextMaintenanceDate !== undefined) {
-        vehiclePatch.nextMaintenanceDate = dto.nextMaintenanceDate ? new Date(`${dto.nextMaintenanceDate.slice(0, 10)}T07:00:00.000Z`) : (null as any);
+      // Solo mantenimiento/servicio/reparación de una unidad actualizan su historial de servicio.
+      if (po.vehicleId && reqType !== 'compra') {
+        const vehicle = await m.findOne(Vehicle, { where: { id: po.vehicleId } });
+        const vehiclePatch: Partial<Vehicle> = { lastMaintenanceDate: dayInstant };
+        if (dto.completedKms !== undefined && dto.completedKms !== null) {
+          vehiclePatch.lastMaintenanceKms = dto.completedKms;
+          const kms = nextVehicleKms(vehicle?.kms, dto.completedKms);
+          if (kms.changed) vehiclePatch.kms = kms.kms!;
+        }
+        if (dto.nextMaintenanceDate !== undefined) {
+          vehiclePatch.nextMaintenanceDate = dto.nextMaintenanceDate ? new Date(`${dto.nextMaintenanceDate.slice(0, 10)}T07:00:00.000Z`) : (null as any);
+        }
+        await m.update(Vehicle, po.vehicleId, vehiclePatch);
       }
-      await m.update(Vehicle, po.vehicleId, vehiclePatch);
 
-      let category = await m.findOne(ExpenseCategory, { where: { name: MAINTENANCE_EXPENSE_CATEGORY } });
-      if (!category) category = await m.save(ExpenseCategory, m.create(ExpenseCategory, { name: MAINTENANCE_EXPENSE_CATEGORY, active: true }));
-      const unit = po.vehicle?.name || po.vehicle?.code || po.vehicle?.plateNumber || 'unidad';
+      const categoryName = expenseCategoryFor(reqType);
+      let category = await m.findOne(ExpenseCategory, { where: { name: categoryName } });
+      if (!category) category = await m.save(ExpenseCategory, m.create(ExpenseCategory, { name: categoryName, active: true }));
+      const unit = po.vehicle?.name || po.vehicle?.code || po.vehicle?.plateNumber || null;
       const expense = await m.save(Expense, m.create(Expense, {
         subsidiaryId: po.subsidiaryId,
         categoryId: category.id,
         vehicleId: po.vehicleId,
         date: day,
         amount,
-        description: `Mantenimiento ${unit} — ${po.folio} (${po.supplier?.name ?? 'proveedor'})`.slice(0, 255),
+        description: `${reqType === 'compra' ? 'Compra' : 'Mantenimiento'}${unit ? ` ${unit}` : ''} — ${po.folio} (${po.supplier?.name ?? 'proveedor'})`.slice(0, 255),
         responsible: userDisplayName(user),
-        notes: 'Generado desde orden de compra de mantenimiento',
+        notes: `Generado desde la orden de compra ${po.folio}`,
         createdById: user?.userId ?? undefined,
       }));
 
       await m.update(PurchaseOrder, id, {
-        status: 'completada', completedAt: dayInstant, completedKms: dto.completedKms, finalAmount: amount,
+        status: 'completada', completedAt: dayInstant, completedKms: dto.completedKms ?? null, finalAmount: amount,
         expenseId: expense.id, updatedAt: new Date(),
       });
-      await m.update(MaintenanceRequest, po.requestId, { status: 'completada', updatedAt: new Date() });
     });
+    await this.afterOrderClosed(po.requestId, user);
     return this.findOne(id, user);
+  }
+
+  /**
+   * Tras cancelar/eliminar/cerrar una orden: si ya no quedan órdenes activas, la solicitud regresa a cotización
+   * (para elegir otros proveedores); si todas las activas están completadas, la solicitud queda terminada.
+   */
+  private async afterOrderClosed(requestId: string, user: ScopeUser) {
+    const list = await this.orders.find({ where: { requestId }, select: ['id', 'status'] });
+    const active = list.filter((o) => o.status !== 'cancelada');
+    const reqRepo = this.dataSource.getRepository(MaintenanceRequest);
+    if (!active.length) {
+      await this.dataSource.getRepository(MaintenanceQuote).update({ requestId }, { status: 'capturada' });
+      await reqRepo.update(requestId, { status: 'en_cotizacion', updatedAt: new Date() });
+    } else if (active.every((o) => o.status === 'completada')) {
+      await reqRepo.update(requestId, { status: 'completada', updatedAt: new Date() });
+      await this.notifyRequester(requestId, 'compras.solicitud_terminada', 'Tu solicitud ya quedó terminada', 'Se recibió todo lo que pediste.', user);
+    }
   }
 
   // ---------------- Notificaciones ----------------
@@ -267,6 +298,22 @@ export class PurchaseOrdersService {
       });
     } catch (e: any) {
       this.logger.warn(`no se pudo notificar la OC ${po.folio}: ${e?.message}`);
+    }
+  }
+
+  /** Avisa a quien levantó la solicitud (no a sí mismo). Nunca lanza. */
+  async notifyRequester(requestId: string, type: string, title: string, body: string, user: ScopeUser) {
+    try {
+      const r = await this.dataSource.getRepository(MaintenanceRequest).findOne({
+        where: { id: requestId }, select: ['id', 'folio', 'createdById', 'subsidiaryId'],
+      });
+      if (!r?.createdById || r.createdById === user?.userId) return;
+      await this.notifier.emit({
+        type, audience: { userId: r.createdById }, title: `${title} (${r.folio})`, body, link: poLink({ requestId }), entityId: r.id,
+        subsidiaryId: r.subsidiaryId, actor: { id: user?.userId, name: userDisplayName(user) },
+      });
+    } catch (e: any) {
+      this.logger.warn(`no se pudo avisar al solicitante de ${requestId}: ${e?.message}`);
     }
   }
 

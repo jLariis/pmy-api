@@ -79,3 +79,4 @@ export * from './product.entity';
 export * from './product-offer.entity';
 export * from './request-item.entity';
 export * from './vehicle-spec-item.entity';
+export * from './request-dispatch.entity';

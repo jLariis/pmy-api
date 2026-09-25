@@ -12,7 +12,7 @@ const baseOrder = (over: any = {}) => ({
   ...over,
 });
 
-function make(order: any) {
+function make(order: any, siblings: Array<{ id: string; status: string }> = []) {
   const updates: any[] = [];
   const savedItems: any[] = [];
   const m: any = {
@@ -26,12 +26,23 @@ function make(order: any) {
     update: jest.fn(async (e: any, _id: any, patch: any) => updates.push({ entity: e?.name, ...patch })),
     softDelete: jest.fn(async () => undefined),
   };
-  const orders: any = { update: jest.fn(async (_id: any, patch: any) => updates.push(patch)) };
-  const dataSource: any = { transaction: (fn: any) => fn(m), query: jest.fn(async () => [{ userId: 'edgardo' }]) };
+  const reqUpdates: any[] = [];
+  const orders: any = {
+    update: jest.fn(async (_id: any, patch: any) => updates.push(patch)),
+    softDelete: jest.fn(async () => undefined),
+    // Las órdenes de la solicitud después del cambio (para decidir el estado de la solicitud).
+    find: jest.fn(async () => siblings),
+  };
+  const repo = (name: string) => ({ update: jest.fn(async (_w: any, patch: any) => reqUpdates.push({ entity: name, ...patch })) });
+  const dataSource: any = {
+    transaction: (fn: any) => fn(m),
+    query: jest.fn(async () => [{ userId: 'edgardo' }]),
+    getRepository: jest.fn((e: any) => repo(e?.name)),
+  };
   const notifier: any = { emit: jest.fn(async () => undefined) };
   const svc = new PurchaseOrdersService(orders, {} as any, dataSource, notifier);
   jest.spyOn(svc, 'findOne').mockImplementation(async () => order);
-  return { svc, updates, savedItems, notifier, m };
+  return { svc, updates, savedItems, notifier, m, orders, reqUpdates };
 }
 
 const edgardo = { userId: 'edgardo', role: 'admin', permissions: ['mttoVehiculos.autorizar'] };
@@ -78,10 +89,11 @@ describe('PurchaseOrdersService', () => {
 
   it('eliminar una autorizada → 400; borrador → baja lógica y solicitud vuelve a cotización', async () => {
     await expect(make(baseOrder({ status: 'autorizada' })).svc.remove('po1', admin)).rejects.toBeInstanceOf(BadRequestException);
-    const { svc, m } = make(baseOrder({ status: 'borrador' }));
+    // Era la única orden activa → la solicitud regresa a cotización.
+    const { svc, orders, reqUpdates } = make(baseOrder({ status: 'borrador' }), []);
     await svc.remove('po1', admin);
-    expect(m.softDelete).toHaveBeenCalled();
-    expect(m.update).toHaveBeenCalledWith(expect.anything(), 'r1', expect.objectContaining({ status: 'en_cotizacion' }));
+    expect(orders.softDelete).toHaveBeenCalledWith('po1');
+    expect(reqUpdates).toContainEqual(expect.objectContaining({ entity: 'MaintenanceRequest', status: 'en_cotizacion' }));
   });
 
   it('quien captura no edita una orden pendiente', async () => {
@@ -90,9 +102,9 @@ describe('PurchaseOrdersService', () => {
   });
 
   it('completar actualiza la unidad, crea el gasto con el monto final y cierra la solicitud', async () => {
-    const { svc, updates, savedItems } = make(baseOrder({
-      status: 'enviada', vehicleId: 'v1', total: 2320, vehicle: { name: 'PMY 13' }, supplier: { name: 'Taller X' },
-    }));
+    const { svc, updates, savedItems, reqUpdates } = make(baseOrder({
+      status: 'enviada', vehicleId: 'v1', total: 2320, vehicle: { name: 'PMY 13' }, supplier: { name: 'Taller X' }, request: { type: 'reparacion' },
+    }), [{ id: 'po1', status: 'completada' }, { id: 'po2', status: 'cancelada' }]);
     await svc.complete('po1', { completedAt: '2026-09-20', completedKms: 90500, finalAmount: 2500, nextMaintenanceDate: '2026-12-20' }, admin);
     expect(updates.find((u) => u.entity === 'Vehicle')).toMatchObject({
       lastMaintenanceKms: 90500, kms: 90500, lastMaintenanceDate: new Date('2026-09-20T07:00:00.000Z'),
@@ -102,7 +114,23 @@ describe('PurchaseOrdersService', () => {
       subsidiaryId: 'sub1', categoryId: 'cat1', vehicleId: 'v1', date: '2026-09-20', amount: 2500,
     });
     expect(updates.find((u) => u.entity === 'PurchaseOrder')).toMatchObject({ status: 'completada', expenseId: 'exp1', finalAmount: 2500 });
-    expect(updates.find((u) => u.entity === 'MaintenanceRequest')).toMatchObject({ status: 'completada' });
+    expect(reqUpdates).toContainEqual(expect.objectContaining({ entity: 'MaintenanceRequest', status: 'completada' }));
+  });
+
+  it('completar una orden mientras otra sigue en proceso NO cierra la solicitud', async () => {
+    const { svc, reqUpdates } = make(baseOrder({ status: 'enviada', vehicleId: 'v1', total: 100, request: { type: 'reparacion' } }),
+      [{ id: 'po1', status: 'completada' }, { id: 'po2', status: 'enviada' }]);
+    await svc.complete('po1', { completedAt: '2026-09-20', completedKms: 90500 }, admin);
+    expect(reqUpdates.find((u) => u.entity === 'MaintenanceRequest')).toBeUndefined();
+  });
+
+  it('compra de material: sin km, no toca la unidad y el gasto va a Compras', async () => {
+    const { svc, updates, savedItems, m } = make(baseOrder({ status: 'enviada', vehicleId: null, total: 500, request: { type: 'compra' } }),
+      [{ id: 'po1', status: 'completada' }]);
+    m.findOne.mockImplementation(async (e: any, q: any) => (e?.name === 'ExpenseCategory' && q?.where?.name === 'Compras' ? { id: 'catCompras' } : null));
+    await svc.complete('po1', { completedAt: '2026-09-20' }, admin);
+    expect(updates.find((u) => u.entity === 'Vehicle')).toBeUndefined();
+    expect(savedItems.find((x) => x.entity === 'Expense')).toMatchObject({ categoryId: 'catCompras', vehicleId: null, amount: 500 });
   });
 
   it('completar desde autorizada (sin enviar) → 400', async () => {
