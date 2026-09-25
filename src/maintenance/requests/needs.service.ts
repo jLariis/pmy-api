@@ -42,7 +42,7 @@ export interface NeedView {
   source: string;
   sourceLabel: string;
   suggestions: RankedOffer[];
-  inQuote: { quoteId: string; quoteItemId: string; supplierName: string; offerProductId: string | null } | null;
+  inQuote: { quoteId: string; quoteItemId: string; supplierId: string; supplierName: string; offerProductId: string | null } | null;
 }
 
 const today = () => new Date().toLocaleDateString('en-CA', { timeZone: 'America/Hermosillo' });
@@ -116,8 +116,8 @@ export class NeedsService {
     if (!list.length) return { needs: [] };
 
     const candidates = await this.candidates(list.map((n) => n.categoryId));
-    const quoteItems: Array<{ id: string; quoteId: string; requestNeedId: string; productId: string | null; supplierName: string }> = await this.dataSource.query(
-      `SELECT qi.id, qi.quoteId, qi.requestNeedId, qi.productId, s.name AS supplierName
+    const quoteItems: Array<{ id: string; quoteId: string; requestNeedId: string; productId: string | null; supplierId: string; supplierName: string }> = await this.dataSource.query(
+      `SELECT qi.id, qi.quoteId, qi.requestNeedId, qi.productId, q.supplierId, s.name AS supplierName
          FROM maintenance_quote_item qi
          JOIN maintenance_quote q ON q.id = qi.quoteId AND q.deletedAt IS NULL
          JOIN supplier s ON s.id = q.supplierId
@@ -137,7 +137,7 @@ export class NeedsService {
           source: n.source,
           sourceLabel: n.sourceLabel,
           suggestions: rankOffers(candidates.get(n.categoryId) ?? [], { preferredProductId: n.productId }),
-          inQuote: qi ? { quoteId: qi.quoteId, quoteItemId: qi.id, supplierName: qi.supplierName, offerProductId: qi.productId } : null,
+          inQuote: qi ? { quoteId: qi.quoteId, quoteItemId: qi.id, supplierId: qi.supplierId, supplierName: qi.supplierName, offerProductId: qi.productId } : null,
         };
       }),
     };
