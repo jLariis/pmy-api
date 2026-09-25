@@ -3,6 +3,9 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, In, Repository } from 'typeorm';
 import { MaintenanceRequest, TYPES_REQUIRING_VEHICLE } from 'src/entities/maintenance-request.entity';
 import { RequestItem } from 'src/entities/request-item.entity';
+import { RequestSelectedService } from 'src/entities/request-service.entity';
+import { RequestNeed } from 'src/entities/request-need.entity';
+import { ServiceTemplate } from 'src/entities/service-template.entity';
 import { PurchaseOrder } from 'src/entities/purchase-order.entity';
 import { Vehicle } from 'src/entities/vehicle.entity';
 import { NotificationsService } from 'src/notifications/notifications.service';
@@ -115,6 +118,8 @@ export class RequestsService {
       .leftJoinAndSelect('reqItem.product', 'reqProduct')
       .leftJoinAndSelect('reqItem.category', 'reqCategory')
       .leftJoinAndSelect('reqItem.unit', 'reqUnit')
+      .leftJoinAndSelect('r.services', 'reqService')
+      .leftJoinAndSelect('reqService.serviceTemplate', 'serviceTemplate')
       .leftJoinAndSelect('r.quotes', 'quote')
       .leftJoinAndSelect('quote.items', 'item')
       .leftJoinAndSelect('item.product', 'product')
@@ -133,6 +138,8 @@ export class RequestsService {
     const pos = (await this.ordersByRequest([r.id])).get(r.id) ?? [];
     return {
       ...r,
+      services: [...(r.services ?? [])].sort((a, b) => a.sortOrder - b.sortOrder)
+        .map((x) => ({ id: x.serviceTemplateId, name: x.serviceTemplate?.name ?? 'Servicio' })),
       orders: pos.map((p) => ({ id: p.id, folio: p.folio, status: p.status, total: Number(p.finalAmount ?? p.total), supplierName: p.supplier?.name ?? null, rejectionReason: p.rejectionReason })),
       /** Compat: la primera orden activa (las pantallas viejas leen `purchaseOrder`). */
       purchaseOrder: pos.find((p) => p.status !== 'cancelada') ?? null,
@@ -172,11 +179,27 @@ export class RequestsService {
     }
   }
 
+  /** Compras necesita renglones; mantenimiento se describe con servicios y/o texto. Servicios deben existir. */
+  private async validateContent(type: string, items: RequestItemDto[] | undefined, serviceIds: string[] | undefined) {
+    if (type === 'compra' && !(items?.length)) throw new BadRequestException('Agrega al menos un renglón: qué se necesita y cuánto.');
+    const ids = [...new Set(serviceIds ?? [])];
+    if (ids.length) {
+      const found = await this.dataSource.getRepository(ServiceTemplate).count({ where: { id: In(ids) } });
+      if (found !== ids.length) throw new BadRequestException('Uno de los servicios elegidos ya no existe.');
+    }
+    return ids;
+  }
+
+  private buildServices(ids: string[], requestId: string) {
+    return ids.map((serviceTemplateId, idx) => this.dataSource.manager.create(RequestSelectedService, { requestId, serviceTemplateId, sortOrder: idx }));
+  }
+
   async create(dto: CreateRequestDto, user: ScopeUser) {
     await this.validateScope(dto.type, dto.subsidiaryId, dto.vehicleId, user);
+    const serviceIds = await this.validateContent(dto.type, dto.items, dto.serviceTemplateIds);
     const saved = await this.dataSource.transaction(async (m) => {
       const folio = await this.folios.next(m, 'SOL');
-      return m.save(MaintenanceRequest, m.create(MaintenanceRequest, {
+      const r = await m.save(MaintenanceRequest, m.create(MaintenanceRequest, {
         folio,
         type: dto.type,
         subsidiaryId: dto.subsidiaryId,
@@ -186,8 +209,10 @@ export class RequestsService {
         priority: dto.priority,
         status: 'por_revisar',
         createdById: user?.userId ?? null,
-        items: this.buildItems(dto.items),
+        items: this.buildItems(dto.items ?? []),
       }));
+      if (serviceIds.length) await m.save(RequestSelectedService, this.buildServices(serviceIds, r.id));
+      return r;
     });
     if (dto.vehicleId && dto.kmsAtRequest) await this.vehicleKms.bump(dto.vehicleId, dto.kmsAtRequest, 'request');
     await this.notifyPurchasers(saved, user);
@@ -208,8 +233,18 @@ export class RequestsService {
       ...(dto.kmsAtRequest !== undefined ? { kmsAtRequest: dto.kmsAtRequest } : {}),
       updatedAt: new Date(),
     });
+    const items = dto.items ?? r.items;
+    const serviceIds = await this.validateContent(type, items, dto.serviceTemplateIds);
     if (dto.items) r.items = this.buildItems(dto.items, r.id);
-    await this.requests.save(r);
+    await this.dataSource.transaction(async (m) => {
+      await m.save(MaintenanceRequest, r);
+      if (dto.serviceTemplateIds) {
+        await m.delete(RequestSelectedService, { requestId: r.id });
+        if (serviceIds.length) await m.save(RequestSelectedService, this.buildServices(serviceIds, r.id));
+      }
+      // Cambió lo que se pide: "Lo que se necesita" se vuelve a calcular (se conservan las agregadas a mano).
+      await m.delete(RequestNeed, { requestId: r.id, source: In(['receta', 'ficha', 'palabra']) });
+    });
     return this.findOne(id, user);
   }
 

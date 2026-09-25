@@ -4,7 +4,7 @@ import { RequestsService } from './requests.service';
 const gerardo = { userId: 'g1', role: 'admin', permissions: ['mttoVehiculos.revisar'], subsidiaryIds: ['s1'] };
 const juan = { userId: 'u1', role: 'auxiliar', permissions: [], subsidiaryIds: ['s1', 's2'] };
 
-function make(opts: { request?: any; vehicle?: any; hasOrders?: boolean } = {}) {
+function make(opts: { request?: any; vehicle?: any; hasOrders?: boolean; servicesFound?: number } = {}) {
   const saved: any[] = [];
   const updates: any[] = [];
   const m: any = {
@@ -19,7 +19,10 @@ function make(opts: { request?: any; vehicle?: any; hasOrders?: boolean } = {}) 
   };
   const orders: any = { exist: jest.fn(async () => !!opts.hasOrders), find: jest.fn(async () => []) };
   const vehicles: any = { findOne: jest.fn(async () => opts.vehicle ?? null) };
-  const dataSource: any = { transaction: (fn: any) => fn(m), manager: m, query: jest.fn(async () => [{ userId: 'g1' }]) };
+  const dataSource: any = {
+    transaction: (fn: any) => fn(m), manager: m, query: jest.fn(async () => [{ userId: 'g1' }]),
+    getRepository: jest.fn(() => ({ count: jest.fn(async () => opts.servicesFound ?? 0) })),
+  };
   const folios: any = { next: jest.fn(async () => 'SOL-000005') };
   const kms: any = { bump: jest.fn() };
   const notifier: any = { emit: jest.fn(async () => undefined) };
@@ -78,5 +81,25 @@ describe('RequestsService (v3)', () => {
     await expect(make({ request: { id: 'r1', status: 'abierta', createdById: 'u1' } }).svc.loadEditable('r1', juan)).rejects.toThrow(/ya la revisó/);
     await expect(make({ request: { id: 'r1', status: 'abierta', createdById: 'u1' }, hasOrders: true }).svc.loadEditable('r1', gerardo))
       .rejects.toThrow(/órdenes/);
+  });
+});
+
+describe('RequestsService (v4: servicios predefinidos)', () => {
+  it('mantenimiento con servicios y sin renglones: guarda la solicitud y sus servicios', async () => {
+    const { svc, saved } = make({ vehicle: { id: 'v1', subsidiary: { id: 's1' } }, servicesFound: 2 });
+    await svc.create({ type: 'mantenimiento', subsidiaryId: 's1', vehicleId: 'v1', description: 'Rechina al frenar', priority: 'media', serviceTemplateIds: ['t1', 't2'] }, juan);
+    expect(saved[0]).toMatchObject({ type: 'mantenimiento', items: [] });
+    expect(saved[1].map((x: any) => [x.requestId, x.serviceTemplateId, x.sortOrder])).toEqual([['r-new', 't1', 0], ['r-new', 't2', 1]]);
+  });
+
+  it('compra sin renglones → 400 en llano', async () => {
+    await expect(make().svc.create({ type: 'compra', subsidiaryId: 's1', description: 'Sillas', priority: 'baja' }, juan))
+      .rejects.toThrow(/al menos un renglón/);
+  });
+
+  it('servicio que ya no existe → 400', async () => {
+    const { svc } = make({ vehicle: { id: 'v1', subsidiary: { id: 's1' } }, servicesFound: 1 });
+    await expect(svc.create({ type: 'servicio', subsidiaryId: 's1', vehicleId: 'v1', description: 'xxx', priority: 'baja', serviceTemplateIds: ['t1', 't2'] }, juan))
+      .rejects.toThrow(/ya no existe/);
   });
 });

@@ -53,10 +53,14 @@ export class CreateRequestDto {
   @IsIn(REQUEST_PRIORITIES as unknown as string[], { message: 'Elige la prioridad' })
   priority: RequestPriority;
 
-  @IsArray({ message: 'Agrega al menos un renglón' })
-  @ArrayMinSize(1, { message: 'Agrega al menos un renglón (qué se necesita y cuánto)' })
+  /** Renglones de texto libre (obligatorios en compras; en mantenimiento son opcionales). */
+  @IsOptional() @IsArray({ message: 'Renglones no válidos' })
   @ValidateNested({ each: true }) @Type(() => RequestItemDto)
-  items: RequestItemDto[];
+  items?: RequestItemDto[];
+
+  /** Servicios predefinidos elegidos (mantenimiento/servicio/reparación). */
+  @IsOptional() @IsArray() @IsUUID('all', { each: true, message: 'Servicio no reconocido' })
+  serviceTemplateIds?: string[];
 }
 
 export class UpdateRequestDto {
@@ -75,9 +79,12 @@ export class UpdateRequestDto {
   @IsOptional() @IsIn(REQUEST_PRIORITIES as unknown as string[], { message: 'Elige la prioridad' })
   priority?: RequestPriority;
 
-  @IsOptional() @IsArray() @ArrayMinSize(1, { message: 'Agrega al menos un renglón' })
+  @IsOptional() @IsArray({ message: 'Renglones no válidos' })
   @ValidateNested({ each: true }) @Type(() => RequestItemDto)
   items?: RequestItemDto[];
+
+  @IsOptional() @IsArray() @IsUUID('all', { each: true, message: 'Servicio no reconocido' })
+  serviceTemplateIds?: string[];
 }
 
 export class RejectRequestDto {
