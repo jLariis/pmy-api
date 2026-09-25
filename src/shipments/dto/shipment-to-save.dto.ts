@@ -19,4 +19,10 @@ export class ShipmentToSaveDto {
     consNumber?: string;
     subsidiary?: Subsidiary;
     isHighValue?: boolean;
+    /** Alta manual: 'shipment' (default) o 'charge' (carga/F2 → charge_shipment). */
+    kind?: 'shipment' | 'charge';
+    /** Alta manual DHL: ID de pieza (JD…) opcional. */
+    dhlUniqueId?: string;
+    /** Alta manual de carga: código de excepción opcional. */
+    exceptionCode?: string;
 }

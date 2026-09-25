@@ -32,6 +32,7 @@ import * as stringSimilarity from 'string-similarity';
 import * as path from 'path';
 import { Charge } from 'src/entities/charge.entity';
 import { ChargeShipment } from 'src/entities/charge-shipment.entity';
+import { blocksManualDuplicate, ManualPackageKind, normalizeManualTracking, resolveManualCarrier, resolveManualKind } from './manual-shipment.util';
 import { resolveCobroTarget } from './cobro-target.util';
 import { ShipmentAndChargeDto } from './dto/shipment-and-charge.dto';
 import { ChargeWithStatusDto } from './dto/charge-with-status.dto';
@@ -5969,217 +5970,271 @@ export class ShipmentsService {
 
 
     /***** Agrear shipments directamente */
+    /**
+     * Alta MANUAL de un paquete (desembarque "sobrante → Crear nuevo" y el "+"
+     * del header). Soporta FedEx/DHL y paquete (shipment) o carga (charge_shipment).
+     * - Valida la guía por paquetería (manual-shipment.util) con mensajes en llano.
+     * - No duplica: si la guía ya existe "viva" (no terminal) se rechaza.
+     * - FedEx: se consulta el rastreo para historial/estatus/fecha; si FedEx falla
+     *   el alta NO se bloquea (se usan los datos capturados). DHL no se consulta
+     *   aquí (cuota de API); lo toma el cron horario.
+     * - Consolidado opcional por consNumber de la misma sucursal (carga → su Charge).
+     */
     async addShipment(dto: ShipmentToSaveDto, userId?: string): Promise<any> {
       try {
-        this.logger.log("📥 addShipment() recibido");
-        this.logger.log(JSON.stringify(dto, null, 2));
-
-        // Validar que venga un trackingNumber
-        if (!dto.trackingNumber) {
-          throw new Error("trackingNumber es requerido");
-        }
-
-        // Obtener sucursal (como tú manejas subsidiaries)
-        const subsidiary = await this.subsidiaryRepository.findOne({
-          where: { id: dto.subsidiary.id },
+        const kind = resolveManualKind(dto.kind);
+        const norm = normalizeManualTracking({
+          carrier: dto.shipmentType,
+          trackingNumber: dto.trackingNumber,
+          dhlUniqueId: dto.dhlUniqueId,
         });
+        if ('message' in norm) return { ok: false, message: norm.message };
 
-        if (!subsidiary) {
-          throw new Error(`Subsidiary ${dto.subsidiary.id} no encontrada`);
+        const subsidiaryId = dto.subsidiary?.id;
+        if (!subsidiaryId) return { ok: false, message: 'Selecciona una sucursal.' };
+        const subsidiary = await this.subsidiaryRepository.findOne({ where: { id: subsidiaryId } });
+        if (!subsidiary) return { ok: false, message: 'No se encontró la sucursal seleccionada.' };
+
+        const dup = await this.findBlockingManualDuplicate(norm.trackingNumber, norm.dhlUniqueId, norm.carrier);
+        if (dup) {
+          const code = norm.dhlUniqueId ?? norm.trackingNumber;
+          const where = dup.subsidiary?.name ? `en ${dup.subsidiary.name}` : 'en otra sucursal';
+          const status = String(dup.status ?? '').replace(/_/g, ' ');
+          return {
+            ok: false,
+            message: `La guía ${code} ya está registrada ${where}${status ? ` (${status})` : ''}. No se creó otra vez.`,
+          };
         }
 
-        // -------------------------
-        // LLAMAR processShipmentDirect()
-        // -------------------------
-        const savedShipment = await this.processShipmentDirect(dto, subsidiary, userId);
+        const saved = await this.processShipmentDirect(
+          { ...dto, trackingNumber: norm.trackingNumber, shipmentType: norm.carrier, dhlUniqueId: norm.dhlUniqueId ?? undefined },
+          subsidiary,
+          userId,
+          kind,
+        );
 
-        this.logger.log(`✅ Shipment guardado: ${savedShipment.trackingNumber}`);
-
+        this.logger.log(`✅ Alta manual (${kind}/${norm.carrier}): ${saved.trackingNumber}`);
         return {
           ok: true,
-          message: "Shipment procesado y guardado correctamente",
-          shipment: savedShipment,
+          message: kind === 'charge' ? 'Carga registrada correctamente' : 'Paquete registrado correctamente',
+          isCharge: kind === 'charge',
+          // Proyección plana: el entity guardado trae back-references (historial ↔ paquete).
+          shipment: {
+            id: saved.id,
+            trackingNumber: saved.trackingNumber,
+            dhlUniqueId: (saved as Shipment).dhlUniqueId ?? null,
+            shipmentType: saved.shipmentType,
+            recipientName: saved.recipientName,
+            recipientAddress: saved.recipientAddress,
+            recipientCity: saved.recipientCity,
+            recipientZip: saved.recipientZip,
+            recipientPhone: saved.recipientPhone,
+            commitDateTime: saved.commitDateTime,
+            priority: saved.priority,
+            status: saved.status,
+            isHighValue: saved.isHighValue,
+            consNumber: saved.consNumber,
+            consolidatedId: saved.consolidatedId ?? null,
+            isCharge: kind === 'charge',
+          },
         };
-
       } catch (err) {
         this.logger.error(`❌ Error en addShipment(): ${err.message}`);
-
-        return {
-          ok: false,
-          message: err.message,
-        };
+        return { ok: false, message: 'No se pudo registrar el paquete. Intenta de nuevo.' };
       }
+    }
+
+    /** Registro "vivo" (no terminal) con la misma guía/pieza, en shipment o charge_shipment. */
+    private async findBlockingManualDuplicate(
+      trackingNumber: string,
+      dhlUniqueId: string | null,
+      carrier: ShipmentType,
+    ): Promise<Shipment | ChargeShipment | null> {
+      // DHL multi-pieza: varias piezas comparten guía; con JD se compara por pieza.
+      const pieceVariants = dhlUniqueId ? [dhlUniqueId, `J${dhlUniqueId}`] : [];
+      const byPiece = carrier === ShipmentType.DHL && !!dhlUniqueId;
+      const shipmentWhere = byPiece
+        ? [{ dhlUniqueId: In(pieceVariants) }, { trackingNumber: In(pieceVariants) }]
+        : [{ trackingNumber }];
+
+      const [shipments, charges] = await Promise.all([
+        this.shipmentRepository.find({ where: shipmentWhere, relations: ['subsidiary'], order: { createdAt: 'DESC' }, take: 10 }),
+        this.chargeShipmentRepository.find({
+          where: { trackingNumber: In(byPiece ? pieceVariants : [trackingNumber]) },
+          relations: ['subsidiary'],
+          order: { createdAt: 'DESC' },
+          take: 10,
+        }),
+      ]);
+      return [...shipments, ...charges].find((r) => blocksManualDuplicate(r)) ?? null;
     }
 
     async processShipmentDirect(
       shipment: ShipmentToSaveDto,
       predefinedSubsidiary: Subsidiary,
       userId?: string,
-    ): Promise<Shipment> {
+      kind: ManualPackageKind = 'shipment',
+    ): Promise<Shipment | ChargeShipment> {
 
       const trackingNumber = shipment.trackingNumber;
+      const carrier = resolveManualCarrier(shipment.shipmentType);
 
-      this.logger.log(`📦 Procesando envío: ${trackingNumber}`);
-      this.logger.log(`📅 commitDate=${shipment.commitDate}, commitTime=${shipment.commitTime}`);
+      this.logger.log(`📦 Alta manual ${kind}/${carrier}: ${trackingNumber}`);
 
       // -----------------------
-      // PARSEO commitDate/Time
+      // FECHA DE COMPROMISO capturada (hora local Hermosillo)
       // -----------------------
       let commitDate: string | undefined;
       let commitTime: string | undefined;
       let commitDateTime: Date | undefined;
-      let dateSource = "";
 
       if (shipment.commitDate && shipment.commitTime) {
         try {
-          const timeZone = "America/Hermosillo";
-
           const parsedDate = parse(shipment.commitDate, "yyyy-MM-dd", new Date());
           const parsedTime = parse(shipment.commitTime, "HH:mm:ss", new Date());
-
           if (!isNaN(parsedDate.getTime()) && !isNaN(parsedTime.getTime())) {
             commitDate = format(parsedDate, "yyyy-MM-dd");
             commitTime = format(parsedTime, "HH:mm:ss");
-
-            const localDateTime = `${commitDate}T${commitTime}`;
-            commitDateTime = toDate(localDateTime, { timeZone });
-            dateSource = "Save Direct";
+            commitDateTime = toDate(`${commitDate}T${commitTime}`, { timeZone: "America/Hermosillo" });
           }
         } catch {}
       }
 
       // -----------------------
-      // CREAR SHIPMENT BASE
+      // FEDEX (solo FedEx; si falla no bloquea el alta)
       // -----------------------
-      const newShipment = Object.assign(new Shipment(), {
-        trackingNumber,
-        shipmentType: ShipmentType.FEDEX,
-        recipientName: shipment.recipientName || '',
-        recipientAddress: shipment.recipientAddress || '',
-        recipientCity: shipment.recipientCity || predefinedSubsidiary.name,
-        recipientZip: shipment.recipientZip || '',
-        commitDate,
-        commitTime,
-        commitDateTime,
-        recipientPhone: shipment.recipientPhone || '',
-        status: shipment.status,
-        priority: shipment.priority,
-        receivedByName: '',
-        createdById: userId ?? null,
-        subsidiary: predefinedSubsidiary,
-        subsidiaryId: predefinedSubsidiary.id,
-      });
+      let histories: ShipmentStatus[] = [];
+      let receivedByName = '';
+      let fedexUniqueId: string | null = null;
+      let fedexCarrierCode: string | null = null;
 
-      // -----------------------
-      // CONSULTAR FEDEX
-      // -----------------------
-      let fedexShipmentData: FedExTrackingResponseDto;
+      if (carrier === ShipmentType.FEDEX) {
+        try {
+          const fedexData: FedExTrackingResponseDto = await this.fedexService.trackPackage(trackingNumber);
+          const trackResults = fedexData?.output?.completeTrackResults?.[0]?.trackResults ?? [];
 
-      try {
-        this.logger.log(`📬 Consultando FedEx para ${trackingNumber}`);
-        fedexShipmentData = await this.fedexService.trackPackage(trackingNumber);
-      } catch (err) {
-        throw new Error(`Error consultando FedEx: ${err.message}`);
-      }
+          histories = await this.processFedexScanEventsToStatusesResp(
+            trackResults.flatMap(r => r.scanEvents ?? []),
+            Object.assign(new Shipment(), { trackingNumber }),
+          );
+          histories.forEach(h => {
+            h.shipment = undefined; // lo enlaza el cascade del padre
+            h.id = undefined;
+          });
 
-      // -----------------------
-      // PROCESAR HISTORIES / SCAN EVENTS
-      // -----------------------
-      const trackResults = fedexShipmentData.output.completeTrackResults[0].trackResults;
+          const latestResult =
+            trackResults.find(r => r.latestStatusDetail?.derivedCode === "DL") ??
+            [...trackResults].sort((a, b) => {
+              const da = a.scanEvents?.[0]?.date ? new Date(a.scanEvents[0].date).getTime() : 0;
+              const db = b.scanEvents?.[0]?.date ? new Date(b.scanEvents[0].date).getTime() : 0;
+              return db - da;
+            })[0];
 
-      const shipmentReference = Object.assign(new Shipment(), { trackingNumber });
+          receivedByName = latestResult?.deliveryDetails?.receivedByName || '';
+          fedexUniqueId = latestResult?.trackingNumberInfo?.trackingNumberUniqueId || null;
+          fedexCarrierCode = latestResult?.trackingNumberInfo?.carrierCode || null;
 
-      const histories = await this.processFedexScanEventsToStatusesResp(
-        trackResults.flatMap(r => r.scanEvents ?? []),
-        shipmentReference
-      );
-
-      histories.forEach(h => {
-        h.shipment = undefined; // no referencias circulares
-        h.id = undefined;       // ID se genera al guardar
-      });
-
-      // -----------------------
-      // ULTIMO STATUS (como antes)
-      // -----------------------
-      const lastStatus = histories[histories.length - 1]?.status;
-      newShipment.status = lastStatus ?? ShipmentStatusType.EN_RUTA;
-
-      // recibido por
-      const latestResult =
-        trackResults.find(r => r.latestStatusDetail?.derivedCode === "DL") ??
-        trackResults.sort((a, b) => {
-          const da = a.scanEvents[0]?.date ? new Date(a.scanEvents[0].date).getTime() : 0;
-          const db = b.scanEvents[0]?.date ? new Date(b.scanEvents[0].date).getTime() : 0;
-          return db - da;
-        })[0];
-
-      newShipment.receivedByName = latestResult?.deliveryDetails?.receivedByName || "";
-
-      // -----------------------
-      // commitDateTime desde FedEx si Excel falló
-      // -----------------------
-      if (!commitDateTime) {
-        const rawDate = latestResult?.standardTransitTimeWindow?.window?.ends;
-
-        if (rawDate) {
-          try {
+          // Si no capturaron fecha, la de FedEx.
+          const rawDate = latestResult?.standardTransitTimeWindow?.window?.ends;
+          if (!commitDateTime && rawDate) {
             const parsedFedexDate = parse(rawDate, "yyyy-MM-dd'T'HH:mm:ssXXX", new Date());
             if (!isNaN(parsedFedexDate.getTime())) {
               commitDate = format(parsedFedexDate, "yyyy-MM-dd");
               commitTime = format(parsedFedexDate, "HH:mm:ss");
               commitDateTime = parsedFedexDate;
-              dateSource = "FedEx";
             }
-          } catch {}
+          }
+        } catch (err) {
+          this.logger.warn(`⚠️ FedEx no respondió para ${trackingNumber} (alta manual sigue con lo capturado): ${err.message}`);
+          histories = [];
         }
       }
 
-      // -----------------------
-      // FECHA DEFAULT
-      // -----------------------
+      // Fecha por defecto: hoy 18:00 Hermosillo.
       if (!commitDateTime) {
         const now = new Date();
-        commitDateTime = new Date(Date.UTC(
-          now.getUTCFullYear(),
-          now.getUTCMonth(),
-          now.getUTCDate(),
-          18 + 7,
-          0,
-          0
-        ));
-        dateSource = "Default";
+        commitDateTime = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 18 + 7, 0, 0));
       }
 
-      newShipment.commitDate = commitDate;
-      newShipment.commitTime = commitTime;
-      newShipment.commitDateTime = commitDateTime;
-      newShipment.priority = getPriority(commitDateTime);
+      const lastStatus = histories[histories.length - 1]?.status;
+      const status = lastStatus ?? shipment.status ?? ShipmentStatusType.PENDIENTE;
 
       // -----------------------
-      // PAYMENT (igual que antes)
+      // CONSOLIDADO opcional (misma sucursal)
       // -----------------------
+      const consNumber = (shipment.consNumber ?? '').trim();
+      const consolidated = consNumber
+        ? await this.consolidatedRepository.findOne({
+            where: { consNumber, subsidiary: { id: predefinedSubsidiary.id } },
+            order: { createdAt: 'DESC' },
+          })
+        : null;
+
       // Método ÚNICO de interpretación de cobro (mismo parsePaymentCell que el resto).
       const parsedPayment = parsePaymentCell(shipment.payment);
-      if (parsedPayment) {
-        newShipment.payment = Object.assign(new Payment(), {
-          amount: parsedPayment.amount,
-          // Sin tipo explícito → COD (enum NOT NULL; null explícito rompe el INSERT).
-          type: (parsedPayment.type as PaymentTypeEnum) ?? PaymentTypeEnum.COD,
-          status: histories.some(h => h.status === ShipmentStatusType.ENTREGADO)
-            ? PaymentStatus.PAID
-            : PaymentStatus.PENDING,
+      const buildPayment = () => parsedPayment
+        ? Object.assign(new Payment(), {
+            amount: parsedPayment.amount,
+            // Sin tipo explícito → COD (enum NOT NULL; null explícito rompe el INSERT).
+            type: (parsedPayment.type as PaymentTypeEnum) ?? PaymentTypeEnum.COD,
+            status: histories.some(h => h.status === ShipmentStatusType.ENTREGADO) ? PaymentStatus.PAID : PaymentStatus.PENDING,
+          })
+        : undefined;
+
+      const base = {
+        trackingNumber,
+        shipmentType: carrier,
+        recipientName: shipment.recipientName || '',
+        recipientAddress: shipment.recipientAddress || '',
+        recipientCity: shipment.recipientCity || predefinedSubsidiary.name,
+        recipientZip: shipment.recipientZip || '',
+        recipientPhone: shipment.recipientPhone || '',
+        commitDateTime,
+        status,
+        priority: getPriority(commitDateTime),
+        receivedByName,
+        isHighValue: !!shipment.isHighValue,
+        consNumber: consolidated?.consNumber ?? consNumber,
+        consolidatedId: consolidated?.id ?? null,
+        createdById: userId ?? null,
+        subsidiary: predefinedSubsidiary,
+        fedexUniqueId,
+        carrierCode: fedexCarrierCode,
+        statusHistory: histories,
+      };
+
+      if (kind === 'charge') {
+        // Carga: se liga a la Charge (F2) del mismo consNumber si existe. No se
+        // crea una Charge nueva (eso generaría ingreso de carga).
+        const charge = consNumber
+          ? await this.chargeRepository.findOne({
+              where: { consNumber, subsidiary: { id: predefinedSubsidiary.id } },
+              order: { createdAt: 'DESC' },
+            })
+          : null;
+        const newCharge = Object.assign(new ChargeShipment(), {
+          ...base,
+          charge: charge ?? undefined,
+          exceptionCode: shipment.exceptionCode || '',
+          payment: buildPayment(), // dueño = payment.chargeShipmentId (cascade)
         });
+        return this.chargeShipmentRepository.save(newCharge);
       }
 
-      // aplicar histories ya procesado
-      newShipment.statusHistory = histories;
-
-      // -----------------------
-      // GUARDAR DIRECTAMENTE
-      // -----------------------
+      const newShipment = Object.assign(new Shipment(), {
+        ...base,
+        commitDate,
+        commitTime,
+        dhlUniqueId: carrier === ShipmentType.DHL ? (shipment.dhlUniqueId || null) : null,
+        subsidiaryId: predefinedSubsidiary.id,
+        payment: buildPayment(), // cascade llena shipment.paymentId (lado canónico)
+      });
       const saved = await this.shipmentRepository.save(newShipment);
 
+      // Doble dueño Shipment↔Payment: enlazamos también payment.shipmentId.
+      if (saved.payment?.id) {
+        await this.dataSource.getRepository(Payment).update(saved.payment.id, { shipment: { id: saved.id } as Shipment });
+      }
       return saved;
     }
 
