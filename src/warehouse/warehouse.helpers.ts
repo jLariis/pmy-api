@@ -50,3 +50,31 @@ export function formatPaymentDisplay(amount: number | null, type?: string | null
   const money = `$${Number(amount).toFixed(2)}`;
   return type ? `${type} ${money}` : money;
 }
+
+/**
+ * Valores de relleno que el sistema guarda cuando un paquete NO trae el dato
+ * (import/pegar FedEx, alta manual, etc.): "N/A", "Sin Teléfono", "N/D"...
+ * Se comparan normalizados (minúsculas, sin acentos ni espacios extra).
+ */
+const MISSING_PLACEHOLDERS = new Set([
+  'n/a', 'na', 'n.a.', 'n/d', 'nd', 'null', 'undefined', '-', '--',
+  'sin telefono', 'sin tel', 's/telefono', 's/tel', 'not phone', 'no phone',
+  'sin nombre', 'sin direccion', 's/direccion', 'sin cp', 'sin codigo postal',
+]);
+
+/**
+ * Normaliza un dato "faltante" a cadena vacía para los archivos de TRASPASO.
+ * Administración los procesa en otro sistema/app que espera la celda VACÍA,
+ * no "N/A" / "Sin Teléfono". Cualquier otro valor se regresa tal cual (trim).
+ */
+export function blankIfMissing(value: unknown): string {
+  if (value == null) return '';
+  const text = String(value).trim();
+  if (!text) return '';
+  const normalized = text
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .replace(/\s+/g, ' ');
+  return MISSING_PLACEHOLDERS.has(normalized) ? '' : text;
+}

@@ -25,7 +25,7 @@ import { ShipmentStatusType } from 'src/common/enums';
 import { PaginatedResult, parsePagination, resolveDateRange } from 'src/common/pagination.util';
 import { CreateOutboundDto } from './dto/create-outbound.dto';
 import { assertOutboundConsistency } from './warehouse.validation';
-import { formatPaymentDisplay, hydratePackageIds, resolvePackagePayment, splitShipmentIds } from './warehouse.helpers';
+import { blankIfMissing, formatPaymentDisplay, hydratePackageIds, resolvePackagePayment, splitShipmentIds } from './warehouse.helpers';
 import { MailService } from 'src/mail/mail.service';
 import { format, toZonedTime } from 'date-fns-tz';
 import axios from 'axios';
@@ -75,6 +75,12 @@ interface NotificationHeader {
    * origen queda en el título ("Traspaso desde …").
    */
   destinationName?: string | null;
+  /**
+   * Solo traspasos: todo dato faltante ("N/A", "Sin Teléfono", nulo, etc.) se
+   * escribe VACÍO en PDF y Excel. Administración procesa estos archivos en otro
+   * sistema que espera la celda vacía.
+   */
+  blankMissing?: boolean;
 }
 
 /**
@@ -96,6 +102,9 @@ export function buildWarehousePdfData(header: any, packages: any[], timeZone: st
   // El layout "Hermosillo" (oculta HORA) depende de la bodega que imprime = origen.
   const isHermosillo = originName.toLowerCase().includes('hermosillo');
   const todayStr = format(toZonedTime(new Date(), timeZone), 'yyyy-MM-dd');
+  // Traspaso: los datos faltantes van vacíos (no "N/A" / "Sin Teléfono").
+  const blank = !!header?.blankMissing;
+  const txt = (v: unknown) => (blank ? blankIfMissing(v) : ((v as string) ?? ''));
   const rows = packages.map((pkg, i) => {
     const { amount, hasPayment, type } = resolvePackagePayment(pkg);
     const commit = pkg.commitDateTime ? toZonedTime(new Date(pkg.commitDateTime), timeZone) : null;
@@ -104,21 +113,23 @@ export function buildWarehousePdfData(header: any, packages: any[], timeZone: st
     return {
       index: i + 1,
       trackingNumber: pkg.trackingNumber || pkg.dhlUniqueId || '',
-      recipientName: pkg.recipientName ?? '',
-      recipientAddress: pkg.recipientAddress ?? '',
-      recipientZip: pkg.recipientZip ?? '',
+      recipientName: txt(pkg.recipientName),
+      recipientAddress: txt(pkg.recipientAddress),
+      recipientZip: txt(pkg.recipientZip),
       // Cobro con TIPO antepuesto: "COD $1500.00" / "FTC $958.44".
-      payment: formatPaymentDisplay(amount, type),
+      payment: blank && amount == null ? '' : formatPaymentDisplay(amount, type),
       date: dateStr,
       time: commit ? format(commit, 'HH:mm:ss') : '',
-      recipientPhone: pkg.recipientPhone ?? '',
+      recipientPhone: txt(pkg.recipientPhone),
       signature: '',
       rowClass: venceHoy ? 'vencehoy' : (hasPayment ? 'pago' : ''),
     };
   });
   return {
     title: header?.title ?? 'SALIDA A RUTA',
-    subsidiaryName, subsidiaryLabel, vehicleName: header?.vehicle?.name ?? 'N/A',
+    subsidiaryName: blank ? blankIfMissing(subsidiaryName) : subsidiaryName,
+    subsidiaryLabel,
+    vehicleName: blank ? blankIfMissing(header?.vehicle?.name) : (header?.vehicle?.name ?? 'N/A'),
     totalPackages: packages.length, trackingNumber: header?.trackingNumber ?? '',
     isHermosillo, rows,
   };
@@ -133,6 +144,10 @@ export function buildWarehouseExcelData(header: any, packages: any[], timeZone: 
   const { format } = require('date-fns');
   const { toZonedTime } = require('date-fns-tz');
   const now = toZonedTime(new Date(), timeZone);
+  // Traspaso: los datos faltantes van vacíos (no "N/A" / "Sin Teléfono").
+  const blank = !!header?.blankMissing;
+  const txt = (v: unknown) => (blank ? blankIfMissing(v) : v);
+  const orNA = (v: string | undefined) => (blank ? blankIfMissing(v) : v || 'N/A');
   const rows = packages.map((pkg, i) => {
     // Cobro (COD) vía helper compartido `resolvePackagePayment` (mismo criterio
     // que el PDF y el generador legacy): se muestra cuando hay `payment`, sin
@@ -144,21 +159,21 @@ export function buildWarehouseExcelData(header: any, packages: any[], timeZone: 
     return {
       index: i + 1,
       trackingNumber: pkg.trackingNumber || pkg.dhlUniqueId,
-      recipientName: pkg.recipientName,
-      recipientAddress: pkg.recipientAddress,
-      recipientZip: pkg.recipientZip,
+      recipientName: txt(pkg.recipientName),
+      recipientAddress: txt(pkg.recipientAddress),
+      recipientZip: txt(pkg.recipientZip),
       // Cobro con TIPO antepuesto: "COD $1500.00" / "FTC $958.44".
-      payment: formatPaymentDisplay(amount, type),
+      payment: blank && amount == null ? '' : formatPaymentDisplay(amount, type),
       date: commit ? format(commit, 'dd/MM/yyyy') : '',
-      recipientPhone: pkg.recipientPhone || '',
+      recipientPhone: blank ? blankIfMissing(pkg.recipientPhone) : pkg.recipientPhone || '',
       signature: '',
     };
   });
   return {
     title: header?.title ?? 'Salida a Ruta',
-    rutas: header?.routes?.map((r: any) => r.name).join(' -> ') || 'N/A',
-    conductores: header?.drivers?.map((d: any) => d.name).join(' - ') || 'N/A',
-    unidad: header?.vehicle?.name || 'N/A',
+    rutas: orNA(header?.routes?.map((r: any) => r.name).join(' -> ')),
+    conductores: orNA(header?.drivers?.map((d: any) => d.name).join(' - ')),
+    unidad: orNA(header?.vehicle?.name),
     fechaDateTime: format(now, 'yyyy-MM-dd HH:mm'),
     totalPackages: packages.length,
     rows,
@@ -192,6 +207,7 @@ export function buildTransferNotificationHeader(
     trackingNumber: outbound?.trackingNumber ?? '',
     destinationName: dest, // el PDF lo muestra como "SUCURSAL DESTINO"
     title: `Traspaso desde ${origin}`,
+    blankMissing: true, // Administración requiere celdas vacías, no "N/A"
   };
 }
 
@@ -1801,15 +1817,14 @@ export class WarehouseService {
       'yyyy-MM-dd HH:mm',
     );
 
-    sheet.addRow([
-      `Ruta: ${header.routes?.map((r) => r.name).join(' -> ') || 'N/A'}`,
-    ]);
-    sheet.addRow([
-      `Conductores: ${
-        header.drivers?.map((d) => d.name).join(' - ') || 'N/A'
-      }`,
-    ]);
-    sheet.addRow([`Unidad: ${header.vehicle?.name || 'N/A'}`]);
+    // Traspaso: datos faltantes vacíos (Administración los procesa en otro sistema).
+    const blank = !!header.blankMissing;
+    const orNA = (v: string | undefined) => (blank ? blankIfMissing(v) : v || 'N/A');
+    const txt = (v: unknown) => (blank ? blankIfMissing(v) : v);
+
+    sheet.addRow([`Ruta: ${orNA(header.routes?.map((r) => r.name).join(' -> '))}`]);
+    sheet.addRow([`Conductores: ${orNA(header.drivers?.map((d) => d.name).join(' - '))}`]);
+    sheet.addRow([`Unidad: ${orNA(header.vehicle?.name)}`]);
     sheet.addRow([`Fecha: ${createdAt}`]);
     sheet.addRow([`Paquetes: ${packages.length}`]);
     sheet.addRow([]);
@@ -1848,12 +1863,12 @@ export class WarehouseService {
       sheet.addRow([
         index + 1,
         pkg.trackingNumber || pkg.dhlUniqueId,
-        pkg.recipientName,
-        pkg.recipientAddress,
-        pkg.recipientZip,
-        formatPaymentDisplay(amount, type),
+        txt(pkg.recipientName),
+        txt(pkg.recipientAddress),
+        txt(pkg.recipientZip),
+        blank && amount == null ? '' : formatPaymentDisplay(amount, type),
         commit ? format(commit, 'dd/MM/yyyy') : '',
-        pkg.recipientPhone || '',
+        blank ? blankIfMissing(pkg.recipientPhone) : pkg.recipientPhone || '',
         '',
       ]);
     });
@@ -1895,6 +1910,9 @@ export class WarehouseService {
       const subsidiaryName = isTransfer ? this.toPdfSafe(header.destinationName) : originName;
       const subsidiaryLabel = isTransfer ? 'SUCURSAL DESTINO' : 'SUCURSAL';
       const isHermosillo = originName.toLowerCase().includes('hermosillo');
+      // Traspaso: datos faltantes vacíos (Administración los procesa en otro sistema).
+      const blank = !!header.blankMissing;
+      const pdfTxt = (v: unknown) => this.toPdfSafe(blank ? blankIfMissing(v) : (v as string));
 
       // Lógica de anchos de columna
       let tableWidths = [20, 65, 100, 140, 30, 50, 50, 40, 60, 80];
@@ -1951,14 +1969,14 @@ export class WarehouseService {
             )
           : '';
         // Cobro con TIPO antepuesto: "COD $1500.00" / "FTC $958.44".
-        const paymentText = formatPaymentDisplay(amount, type);
+        const paymentText = blank && amount == null ? '' : formatPaymentDisplay(amount, type);
 
         const rowData: TableCell[] = [
           { text: `${index + 1}`, color: '#cc0000', bold: true },
           { text: this.toPdfSafe(pkg.trackingNumber), color: '#cc0000', bold: true },
-          { text: this.toPdfSafe(pkg.recipientName) },
-          { text: this.toPdfSafe(pkg.recipientAddress) },
-          { text: this.toPdfSafe(pkg.recipientZip) },
+          { text: pdfTxt(pkg.recipientName) },
+          { text: pdfTxt(pkg.recipientAddress) },
+          { text: pdfTxt(pkg.recipientZip) },
           { text: paymentText, bold: hasPayment },
           { text: commitDate },
         ];
@@ -1967,7 +1985,7 @@ export class WarehouseService {
           rowData.push({ text: commitTime });
         }
 
-        rowData.push({ text: this.toPdfSafe(pkg.recipientPhone) });
+        rowData.push({ text: pdfTxt(pkg.recipientPhone) });
         rowData.push({ text: '' }); // Firma vacía
 
         const formattedRow = rowData.map((cell) => {
@@ -2008,8 +2026,8 @@ export class WarehouseService {
               widths: ['*', '*', '*', '*'],
               body: [
                 [
-                  { stack: [{ text: subsidiaryLabel, style: 'gridLabel' }, { text: subsidiaryName, style: 'gridValue' }], fillColor: '#f8f9fa', border: [true, true, true, true] },
-                  { stack: [{ text: 'VEHÍCULO', style: 'gridLabel' }, { text: this.toPdfSafe(header.vehicle?.name) || 'N/A', style: 'gridValue' }], fillColor: '#f8f9fa', border: [true, true, true, true] },
+                  { stack: [{ text: subsidiaryLabel, style: 'gridLabel' }, { text: blank ? blankIfMissing(subsidiaryName) : subsidiaryName, style: 'gridValue' }], fillColor: '#f8f9fa', border: [true, true, true, true] },
+                  { stack: [{ text: 'VEHÍCULO', style: 'gridLabel' }, { text: blank ? pdfTxt(header.vehicle?.name) : this.toPdfSafe(header.vehicle?.name) || 'N/A', style: 'gridValue' }], fillColor: '#f8f9fa', border: [true, true, true, true] },
                   { stack: [{ text: 'TOTAL PAQUETES', style: 'gridLabel' }, { text: `${packages.length}`, style: 'gridValue' }], fillColor: '#f8f9fa', border: [true, true, true, true] },
                   { stack: [{ text: 'SEGUIMIENTO', style: 'gridLabel' }, { text: this.toPdfSafe(header.trackingNumber), style: 'gridValue' }], fillColor: '#f8f9fa', border: [true, true, true, true] },
                 ],
