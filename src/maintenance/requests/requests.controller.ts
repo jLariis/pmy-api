@@ -27,8 +27,12 @@ export class RequestsController {
     private readonly needs: NeedsService,
   ) {}
 
-  /** Tablero: Compras/autorizador ven todas las sucursales (filtro opcional); los demás, una de sus sucursales. */
+  /**
+   * Tablero: Compras/autorizador ven todas las sucursales (filtro opcional); los administradores de sucursal
+   * (permiso solicitudes) solo las suyas y en consulta — como en la v2 (`board/:subsidiaryId`).
+   */
   @Get('board')
+  @RequirePermission(MTTO.revisar, MTTO.solicitudes, MTTO.ordenes, MTTO.autorizar)
   board(@Query('subsidiaryId') subsidiaryId: string | undefined, @Query('type') type: string | undefined, @Req() req: any) {
     return this.requests.board({ subsidiaryId: subsidiaryId || undefined, type: type || undefined }, req.user);
   }
