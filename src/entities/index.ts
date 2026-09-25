@@ -80,3 +80,7 @@ export * from './product-offer.entity';
 export * from './request-item.entity';
 export * from './vehicle-spec-item.entity';
 export * from './request-dispatch.entity';
+export * from './service-template.entity';
+export * from './service-template-item.entity';
+export * from './request-service.entity';
+export * from './request-need.entity';

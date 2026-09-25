@@ -1,3 +1,4 @@
+import { RequestSelectedService } from './request-service.entity';
 import { Column, DeleteDateColumn, Entity, JoinColumn, ManyToOne, OneToMany, PrimaryGeneratedColumn } from 'typeorm';
 import { Vehicle } from './vehicle.entity';
 import { Subsidiary } from './subsidiary.entity';
@@ -67,6 +68,9 @@ export class MaintenanceRequest {
 
   @OneToMany(() => RequestItem, (i) => i.request, { cascade: true })
   items: RequestItem[];
+
+  @OneToMany(() => RequestSelectedService, (s) => s.request)
+  services: RequestSelectedService[];
 
   @OneToMany(() => MaintenanceQuote, (q) => q.request)
   quotes: MaintenanceQuote[];

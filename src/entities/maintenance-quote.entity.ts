@@ -62,6 +62,10 @@ export class MaintenanceQuote {
   @Column({ type: 'enum', enum: QUOTE_STATUSES, default: 'capturada' })
   status: QuoteStatus;
 
+  /** Armada desde las sugerencias con precios del catálogo: falta confirmarla con el proveedor. */
+  @Column({ default: false })
+  fromCatalog: boolean;
+
   @OneToMany(() => MaintenanceQuoteItem, (i) => i.quote, { cascade: true })
   items: MaintenanceQuoteItem[];
 

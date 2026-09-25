@@ -31,6 +31,10 @@ export class MaintenanceQuoteItem {
   @Column({ length: 36, nullable: true })
   requestItemId: string | null;
 
+  /** Necesidad ("Lo que se necesita") que cotiza esta partida. */
+  @Column({ length: 36, nullable: true })
+  requestNeedId: string | null;
+
   @ManyToOne(() => Product, { createForeignKeyConstraints: false, nullable: true })
   @JoinColumn({ name: 'productId' })
   product: Product | null;

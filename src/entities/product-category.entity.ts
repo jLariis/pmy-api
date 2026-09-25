@@ -18,6 +18,10 @@ export class ProductCategory {
   @Column({ type: 'enum', enum: PRODUCT_KINDS })
   kind: ProductKind;
 
+  /** Sinónimos separados por coma (para reconocerla en lo que escribe el usuario). */
+  @Column({ type: 'text', nullable: true })
+  keywords: string | null;
+
   @Column({ default: 0 })
   sortOrder: number;
 

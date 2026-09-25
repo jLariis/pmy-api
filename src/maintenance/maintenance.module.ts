@@ -3,7 +3,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import {
   MaintenanceFolioCounter, MaintenanceQuote, MaintenanceQuoteItem, MaintenanceRequest, MaintenanceService,
   MaintenanceServiceCategory, Product, ProductCategory, ProductOffer, PurchaseOrder, PurchaseOrderDispatch, PurchaseOrderItem,
-  RequestDispatch, RequestItem, Supplier, SupplierContact, UnitOfMeasure, User, Vehicle, VehicleSpecItem,
+  RequestDispatch, RequestItem, RequestNeed, RequestSelectedService, ServiceTemplate, ServiceTemplateItem, Supplier, SupplierContact, UnitOfMeasure, User, Vehicle, VehicleSpecItem,
 } from 'src/entities';
 import { ProductsService } from './catalog/products.service';
 import { VehicleSpecService } from './schedule/vehicle-spec.service';
@@ -37,7 +37,7 @@ import { MailService } from 'src/mail/mail.service';
     TypeOrmModule.forFeature([
       MaintenanceServiceCategory, MaintenanceService, Supplier, SupplierContact, MaintenanceRequest, MaintenanceQuote,
       MaintenanceQuoteItem, PurchaseOrder, PurchaseOrderItem, PurchaseOrderDispatch, MaintenanceFolioCounter, Vehicle,
-      UnitOfMeasure, ProductCategory, Product, ProductOffer, RequestItem, VehicleSpecItem, RequestDispatch, User,
+      UnitOfMeasure, ProductCategory, Product, ProductOffer, RequestItem, VehicleSpecItem, RequestDispatch, User, ServiceTemplate, ServiceTemplateItem, RequestSelectedService, RequestNeed,
     ]),
     VehicleKmsModule,
     NotificationsModule,
