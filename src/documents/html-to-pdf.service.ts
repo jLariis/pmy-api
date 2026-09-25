@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
 import { chromium } from 'playwright-core';
 
 /** Aísla la conversión HTML→PDF con Chromium headless (playwright-core). */
@@ -15,7 +15,16 @@ export class HtmlToPdfService {
     const launchOpts: any = process.env.CHROMIUM_PATH
       ? { executablePath: process.env.CHROMIUM_PATH }
       : {};
-    const browser = await chromium.launch(launchOpts);
+    const browser = await chromium.launch(launchOpts).catch((e: any) => {
+      // Causa típica: no se instaló el Chromium de Playwright en esa máquina. Mensaje claro en vez de un 500 opaco.
+      const missing = /Executable doesn't exist|Failed to launch/i.test(String(e?.message));
+      this.logger.error(`No se pudo abrir Chromium para generar PDF: ${e?.message}`);
+      throw new ServiceUnavailableException(
+        missing
+          ? 'El generador de PDF no está instalado en el servidor. Pide a Sistemas que ejecute "npx playwright install chromium" en la API.'
+          : 'No se pudo abrir el generador de PDF. Intenta de nuevo en un momento.',
+      );
+    });
     try {
       const page = await browser.newPage();
       await page.setContent(html, { waitUntil: 'networkidle' });
