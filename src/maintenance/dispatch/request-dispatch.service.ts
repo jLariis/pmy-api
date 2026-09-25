@@ -108,7 +108,11 @@ export class RequestDispatchService {
    * Manda la solicitud de cotización a cada proveedor elegido por su canal (o el predeterminado del
    * contacto). No se detiene si uno falla: regresa el resultado por proveedor y deja todo en bitácora.
    */
-  async sendRfq(requestId: string, dto: SendRfqDto, user: ScopeUser): Promise<RfqResult[]> {
+  /**
+   * `pdfs`: PDF ya generado por el front para cada proveedor (supplierId → archivo). Si falta, se intenta
+   * generar aquí (depende de Chromium en el servidor).
+   */
+  async sendRfq(requestId: string, dto: SendRfqDto, user: ScopeUser, pdfs: Record<string, Buffer> = {}): Promise<RfqResult[]> {
     if (!isPurchaser(user)) throw new ForbiddenException('Solo Compras pide cotizaciones.');
     const r = await this.loadRequest(requestId);
     if (!['abierta', 'en_cotizacion'].includes(r.status)) {
@@ -134,7 +138,9 @@ export class RequestDispatchService {
       try {
         if (!contact) throw new BadRequestException(`${supplier.name} no tiene contactos. Agrega uno en Catálogos → Proveedores.`);
         destination = resolveDestination(contact, channel);
-        const pdf = await this.renderRfq(r, supplier, contact, sender, dto.notes);
+        const pdf = pdfs[supplier.id]?.length
+          ? { buffer: pdfs[supplier.id], fileName: `Cotizacion-${r.folio}.pdf` }
+          : await this.renderRfq(r, supplier, contact, sender, dto.notes);
         if (channel === 'email') {
           emailLogId = await this.sendEmail(r, supplier, contact, destination, pdf, user, sender, company, dto.notes);
         } else {

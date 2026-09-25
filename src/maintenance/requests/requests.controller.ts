@@ -1,7 +1,10 @@
 import {
-  Body, Controller, Delete, Get, Param, Patch, Post, Put, Query, Req, Res, UploadedFile, UseGuards, UseInterceptors,
+  BadRequestException, Body, Controller, Delete, Get, Param, Patch, Post, Put, Query, Req, Res, UploadedFile, UploadedFiles, UseGuards, UseInterceptors,
 } from '@nestjs/common';
-import { FileInterceptor } from '@nestjs/platform-express';
+import { AnyFilesInterceptor, FileInterceptor } from '@nestjs/platform-express';
+import { plainToInstance } from 'class-transformer';
+import { validate } from 'class-validator';
+import { assertUploadedPdf } from '../dispatch/po-dispatch.service';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { Response } from 'express';
 import { PermissionsGuard } from 'src/auth/guards/permissions.guard';
@@ -170,8 +173,16 @@ export class RequestsController {
   /** Manda la solicitud de cotización a los proveedores elegidos; regresa el resultado por proveedor. */
   @Post(':id/rfq')
   @RequirePermission(MTTO.revisar)
-  sendRfq(@Param('id') id: string, @Body() dto: SendRfqDto, @Req() req: any) {
-    return this.dispatch.sendRfq(id, dto, req.user);
+  @UseInterceptors(AnyFilesInterceptor({ limits: { fileSize: 10 * 1024 * 1024, files: 30 } }))
+  async sendRfq(@Param('id') id: string, @Body() body: any, @UploadedFiles() files: Express.Multer.File[] | undefined, @Req() req: any) {
+    // JSON normal, o multipart con `payload` (JSON) + un PDF por proveedor en el campo `pdf_<supplierId>`.
+    const dto = await parseRfqBody(body);
+    const pdfs: Record<string, Buffer> = {};
+    for (const f of files ?? []) {
+      assertUploadedPdf(f);
+      if (f.fieldname.startsWith('pdf_')) pdfs[f.fieldname.slice(4)] = f.buffer;
+    }
+    return this.dispatch.sendRfq(id, dto, req.user, pdfs);
   }
 
   /** Bitácora de envíos de la solicitud de cotización. */
@@ -233,4 +244,19 @@ export class RequestsController {
   saveToCatalog(@Param('id') id: string, @Body() dto: SaveToCatalogDto, @Req() req: any) {
     return this.needs.saveToCatalog(id, dto, req.user);
   }
+}
+
+/** Cuerpo de "Pedir cotización": JSON, o multipart con el JSON en `payload`. Valida con los mensajes del DTO. */
+export async function parseRfqBody(body: any): Promise<SendRfqDto> {
+  let raw = body;
+  if (typeof body?.payload === 'string') {
+    try { raw = JSON.parse(body.payload); } catch { throw new BadRequestException('Datos de envío no válidos.'); }
+  }
+  const dto = plainToInstance(SendRfqDto, raw);
+  const errors = await validate(dto);
+  if (errors.length) {
+    const msgs = errors.flatMap((e) => [...Object.values(e.constraints ?? {}), ...(e.children ?? []).flatMap((ch) => ch.children?.flatMap((g) => Object.values(g.constraints ?? {})) ?? [])]);
+    throw new BadRequestException(msgs.length ? msgs : 'Datos de envío no válidos.');
+  }
+  return dto;
 }

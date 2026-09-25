@@ -1,4 +1,5 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Req, Res, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Req, Res, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { Response } from 'express';
 import { PermissionsGuard } from 'src/auth/guards/permissions.guard';
@@ -7,7 +8,7 @@ import { RequirePermission } from 'src/auth/decorators/require-permission.decora
 import { MTTO } from '../maintenance.permissions';
 import { assertSubsidiaryScope } from '../maintenance-scope.util';
 import { PurchaseOrdersService } from './purchase-orders.service';
-import { PoDispatchService } from '../dispatch/po-dispatch.service';
+import { assertUploadedPdf, PoDispatchService } from '../dispatch/po-dispatch.service';
 import { HistoryService } from '../schedule/history.service';
 import { AuthorizeDto, CancelDto, CompleteDto, ReasonDto, SendDto, UpdatePurchaseOrderDto } from './dto/purchase-order.dto';
 
@@ -90,12 +91,15 @@ export class PurchaseOrdersController {
     res.send(buffer);
   }
 
+  /** Envía la orden. Puede llegar como JSON o multipart con el PDF (`pdf`) ya generado por el front. */
   @Post('purchase-orders/:id/send')
   @RequirePermission(MTTO.ordenes, MTTO.autorizar)
-  async send(@Param('id') id: string, @Body() dto: SendDto, @Req() req: any) {
+  @UseInterceptors(FileInterceptor('pdf', { limits: { fileSize: 10 * 1024 * 1024 } }))
+  async send(@Param('id') id: string, @Body() dto: SendDto, @UploadedFile() pdf: Express.Multer.File | undefined, @Req() req: any) {
+    assertUploadedPdf(pdf);
     const po = await this.orders.findOne(id, req.user);
     const firstSend = po.status === 'autorizada';
-    await this.dispatch.send(po, req.user, dto);
+    await this.dispatch.send(po, req.user, dto, pdf ? { buffer: pdf.buffer } : undefined);
     if (firstSend) {
       await this.orders.notifyRequester(po.requestId, 'compras.solicitud_comprada', 'Ya se pidió lo de tu solicitud',
         `Se envió la orden ${po.folio} a ${po.supplier?.name ?? 'el proveedor'}.`, req.user);

@@ -17,6 +17,16 @@ import { mapPurchaseOrderToPdf } from './po-pdf.mapper';
 
 export const PO_EMAIL_MODULE = 'purchase_order';
 
+/** PDF ya generado (por el front) que se adjunta tal cual. */
+export interface ProvidedPdf { buffer: Buffer; fileName?: string }
+
+/** Valida un PDF subido: tipo y tamaño (máx. 10 MB). */
+export function assertUploadedPdf(file?: { mimetype?: string; size?: number; buffer?: Buffer } | null) {
+  if (!file) return;
+  if (file.mimetype !== 'application/pdf') throw new BadRequestException('El archivo adjunto debe ser un PDF.');
+  if ((file.size ?? file.buffer?.length ?? 0) > 10 * 1024 * 1024) throw new BadRequestException('El PDF excede 10 MB.');
+}
+
 const escapeHtml = (s: string) => s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
 const money = (n: number) => new Intl.NumberFormat('es-MX', { style: 'currency', currency: 'MXN' }).format(Number(n || 0));
 
@@ -61,7 +71,7 @@ export class PoDispatchService {
    * Envía la orden AUTORIZADA (o reenvía una ENVIADA) por el canal elegido o el predeterminado del
    * contacto. Solo si el envío sale bien la orden pasa a "enviada"; si falla queda como estaba.
    */
-  async send(po: PurchaseOrder, user: ScopeUser, opts: { channel?: ContactChannel; contactId?: string } = {}) {
+  async send(po: PurchaseOrder, user: ScopeUser, opts: { channel?: ContactChannel; contactId?: string } = {}, provided?: ProvidedPdf) {
     if (po.status !== 'autorizada' && po.status !== 'enviada') {
       throw new BadRequestException('Solo se envían órdenes autorizadas.');
     }
@@ -71,7 +81,10 @@ export class PoDispatchService {
     if (opts.contactId && !contact) throw new BadRequestException('El contacto no pertenece al proveedor de la orden.');
     const channel: ContactChannel = opts.channel ?? contact?.preferredChannel ?? 'email';
     const destination = resolveDestination(contact, channel);
-    const { buffer, fileName } = await this.renderPdf(po);
+    // El PDF lo genera el front (no depende de Chromium en el servidor); si no llega, se intenta aquí.
+    const { buffer, fileName } = provided?.buffer?.length
+      ? { buffer: provided.buffer, fileName: `${po.folio}.pdf` }
+      : await this.renderPdf(po);
     const sentByName = userDisplayName(user);
 
     let emailLogId: string | null = null;

@@ -1,5 +1,5 @@
 import { BadRequestException } from '@nestjs/common';
-import { PoDispatchService, resolveDestination } from './po-dispatch.service';
+import { assertUploadedPdf, PoDispatchService, resolveDestination } from './po-dispatch.service';
 
 const contactEmail = { id: 'c1', name: 'Juan', email: 'juan@taller.com', phone: '6621234567', whatsapp: null, preferredChannel: 'email', isDefault: true };
 const contactWa = { id: 'c2', name: 'Ana', email: null, phone: null, whatsapp: '(662) 765-4321', preferredChannel: 'whatsapp', isDefault: false };
@@ -34,7 +34,7 @@ function make(opts: { mailFails?: boolean; waFails?: boolean } = {}) {
     sendText: jest.fn(async () => ({ ok: true })),
   };
   const svc = new PoDispatchService(orders, dispatches, templates, branding, mail, emailLog, whatsapp);
-  return { svc, saved, orders, mail, emailLog, whatsapp };
+  return { svc, saved, orders, mail, emailLog, whatsapp, templates };
 }
 
 const user = { userId: 'u1', name: 'Laura', role: 'admin' };
@@ -75,5 +75,21 @@ describe('PoDispatchService.send', () => {
     const { svc, emailLog } = make({ mailFails: true });
     await expect(svc.send(order() as any, user)).rejects.toBeInstanceOf(BadRequestException);
     expect(emailLog.record).toHaveBeenCalledWith(expect.objectContaining({ status: 'error' }));
+  });
+});
+
+describe('PDF generado por el front', () => {
+  it('si llega el PDF, se adjunta tal cual y no se genera en el servidor', async () => {
+    const { svc, mail, templates } = make();
+    const front = Buffer.from('%PDF-front');
+    await svc.send(order() as any, user, {}, { buffer: front });
+    expect(templates.render).not.toHaveBeenCalled();
+    expect(mail.sendPurchaseOrderEmail).toHaveBeenCalledWith(expect.objectContaining({ attachments: [{ filename: 'OC-000001.pdf', content: front }] }));
+  });
+
+  it('valida que el archivo subido sea PDF y de máx. 10 MB', () => {
+    expect(() => assertUploadedPdf({ mimetype: 'image/png', size: 10 })).toThrow(/debe ser un PDF/);
+    expect(() => assertUploadedPdf({ mimetype: 'application/pdf', size: 11 * 1024 * 1024 })).toThrow(/10 MB/);
+    expect(() => assertUploadedPdf(undefined)).not.toThrow();
   });
 });

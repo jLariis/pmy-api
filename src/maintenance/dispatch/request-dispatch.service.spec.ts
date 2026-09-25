@@ -1,5 +1,6 @@
 import { BadRequestException, ForbiddenException } from '@nestjs/common';
 import { RequestDispatchService } from './request-dispatch.service';
+import { parseRfqBody } from '../requests/requests.controller';
 
 const gerardo = { userId: 'g1', role: 'admin', permissions: ['mttoVehiculos.revisar'] };
 
@@ -22,7 +23,7 @@ function make(opts: { status?: string; whatsappFails?: boolean } = {}) {
   const emailLog: any = { persistAttachments: jest.fn(), record: jest.fn(async () => ({ id: 'log1' })) };
   const whatsapp: any = { sendDocument: jest.fn(async () => { if (opts.whatsappFails) throw new Error('WhatsApp desconectado'); }) };
   const svc = new RequestDispatchService(requests, dispatches, suppliers, users, {} as any, templates, branding, mail, emailLog, whatsapp);
-  return { svc, saved, mail, whatsapp };
+  return { svc, saved, mail, whatsapp, templates };
 }
 
 describe('RequestDispatchService.sendRfq', () => {
@@ -48,5 +49,24 @@ describe('RequestDispatchService.sendRfq', () => {
     await expect(make().svc.sendRfq('r1', { targets: [{ supplierId: 'sA' }] }, { userId: 'x', permissions: [] })).rejects.toBeInstanceOf(ForbiddenException);
     await expect(make({ status: 'por_revisar' }).svc.sendRfq('r1', { targets: [{ supplierId: 'sA' }] }, gerardo)).rejects.toThrow(/autoriza la solicitud/);
     await expect(make({ status: 'completada' }).svc.sendRfq('r1', { targets: [{ supplierId: 'sA' }] }, gerardo)).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('usa el PDF que generó el front para cada proveedor (sin Chromium en el servidor)', async () => {
+    const { svc, templates, mail } = make();
+    const pdfA = Buffer.from('%PDF-A');
+    await svc.sendRfq('r1', { targets: [{ supplierId: 'sA' }] }, gerardo, { sA: pdfA });
+    expect(templates.render).not.toHaveBeenCalled();
+    expect(mail.sendPurchaseOrderEmail).toHaveBeenCalledWith(expect.objectContaining({ attachments: [{ filename: 'Cotizacion-SOL-000001.pdf', content: pdfA }] }));
+  });
+});
+
+describe('parseRfqBody', () => {
+  it('acepta JSON o multipart con payload, y valida en llano', async () => {
+    const a = await parseRfqBody({ targets: [{ supplierId: '0e4f8b0e-2f7c-4b8f-9d1a-3c5e6f7a8b9c' }] });
+    expect(a.targets).toHaveLength(1);
+    const b = await parseRfqBody({ payload: JSON.stringify({ targets: [{ supplierId: '0e4f8b0e-2f7c-4b8f-9d1a-3c5e6f7a8b9c' }], notes: 'hola' }) });
+    expect(b.notes).toBe('hola');
+    await expect(parseRfqBody({ payload: '{mal' })).rejects.toThrow(/no válidos/);
+    await expect(parseRfqBody({ targets: [] })).rejects.toThrow();
   });
 });
