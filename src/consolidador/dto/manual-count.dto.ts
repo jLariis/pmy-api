@@ -30,6 +30,11 @@ export class ManualCountDto {
   @ArrayMaxSize(MAX_PER_LIST, { message: `Máximo ${MAX_PER_LIST} guías en DEX08.` })
   @IsString({ each: true, message: 'Cada guía de DEX08 debe ser texto.' })
   dex08: string[];
+
+  /** 'day' (default) revisa un día; 'week' revisa lunes–domingo de la semana de la fecha. */
+  @IsOptional()
+  @IsIn(['day', 'week'], { message: 'La revisión debe ser por día o por semana.' })
+  scope?: 'day' | 'week';
 }
 
 export class ManualCountPromptDto extends ManualCountDto {

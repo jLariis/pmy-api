@@ -9,13 +9,15 @@ import { extractFedexDayOutcome, selectLatestGeneration } from '../logic/fedex-d
 import { diagnoseGuide, summarize } from '../logic/manual-count-diagnose.util';
 import { pickShipmentRowForDay } from '../logic/manual-count-facts.util';
 import { buildManualCountPrompt } from '../logic/manual-count-prompt.util';
+import { assignWeekMarks, weekDaysOf } from '../logic/manual-count-week.util';
 import {
   Cause,
   DayOutcome,
-  FedexLive,
+  DiagnosisRow,
   GuideFacts,
   IncomeRef,
   ManualCountReport,
+  ManualCountScope,
   ManualLists,
   Mark,
   RouteRef,
@@ -61,13 +63,19 @@ export class ManualCountService {
     return { done: tns.length, failed };
   }
 
-  async diagnose(subsidiaryId: string, day: string, lists: ManualLists): Promise<ManualCountReport> {
+  async diagnose(subsidiaryId: string, day: string, lists: ManualLists, scope: ManualCountScope = 'day'): Promise<ManualCountReport> {
     if (!DAY_RE.test(day)) throw new BadRequestException('La fecha debe tener el formato AAAA-MM-DD.');
+    const days = scope === 'week' ? weekDaysOf(day) : [day];
 
-    const manual = new Map<string, Mark>();
-    // Si una guía viene en varias cajas, gana la última (POD < 07 < 08); el front ya avisa.
+    // Por día, si una guía viene en varias cajas gana la última (POD < 07 < 08); el front ya avisa.
+    // Por semana una guía puede traer varias marcas (p. ej. DEX08 el lunes y POD el viernes).
+    const manual = new Map<string, Set<Mark>>();
     for (const [mark, list] of [['POD', lists.pod], ['07', lists.dex07], ['08', lists.dex08]] as [Mark, string[]][]) {
-      for (const tn of clean(list)) manual.set(tn, mark);
+      for (const tn of clean(list)) {
+        const set = scope === 'week' ? manual.get(tn) ?? new Set<Mark>() : new Set<Mark>();
+        set.add(mark);
+        manual.set(tn, set);
+      }
     }
 
     const subRow = await this.dataSource.query(`SELECT name, fedexCostPackage FROM subsidiary WHERE id = ? LIMIT 1`, [subsidiaryId]);
@@ -75,45 +83,56 @@ export class ManualCountService {
     const subsidiaryName: string | null = subRow[0].name ?? null;
     const expectedCost = Number(subRow[0].fedexCostPackage ?? 0);
 
-    const universe = new Set<string>([...manual.keys(), ...(await this.systemUniverse(subsidiaryId, day))]);
+    const universe = new Set<string>([...manual.keys(), ...(await this.systemUniverse(subsidiaryId, days[0], days[days.length - 1]))]);
     const tns = [...universe];
-    const facts = await this.loadFacts(subsidiaryId, day, tns);
-
-    await this.ensureFedex(tns.filter((tn) => facts.get(tn)?.kind));
-    let fedexFailures = 0;
-    for (const tn of tns) {
-      const f = facts.get(tn)!;
-      if (!f.kind) continue;
-      const c = this.cached(tn);
-      const live: FedexLive = c?.ok
-        ? extractFedexDayOutcome(selectLatestGeneration(c.results), day)
-        : { ok: false, outcome: null, outcomeAt: null, dex08Dates: [], lastCode: null, latestOutcome: null, deliveredDay: null };
-      if (!live.ok) fedexFailures++;
-      f.fedex = live;
-    }
 
     const resolver = await this.chargeRules.buildResolver(subsidiaryId);
-    const ctx = {
-      day,
-      subsidiaryId,
-      expectedCost,
-      isChargeable: (code: 'DELIVERED' | '07' | '08') => resolver.isChargeable('fedex', code === 'DELIVERED' ? DELIVERED_CODE : code) ?? true,
-    };
+    const isChargeable = (code: 'DELIVERED' | '07' | '08') => resolver.isChargeable('fedex', code === 'DELIVERED' ? DELIVERED_CODE : code) ?? true;
+
+    // Hechos por día (la fila vigente, los eventos y la bodega dependen del día) + FedEx una sola vez.
+    const factsByDay = new Map<string, Map<string, GuideFacts>>();
+    for (const d of days) factsByDay.set(d, await this.loadFacts(subsidiaryId, d, tns));
+    const firstFacts = factsByDay.get(days[0])!;
+    await this.ensureFedex(tns.filter((tn) => firstFacts.get(tn)?.kind));
+    let fedexFailures = 0;
+    for (const tn of tns) {
+      if (!firstFacts.get(tn)!.kind) continue;
+      const c = this.cached(tn);
+      if (!c?.ok) fedexFailures++;
+      for (const d of days) {
+        factsByDay.get(d)!.get(tn)!.fedex = c?.ok
+          ? extractFedexDayOutcome(selectLatestGeneration(c.results), d)
+          : { ok: false, outcome: null, outcomeAt: null, dex08Dates: [], lastCode: null, latestOutcome: null, deliveredDay: null };
+      }
+    }
 
     const isMark = (o: DayOutcome) => o === 'POD' || o === '07' || o === '08';
-    const rows = tns
+    const rows: DiagnosisRow[] = [];
+    for (const tn of tns) {
+      const marks = manual.get(tn);
       // Cargas F2 se cuentan aparte (por carga): solo entran si el usuario las contó.
-      .filter((tn) => manual.has(tn) || facts.get(tn)!.kind !== 'charge')
-      .map((tn) => diagnoseGuide(manual.get(tn) ?? null, facts.get(tn)!, ctx))
-      // Del universo del sistema solo interesan las guías con algo que comparar.
-      .filter((r) => r.manual || r.charged.length || isMark(r.fedexSays) || (!r.fedexSays && isMark(r.systemSays)))
-      .sort((a, b) => a.trackingNumber.localeCompare(b.trackingNumber));
+      if (!marks && firstFacts.get(tn)!.kind === 'charge') continue;
+      const ctxOf = (d: string) => ({ day: d, subsidiaryId, expectedCost, isChargeable });
+      // Diagnóstico sin conteo de cada día → decide a qué día va cada marca del usuario.
+      const blank = days.map((d) => ({ day: d, row: diagnoseGuide(null, factsByDay.get(d)!.get(tn)!, ctxOf(d)) }));
+      const assigned = marks ? (scope === 'week' ? assignWeekMarks(marks, blank) : new Map([[day, [...marks][0]]])) : new Map<string, Mark>();
+      for (const { day: d, row } of blank) {
+        const m = assigned.get(d);
+        const r = m ? diagnoseGuide(m, factsByDay.get(d)!.get(tn)!, ctxOf(d)) : row;
+        // Del universo del sistema solo interesan las guías con algo que comparar.
+        if (r.manual || r.charged.length || isMark(r.fedexSays) || (!r.fedexSays && isMark(r.systemSays))) rows.push({ ...r, day: d });
+      }
+    }
+    rows.sort((a, b) => a.day!.localeCompare(b.day!) || a.trackingNumber.localeCompare(b.trackingNumber));
 
-    return { subsidiaryId, subsidiaryName, day, fedexFailures, totals: summarize(rows), rows };
+    return {
+      subsidiaryId, subsidiaryName, day: days[0], scope, from: days[0], to: days[days.length - 1],
+      fedexFailures, totals: summarize(rows), rows,
+    };
   }
 
-  async prompt(subsidiaryId: string, day: string, lists: ManualLists, causes: Cause[] | undefined): Promise<{ prompt: string }> {
-    const report = await this.diagnose(subsidiaryId, day, lists);
+  async prompt(subsidiaryId: string, day: string, lists: ManualLists, causes: Cause[] | undefined, scope: ManualCountScope = 'day'): Promise<{ prompt: string }> {
+    const report = await this.diagnose(subsidiaryId, day, lists, scope);
     const present = [...new Set(report.rows.filter((r) => r.verdict === 'ERROR_SISTEMA' && r.cause).map((r) => r.cause!))];
     return { prompt: buildManualCountPrompt({ report, causes: causes?.length ? causes : present }) };
   }
@@ -126,9 +145,10 @@ export class ManualCountService {
     return { start, end: new Date(start.getTime() + 24 * 3600 * 1000) };
   }
 
-  /** Guías del sistema con ingreso, desenlace o ruta ese día en la sucursal. */
-  private async systemUniverse(subsidiaryId: string, day: string): Promise<string[]> {
-    const { start, end } = this.dayWindow(day);
+  /** Guías del sistema con ingreso, desenlace o ruta en esos días (fromDay..toDay) en la sucursal. */
+  private async systemUniverse(subsidiaryId: string, fromDay: string, toDay: string): Promise<string[]> {
+    const { start } = this.dayWindow(fromDay);
+    const { end } = this.dayWindow(toDay);
     const rows = await this.dataSource.query(
       `SELECT i.trackingNumber AS tn FROM income i
         WHERE i.subsidiaryId = ? AND i.active = 1 AND i.sourceType = 'shipment' AND i.shipmentType = 'fedex'
@@ -145,8 +165,8 @@ export class ManualCountService {
          JOIN package_dispatch_history h ON h.dispatchId = pd.id
          LEFT JOIN shipment s ON s.id = h.shipmentId
          LEFT JOIN charge_shipment cs ON cs.id = h.chargeShipmentId
-        WHERE pd.subsidiaryId = ? AND pd.routeDate = ?`,
-      [subsidiaryId, start, end, subsidiaryId, start, end, subsidiaryId, start, end, subsidiaryId, day],
+        WHERE pd.subsidiaryId = ? AND pd.routeDate >= ? AND pd.routeDate <= ?`,
+      [subsidiaryId, start, end, subsidiaryId, start, end, subsidiaryId, start, end, subsidiaryId, fromDay, toDay],
     );
     return rows.map((r: any) => r.tn).filter(Boolean).map(String);
   }

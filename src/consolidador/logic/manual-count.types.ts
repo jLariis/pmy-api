@@ -112,7 +112,12 @@ export interface DiagnosisRow {
   incomeIds: string[];
   /** Envío vigente de la guía (para "Generar cobro"); null en cargas F2 o si no existe. */
   shipmentId: string | null;
+  /** Día diagnosticado (en la revisión por semana una guía puede salir en varios días). */
+  day?: string;
 }
+
+/** Revisión por día (un día) o por semana (lunes–domingo, el conteo de toda la semana junto). */
+export type ManualCountScope = 'day' | 'week';
 
 export interface ManualCountTotals {
   manual: Record<Mark, number>;
@@ -124,7 +129,10 @@ export interface ManualCountTotals {
 export interface ManualCountReport {
   subsidiaryId: string;
   subsidiaryName: string | null;
-  day: string;
+  day: string; // por semana: el lunes
+  scope?: ManualCountScope;
+  from?: string; // por semana: lunes
+  to?: string; // por semana: domingo
   fedexFailures: number;
   totals: ManualCountTotals;
   rows: DiagnosisRow[];

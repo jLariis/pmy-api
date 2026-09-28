@@ -55,14 +55,14 @@ export class ConsolidadorController {
   @Post(':subsidiaryId/:day/manual-count')
   manualCountDiagnose(@Param('subsidiaryId') subsidiaryId: string, @Param('day') day: string, @Body() dto: ManualCountDto, @Req() req: any) {
     this.assertSuperadmin(req);
-    return this.manualCount.diagnose(subsidiaryId, day, dto);
+    return this.manualCount.diagnose(subsidiaryId, day, dto, dto.scope ?? 'day');
   }
 
   /** Conteo manual: prompt para corregir en Claude Code los errores del sistema encontrados. */
   @Post(':subsidiaryId/:day/manual-count/prompt')
   manualCountPrompt(@Param('subsidiaryId') subsidiaryId: string, @Param('day') day: string, @Body() dto: ManualCountPromptDto, @Req() req: any) {
     this.assertSuperadmin(req);
-    return this.manualCount.prompt(subsidiaryId, day, dto, dto.causes as Cause[] | undefined);
+    return this.manualCount.prompt(subsidiaryId, day, dto, dto.causes as Cause[] | undefined, dto.scope ?? 'day');
   }
 
   /** Ingresos con anomalías de la semana (panel de revisión). */

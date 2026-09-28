@@ -108,7 +108,7 @@ function exampleLine(r: DiagnosisRow): string {
   const broken = r.chain.filter((s) => s.ok === false && s.step !== 8).map((s) => `${s.label}: ${s.detail}`).join(' · ');
   const sub = r.subCause && !r.explanation.toLowerCase().includes(r.subCause.toLowerCase()) ? ` (${r.subCause})` : '';
   return [
-    `- \`${r.trackingNumber}\` — contó ${r.manual ? MARK_LABEL[r.manual] : 'nada'}, FedEx ${r.fedexLabel}, sistema ${r.systemLabel}, cobrado ${r.charged.map((m) => MARK_LABEL[m]).join('+') || 'nada'}.`,
+    `- \`${r.trackingNumber}\`${r.day ? ` (${r.day})` : ''} — contó ${r.manual ? MARK_LABEL[r.manual] : 'nada'}, FedEx ${r.fedexLabel}, sistema ${r.systemLabel}, cobrado ${r.charged.map((m) => MARK_LABEL[m]).join('+') || 'nada'}.`,
     `  ${r.explanation}${sub}${broken ? `\n  Eslabones rotos: ${broken}` : ''}${r.incomeIds.length ? `\n  income.id: ${r.incomeIds.join(', ')}` : ''}`,
   ].join('\n');
 }
@@ -121,14 +121,16 @@ export function buildManualCountPrompt(input: { report: ManualCountReport; cause
     .filter((s) => s.rows.length > 0);
 
   const out: string[] = [];
-  out.push(`# Corregir descuadres de cobro — ${report.subsidiaryName ?? report.subsidiaryId} · ${report.day}`);
+  const isWeek = report.scope === 'week';
+  const period = isWeek ? `semana ${report.from} a ${report.to}` : report.day;
+  out.push(`# Corregir descuadres de cobro — ${report.subsidiaryName ?? report.subsidiaryId} · ${period}`);
   out.push('');
   out.push('Actúa como developer senior fullstack en pmy-api (NestJS + TypeORM, MySQL) y app-pmy (Next.js).');
   out.push('El conteo manual de paquetes de la sucursal no cuadra con el sistema. La herramienta "Conteo manual vs sistema" del Consolidador comparó cada guía contra FedEx en vivo, las rutas, los consolidados y los ingresos, y encontró estos **errores del sistema**. Encuentra la causa raíz en el código y corrígela.');
   out.push('');
   out.push('## Contexto');
   out.push(`- Sucursal: ${report.subsidiaryName ?? '—'} (\`${report.subsidiaryId}\`)`);
-  out.push(`- Día (local Hermosillo): ${report.day}`);
+  out.push(isWeek ? `- Semana (local Hermosillo, lunes–domingo): ${report.from} a ${report.to}` : `- Día (local Hermosillo): ${report.day}`);
   if (report.fedexFailures) out.push(`- FedEx no respondió para ${report.fedexFailures} guía(s); en esas se usó el estatus del sistema.`);
   out.push('');
   out.push('| | POD | DEX07 | DEX08 |');
