@@ -4,6 +4,7 @@ import { UpdateUnloadingDto } from './dto/update-unloading.dto';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Unloading } from 'src/entities/unloading.entity';
 import { Between, DataSource, In, MoreThanOrEqual, Not, Repository } from 'typeorm';
+import { pickScanCandidate } from 'src/common/scan-candidate.util';
 import { PaginatedResult, parsePagination, resolveDateRange } from 'src/common/pagination.util';
 import { Charge, ChargeShipment, Consolidated, Shipment, ShipmentStatus } from 'src/entities';
 import { ValidatedPackageDispatchDto } from 'src/package-dispatch/dto/validated-package-dispatch.dto';
@@ -1960,11 +1961,12 @@ export class UnloadingService {
       return map;
     };
 
-    // 2️⃣ Validar el trackingNumber recibido
-    if (shipment) {
+    // 2️⃣ Validar el trackingNumber recibido (entre shipment y carga gana el más reciente)
+    const pick = pickScanCandidate(shipment, chargeShipment);
+    if (pick?.kind === 'shipment') {
       const validated = await this.validatePackageResp({ ...shipment, isValid: false }, subsidiaryId);
       validatedShipments.push(validated);
-    } else if (chargeShipment) {
+    } else if (pick?.kind === 'charge') {
       const validatedCharge = await this.validatePackageResp({ ...chargeShipment, isValid: false }, subsidiaryId);
       validatedShipments.push({ ...validatedCharge, isCharge: true });
     } else {

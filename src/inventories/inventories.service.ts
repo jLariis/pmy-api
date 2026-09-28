@@ -3,6 +3,7 @@ import { CreateInventoryDto } from './dto/create-inventory.dto';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Inventory } from 'src/entities/inventory.entity';
 import { Between, DataSource, In, Not, Repository } from 'typeorm';
+import { pickScanCandidate } from 'src/common/scan-candidate.util';
 import { PaginatedResult, parsePagination, resolveDateRange } from 'src/common/pagination.util';
 import { ChargeShipment, Consolidated, Shipment, ShipmentStatus, Subsidiary } from 'src/entities';
 import { ValidatedPackageDispatchDto } from 'src/package-dispatch/dto/validated-package-dispatch.dto';
@@ -215,25 +216,31 @@ export class InventoriesService {
     trackingNumber: string,
     subsidiaryId?: string
   ): Promise<ValidatedPackageDispatchDto & { isCharge?: boolean; consolidated?: Consolidated }> {
-    const shipment = await this.shipmentRepository.findOne({
-      where: { 
-        trackingNumber,
-        status: Not(ShipmentStatusType.DEVUELTO_A_FEDEX) 
-      },
-      relations: ['subsidiary', 'statusHistory', 'payment'],
-      order: { createdAt: 'DESC' }
-    });
-
-
-    if (!shipment) {
-      const chargeShipment = await this.chargeShipmentRepository.findOne({
-        where: { 
+    const [liveShipment, liveCharge] = await Promise.all([
+      this.shipmentRepository.findOne({
+        where: {
           trackingNumber,
-          status: Not(ShipmentStatusType.DEVUELTO_A_FEDEX) 
+          status: Not(ShipmentStatusType.DEVUELTO_A_FEDEX)
+        },
+        relations: ['subsidiary', 'statusHistory', 'payment'],
+        order: { createdAt: 'DESC' }
+      }),
+      this.chargeShipmentRepository.findOne({
+        where: {
+          trackingNumber,
+          status: Not(ShipmentStatusType.DEVUELTO_A_FEDEX)
         },
         relations: ['subsidiary', 'charge', 'payment'],
         order: { createdAt: 'DESC' }
-      });
+      }),
+    ]);
+
+    // Entre shipment y carga gana el registro más reciente (no siempre el shipment).
+    const pick = pickScanCandidate(liveShipment, liveCharge);
+    const shipment = pick?.kind === 'shipment' ? pick.record : null;
+
+    if (!shipment) {
+      const chargeShipment = pick?.kind === 'charge' ? pick.record : null;
 
       if (!chargeShipment) {
       // Retornar DTO mínimo con un mensaje indicando el motivo

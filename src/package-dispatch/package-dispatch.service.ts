@@ -5,6 +5,7 @@ import { UpdatePackageDispatchDto } from './dto/update-package-dispatch.dto';
 import { InjectRepository } from '@nestjs/typeorm';
 import { PackageDispatch } from 'src/entities/package-dispatch.entity';
 import { Between, DataSource, In, Not, Repository } from 'typeorm';
+import { pickScanCandidate } from '../common/scan-candidate.util';
 import { differenceInCalendarDays } from 'date-fns';
 import { LD_QUALIFYING_SQL_IN } from 'src/common/ld-codes';
 import { Shipment, ChargeShipment, Consolidated, ShipmentStatus, Subsidiary } from 'src/entities';
@@ -158,6 +159,17 @@ export class PackageDispatchService {
 
       if (stillMissing.length > 0) {
         throw new BadRequestException(`No se encontraron los IDs: ${stillMissing.join(', ')}`);
+      }
+
+      // Un registro devuelto a FedEx no se "revive" (pasarlo a en_ruta lo vuelve a
+      // meter al cron). Si la guía regresó, trae un registro nuevo.
+      const returned = [...shipments, ...chargeShipments]
+        .filter(s => s.status === ShipmentStatusType.DEVUELTO_A_FEDEX)
+        .map(s => s.trackingNumber);
+      if (returned.length > 0) {
+        throw new BadRequestException(
+          `Estas guías ya fueron devueltas a FedEx y no pueden salir a ruta: ${returned.join(', ')}. Vuelve a escanearlas para tomar su registro nuevo.`,
+        );
       }
 
       // 2. Crear y Guardar el Despacho primero
@@ -349,20 +361,45 @@ export class PackageDispatchService {
       { trackingNumber: tn }
     ]);
 
-    // 3. Buscar en shipmentRepository
-    const shipment = await this.shipmentRepository.findOne({
-      where: findConditions,
-      relations: ['subsidiary', 'statusHistory', 'payment'],
-      order: { createdAt: 'DESC' }
-    });
-
-    if (!shipment) {
-      // 4. Si no está en shipments, buscar en chargeShipmentRepository
-      const chargeShipment = await this.chargeShipmentRepository.findOne({
-        where: findConditionsCharge,
+    // 3. Buscar el registro vivo más reciente en AMBAS tablas. Un registro
+    // DEVUELTO_A_FEDEX nunca sale a ruta: si la guía regresó, lo hizo con un
+    // registro nuevo (otro consolidado u otra carga) y es ese el que va.
+    const notReturned = Not(ShipmentStatusType.DEVUELTO_A_FEDEX);
+    const [liveShipment, liveCharge] = await Promise.all([
+      this.shipmentRepository.findOne({
+        where: findConditions.map(c => ({ ...c, status: notReturned })),
+        relations: ['subsidiary', 'statusHistory', 'payment'],
+        order: { createdAt: 'DESC' }
+      }),
+      this.chargeShipmentRepository.findOne({
+        where: findConditionsCharge.map(c => ({ ...c, status: notReturned })),
         relations: ['subsidiary', 'charge', 'payment'],
         order: { createdAt: 'DESC' }
-      });
+      }),
+    ]);
+
+    let pick = pickScanCandidate(liveShipment, liveCharge);
+    if (!pick) {
+      // Sin registros vivos: ¿existe pero ya fue devuelto a FedEx?
+      const returned =
+        (await this.shipmentRepository.findOne({ where: findConditions, relations: ['subsidiary'], order: { createdAt: 'DESC' } })) ??
+        (await this.chargeShipmentRepository.findOne({ where: findConditionsCharge, relations: ['subsidiary'], order: { createdAt: 'DESC' } }));
+      pick = pickScanCandidate(returned as any, null);
+    }
+
+    if (pick?.kind === 'returned') {
+      return {
+        ...(pick.record as any),
+        isValid: false,
+        reason: 'La guía ya fue devuelta a FedEx. Solo puede volver a salir si llega en un nuevo consolidado o carga.',
+      };
+    }
+
+    const shipment = pick?.kind === 'shipment' ? pick.record : null;
+
+    if (!shipment) {
+      // 4. La guía vive (más reciente) como pieza de carga
+      const chargeShipment = pick?.kind === 'charge' ? pick.record : null;
 
       if (!chargeShipment) {
         // 5. Recurrir a FedEx si no existe en ninguna base de datos

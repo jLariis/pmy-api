@@ -17,7 +17,8 @@ import {
   WarehouseOutbound,
   WarehouseReceiving,
 } from 'src/entities';
-import { Between, DataSource, In, QueryRunner, Repository } from 'typeorm';
+import { Between, DataSource, In, Not, QueryRunner, Repository } from 'typeorm';
+import { pickScanCandidate } from 'src/common/scan-candidate.util';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ScannedShipment } from './dto/scanned-shipment.dto';
 import { PaymentTypeEnum } from 'src/common/enums/payment-type.enum';
@@ -426,10 +427,14 @@ export class WarehouseService {
       chargeWhereConditions.push({ trackingNumber: alternateTrackingNumber });
     }
 
+    // Un registro DEVUELTO_A_FEDEX no se vuelve a operar: si la guía regresó,
+    // trae un registro nuevo (otro consolidado u otra carga) y es ese el que va.
+    const notReturned = Not(ShipmentStatusType.DEVUELTO_A_FEDEX);
+
     // 1. Buscamos en ambas tablas simultáneamente e incluimos la relación 'payment'
-    const [shipment, chargeShipment] = await Promise.all([
+    const [liveShipment, liveCharge] = await Promise.all([
       this.shipmentRepository.findOne({
-        where: shipmentWhereConditions,
+        where: shipmentWhereConditions.map((c) => ({ ...c, status: notReturned })),
         select: {
           id: true,
           trackingNumber: true,
@@ -456,7 +461,7 @@ export class WarehouseService {
       }),
 
       this.chargeShipmentRepository.findOne({
-        where: chargeWhereConditions,
+        where: chargeWhereConditions.map((c) => ({ ...c, status: notReturned })),
         select: {
           id: true,
           trackingNumber: true,
@@ -479,10 +484,24 @@ export class WarehouseService {
       }),
     ]);
 
+    // Entre shipment y carga gana el registro más reciente (no siempre el shipment).
+    const pick = pickScanCandidate(liveShipment, liveCharge);
+    const shipment = pick?.kind === 'shipment' ? pick.record : null;
+    const chargeShipment = pick?.kind === 'charge' ? pick.record : null;
     const foundPackage = shipment || chargeShipment;
 
     // 2. Si no existe en la base de datos (ni el original ni la variante), retornamos error
     if (!foundPackage) {
+      const wasReturned =
+        (await this.shipmentRepository.count({ where: shipmentWhereConditions })) > 0 ||
+        (await this.chargeShipmentRepository.count({ where: chargeWhereConditions })) > 0;
+      if (wasReturned) {
+        return {
+          trackingNumber,
+          isValid: false,
+          reason: 'La guía ya fue devuelta a FedEx. Solo puede volver a entrar con un nuevo consolidado o carga.',
+        };
+      }
       return {
         trackingNumber,
         isValid: false,
