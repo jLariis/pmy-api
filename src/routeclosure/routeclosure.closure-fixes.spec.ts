@@ -279,6 +279,8 @@ describe('RouteclosureService.reconcileRouteWithFedex — (3) revalidación FedE
     expect(updatedIncomes).toHaveLength(0); // el DEX se conserva
     expect(savedIncomes).toHaveLength(1);
     expect(savedIncomes[0].incomeType).toBe(IncomeStatus.ENTREGADO);
+    // Con evento FedEx el ingreso lleva su hora exacta (no la medianoche del día).
+    expect(new Date(savedIncomes[0].date).toISOString()).toBe('2026-08-13T20:00:00.000Z');
   });
 
   it('RESCATE: guía EN_RUTA pegada → el resolver la funde a RECHAZADO y le genera su ingreso', async () => {

@@ -189,7 +189,9 @@ export class RouteclosureService {
           ? new Date(o.eventAt)
           : (dispatch.routeDate ?? dispatch.createdAt ?? new Date());
         const deliveryDay = toHermosilloDateString(instant);
-        const incomeDate = hermosilloDayStartFromInstant(instant);
+        // Con evento FedEx se guarda su hora EXACTA (igual que el cron y el motor nuevo); solo
+        // sin evento se ancla al inicio del día de la ruta (07:00Z = 00:00 Hermosillo).
+        const incomeDate = o.eventAt ? instant : hermosilloDayStartFromInstant(instant);
 
         const existingRows = await incomeRepo.find({
           where: { trackingNumber: o.trackingNumber, sourceType: IncomeSourceType.SHIPMENT },
