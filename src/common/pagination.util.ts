@@ -83,3 +83,26 @@ export function resolveDateRange(from?: string, to?: string, now: Date = new Dat
   }
   return currentWeekRange(now);
 }
+
+function toDayString(d: Date): string {
+  return d.toISOString().slice(0, 10);
+}
+
+/**
+ * Igual que `resolveDateRange` pero como DÍAS calendario 'YYYY-MM-DD' (inclusive), para
+ * filtrar columnas que guardan el día operativo y no un instante (p. ej. `routeDate`,
+ * tipo DATE). Sin from/to válidos ⇒ semana en curso lun–dom de Hermosillo.
+ */
+export function resolveDayRange(from?: string, to?: string, now: Date = new Date()): { fromDay: string; toDay: string } {
+  if (from && to) {
+    const fromDay = toCalendarDay(from);
+    const toDay = toCalendarDay(to);
+    if (fromDay && toDay) return { fromDay: toDayString(fromDay), toDay: toDayString(toDay) };
+  }
+  const { start, end } = currentWeekRange(now);
+  // start = lunes 07:00Z (mismo día UTC); end = lunes siguiente 06:59Z ⇒ restar 7h da el domingo.
+  return {
+    fromDay: toDayString(start),
+    toDay: toDayString(new Date(end.getTime() - HERMOSILLO_OFFSET_HOURS * 60 * 60 * 1000)),
+  };
+}

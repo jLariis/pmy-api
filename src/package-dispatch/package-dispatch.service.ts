@@ -20,7 +20,7 @@ import { ShipmentsService } from 'src/shipments/shipments.service';
 import { PackageDispatchHistory } from 'src/entities/package-dispatch-history.entity';
 import { DateTime } from 'luxon';
 import * as ExcelJS from 'exceljs';
-import { PaginatedResult, parsePagination, resolveDateRange } from 'src/common/pagination.util';
+import { PaginatedResult, parsePagination, resolveDayRange } from 'src/common/pagination.util';
 import { TemplateService } from 'src/documents/template.service';
 import { buildRouteDispatchData, RouteDispatchInput, RouteDispatchPackage } from 'src/documents/data/route-dispatch.mapper';
 import { buildDriverReportData } from 'src/documents/data/driver-report.mapper';
@@ -39,6 +39,9 @@ export interface EmailActor {
   id?: string | null;
   name?: string | null;
 }
+
+/** Día operativo de una salida a ruta: `routeDate` o, si es null, el día Hermosillo de createdAt. */
+const ROUTE_DAY_SQL = "COALESCE(pd.routeDate, DATE(pd.createdAt - INTERVAL 7 HOUR))";
 
 @Injectable()
 export class PackageDispatchService {
@@ -597,15 +600,17 @@ export class PackageDispatchService {
       search?: string;
     } = {},
   ): Promise<PaginatedResult<any>> {
-    const { start, end } = resolveDateRange(opts.from, opts.to);
+    const { fromDay, toDay } = resolveDayRange(opts.from, opts.to);
     const { page, limit, skip } = parsePagination(opts.page, opts.limit);
     const search = (opts.search || '').trim();
 
-    // Filtros comunes (semana + búsqueda). No carga relaciones pesadas:
+    // Filtros comunes (semana + búsqueda). La semana se filtra por el DÍA DE LA RUTA
+    // (`routeDate`), no por cuándo se capturó: una ruta del lunes capturada el martes
+    // debe salir el lunes. Rutas viejas sin `routeDate` ⇒ día Hermosillo (UTC-7) de createdAt. No carga relaciones pesadas:
     // los paquetes se devuelven como conteo y el detalle se pide aparte por id.
     const applyFilters = <T extends import('typeorm').SelectQueryBuilder<PackageDispatch>>(qb: T): T => {
       qb.where('subsidiary.id = :subsidiaryId', { subsidiaryId })
-        .andWhere('pd.createdAt BETWEEN :start AND :end', { start, end })
+        .andWhere(`${ROUTE_DAY_SQL} BETWEEN :fromDay AND :toDay`, { fromDay, toDay })
         .andWhere('pd.active = :active', { active: true });
       if (search) qb.andWhere('pd.trackingNumber LIKE :search', { search: `%${search}%` });
       return qb;
@@ -628,6 +633,7 @@ export class PackageDispatchService {
         'pd.id',
         'pd.trackingNumber',
         'pd.status',
+        'pd.routeDate',
         'pd.createdAt',
         'pd.closedAt',
         'pd.emailStatus',
@@ -652,7 +658,8 @@ export class PackageDispatchService {
       .addGroupBy('subsidiary.id')
       .addGroupBy('routes.id')
       .addGroupBy('vehicle.id')
-      .orderBy('pd.createdAt', 'DESC')
+      .orderBy(ROUTE_DAY_SQL, 'DESC')
+      .addOrderBy('pd.createdAt', 'DESC')
       .offset(skip)
       .limit(limit)
       .getRawAndEntities();

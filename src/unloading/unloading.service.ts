@@ -2207,7 +2207,7 @@ export class UnloadingService {
       .createQueryBuilder('unloading')
       .leftJoin('unloading.subsidiary', 'subsidiary')
       .where('subsidiary.id = :subsidiaryId', { subsidiaryId })
-      .andWhere('unloading.createdAt BETWEEN :start AND :end', { start, end });
+      .andWhere('COALESCE(unloading.date, unloading.createdAt) BETWEEN :start AND :end', { start, end });
     if (search) countQb.andWhere('unloading.trackingNumber LIKE :search', { search: `%${search}%` });
     const total = await countQb.getCount();
 
@@ -2217,7 +2217,7 @@ export class UnloadingService {
       .leftJoin('unloading.shipments', 'shipments')
       .leftJoin('unloading.chargeShipments', 'chargeShipments')
       .where('subsidiary.id = :subsidiaryId', { subsidiaryId })
-      .andWhere('unloading.createdAt BETWEEN :start AND :end', { start, end });
+      .andWhere('COALESCE(unloading.date, unloading.createdAt) BETWEEN :start AND :end', { start, end });
     if (search) qb.andWhere('unloading.trackingNumber LIKE :search', { search: `%${search}%` });
     qb
       .select([

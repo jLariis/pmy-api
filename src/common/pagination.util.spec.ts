@@ -1,4 +1,4 @@
-import { currentWeekRange, resolveDateRange } from './pagination.util';
+import { currentWeekRange, resolveDateRange, resolveDayRange } from './pagination.util';
 
 describe('resolveDateRange (semana lun–dom, hora Hermosillo)', () => {
   it('from/to YYYY-MM-DD → 00:00 del lunes a 23:59:59.999 del domingo en Hermosillo', () => {
@@ -37,5 +37,17 @@ describe('currentWeekRange', () => {
     // 2026-10-05 00:30 Hermosillo = 2026-10-05T07:30Z
     const { start } = currentWeekRange(new Date('2026-10-05T07:30:00Z'));
     expect(start.toISOString()).toBe('2026-10-05T07:00:00.000Z');
+  });
+});
+
+describe('resolveDayRange (días calendario)', () => {
+  it('pasa from/to YYYY-MM-DD tal cual', () => {
+    expect(resolveDayRange('2026-09-28', '2026-10-04')).toEqual({ fromDay: '2026-09-28', toDay: '2026-10-04' });
+  });
+
+  it('sin from/to → lunes–domingo de la semana en curso (Hermosillo)', () => {
+    expect(resolveDayRange(undefined, undefined, new Date('2026-10-01T20:00:00Z'))).toEqual({ fromDay: '2026-09-28', toDay: '2026-10-04' });
+    // domingo 22:00 Hermosillo (lunes 05:00Z) sigue siendo su semana
+    expect(resolveDayRange(undefined, undefined, new Date('2026-10-05T05:00:00Z'))).toEqual({ fromDay: '2026-09-28', toDay: '2026-10-04' });
   });
 });
