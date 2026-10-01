@@ -50,7 +50,7 @@ El decisor recibe un **desenlace** de una guía (ENTREGADO o DEX con código, co
 1. **Carga F2 (charge_shipment)** → no cobra por guía (se cobra por carga, flujo aparte, no se toca).
 2. **Ruta 31.5** (la guía salió ese día en una ruta 31.5) → no cobra.
 3. **Entregado por FedEx** (005 u OD) **y NO salió en nuestra ruta ese día con nuestro consolidado** → no cobra. Si salió en nuestra ruta ese día → es nuestra entrega y cobra como ENTREGADO.
-4. **Devolución registrada** de la guía el mismo día o después → el ENTREGADO no cobra (y el existente se anula por el flujo de devoluciones, como hoy).
+4. **Devuelto a FedEx / Retorno abandono.** (a) Cualquier desenlace (entregado o DEX) con hora **posterior** a la devolución o al abandono → no cobra: la guía ya no es nuestra. (b) ENTREGADO con devolución el mismo día o después → no cobra (el existente lo anula el flujo de devoluciones, como hoy). (c) Un DEX **anterior** a la devolución (p. ej. 07 rechazado y luego devuelto) sigue las reglas normales.
 5. **Regla de cobro** `charge_rule` para (fedex, código): primero la de la sucursal, si no la general. `false` → no cobra. Sin regla → cobra (igual que hoy al leer). Código de ENTREGADO = `DELIVERED`.
 6. **DEX08** → solo cobra el evento que completa el **3er día distinto con 08 de SU semana** (Hermosillo, lun–dom). Los demás 08 no cobran.
 7. **Sin código** en un DEX → no cobra (hoy se colaban como "cuenta siempre").
@@ -66,6 +66,18 @@ El decisor recibe un **desenlace** de una guía (ENTREGADO o DEX con código, co
 **Excepción — alta manual del Consolidador:** pasa por el mismo decisor; si dice "no cobra", el superadmin ve el motivo y puede **forzar** con motivo obligatorio (queda en auditoría como `manual_override`).
 
 ---
+
+## Regla de estatus: Devuelto a FedEx y Retorno abandono no se rastrean
+
+Una fila de guía en **DEVUELTO_A_FEDEX** o **RETORNO_ABANDONO_FEDEX** (ambos estatus finales) sale por completo del rastreo FedEx: nadie la consulta ni le escribe estatus ni ingresos.
+
+- Todos los universos de rastreo la excluyen: cron legacy (`getShipmentsToValidate`), motor nuevo (`route-universe.service.ts`), barrida 05:00, y **también** las entradas por ruta/consolidado/salida (`applyByRoute`, `getShipmentsByPackageDispatchId`, `consolidated.service`, `pendings/update-one`, monitoreo, forense). Hoy los crons ya la excluyen por estatus, pero las entradas por ruta/consolidado/endpoint no.
+- Si FedEx trae resultados de un número de guía que tiene varias filas, **no se aplican a las filas devueltas** (solo a la fila vigente).
+- El escudo terminal deja de tener la excepción "ENTREGADO siempre gana" sobre DEVUELTO_A_FEDEX ni RETORNO_ABANDONO_FEDEX: una devuelta o abandonada no se vuelve entregada por FedEx.
+- Si la guía regresa en otro consolidado, es una **fila nueva** y se rastrea normal (ya lo resuelve `scan-candidate.util.ts`).
+- Único que la sigue viendo: pantallas de consulta/diagnóstico (conteo manual, trazabilidad), solo lectura.
+
+Datos locales (desde 2026-08-01, guías con devolución registrada): 165 filas quedaron en `entregado` y hay eventos guardados después de la devolución (74 en_ruta, 9 entregado, 11 retorno…); además hay ingresos creados después de la devolución (133 entregados, 83 DEX07, 30 DEX03, 20 DEX08…). Parte puede ser legítima (DEX previo a la devolución cerrado después); el reporte de la Fase 4 los separa.
 
 ## File Structure
 
@@ -184,6 +196,7 @@ export interface FedexIncomeFacts {
   routeDays: { day: string; is315: boolean }[]; // días Hermosillo de sus salidas a ruta
   hasConsolidado: boolean;
   returnedOnOrAfter: string | null;             // día de devolución más temprana ≥ día del desenlace
+  returnedAt?: Date | null;                     // instante en que la fila quedó DEVUELTO_A_FEDEX o RETORNO_ABANDONO_FEDEX
   dex08Dates: Date[];                           // todos los 08 conocidos (BD + FedEx)
   activeIncomes: { id: string; incomeType: string; nonDeliveryStatus: string | null; date: Date }[]; // misma guía, active=1
   cost: number;                                 // subsidiary.fedexCostPackage
@@ -234,6 +247,11 @@ describe('decideFedexIncome', () => {
   it('devolución el mismo día o después anula el entregado', () => {
     expect(decideFedexIncome(pod(), base({ returnedOnOrAfter: '2026-09-23' }))).toEqual({ action: 'skip', reason: 'DEVOLUCION' });
   });
+  it('nada posterior a la devolución cobra; un DEX anterior sí sigue las reglas', () => {
+    const returnedAt = new Date('2026-09-22T19:00:00Z');
+    expect(decideFedexIncome(dex('07', '2026-09-23T18:00:00Z'), base({ returnedAt, returnedOnOrAfter: '2026-09-22' }))).toEqual({ action: 'skip', reason: 'DEVOLUCION' });
+    expect(decideFedexIncome(dex('07', '2026-09-22T17:00:00Z'), base({ returnedAt, returnedOnOrAfter: '2026-09-22' })).action).toBe('create');
+  });
   it('charge_rule de la sucursal/general manda (DEX03 apagado)', () => {
     expect(decideFedexIncome(dex('03'), base({ isChargeable: (c) => (c === '03' ? false : undefined) }))).toEqual({ action: 'skip', reason: 'REGLA_NO_COBRA' });
     expect(decideFedexIncome(pod(), base({ isChargeable: (c) => (c === 'DELIVERED' ? false : undefined) }))).toEqual({ action: 'skip', reason: 'REGLA_NO_COBRA' });
@@ -281,6 +299,7 @@ export function decideFedexIncome(o: FedexOutcome, f: FedexIncomeFacts): FedexIn
   if (f.kind === 'charge') return skip('CARGA_F2');
   if (routeToday.some((r) => r.is315)) return skip('RUTA_315');
   if (o.kind === 'DELIVERED' && o.deliveredByFedex && !(routeToday.length && f.hasConsolidado)) return skip('ENTREGADO_POR_FEDEX');
+  if (f.returnedAt && o.at > f.returnedAt) return skip('DEVOLUCION');
   if (o.kind === 'DELIVERED' && f.returnedOnOrAfter && f.returnedOnOrAfter >= day) return skip('DEVOLUCION');
 
   const code = o.kind === 'DELIVERED' ? DELIVERED_CODE : String(o.code ?? '').trim();
@@ -399,6 +418,12 @@ Cada tarea: reemplazar la lógica local por `fedexIncome.apply([...], 'persist')
 - Create `src/tracking-sync/fedex-sync.facade.ts`: `syncShipments(shipmentIds, actor)` / `syncCharges(...)` → agrupa por sucursal: en cutover → `TrackingCompareService.applyMany`; si no → legacy `processMasterFedexUpdate`/`processChargeFedexUpdate`.
 - Todos los endpoints que hoy llaman legacy directo pasan por la fachada: `package-dispatch.service.ts:1552`, `pendings/update-one` (`:8306`), `backfill-44` (`:4206`), `consolidated.service`, monitoreo, `dev/run-tracking`.
 - Test: por sucursal se enruta al motor correcto. Commit.
+
+### Task 10b: Devuelto a FedEx fuera del rastreo
+- Create `src/tracking-sync/trackable-filter.util.ts`: `isTrackableFedexRow(row: { status: string }): boolean` (false para `devuelto_a_fedex` y `retorno_abandono_fedex`) + prueba.
+- Aplicarlo en: `route-universe.service.ts`, `getShipmentsToValidate`/charge (`shipments.service.ts:4064`), `applyByRoute`/`applyMany` (`tracking-compare.service.ts`), la fachada (Task 10), y al repartir resultados de FedEx por número de guía en `processMasterFedexUpdate`/`processChargeFedexUpdate` (no aplicar a filas devueltas).
+- `rules/terminal-lock.rule.ts`: la excepción "ENTREGADO siempre gana" NO aplica si el actual es `devuelto_a_fedex` o `retorno_abandono_fedex`; prueba en `terminal-lock.rule.spec.ts`.
+- Commit `fix(fedex): guias devueltas a FedEx o en retorno abandono fuera del rastreo`.
 
 ### Task 11: Interruptor correcto
 - `tracking.cron.service.ts:46`: en vez de saltar TODO con cutover, el cron legacy procesa solo sucursales **fuera** de cutover; la fase DHL corre siempre (sin cambiar su código).
