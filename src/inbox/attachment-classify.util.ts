@@ -3,6 +3,8 @@ import { headerAliases } from '../utils/header-detector.util';
 import { isThreeSheetDhlWorkbook } from '../utils/dhl-excel.util';
 import { normalize } from './text-normalize.util';
 import { AttachmentKind, SheetSummary } from './inbox.types';
+import { numbersInFilename } from './extract.util';
+import { tsvMetaConsNumber } from './paste-plan.util';
 
 /**
  * Clasificación de adjuntos de correos FedEx: tipo por nombre (aéreo, valor, F2,
@@ -134,4 +136,17 @@ export function finalizeKinds(items: ClassifyItem[]): AttachmentKind[] {
   });
   const hasMaster = kinds.some((k) => k === 'master' || k === 'master_aereo' || k === 'high_value' || k === 'f2');
   return kinds.map((k) => (k === 'ccp' && hasMaster ? 'ccp_ignored' : k));
+}
+
+const CONS_KINDS: AttachmentKind[] = ['master', 'master_aereo', 'f2', 'high_value', 'dhl'];
+
+/**
+ * Número de consolidado de un adjunto: el del nombre del archivo o, si no trae, el de
+ * la fila "meta" que FedEx pone arriba del encabezado ("305821338193 … SALIDA AEREA").
+ */
+export function attachmentConsNumber(filename: string, kind: AttachmentKind, content: Buffer | null): string | null {
+  const fromName = numbersInFilename(filename)[0];
+  if (fromName) return fromName;
+  if (!content || !CONS_KINDS.includes(kind) || !isSpreadsheet(filename)) return null;
+  return tsvMetaConsNumber(workbookToTsv(content));
 }

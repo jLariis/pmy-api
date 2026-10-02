@@ -26,7 +26,26 @@ export interface ListFilters {
 /** Scope = sucursales visibles para el usuario; null = todas (superadmin). */
 export type Scope = string[] | null;
 
-const VIEW_STATUSES: InboxMessageStatus[] = ['revision', 'detectado', 'confirmado', 'ignorado', 'error'];
+/** Vistas de la bandeja, en el lenguaje de la operación. */
+export type InboxViewKey = 'falta_confirmar' | 'listos' | 'subidos' | 'todos' | 'ignorado';
+const VIEW_KEYS: InboxViewKey[] = ['falta_confirmar', 'listos', 'subidos', 'todos', 'ignorado'];
+
+const UPLOADABLE = "('master','master_aereo','f2','dhl')";
+const HAS_GUIDES = `EXISTS (SELECT 1 FROM inbox_attachment ua WHERE ua.inboxMessageId = m.id AND ua.kind IN ${UPLOADABLE})`;
+const ALL_UPLOADED = `(EXISTS (SELECT 1 FROM inbox_consolidation uc WHERE uc.inboxMessageId = m.id)
+  AND NOT EXISTS (SELECT 1 FROM inbox_consolidation uc WHERE uc.inboxMessageId = m.id AND uc.linkStatus = 'pendiente'))`;
+const READY = "m.status IN ('detectado','confirmado')";
+
+const VIEW_WHERE: Record<InboxViewKey, string> = {
+  falta_confirmar: "m.status IN ('revision','nuevo')",
+  listos: `${READY} AND ${HAS_GUIDES} AND NOT ${ALL_UPLOADED}`,
+  subidos: `${READY} AND ${ALL_UPLOADED}`,
+  todos: "m.status <> 'ignorado'",
+  ignorado: "m.status = 'ignorado'",
+};
+
+/** Estado simple de un correo para la lista. */
+export type UploadState = 'falta_confirmar' | 'listo' | 'subido' | 'sin_guias' | 'ignorado' | 'error';
 
 @Injectable()
 export class InboxQueryService {
@@ -90,18 +109,12 @@ export class InboxQueryService {
       return qb;
     };
 
-    const countRows = await base().select('m.status', 'status').addSelect('COUNT(*)', 'n').groupBy('m.status').getRawMany();
-    const counts: Record<string, number> = { todos: 0 };
-    for (const s of VIEW_STATUSES) counts[s] = 0;
-    for (const r of countRows) {
-      counts[r.status] = Number(r.n);
-      if (r.status !== 'ignorado') counts.todos += Number(r.n);
-    }
+    const counts = {} as Record<InboxViewKey, number>;
+    await Promise.all(VIEW_KEYS.map(async (v) => (counts[v] = await base().andWhere(VIEW_WHERE[v]).getCount())));
 
     const qb = base();
-    const status = f.status || 'revision';
-    if (status === 'todos') qb.andWhere("m.status <> 'ignorado'");
-    else qb.andWhere('m.status = :st', { st: status });
+    const view: InboxViewKey = VIEW_KEYS.includes(f.status as InboxViewKey) ? (f.status as InboxViewKey) : 'falta_confirmar';
+    qb.andWhere(VIEW_WHERE[view]);
     qb.select(['m.id', 'm.receivedAt', 'm.fromAddress', 'm.fromName', 'm.subject', 'm.status', 'm.subsidiaryId', 'm.ignoreReason', 'm.errorMessage'])
       .orderBy('m.receivedAt', 'DESC')
       .skip((page - 1) * pageSize)
@@ -117,7 +130,17 @@ export class InboxQueryService {
     const items = rows.map((m) => {
       const d = dets.get(m.id);
       const mc = cons.filter((c) => c.inboxMessageId === m.id);
+      const ma = atts.filter((a) => a.inboxMessageId === m.id);
+      const hasGuides = ma.some((a) => ['master', 'master_aereo', 'f2', 'dhl'].includes(a.kind));
+      const uploadState: UploadState =
+        m.status === 'ignorado' ? 'ignorado'
+        : m.status === 'error' ? 'error'
+        : m.status === 'revision' || m.status === 'nuevo' ? 'falta_confirmar'
+        : !hasGuides ? 'sin_guias'
+        : mc.length && mc.every((c) => c.linkStatus !== 'pendiente') ? 'subido'
+        : 'listo';
       return {
+        uploadState,
         id: m.id,
         receivedAt: m.receivedAt,
         fromAddress: m.fromAddress,

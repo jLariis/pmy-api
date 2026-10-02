@@ -2,8 +2,8 @@ import { simpleParser, AddressObject } from 'mailparser';
 import sanitizeHtml = require('sanitize-html');
 import { createHash } from 'crypto';
 import { cutQuotedHistory } from './text-normalize.util';
-import { extractCobros, extractConsolidations, numbersInFilename } from './extract.util';
-import { classifyByName, finalizeKinds, isSpreadsheet, summarizeWorkbook } from './attachment-classify.util';
+import { extractCobros, extractConsolidations } from './extract.util';
+import { attachmentConsNumber, classifyByName, finalizeKinds, isSpreadsheet, summarizeWorkbook } from './attachment-classify.util';
 import { AnnouncedCons, AttachmentKind, Cobro, ConsolidationKind, SheetSummary } from './inbox.types';
 
 /**
@@ -72,7 +72,8 @@ export function sanitizeMailHtml(html: string): string {
 /** Consolidados del correo: los del cuerpo + números en nombres de archivo master/aéreo/valor/F2. */
 export function mergeConsolidations(announced: AnnouncedCons[], atts: { kind: AttachmentKind; consNumber: string | null }[]): MailConsolidation[] {
   const out: MailConsolidation[] = announced.map((a) => ({ consNumber: a.consNumber, kind: a.kind, announcedCount: a.announcedCount }));
-  const kindOf: Partial<Record<AttachmentKind, ConsolidationKind>> = { master: 'master', master_aereo: 'aereo', high_value: 'high_value', f2: 'f2', dhl: 'dhl' };
+  // "valor" no es consolidado propio: sus guías se suben dentro del aéreo del mismo correo.
+  const kindOf: Partial<Record<AttachmentKind, ConsolidationKind>> = { master: 'master', master_aereo: 'aereo', f2: 'f2', dhl: 'dhl' };
   for (const a of atts) {
     const k = kindOf[a.kind];
     if (!k || !a.consNumber) continue;
@@ -105,7 +106,7 @@ export async function analyzeMail(source: Buffer, fallbackDate: Date | null = nu
     sha256: createHash('sha256').update(x.content).digest('hex'),
     kind: kinds[i],
     kindSource: x.byName && x.byName === kinds[i] ? 'nombre' : kinds[i] === 'ccp_ignored' ? 'nombre' : 'contenido',
-    consNumber: numbersInFilename(x.filename)[0] ?? null,
+    consNumber: attachmentConsNumber(x.filename, kinds[i], x.content),
     summary: x.summary,
   }));
 

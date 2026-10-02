@@ -7,17 +7,24 @@ import { InboxMessage } from '../entities/inbox-message.entity';
 import { InboxAttachment } from '../entities/inbox-attachment.entity';
 import { InboxConsolidation } from '../entities/inbox-consolidation.entity';
 import { workbookToTsv } from './attachment-classify.util';
-import { buildPastePlan, PasteBatch, PasteBatchKind } from './paste-plan.util';
+import { buildPastePlan, PasteBatch, PasteBatchKind, tsvTrackings } from './paste-plan.util';
 import { uploadMinutes } from './zip-coverage.util';
 import { ConsolidationKind } from './inbox.types';
 
 const TSV_KINDS = ['master', 'master_aereo', 'f2', 'high_value'];
 
+export interface PlanBatchView extends PasteBatch {
+  hvCount: number;
+  cobrosCount: number;
+  /** Ya está en el sistema (por esta bandeja o subido por otro camino). */
+  uploaded: { at: Date; byName: string | null; minutes: number | null; via: string | null } | null;
+}
+
 export interface PastePlanResult {
   /** Se puede mandar sin otra confirmación (sucursal confirmada o detectada segura). */
   ready: boolean;
   reason: string | null;
-  batches: PasteBatch[];
+  batches: PlanBatchView[];
 }
 
 /**
@@ -61,6 +68,27 @@ export class InboxPasteService {
       doneKeys: atts.filter((a) => a.pastedAt).map((a) => `${a.kind === 'master_aereo' ? 'aereo' : a.kind === 'high_value' ? 'master' : a.kind}:${a.id}`),
     });
 
+    const userIds = [...new Set(cons.map((c) => c.uploadedById).filter((x): x is string => !!x))];
+    const users: { id: string; name: string | null; lastName: string | null }[] = userIds.length
+      ? await this.ds.query(`SELECT id, name, lastName FROM \`user\` WHERE id IN (${userIds.map(() => '?').join(',')})`, userIds)
+      : [];
+    const nameOf = (id: string | null) => {
+      const u = users.find((x) => x.id === id);
+      return u ? [u.name, u.lastName].filter(Boolean).join(' ') : null;
+    };
+    const consKind = (k: PasteBatchKind) => (k === 'aereo' ? 'aereo' : k === 'f2' ? 'f2' : 'master');
+    const views: PlanBatchView[] = batches.map((b) => {
+      const c = b.consNumber
+        ? cons.find((x) => x.consNumber === b.consNumber && x.kind === consKind(b.kind) && x.linkStatus === 'subido')
+        : undefined;
+      return {
+        ...b,
+        hvCount: tsvTrackings(b.hvRaw).trackings.size,
+        cobrosCount: b.paymentsRaw ? b.paymentsRaw.split('\n').length - 1 : 0,
+        uploaded: c?.uploadedAt ? { at: c.uploadedAt, byName: nameOf(c.uploadedById), minutes: c.uploadMinutes, via: c.uploadedVia } : null,
+      };
+    });
+
     const ready = msg.status === 'confirmado' || msg.status === 'detectado';
     const reason =
       msg.status === 'ignorado'
@@ -70,7 +98,7 @@ export class InboxPasteService {
           : ready
             ? null
             : 'Primero confirma la sucursal';
-    return { ready, reason, batches };
+    return { ready, reason, batches: views };
   }
 
   /** Registra que un lote se mandó y subió desde el pegado. */
