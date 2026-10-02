@@ -78,9 +78,9 @@ describe('detector', () => {
     const r = detect(input(CABORCA, { '83600': 120, '83550': 3 }, knowledge()));
     expect(r.subsidiaryId).toBe('caborca');
     expect(r.autoSafe).toBe(true);
-    expect(r.signals.map((s) => s.type)).toEqual(expect.arrayContaining(['cp_archivo', 'asunto_o_archivo', 'cuerpo']));
-    // El cuerpo menciona PENASCO y SANTA ANA, pero solo vota la primera (Caborca).
-    expect(r.signals.filter((s) => s.type === 'cuerpo')).toHaveLength(1);
+    expect(r.signals.map((s) => s.type)).toEqual(expect.arrayContaining(['cp_archivo', 'asunto_o_archivo']));
+    // El cuerpo dice "CABORCA" igual que el asunto: no vuelve a votar. PENASCO/SANTA ANA tampoco.
+    expect(r.signals.filter((s) => s.type === 'cuerpo')).toHaveLength(0);
   });
 
   it('"Salida Aerea." sin texto útil: CP de Cabo + Wendy (39/40) → Cabo seguro', () => {
@@ -131,6 +131,24 @@ describe('detector', () => {
     const k = knowledge({ aliases: [alias('remitente', 'luis.torres@fedex.com', 'lapaz', 6), alias('remitente', 'luis.torres@fedex.com', 'cabo', 5), alias('remitente', 'luis.torres@fedex.com', 'const', 4)] });
     const r = detect(input(SUR, { '23000': 80 }, k));
     expect(r.signals.some((s) => s.type === 'remitente')).toBe(false);
+  });
+
+  it('PREALERTA CABORCA se sube a Bodega Hermosillo: choca con el catálogo hasta aprender', () => {
+    // La cobertura por dueño del consolidado pone los CP de Caborca en Bodega Hermosillo.
+    const cov = [
+      { zip: '83600', subsidiaryId: 'bhmo', share: 0.98, status: 'sugerido' as const, city: 'Caborca' },
+      { zip: '83550', subsidiaryId: 'bhmo', share: 0.97, status: 'sugerido' as const, city: 'Puerto Penasco' },
+    ];
+    const before = detect(input(CABORCA, { '83600': 60, '83550': 50 }, knowledge({ zipCoverage: cov })));
+    expect(before.autoSafe).toBe(false);
+    expect(before.reason).toMatch(/pero/);
+    expect(before.subsidiaryId).toBe('bhmo'); // la sugerencia sigue al CP, no al nombre del catálogo
+
+    const learned = knowledge({ zipCoverage: cov, aliases: [alias('termino', 'CABORCA', 'bhmo', 2)] });
+    const after = detect(input(CABORCA, { '83600': 60, '83550': 50 }, learned));
+    expect(after.subsidiaryId).toBe('bhmo');
+    expect(after.autoSafe).toBe(true);
+    expect(after.signals.some((s) => s.subsidiaryId === 'caborca')).toBe(false);
   });
 
   it('códigos de estación desde asunto y archivos', () => {

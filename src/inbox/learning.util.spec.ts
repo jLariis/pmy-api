@@ -8,7 +8,7 @@ describe('learning.util', () => {
     expect(subjectTerms(CABO.subject)).toEqual(['CABO']);
     expect(subjectTerms(SUR.subject)).toEqual(['SUR']);
     expect(subjectTerms(AEREO.subject)).toEqual([]);
-    expect(subjectTerms('Sensitive-External - PREALERTA DEL YAQUI LOCAL RUTA 364, 367')).toEqual([]);
+    expect(subjectTerms('Sensitive-External - PREALERTA DEL YAQUI LOCAL RUTA 364, 367')).toEqual(['LOCAL']);
   });
 
   it('aprende remitente, copias, estación y asunto; ignora direcciones propias', () => {

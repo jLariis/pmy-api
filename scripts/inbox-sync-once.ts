@@ -1,7 +1,7 @@
 /**
  * Llena la bandeja FedEx (BD local) leyendo el buzón en SOLO LECTURA, sin levantar la API.
  *   npx ts-node -r tsconfig-paths/register scripts/inbox-sync-once.ts [--days 7] [--rounds 40]
- * Repite vueltas hasta ponerse al día y luego liga lo ya subido.
+ * Repite vueltas hasta ponerse al día y luego liga lo ya subido. --redetect re-evalúa lo no confirmado.
  */
 import 'dotenv/config';
 import { AppDataSource } from '../src/data-source';
@@ -41,6 +41,7 @@ async function main() {
       console.log(`vuelta ${i + 1}:`, rep);
       if (rep.skipped || rep.read === 0) break;
     }
+    if (process.argv.includes('--redetect')) console.log('re-detectados:', await ingest.redetect());
     console.log('ligado:', await new InboxLinkService(r(InboxConsolidation) as any, AppDataSource).linkPending());
     const counts = await AppDataSource.query('SELECT status, COUNT(*) n FROM inbox_message GROUP BY status');
     console.table(counts);

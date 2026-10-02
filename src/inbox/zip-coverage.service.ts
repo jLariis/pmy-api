@@ -23,18 +23,26 @@ export class ZipCoverageService {
    * Recalcula desde el historial RECIENTE (ventana de `days`, por defecto 90): la
    * operación cambia (p. ej. los CP de Caborca eran de "Hermosillo Ruta Extendida"
    * hasta jun-2026), así que la cobertura debe reflejar quién atiende hoy cada CP.
+   *
+   * La sucursal que cuenta es la DUEÑA DEL CONSOLIDADO (a quién se sube el archivo),
+   * no la de la guía: Caborca/Peñasco/Santa Ana se suben a Bodega Hermosillo y luego
+   * sus guías se reparten a cada sucursal.
    */
   async rebuildFromHistory(days = Number(process.env.INBOX_COVERAGE_DAYS ?? 90)): Promise<{ pairs: number; days: number }> {
-    const sql = (table: string) => `
-      SELECT recipientZip AS zip, subsidiaryId, UPPER(TRIM(recipientCity)) AS city, COUNT(*) AS n,
-             MIN(createdAt) AS firstSeen, MAX(createdAt) AS lastSeen
-      FROM \`${table}\`
-      WHERE subsidiaryId IS NOT NULL AND recipientZip IS NOT NULL AND recipientZip <> ''
-        AND createdAt >= DATE_SUB(NOW(), INTERVAL ? DAY)
-      GROUP BY recipientZip, subsidiaryId, UPPER(TRIM(recipientCity))`;
+    const sql = (table: string, ownerJoin: string, ownerCol: string) => `
+      SELECT x.recipientZip AS zip, COALESCE(${ownerCol}, x.subsidiaryId) AS subsidiaryId,
+             UPPER(TRIM(x.recipientCity)) AS city, COUNT(*) AS n,
+             MIN(x.createdAt) AS firstSeen, MAX(x.createdAt) AS lastSeen
+      FROM \`${table}\` x ${ownerJoin}
+      WHERE COALESCE(${ownerCol}, x.subsidiaryId) IS NOT NULL AND x.recipientZip IS NOT NULL AND x.recipientZip <> ''
+        AND x.createdAt >= DATE_SUB(NOW(), INTERVAL ? DAY)
+      GROUP BY x.recipientZip, COALESCE(${ownerCol}, x.subsidiaryId), UPPER(TRIM(x.recipientCity))`;
     const raw: any[] = [
-      ...(await this.ds.query(sql('shipment'), [days])),
-      ...(await this.ds.query(sql('charge_shipment'), [days])),
+      ...(await this.ds.query(sql('shipment', 'LEFT JOIN consolidated o ON o.id = x.consolidatedId', 'o.subsidiaryId'), [days])),
+      ...(await this.ds.query(
+        sql('charge_shipment', 'LEFT JOIN consolidated o ON o.id = x.consolidatedId LEFT JOIN charge ch ON ch.id = x.chargeId', 'COALESCE(o.subsidiaryId, ch.subsidiaryId)'),
+        [days],
+      )),
     ];
     // Lo que salió de la ventana deja de contar (sin borrar filas ni tocar su status).
     await this.ds.query(`UPDATE subsidiary_zip_coverage SET shipmentCount = 0 WHERE source = 'historial'`);

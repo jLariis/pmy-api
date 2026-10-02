@@ -14,7 +14,7 @@ export const DETECTOR_VERSION = 1;
 
 export const WEIGHTS = {
   consolidado_conocido: 1.0,
-  cp_archivo: 0.9,
+  cp_archivo: 1.0,
   ciudad_archivo: 0.6,
   asunto_o_archivo: 0.8,
   cuerpo: 0.5,
@@ -37,7 +37,7 @@ const STRONG: SignalType[] = ['consolidado_conocido', 'cp_archivo'];
 /** Palabras que aparecen en casi todos los correos y no identifican sucursal. */
 export const GENERIC_TERMS = new Set([
   'YAQUI', 'CARGA', 'PAQUETERIA', 'MENSAJERIA', 'SALIDA', 'PREALERTA', 'DEL', 'LA', 'EL', 'LOS', 'DE', 'Y',
-  'LOCAL', 'RUTA', 'MASTER', 'AEREO', 'AEREA', 'VALOR', 'CCP', 'F2', 'XLSX', 'XLS', 'ODS', 'CSV', 'PDF',
+  'RUTA', 'MASTER', 'AEREO', 'AEREA', 'VALOR', 'CCP', 'F2', 'XLSX', 'XLS', 'ODS', 'CSV', 'PDF',
   'PQT', 'FEDEX', 'SENSITIVE', 'EXTERNAL', 'RE', 'RV', 'FW', 'FWD', 'CONS', 'GUIAS', 'COBROS', 'BODEGA',
   'CIUDAD', 'CUIDAD', 'CD', 'SA', 'CV', 'OCT', 'SEP', 'NOV', 'DIC', 'ENE', 'FEB', 'MAR', 'ABR', 'MAY',
   'JUN', 'JUL', 'AGO',
@@ -116,10 +116,31 @@ export function buildTerms(k: Knowledge): Term[] {
     s.add(c.subsidiaryId);
     owners.set(c.term, s);
   }
+  // Lo aprendido le gana al catálogo: si las confirmaciones dicen que "CABORCA" en estos
+  // correos es Bodega Hermosillo (ahí se sube el consolidado), ese término deja de
+  // apuntar a la sucursal Caborca. Solo aplica si un único destino aprendido lo reclama.
+  const learnedOwner = new Map<string, Set<string>>();
+  for (const c of candidates) {
+    if (c.origin !== 'aprendido') continue;
+    const s = learnedOwner.get(c.term) ?? new Set<string>();
+    s.add(c.subsidiaryId);
+    learnedOwner.set(c.term, s);
+  }
+  const learnedWins = (c: Term) => {
+    const s = learnedOwner.get(c.term);
+    return !!s && s.size === 1;
+  };
   const fullNames = new Set(candidates.filter((c) => c.isFullName).map((c) => c.term));
   const seen = new Set<string>();
   return candidates.filter((c) => {
     if (!c.term || GENERIC_TERMS.has(c.term)) return false;
+    if (learnedWins(c)) {
+      if (c.origin !== 'aprendido') return false;
+      const key = `${c.term}|${c.subsidiaryId}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    }
     // El nombre completo siempre identifica a su sucursal; las variantes solo si nadie más las reclama.
     if (!c.isFullName && (fullNames.has(c.term) || (owners.get(c.term)?.size ?? 0) > 1)) return false;
     const key = `${c.term}|${c.subsidiaryId}`;
@@ -241,7 +262,7 @@ export function detect(input: DetectionInput): DetectionResult {
     const best = Object.entries(bySub).sort((a, b) => b[1] - a[1])[0];
     if (best && best[1] / totalZipRows >= CP_MIN_FRACTION) {
       const frac = best[1] / totalZipRows;
-      const factor = confirmedRows / best[1] >= 0.5 ? 1 : 0.8;
+      const factor = confirmedRows / best[1] >= 0.5 ? 1 : 0.9;
       signals.push({ type: 'cp_archivo', value: `${Math.round(frac * 100)}%`, subsidiaryId: best[0], weight: +(WEIGHTS.cp_archivo * factor).toFixed(3), note: `${Math.round(frac * 100)}% de las guías del archivo son de códigos postales de ${nameOf(best[0])}` });
     } else {
       const amb = Object.entries(ambiguousBySub).sort((a, b) => b[1] - a[1]);
@@ -277,7 +298,8 @@ export function detect(input: DetectionInput): DetectionResult {
 
   // 5) Cuerpo: solo la primera sucursal mencionada (origen de "RUTA: A-B-C")
   const bodyHits = findTerms(body, terms).sort((a, b) => a.position - b.position);
-  if (bodyHits.length) {
+  // La misma palabra ya contada en el asunto no vuelve a votar (es la misma evidencia).
+  if (bodyHits.length && !headerHits.some((h) => h.term.term === bodyHits[0].term.term && h.term.subsidiaryId === bodyHits[0].term.subsidiaryId)) {
     const first = bodyHits[0];
     signals.push({ type: 'cuerpo', value: first.term.term, subsidiaryId: first.term.subsidiaryId, weight: +(WEIGHTS.cuerpo * first.term.weightFactor).toFixed(3), note: `El correo menciona primero "${first.term.term}"` });
   }

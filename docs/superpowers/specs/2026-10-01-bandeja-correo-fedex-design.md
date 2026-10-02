@@ -136,7 +136,7 @@ Se quitan bloques boilerplate (IMPORTANTE…, Caution!…, firmas tras `Saludos`
 | Señal | Peso | Regla |
 |---|---|---|
 | `consolidado_conocido` | 1.0 | `consNumber` extraído existe en consolidated/charge con sucursal |
-| `cp_archivo` | 0.9 | ≥ 85 % de filas con CP en cobertura (no excluida) de una sucursal; confirmado pesa 1×, sugerido 0.8× |
+| `cp_archivo` | 1.0 (0.9 si el CP es solo sugerido) | ≥ 85 % de filas con CP en cobertura (no excluida) de una sucursal; confirmado pesa 1×, sugerido 0.8× |
 | `ciudad_archivo` | 0.6 | respaldo si no hay CP: ≥ 85 % de ciudades en cobertura de una sucursal |
 | `asunto_o_archivo` | 0.8 | nombre/variante de sucursal, alias aprendido o ciudad de su cobertura en asunto o nombre de archivo (término más largo gana; palabras genéricas YAQUI/CARGA/PAQUETERIA/SALIDA excluidas) |
 | `cuerpo` | 0.5 | igual que arriba pero en el cuerpo superior (`RUTA: …`) |
