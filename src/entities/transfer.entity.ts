@@ -14,6 +14,11 @@ export class Transfer {
   @Column({ nullable: true })
   originId: string;
 
+  // Origen externo (texto libre) cuando no sale de una sucursal nuestra. En ese caso
+  // `originId` va vacío y el ingreso se registra en la sucursal destino.
+  @Column({ type: 'varchar', length: 255, nullable: true })
+  otherOrigin: string;
+
   @ManyToOne(() => Subsidiary, { nullable: true })
   @JoinColumn({ name: 'destinationId' })
   destination: Subsidiary;

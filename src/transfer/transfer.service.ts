@@ -1,6 +1,6 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, Repository } from 'typeorm';
+import { DataSource, IsNull, Repository } from 'typeorm';
 import { CreateTransferDto } from './dto/create-transfer.dto';
 import { Income, Subsidiary, Transfer } from 'src/entities';
 import { IncomeSourceType, IncomeStatus, ShipmentType, TransferType } from 'src/common/enums';
@@ -22,7 +22,22 @@ export class TransferService {
     try {
       console.log("🚀 ~ TransferService ~ create ~ createTransferDto:", createTransferDto);
       
-      const subsidiary = await queryRunner.manager.findOne(Subsidiary, { where: { id: createTransferDto.originId } });
+      // Origen externo (texto libre, sin `originId`): el traslado lo cobra la sucursal
+      // destino, así que debe existir y de ella salen las tarifas (tyco/aeropuerto/2º a bordo).
+      const otherOrigin = createTransferDto.otherOrigin?.trim() || undefined;
+      const isExternalOrigin = !createTransferDto.originId && !!otherOrigin;
+      if (!createTransferDto.originId && !otherOrigin) {
+        throw new BadRequestException('Indica la sucursal de origen o escribe el origen externo.');
+      }
+      if (isExternalOrigin && !createTransferDto.destinationId) {
+        throw new BadRequestException(
+          'Si el origen es externo, el destino debe ser una de nuestras sucursales (ahí se registra el ingreso).',
+        );
+      }
+      createTransferDto.otherOrigin = isExternalOrigin ? otherOrigin : undefined;
+
+      const rateSubsidiaryId = isExternalOrigin ? createTransferDto.destinationId : createTransferDto.originId;
+      const subsidiary = await queryRunner.manager.findOne(Subsidiary, { where: { id: rateSubsidiaryId } });
 
       // 1. Determine Base Amount and Types
       let baseAmount = Number(createTransferDto.amount) || 4689.45; 
@@ -73,8 +88,10 @@ export class TransferService {
       // sucursal real registra su ingreso en la sucursal DESTINO, no en la de origen.
       // Si el destino es externo (texto libre, sin `destinationId`) o el traslado es
       // tyco/aeropuerto, el ingreso se queda en la sucursal de origen como siempre.
+      // Si el ORIGEN es externo, el ingreso siempre va a la sucursal destino.
       const incomeSubsidiaryId =
-        sourceType === IncomeSourceType.SPECIAL_TRANSFER && createTransferDto.destinationId
+        isExternalOrigin ||
+        (sourceType === IncomeSourceType.SPECIAL_TRANSFER && createTransferDto.destinationId)
           ? createTransferDto.destinationId
           : createTransferDto.originId;
 
@@ -119,7 +136,11 @@ export class TransferService {
 
   async findBySubsidiary(subsidiaryId: string): Promise<Transfer[]> {
     return await this.transferRepository.find({
-      where: { origin: { id: subsidiaryId } },
+      // También los de origen externo cuyo destino es esta sucursal (ahí cae su ingreso).
+      where: [
+        { origin: { id: subsidiaryId } },
+        { originId: IsNull(), destination: { id: subsidiaryId } },
+      ],
       relations: ['origin', 'destination', 'vehicle', 'drivers', 'createdBy'],
       order: {
         createdAt: 'DESC',

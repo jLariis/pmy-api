@@ -6,6 +6,10 @@ export class CreateTransferDto {
   @IsOptional()
   originId?: string;
 
+  @IsString()
+  @IsOptional()
+  otherOrigin?: string;
+
   @IsUUID()
   @IsOptional()
   destinationId?: string;
