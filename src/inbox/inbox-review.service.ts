@@ -9,6 +9,7 @@ import { InboxConsolidation } from '../entities/inbox-consolidation.entity';
 import { KnowledgeService } from './knowledge.service';
 import { ZipCoverageService } from './zip-coverage.service';
 import { AttachmentKind } from './inbox.types';
+import { isSpreadsheet, previewWorkbook, SheetPreview } from './attachment-classify.util';
 
 const KINDS: AttachmentKind[] = ['master', 'master_aereo', 'f2', 'high_value', 'ccp', 'ccp_ignored', 'dhl', 'pdf', 'other'];
 const ZIP_KINDS: AttachmentKind[] = ['master', 'master_aereo', 'f2', 'high_value', 'dhl'];
@@ -82,6 +83,21 @@ export class InboxReviewService {
     msg.ignoreReason = (reason || 'Marcado como no relevante').slice(0, 250);
     await this.consRepo.update({ inboxMessageId: id, linkStatus: 'pendiente' }, { linkStatus: 'no_aplica' });
     return this.msgRepo.save(msg);
+  }
+
+  /** Vista previa para abrir el archivo dentro de la app (hojas como tabla; PDF/imagen se muestran tal cual). */
+  async preview(attachmentId: string): Promise<{ type: 'sheet' | 'pdf' | 'image' | 'none'; filename: string; sheets?: SheetPreview[] }> {
+    const a = await this.attRepo.findOne({ where: { id: attachmentId } });
+    if (!a) throw new NotFoundException('No se encontró el archivo');
+    if (/\.pdf$/i.test(a.filename) || a.contentType === 'application/pdf') return { type: 'pdf', filename: a.filename };
+    if (/^image\//.test(a.contentType)) return { type: 'image', filename: a.filename };
+    if (!isSpreadsheet(a.filename)) return { type: 'none', filename: a.filename };
+    try {
+      const sheets = previewWorkbook(await fs.readFile(join(process.cwd(), a.storagePath)));
+      return sheets.length ? { type: 'sheet', filename: a.filename, sheets } : { type: 'none', filename: a.filename };
+    } catch {
+      throw new NotFoundException('El archivo ya no está en el servidor');
+    }
   }
 
   async download(attachmentId: string): Promise<{ filename: string; contentType: string; buffer: Buffer }> {

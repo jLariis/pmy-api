@@ -199,3 +199,35 @@ export function attachmentConsNumber(filename: string, kind: AttachmentKind, con
   if (!content || !CONS_KINDS.includes(kind) || !isSpreadsheet(filename)) return null;
   return tsvMetaConsNumber(workbookToTsv(content));
 }
+
+export interface SheetPreview {
+  name: string;
+  rows: string[][];
+  totalRows: number;
+  truncated: boolean;
+}
+
+/** Vista previa de un libro para el visor de la app: todas las hojas, recortadas. */
+export function previewWorkbook(buf: Buffer, maxRows = 500, maxCols = 40): SheetPreview[] {
+  let wb: XLSX.WorkBook;
+  try {
+    wb = XLSX.read(buf, { type: 'buffer', cellFormula: false, cellHTML: false, sheetRows: maxRows + 1 });
+  } catch {
+    return [];
+  }
+  // sheetRows corta la lectura; el total real se toma del rango de la hoja.
+  let full: XLSX.WorkBook | null = null;
+  try {
+    full = XLSX.read(buf, { type: 'buffer', bookSheets: false, cellFormula: false, cellHTML: false, sheetStubs: false, dense: true });
+  } catch {
+    full = null;
+  }
+  return wb.SheetNames.map((name) => {
+    const rows = (XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, defval: '', blankrows: false, raw: false }) as unknown[][]).map((r) =>
+      r.slice(0, maxCols).map((c) => String(c ?? '').trim()),
+    );
+    const ref = full?.Sheets[name]?.['!ref'];
+    const totalRows = ref ? XLSX.utils.decode_range(ref).e.r + 1 : rows.length;
+    return { name: name.trim(), rows: rows.slice(0, maxRows), totalRows, truncated: totalRows > maxRows };
+  });
+}

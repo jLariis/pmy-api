@@ -90,6 +90,15 @@ export class InboxController {
     return { ok: true };
   }
 
+  @Get('attachments/:id/preview')
+  @ApiOperation({ summary: 'Ver el archivo dentro de la app (hojas como tabla)' })
+  async preview(@Param('id') id: string, @Req() req: any) {
+    const msgId = await this.review.attachmentMessageId(id);
+    if (!msgId) throw new NotFoundException('No se encontró el archivo');
+    await this.assertCanSee(req, msgId);
+    return this.review.preview(id);
+  }
+
   @Get('attachments/:id/download')
   async download(@Param('id') id: string, @Req() req: any, @Res() res: Response) {
     const msgId = await this.review.attachmentMessageId(id);
