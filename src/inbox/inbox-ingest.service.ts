@@ -13,6 +13,7 @@ import { ImapReaderService, RawMail } from './imap-reader.service';
 import { KnowledgeService } from './knowledge.service';
 import { analyzeMail, isAllowedSender, MailConsolidation, mergeConsolidations } from './mail-analysis';
 import { detect } from './detector';
+import { extractCobros, extractConsolidations } from './extract.util';
 import { attachmentConsNumber, classifyByName, finalizeKinds, isSpreadsheet } from './attachment-classify.util';
 import { Cobro, ConsolidationKind, DetectionResult } from './inbox.types';
 
@@ -321,11 +322,13 @@ export class InboxIngestService {
       await this.reclassify(atts);
       const cons = await this.consRepo.find({ where: { inboxMessageId: m.id } });
       const mc: MailConsolidation[] = cons.map((c) => ({ consNumber: c.consNumber, kind: c.kind, announcedCount: c.announcedCount }));
-      // Suma los consolidados de los archivos (p. ej. el aéreo con su número en la fila meta).
-      for (const extra of mergeConsolidations([], atts)) {
+      // Vuelve a leer el cuerpo (reglas nuevas de extracción) y suma los de los archivos
+      // (p. ej. el aéreo con su número en la fila meta).
+      for (const extra of mergeConsolidations(extractConsolidations(m.textTop ?? ''), atts)) {
         if (!mc.some((x) => x.consNumber === extra.consNumber)) mc.push(extra);
       }
-      await this.detectAndRecord(m, atts, mc, cons.find((c) => c.cobros?.length)?.cobros ?? []);
+      const bodyCobros = extractCobros(m.textTop ?? '');
+      await this.detectAndRecord(m, atts, mc, bodyCobros.length ? bodyCobros : cons.find((c) => c.cobros?.length)?.cobros ?? []);
       updated++;
     }
     return { updated };

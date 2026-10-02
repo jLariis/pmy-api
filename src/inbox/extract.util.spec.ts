@@ -30,6 +30,27 @@ describe('extract.util', () => {
     expect(extractCobros(top).map((c) => c.trackingNumber)).toEqual(['383885282560', '383905025439', '383913948855']);
   });
 
+  it('Cabo 09.26.26: "ETIQUETA : número ,guías" sin la palabra GUIAS, con COD y HV', () => {
+    const body = [
+      'Se anexan archivos de carga',
+      'SALIDA CARGA YAQUI',
+      'CONS MASTER : 305820438524 ,291',
+      'COD:  305820614853 ,7',
+      'F2: 305820283793 ,21',
+      'HV:  305820303788, 1',
+    ].join('\n');
+    expect(extractConsolidations(body)).toEqual([
+      { consNumber: '305820438524', kind: 'master', announcedCount: 291 },
+      { consNumber: '305820614853', kind: 'cod', announcedCount: 7 },
+      { consNumber: '305820283793', kind: 'f2', announcedCount: 21 },
+      { consNumber: '305820303788', kind: 'high_value', announcedCount: 1 },
+    ]);
+  });
+
+  it('la tabla de cobros (COD-COLLECT …) no se confunde con un consolidado COD', () => {
+    expect(extractConsolidations(CABO.body).map((c) => c.kind)).toEqual(['master', 'f2']);
+  });
+
   it('"NO PRECENTAN COBRO" → sin cobros', () => {
     expect(extractCobros(SIN_COBRO_TOP)).toEqual([]);
   });

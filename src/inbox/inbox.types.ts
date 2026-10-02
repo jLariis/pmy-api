@@ -11,11 +11,14 @@ export type AttachmentKind =
   | 'pdf'
   | 'other';
 
-export type ConsolidationKind = 'master' | 'f2' | 'aereo' | 'high_value' | 'dhl';
+export type ConsolidationKind = 'master' | 'f2' | 'aereo' | 'high_value' | 'dhl' | 'cod';
+
+/** Tipos que se anuncian en el cuerpo del correo (MASTER, F2, COD, HV, AÉREO). */
+export type AnnouncedKind = 'master' | 'f2' | 'cod' | 'high_value' | 'aereo';
 
 export interface AnnouncedCons {
   consNumber: string;
-  kind: 'master' | 'f2';
+  kind: AnnouncedKind;
   announcedCount: number | null;
 }
 

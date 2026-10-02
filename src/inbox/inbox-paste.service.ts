@@ -25,6 +25,8 @@ export interface PastePlanResult {
   ready: boolean;
   reason: string | null;
   batches: PlanBatchView[];
+  /** Consolidados que el correo anuncia pero sin archivo adjunto (p. ej. COD, F2 o HV solo en el texto). */
+  announcedOnly: { consNumber: string; kind: string; announcedCount: number | null; uploaded: { at: Date; byName: string | null; minutes: number | null } | null }[];
 }
 
 /**
@@ -98,7 +100,16 @@ export class InboxPasteService {
           : ready
             ? null
             : 'Primero confirma la sucursal';
-    return { ready, reason, batches: views };
+    const inBatches = new Set(views.map((v) => v.consNumber).filter(Boolean));
+    const announcedOnly = cons
+      .filter((c) => !inBatches.has(c.consNumber))
+      .map((c) => ({
+        consNumber: c.consNumber,
+        kind: c.kind,
+        announcedCount: c.announcedCount,
+        uploaded: c.linkStatus === 'subido' && c.uploadedAt ? { at: c.uploadedAt, byName: nameOf(c.uploadedById), minutes: c.uploadMinutes } : null,
+      }));
+    return { ready, reason, batches: views, announcedOnly };
   }
 
   /** Registra que un lote se mandó y subió desde el pegado. */

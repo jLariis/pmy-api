@@ -18,6 +18,7 @@ const IMPORT_KINDS: Record<ConsolidationKind, string[]> = {
   high_value: ['high_value'],
   f2: ['f2'],
   dhl: [],
+  cod: ['payment', 'master'],
 };
 
 /**

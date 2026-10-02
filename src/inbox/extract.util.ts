@@ -1,4 +1,4 @@
-import { AnnouncedCons, Cobro } from './inbox.types';
+import { AnnouncedCons, AnnouncedKind, Cobro } from './inbox.types';
 
 /**
  * Extracción de datos del cuerpo de correos FedEx: consolidados anunciados
@@ -18,32 +18,45 @@ function flat(text: string): string {
 const CONS = '(\\d{10,15})';
 const GUIAS = '\\s*[,.:]?\\s*(\\d{1,5})\\s*GUIAS';
 
+/** Etiqueta del cuerpo → tipo de consolidado. El orden importa: "CONS MASTER" antes que "CONS"/"MASTER". */
+const LABELS: { re: string; kind: AnnouncedKind }[] = [
+  { re: 'CONS\\s+MASTER', kind: 'master' },
+  { re: 'CARGA\\s+YAQUI', kind: 'master' },
+  { re: 'MASTER', kind: 'master' },
+  { re: 'CONS', kind: 'master' },
+  { re: 'COD', kind: 'cod' },
+  { re: 'F2', kind: 'f2' },
+  { re: 'HV', kind: 'high_value' },
+  { re: 'VALOR', kind: 'high_value' },
+  { re: 'AEREO', kind: 'aereo' },
+];
+
+/**
+ * "ETIQUETA [:#] número [, guías | guías GUIAS]". Variantes reales:
+ *   MASTER 305821242296, 189 GUIAS · F2 305821512729 , 15GUIAS · CARGA YAQUI 305821198046, 87 GUIAS
+ *   CONS MASTER : 305820438524 ,291 · COD:  305820614853 ,7 · HV:  305820303788, 1 · CONS:818861721255
+ * El conteo solo se toma si va tras coma/punto o seguido de GUIAS (evita tomar números sueltos).
+ */
+const ANNOUNCED_RE = new RegExp(
+  `\\b(${LABELS.map((l) => l.re).join('|')})\\s*[:#]?\\s*${CONS}(?!\\d)(?:\\s*[,.]\\s*(\\d{1,5})(?!\\d)|${GUIAS})?`,
+  'g',
+);
+
 export function extractConsolidations(text: string): AnnouncedCons[] {
   const t = flat(text);
   const out: AnnouncedCons[] = [];
-  const add = (consNumber: string, kind: 'master' | 'f2', count: string | null) => {
-    if (out.some((o) => o.consNumber === consNumber)) return;
+  for (const m of t.matchAll(ANNOUNCED_RE)) {
+    const label = m[1].replace(/\s+/g, ' ');
+    const kind = LABELS.find((l) => new RegExp(`^${l.re}$`).test(label))?.kind ?? 'master';
+    const consNumber = m[2];
+    const count = m[3] ?? m[4] ?? null;
+    if (out.some((o) => o.consNumber === consNumber)) continue;
     out.push({ consNumber, kind, announcedCount: count ? Number(count) : null });
-  };
-
-  const patterns: { re: RegExp; kind: 'master' | 'f2' }[] = [
-    { re: new RegExp(`\\bMASTER\\s*[:#]?\\s*${CONS}${GUIAS}`, 'g'), kind: 'master' },
-    { re: new RegExp(`\\bF2\\s*[:#]?\\s*${CONS}${GUIAS}`, 'g'), kind: 'f2' },
-    { re: new RegExp(`\\bCARGA YAQUI\\s*[:#]?\\s*${CONS}${GUIAS}`, 'g'), kind: 'master' },
-  ];
-  type Hit = { index: number; cons: string; kind: 'master' | 'f2'; count: string };
-  const hits: Hit[] = [];
-  for (const p of patterns) {
-    for (const m of t.matchAll(p.re)) hits.push({ index: m.index ?? 0, cons: m[1], kind: p.kind, count: m[2] });
   }
-  hits.sort((a, b) => a.index - b.index).forEach((h) => add(h.cons, h.kind, h.count));
-
-  // Formato PREALERTA: "PAQUETES:123 ... CONS:818861721255"
-  const consMatches = [...t.matchAll(new RegExp(`\\bCONS\\s*[:#]?\\s*${CONS}`, 'g'))];
-  if (consMatches.length) {
-    const paq = t.match(/\bPAQUETES\s*[:#]?\s*(\d{1,5})/);
-    for (const m of consMatches) add(m[1], 'master', consMatches.length === 1 && paq ? paq[1] : null);
-  }
+  // Formato PREALERTA: "PAQUETES:123 … CONS:818861721255" (el conteo va en otra línea).
+  const onlyMaster = out.filter((o) => o.kind === 'master');
+  const paq = t.match(/\bPAQUETES\s*[:#]?\s*(\d{1,5})/);
+  if (paq && onlyMaster.length === 1 && onlyMaster[0].announcedCount == null) onlyMaster[0].announcedCount = Number(paq[1]);
   return out;
 }
 
