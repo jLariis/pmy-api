@@ -13,6 +13,7 @@ import { ImapReaderService, RawMail } from './imap-reader.service';
 import { KnowledgeService } from './knowledge.service';
 import { analyzeMail, isAllowedSender, MailConsolidation } from './mail-analysis';
 import { detect } from './detector';
+import { classifyByName, finalizeKinds, isSpreadsheet } from './attachment-classify.util';
 import { Cobro, ConsolidationKind, DetectionResult } from './inbox.types';
 
 export interface SyncReport {
@@ -278,6 +279,23 @@ export class InboxIngestService {
     }
   }
 
+  /** Vuelve a clasificar los archivos con las reglas actuales (respeta los cambiados a mano). */
+  private async reclassify(atts: InboxAttachment[]): Promise<void> {
+    if (!atts.length || atts.some((a) => a.kindSource === 'manual')) return;
+    const kinds = finalizeKinds(
+      atts.map((a) => ({
+        filename: a.filename,
+        byName: classifyByName(a.filename),
+        summary: isSpreadsheet(a.filename)
+          ? { rowCount: a.rowCount ?? 0, zips: a.zipSummary ?? {}, cities: a.citySummary ?? {}, looksFedex: (a.rowCount ?? 0) > 0, isDhl: a.kind === 'dhl' }
+          : null,
+      })),
+    );
+    const changed = atts.filter((a, i) => a.kind !== kinds[i]);
+    atts.forEach((a, i) => (a.kind = kinds[i]));
+    if (changed.length) await this.attRepo.save(changed);
+  }
+
   /** Re-evalúa correos no confirmados (p. ej. tras aprender o mejorar el detector). */
   async redetect(ids?: string[]): Promise<{ updated: number }> {
     const where: any = ids?.length ? { id: In(ids) } : { status: In(['detectado', 'revision', 'nuevo']) };
@@ -286,6 +304,7 @@ export class InboxIngestService {
     for (const m of msgs) {
       if (m.status === 'ignorado' || m.status === 'error') continue;
       const atts = await this.attRepo.find({ where: { inboxMessageId: m.id } });
+      await this.reclassify(atts);
       const cons = await this.consRepo.find({ where: { inboxMessageId: m.id } });
       const mc: MailConsolidation[] = cons.map((c) => ({ consNumber: c.consNumber, kind: c.kind, announcedCount: c.announcedCount }));
       await this.detectAndRecord(m, atts, mc, cons.find((c) => c.cobros?.length)?.cobros ?? []);

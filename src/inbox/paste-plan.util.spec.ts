@@ -35,7 +35,12 @@ describe('paste-plan.util', () => {
   });
 
   it('Varios master sin número (rutas locales): el usuario captura el consolidado', () => {
-    const plan = buildPastePlan({ ...base, attachments: [att('r1', '364.xlsx', 'master'), att('r2', '367.xlsx', 'master')], announced: [] });
+    const nl = String.fromCharCode(10);
+    const plan = buildPastePlan({
+      ...base,
+      attachments: [att('r1', '364.xlsx', 'master', null, `Tracking Number${nl}111`), att('r2', '367.xlsx', 'master', null, `Tracking Number${nl}222`)],
+      announced: [],
+    });
     expect(plan.map((b) => b.consNumber)).toEqual(['', '']);
     expect(plan.every((b) => b.blockedReason === null)).toBe(true);
   });
@@ -44,6 +49,22 @@ describe('paste-plan.util', () => {
     const plan = buildPastePlan({ ...base, subsidiaryId: null, attachments: [att('a1', 'X.xlsx', 'master', '1', null)], announced: [], doneKeys: ['master:a1'] });
     expect(plan[0].blockedReason).toBe('No se pudieron leer las guías de este archivo');
     expect(plan[0].done).toBe(true);
+  });
+
+  it('archivos con las mismas guías: se sube solo el más completo', () => {
+    const tsv = (rows: string[][]) => rows.map((r) => r.join(String.fromCharCode(9))).join(String.fromCharCode(10));
+    const simple = tsv([['Tracking Number', 'Recip Name'], ['111', 'A'], ['222', 'B'], ['333', 'C']]);
+    const rich = tsv([['DEL YAQUI RUTA LOCAL 367'], ['Tracking Number', 'Recip Co.', 'Recip Name', 'COD'], ['111', 'X', 'A'], ['222', 'X', 'B'], ['333', 'X', 'C']]);
+    const plan = buildPastePlan({
+      ...base,
+      attachments: [att('s', '367.xlsx', 'master', null, simple), att('r', 'PREALERTA RUTA 367.xlsx', 'master', null, rich), att('o', '368.xlsx', 'master', null, tsv([['Tracking Number'], ['999']]))],
+      announced: [],
+    });
+    const byFile = Object.fromEntries(plan.map((b) => [b.filename, b]));
+    expect(byFile['PREALERTA RUTA 367.xlsx'].blockedReason).toBeNull();
+    expect(byFile['367.xlsx'].blockedReason).toMatch(/Mismas guías que "PREALERTA RUTA 367.xlsx"/);
+    expect(byFile['368.xlsx'].blockedReason).toBeNull();
+    expect(plan[plan.length - 1].filename).toBe('367.xlsx');
   });
 
   it('cobros sin monto (PIP) y vacío', () => {

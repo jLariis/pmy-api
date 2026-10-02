@@ -21,9 +21,10 @@ export function classifyByName(filename: string): AttachmentKind | null {
   if (/\.pdf$/i.test(filename ?? '')) return 'pdf';
   if (!isSpreadsheet(filename)) return 'other';
   const n = ` ${normalize(filename.replace(SPREADSHEET_EXT, ''))} `;
+  // CCP (carta porte) primero: "ccp aereo" / "ccp valor" son cartas porte, no guías.
+  if (/ CCP /.test(n)) return 'ccp';
   if (/ AEREO /.test(n)) return 'master_aereo';
   if (/ VALOR /.test(n)) return 'high_value';
-  if (/ CCP /.test(n)) return 'ccp';
   if (/ F2 /.test(n) || / 31 5 /.test(n)) return 'f2';
   if (/ (CARGA|PREALERTA|YAQUI|SALIDA|MASTER) /.test(n)) return 'master';
   return null;
@@ -131,6 +132,6 @@ export function finalizeKinds(items: ClassifyItem[]): AttachmentKind[] {
     if (it.summary?.looksFedex) return 'master';
     return 'other';
   });
-  const hasMaster = kinds.some((k) => k === 'master' || k === 'master_aereo');
+  const hasMaster = kinds.some((k) => k === 'master' || k === 'master_aereo' || k === 'high_value' || k === 'f2');
   return kinds.map((k) => (k === 'ccp' && hasMaster ? 'ccp_ignored' : k));
 }

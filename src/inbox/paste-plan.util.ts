@@ -23,6 +23,7 @@ export interface PasteBatch {
   rows: number;
   blockedReason: string | null;
   done: boolean; // ya se mandó desde el correo
+  duplicateOf?: string; // key del lote con las mismas guías
 }
 
 export interface PlanAttachment {
@@ -59,6 +60,34 @@ export function cobrosToTsv(cobros: Cobro[]): string {
 }
 
 const rowCount = (tsv: string | null) => (tsv ? Math.max(0, tsv.split('\n').length - 1) : 0);
+
+const TRACKING_HEADER = /^(tracking\s*(number|no\.?)?|gu[ií]a)$/i;
+
+/** Guías (columna de tracking) y número de columnas del encabezado de un TSV. */
+export function tsvTrackings(tsv: string | null): { trackings: Set<string>; columns: number } {
+  const out = new Set<string>();
+  if (!tsv) return { trackings: out, columns: 0 };
+  const rows = tsv.split('\n').map((l) => l.split('\t'));
+  const h = rows.slice(0, 15).findIndex((r) => r.some((c) => TRACKING_HEADER.test(c.trim())));
+  if (h < 0) return { trackings: out, columns: 0 };
+  const col = rows[h].findIndex((c) => TRACKING_HEADER.test(c.trim()));
+  for (const r of rows.slice(h + 1)) {
+    const t = (r[col] ?? '').trim();
+    if (t) out.add(t);
+  }
+  return { trackings: out, columns: rows[h].filter((c) => c.trim()).length };
+}
+
+/** ¿Dos archivos traen prácticamente las mismas guías? (≥ 90 % del menor) */
+function sameShipments(a: Set<string>, b: Set<string>): boolean {
+  if (!a.size || !b.size) return false;
+  const [small, big] = a.size <= b.size ? [a, b] : [b, a];
+  let common = 0;
+  small.forEach((t) => {
+    if (big.has(t)) common++;
+  });
+  return common / small.size >= 0.9;
+}
 
 export function buildPastePlan(i: PlanInput): PasteBatch[] {
   const consDate = hmoDay(i.receivedAt);
@@ -112,7 +141,18 @@ export function buildPastePlan(i: PlanInput): PasteBatch[] {
       done: i.doneKeys.includes(key),
     });
   }
-  // Orden del día: master → aéreo → F2.
+  // Archivos repetidos (p. ej. "367.xlsx" y "PREALERTA … RUTA 367.xlsx"): se deja el más completo.
+  const info = new Map(out.map((b) => [b.key, tsvTrackings(b.raw)]));
+  const ranked = [...out].sort((x, y) => (info.get(y.key)!.columns - info.get(x.key)!.columns) || y.rows - x.rows);
+  const kept: PasteBatch[] = [];
+  for (const b of ranked) {
+    const twin = kept.find((k) => k.kind === b.kind && sameShipments(info.get(k.key)!.trackings, info.get(b.key)!.trackings));
+    if (twin) {
+      b.blockedReason = `Mismas guías que "${twin.filename}" (no se sube dos veces)`;
+      b.duplicateOf = twin.key;
+    } else kept.push(b);
+  }
+  // Orden del día: master → aéreo → F2; los repetidos al final.
   const order: Record<PasteBatchKind, number> = { master: 0, aereo: 1, f2: 2 };
-  return out.sort((x, y) => order[x.kind] - order[y.kind]);
+  return out.sort((x, y) => Number(!!x.duplicateOf) - Number(!!y.duplicateOf) || order[x.kind] - order[y.kind]);
 }

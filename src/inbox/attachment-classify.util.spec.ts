@@ -12,7 +12,7 @@ describe('attachment-classify.util', () => {
   it('clasifica por nombre los adjuntos reales', () => {
     expect(CABO.attachments.map(classifyByName)).toEqual(['master', 'ccp']);
     expect(SUR.attachments.map(classifyByName)).toEqual(['ccp', 'f2', 'master']);
-    expect(AEREO.attachments.map(classifyByName)).toEqual(['high_value', 'master_aereo', 'high_value', 'master_aereo']);
+    expect(AEREO.attachments.map(classifyByName)).toEqual(['ccp', 'ccp', 'high_value', 'master_aereo']);
     expect(CABORCA.attachments.map(classifyByName)).toEqual(['master', 'pdf']);
     expect(classifyByName('reporte.docx')).toBe('other');
     expect(classifyByName('archivo.xlsx')).toBeNull();
