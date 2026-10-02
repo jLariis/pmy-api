@@ -56,6 +56,7 @@ import { TrackingSyncModule } from './tracking-sync/tracking-sync.module';
 import { ImportFilesModule } from './import-files/import-files.module';
 import { ApprovalsModule } from './approvals/approvals.module';
 import { ConsolidadorModule } from './consolidador/consolidador.module';
+import { InboxModule } from './inbox/inbox.module';
 
 @Module({
   imports: [
@@ -133,6 +134,7 @@ import { ConsolidadorModule } from './consolidador/consolidador.module';
     ImportFilesModule,
     ApprovalsModule,
     ConsolidadorModule,
+    InboxModule,
   ],
   controllers: [AppController],
   providers: [
