@@ -1,5 +1,5 @@
 import * as XLSX from 'xlsx';
-import { buildPastePlan, cobrosToTsv, hmoDay, PlanAttachment } from './paste-plan.util';
+import { buildPastePlan, cobrosToTsv, expandWorkbook, hmoDay, PlanAttachment, WorkbookSheet } from './paste-plan.util';
 import { workbookToTsv } from './attachment-classify.util';
 
 const att = (id: string, filename: string, kind: PlanAttachment['kind'], consNumber: string | null = null, tsv: string | null = 'Tracking Number\tRecip Postal\n1\t23450\n2\t23450'): PlanAttachment => ({ id, filename, kind, consNumber, tsv });
@@ -91,6 +91,51 @@ describe('paste-plan.util', () => {
     expect(byFile['367.xlsx'].blockedReason).toMatch(/Mismas guías que "PREALERTA RUTA 367.xlsx"/);
     expect(byFile['368.xlsx'].blockedReason).toBeNull();
     expect(plan[plan.length - 1].filename).toBe('367.xlsx');
+  });
+
+  it('Cabo 09.26.26: un libro con hojas YAQUI / F2 / COD / HV → master (+HV y cobros de COD) y F2 propio', () => {
+    const T = String.fromCharCode(9);
+    const N = String.fromCharCode(10);
+    const tsv = (rows: string[][]) => rows.map((r) => r.join(T)).join(N);
+    const H = ['Tracking No', 'Recip Name', 'Recip Postal'];
+    const sheets: WorkbookSheet[] = [
+      { name: 'YAQUI', role: null, rows: 2, tsv: tsv([H, ['383804508154', 'ROBERTO', '23462'], ['383800342961', 'ALBERTO', '23473']]) },
+      { name: 'F2', role: 'f2', rows: 1, tsv: tsv([H, ['383772962186', 'LEONEL', '23460']]) },
+      {
+        name: 'COD',
+        role: 'cod',
+        rows: 2,
+        tsv: tsv([H, ['383800342961', 'ALBERTO', '23473'], ['Tracking Number', 'Last COMM Scan Date', 'Last COMM Scan Update'], ['383800342961', '09/24/2026', 'COD-COLLECT CASH 2790.0 MXP']]),
+      },
+      { name: 'HV', role: 'hv', rows: 1, tsv: tsv([H, ['519750357632', 'CLAUDIA', '23473']]) },
+    ];
+    const { units, extraPayments } = expandWorkbook({ id: 'w', filename: 'YAQUI CABO 09.26.26 .xlsx', kind: 'master', consNumber: null }, sheets);
+    expect(units.map((u) => `${u.kind}:${u.sheet}`)).toEqual(['master:YAQUI', 'f2:F2', 'high_value:HV']);
+    expect(extraPayments).toContain('COD-COLLECT CASH 2790.0 MXP');
+
+    const plan = buildPastePlan({
+      ...base,
+      attachments: units,
+      announced: [
+        { consNumber: '305820438524', kind: 'master' },
+        { consNumber: '305820614853', kind: 'cod' },
+        { consNumber: '305820283793', kind: 'f2' },
+        { consNumber: '305820303788', kind: 'high_value' },
+      ],
+      extraPaymentsRaw: extraPayments,
+    });
+    expect(plan.map((b) => `${b.kind}:${b.consNumber}:${b.rows}`)).toEqual(['master:305820438524:2', 'f2:305820283793:1']);
+    expect(plan[0].attachmentId).toBe('w');
+    expect(plan[0].filename).toBe('YAQUI CABO 09.26.26 .xlsx · hoja "YAQUI"');
+    expect(plan[0].hvRaw).toContain('519750357632');
+    expect(plan[0].paymentsRaw).toContain('COD-COLLECT CASH 2790.0 MXP');
+    expect(plan[1].hvRaw).toBe('');
+    expect(new Set(plan.map((b) => b.key)).size).toBe(2);
+  });
+
+  it('libro de una sola hoja: sin cambios', () => {
+    const r = expandWorkbook({ id: 'a', filename: 'X.xlsx', kind: 'master', consNumber: '1' }, [{ name: 'Hoja1', role: null, rows: 1, tsv: 'Tracking No' }]);
+    expect(r.units).toEqual([{ id: 'a', filename: 'X.xlsx', kind: 'master', consNumber: '1', tsv: 'Tracking No' }]);
   });
 
   it('cobros sin monto (PIP) y vacío', () => {

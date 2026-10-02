@@ -6,8 +6,8 @@ import { join } from 'path';
 import { InboxMessage } from '../entities/inbox-message.entity';
 import { InboxAttachment } from '../entities/inbox-attachment.entity';
 import { InboxConsolidation } from '../entities/inbox-consolidation.entity';
-import { workbookToTsv } from './attachment-classify.util';
-import { buildPastePlan, PasteBatch, PasteBatchKind, tsvTrackings } from './paste-plan.util';
+import { workbookSheets } from './attachment-classify.util';
+import { buildPastePlan, expandWorkbook, PasteBatch, PasteBatchKind, PlanAttachment, tsvTrackings, WorkbookSheet } from './paste-plan.util';
 import { uploadMinutes } from './zip-coverage.util';
 import { ConsolidationKind } from './inbox.types';
 
@@ -26,7 +26,14 @@ export interface PastePlanResult {
   reason: string | null;
   batches: PlanBatchView[];
   /** Consolidados que el correo anuncia pero sin archivo adjunto (p. ej. COD, F2 o HV solo en el texto). */
-  announcedOnly: { consNumber: string; kind: string; announcedCount: number | null; uploaded: { at: Date; byName: string | null; minutes: number | null } | null }[];
+  announcedOnly: {
+    consNumber: string;
+    kind: string;
+    announcedCount: number | null;
+    /** Hoja del libro master donde ya vienen ("COD" / "HV"); null = no vino archivo. */
+    insideSheet: string | null;
+    uploaded: { at: Date; byName: string | null; minutes: number | null } | null;
+  }[];
 }
 
 /**
@@ -48,26 +55,33 @@ export class InboxPasteService {
     const atts = await this.attRepo.find({ where: { inboxMessageId: messageId } });
     const cons = await this.consRepo.find({ where: { inboxMessageId: messageId } });
 
-    const planAtts = [];
+    // Cada libro se reparte por hojas (YAQUI / F2 / COD / HV) antes de armar los bloques.
+    const planAtts: PlanAttachment[] = [];
+    const sheetRoles = new Set<string>();
+    let extraPayments = '';
     for (const a of atts) {
-      let tsv: string | null = null;
-      if (TSV_KINDS.includes(a.kind)) {
-        try {
-          tsv = workbookToTsv(await fs.readFile(join(process.cwd(), a.storagePath)));
-        } catch {
-          tsv = null;
-        }
+      if (!TSV_KINDS.includes(a.kind)) continue;
+      let sheets: WorkbookSheet[] = [];
+      try {
+        sheets = workbookSheets(await fs.readFile(join(process.cwd(), a.storagePath)));
+      } catch {
+        sheets = [];
       }
-      planAtts.push({ id: a.id, filename: a.filename, kind: a.kind, consNumber: a.consNumber, tsv });
+      const ex = expandWorkbook({ id: a.id, filename: a.filename, kind: a.kind, consNumber: a.consNumber }, sheets);
+      planAtts.push(...ex.units);
+      ex.roles.forEach((r) => sheetRoles.add(r));
+      if (ex.extraPayments) extraPayments = [extraPayments, ex.extraPayments].filter(Boolean).join('\n');
     }
 
+    const legacyKey = (a: InboxAttachment) => `${a.kind === 'master_aereo' ? 'aereo' : a.kind === 'high_value' ? 'master' : a.kind}:${a.id}`;
     const batches = buildPastePlan({
       subsidiaryId: msg.subsidiaryId,
       receivedAt: msg.receivedAt,
       attachments: planAtts,
       announced: cons.map((c) => ({ consNumber: c.consNumber, kind: c.kind })),
       cobros: cons.flatMap((c) => c.cobros ?? []),
-      doneKeys: atts.filter((a) => a.pastedAt).map((a) => `${a.kind === 'master_aereo' ? 'aereo' : a.kind === 'high_value' ? 'master' : a.kind}:${a.id}`),
+      doneKeys: atts.flatMap((a) => [...(a.pastedKeys ?? []), ...(a.pastedAt && !a.pastedKeys?.length ? [legacyKey(a)] : [])]),
+      extraPaymentsRaw: extraPayments,
     });
 
     const userIds = [...new Set(cons.map((c) => c.uploadedById).filter((x): x is string => !!x))];
@@ -107,18 +121,21 @@ export class InboxPasteService {
         consNumber: c.consNumber,
         kind: c.kind,
         announcedCount: c.announcedCount,
+        // COD y HV del texto viajan dentro del master cuando el libro trae su hoja.
+        insideSheet: (c.kind === 'cod' && sheetRoles.has('cod')) || (c.kind === 'high_value' && sheetRoles.has('hv')) ? (c.kind === 'cod' ? 'COD' : 'HV') : null,
         uploaded: c.linkStatus === 'subido' && c.uploadedAt ? { at: c.uploadedAt, byName: nameOf(c.uploadedById), minutes: c.uploadMinutes } : null,
       }));
     return { ready, reason, batches: views, announcedOnly };
   }
 
   /** Registra que un lote se mandó y subió desde el pegado. */
-  async markPasted(messageId: string, body: { attachmentId: string; kind: PasteBatchKind; consNumber: string }, userId: string | null): Promise<void> {
+  async markPasted(messageId: string, body: { attachmentId: string; kind: PasteBatchKind; consNumber: string; key?: string }, userId: string | null): Promise<void> {
     const msg = await this.msgRepo.findOne({ where: { id: messageId } });
     if (!msg) throw new NotFoundException('No se encontró ese correo');
     const att = await this.attRepo.findOne({ where: { id: body?.attachmentId, inboxMessageId: messageId } });
     if (!att) throw new BadRequestException('Ese archivo no es de este correo');
     att.pastedAt = new Date();
+    if (body.key) att.pastedKeys = [...new Set([...(att.pastedKeys ?? []), String(body.key)])];
     att.pastedById = userId;
     await this.attRepo.save(att);
 

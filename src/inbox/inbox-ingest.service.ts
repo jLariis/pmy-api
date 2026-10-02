@@ -273,7 +273,8 @@ export class InboxIngestService {
             announcedCount: c.announcedCount,
             cobros: c === cobrosOwner && cobros.length ? cobros : null,
             receivedAt: msg.receivedAt,
-            linkStatus: 'pendiente',
+            // COD y HV viajan dentro del master: no esperan subida propia.
+            linkStatus: kind === 'cod' || kind === 'high_value' ? 'no_aplica' : 'pendiente',
           }),
         );
       }

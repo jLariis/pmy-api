@@ -54,4 +54,8 @@ export class InboxAttachment {
 
   @Column({ type: 'varchar', length: 36, nullable: true })
   pastedById: string | null;
+
+  /** Bloques de este archivo ya subidos (un libro puede tener hojas YAQUI / F2 / HV). */
+  @Column({ type: 'json', nullable: true })
+  pastedKeys: string[] | null;
 }

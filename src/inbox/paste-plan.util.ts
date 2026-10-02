@@ -27,11 +27,53 @@ export interface PasteBatch {
 }
 
 export interface PlanAttachment {
-  id: string;
+  id: string; // único por unidad (adjunto, o adjunto + hoja)
   filename: string;
   kind: AttachmentKind;
   consNumber: string | null;
   tsv: string | null;
+  /** Adjunto real cuando la unidad es una hoja de un libro con varias. */
+  attachmentId?: string;
+  sheet?: string;
+}
+
+export interface WorkbookSheet {
+  name: string;
+  role: 'master' | 'f2' | 'cod' | 'hv' | 'aereo' | null;
+  tsv: string;
+  rows: number;
+}
+
+/**
+ * Un libro con varias hojas (YAQUI / F2 / COD / HV) se reparte en unidades: la hoja
+ * principal conserva el tipo del archivo; F2 y AÉREO son bloques propios; HV entra como
+ * "valor" (se suma al master marcado como alto valor). COD no es bloque: solo aporta
+ * su tabla de cobros (Last COMM Scan Update) a `extraPayments`.
+ */
+export function expandWorkbook(
+  att: { id: string; filename: string; kind: AttachmentKind; consNumber: string | null },
+  sheets: WorkbookSheet[],
+): { units: PlanAttachment[]; extraPayments: string; roles: Set<string> } {
+  const roles = new Set<string>(sheets.map((s) => s.role ?? 'master'));
+  if (sheets.length <= 1) {
+    return { units: [{ ...att, tsv: sheets[0]?.tsv ?? null }], extraPayments: '', roles };
+  }
+  const units: PlanAttachment[] = [];
+  let extraPayments = '';
+  for (const s of sheets) {
+    const base = { attachmentId: att.id, sheet: s.name, filename: att.filename, tsv: s.tsv, id: `${att.id}::${s.name}` };
+    if (s.role === 'cod') {
+      const lines = s.tsv.split('\n');
+      const h = lines.findIndex((l) => /LAST COMM SCAN UPDATE|COD-COLLECT|^COD\b/i.test(l) && /TRACKING/i.test(l));
+      if (h >= 0) extraPayments = [extraPayments, lines.slice(h).join('\n')].filter(Boolean).join('\n');
+      continue;
+    }
+    if (s.role === 'f2') units.push({ ...base, kind: 'f2', consNumber: null });
+    else if (s.role === 'hv') units.push({ ...base, kind: 'high_value', consNumber: null });
+    else if (s.role === 'aereo') units.push({ ...base, kind: 'master_aereo', consNumber: null });
+    else units.push({ ...base, kind: att.kind, consNumber: att.consNumber });
+  }
+  return { units, extraPayments, roles };
 }
 
 export interface PlanInput {
@@ -42,6 +84,8 @@ export interface PlanInput {
   cobros: Cobro[];
   /** Lotes ya mandados al pegado desde este correo (key). */
   doneKeys: string[];
+  /** Cobros que vienen en una hoja COD del libro (TSV con encabezado). */
+  extraPaymentsRaw?: string;
 }
 
 const TZ_OFFSET_MS = 7 * 3_600_000; // Hermosillo, UTC−7 fijo
@@ -101,7 +145,7 @@ function sameShipments(a: Set<string>, b: Set<string>): boolean {
 
 export function buildPastePlan(i: PlanInput): PasteBatch[] {
   const consDate = hmoDay(i.receivedAt);
-  const paymentsRaw = cobrosToTsv(i.cobros);
+  const paymentsRaw = [cobrosToTsv(i.cobros), i.extraPaymentsRaw ?? ''].filter(Boolean).join('\n');
   const hvRaw = i.attachments
     .filter((a) => a.kind === 'high_value' && a.tsv)
     .map((a) => a.tsv as string)
@@ -146,8 +190,8 @@ export function buildPastePlan(i: PlanInput): PasteBatch[] {
     out.push({
       key,
       kind,
-      attachmentId: a.id,
-      filename: a.filename,
+      attachmentId: a.attachmentId ?? a.id,
+      filename: a.sheet ? `${a.filename} · hoja "${a.sheet}"` : a.filename,
       subsidiaryId: i.subsidiaryId,
       consNumber,
       consDate,

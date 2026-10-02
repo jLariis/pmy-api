@@ -84,7 +84,7 @@ export class InboxController {
 
   @Post('messages/:id/pasted')
   @ApiOperation({ summary: 'Registrar que un lote del correo se subió desde el pegado' })
-  async pasted(@Param('id') id: string, @Body() body: { attachmentId: string; kind: PasteBatchKind; consNumber: string }, @Req() req: any) {
+  async pasted(@Param('id') id: string, @Body() body: { attachmentId: string; kind: PasteBatchKind; consNumber: string; key?: string }, @Req() req: any) {
     await this.assertCanSee(req, id);
     await this.paste.markPasted(id, body, req?.user?.userId ?? null);
     return { ok: true };
