@@ -24,6 +24,7 @@ export interface PasteBatch {
   blockedReason: string | null;
   done: boolean; // ya se mandó desde el correo
   duplicateOf?: string; // key del lote con las mismas guías
+  sheet?: string; // hoja del libro (cuando el archivo trae varias)
 }
 
 export interface PlanAttachment {
@@ -191,6 +192,7 @@ export function buildPastePlan(i: PlanInput): PasteBatch[] {
       key,
       kind,
       attachmentId: a.attachmentId ?? a.id,
+      sheet: a.sheet,
       filename: a.sheet ? `${a.filename} · hoja "${a.sheet}"` : a.filename,
       subsidiaryId: i.subsidiaryId,
       consNumber,
