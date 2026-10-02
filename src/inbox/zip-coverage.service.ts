@@ -19,17 +19,25 @@ export class ZipCoverageService {
     private readonly ds: DataSource,
   ) {}
 
-  async rebuildFromHistory(): Promise<{ pairs: number }> {
+  /**
+   * Recalcula desde el historial RECIENTE (ventana de `days`, por defecto 90): la
+   * operación cambia (p. ej. los CP de Caborca eran de "Hermosillo Ruta Extendida"
+   * hasta jun-2026), así que la cobertura debe reflejar quién atiende hoy cada CP.
+   */
+  async rebuildFromHistory(days = Number(process.env.INBOX_COVERAGE_DAYS ?? 90)): Promise<{ pairs: number; days: number }> {
     const sql = (table: string) => `
       SELECT recipientZip AS zip, subsidiaryId, UPPER(TRIM(recipientCity)) AS city, COUNT(*) AS n,
              MIN(createdAt) AS firstSeen, MAX(createdAt) AS lastSeen
       FROM \`${table}\`
       WHERE subsidiaryId IS NOT NULL AND recipientZip IS NOT NULL AND recipientZip <> ''
+        AND createdAt >= DATE_SUB(NOW(), INTERVAL ? DAY)
       GROUP BY recipientZip, subsidiaryId, UPPER(TRIM(recipientCity))`;
     const raw: any[] = [
-      ...(await this.ds.query(sql('shipment'))),
-      ...(await this.ds.query(sql('charge_shipment'))),
+      ...(await this.ds.query(sql('shipment'), [days])),
+      ...(await this.ds.query(sql('charge_shipment'), [days])),
     ];
+    // Lo que salió de la ventana deja de contar (sin borrar filas ni tocar su status).
+    await this.ds.query(`UPDATE subsidiary_zip_coverage SET shipmentCount = 0 WHERE source = 'historial'`);
     const rows: ZipCountRow[] = raw.map((r) => ({
       zip: r.zip,
       subsidiaryId: r.subsidiaryId,
@@ -46,15 +54,15 @@ export class ZipCoverageService {
       await this.ds.query(
         `INSERT INTO subsidiary_zip_coverage (id, zip, subsidiaryId, city, shipmentCount, share, source, status, firstSeenAt, lastSeenAt)
          VALUES ${values}
-         ON DUPLICATE KEY UPDATE city = VALUES(city), shipmentCount = GREATEST(shipmentCount, VALUES(shipmentCount)),
+         ON DUPLICATE KEY UPDATE city = VALUES(city), shipmentCount = VALUES(shipmentCount),
            firstSeenAt = LEAST(COALESCE(firstSeenAt, VALUES(firstSeenAt)), COALESCE(VALUES(firstSeenAt), firstSeenAt)),
            lastSeenAt = GREATEST(COALESCE(lastSeenAt, VALUES(lastSeenAt)), COALESCE(VALUES(lastSeenAt), lastSeenAt))`,
         params,
       );
     }
     await this.recomputeShares();
-    this.logger.log(`🗺️ cobertura CP recalculada: ${shares.length} pares CP–sucursal`);
-    return { pairs: shares.length };
+    this.logger.log(`🗺️ cobertura CP recalculada (${days} días): ${shares.length} pares CP–sucursal`);
+    return { pairs: shares.length, days };
   }
 
   /** Recalcula la proporción de cada sucursal dentro de su CP (todos o solo los dados). */
