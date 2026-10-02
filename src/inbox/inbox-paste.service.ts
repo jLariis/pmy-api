@@ -7,7 +7,7 @@ import { InboxMessage } from '../entities/inbox-message.entity';
 import { InboxAttachment } from '../entities/inbox-attachment.entity';
 import { InboxConsolidation } from '../entities/inbox-consolidation.entity';
 import { workbookSheets } from './attachment-classify.util';
-import { buildPastePlan, expandWorkbook, PasteBatch, PasteBatchKind, PlanAttachment, tsvTrackings, WorkbookSheet } from './paste-plan.util';
+import { buildPastePlan, expandWorkbook, PasteBatch, PasteBatchKind, PlanAttachment, tsvTrackings, unmatchedCobros, WorkbookSheet } from './paste-plan.util';
 import { uploadMinutes } from './zip-coverage.util';
 import { ConsolidationKind } from './inbox.types';
 
@@ -25,6 +25,8 @@ export interface PastePlanResult {
   ready: boolean;
   reason: string | null;
   batches: PlanBatchView[];
+  /** Guías de cobros del correo que no están en ningún archivo (no se pueden aplicar). */
+  unmatchedCobros: string[];
   /** Consolidados que el correo anuncia pero sin archivo adjunto (p. ej. COD, F2 o HV solo en el texto). */
   announcedOnly: {
     consNumber: string;
@@ -125,7 +127,8 @@ export class InboxPasteService {
         insideSheet: (c.kind === 'cod' && sheetRoles.has('cod')) || (c.kind === 'high_value' && sheetRoles.has('hv')) ? (c.kind === 'cod' ? 'COD' : 'HV') : null,
         uploaded: c.linkStatus === 'subido' && c.uploadedAt ? { at: c.uploadedAt, byName: nameOf(c.uploadedById), minutes: c.uploadMinutes } : null,
       }));
-    return { ready, reason, batches: views, announcedOnly };
+    const orphanCobros = unmatchedCobros({ cobros: cons.flatMap((c) => c.cobros ?? []), extraPaymentsRaw: extraPayments, attachments: planAtts });
+    return { ready, reason, batches: views, announcedOnly, unmatchedCobros: orphanCobros };
   }
 
   /** Registra que un lote se mandó y subió desde el pegado. */

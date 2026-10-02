@@ -1,5 +1,5 @@
 import * as XLSX from 'xlsx';
-import { buildPastePlan, cobrosToTsv, expandWorkbook, hmoDay, PlanAttachment, WorkbookSheet } from './paste-plan.util';
+import { buildPastePlan, cobrosToTsv, expandWorkbook, hmoDay, PlanAttachment, unmatchedCobros, WorkbookSheet } from './paste-plan.util';
 import { workbookToTsv } from './attachment-classify.util';
 
 const att = (id: string, filename: string, kind: PlanAttachment['kind'], consNumber: string | null = null, tsv: string | null = 'Tracking Number\tRecip Postal\n1\t23450\n2\t23450'): PlanAttachment => ({ id, filename, kind, consNumber, tsv });
@@ -10,7 +10,7 @@ describe('paste-plan.util', () => {
     expect(hmoDay(new Date('2026-10-02T02:32:00Z'))).toBe('2026-10-01');
   });
 
-  it('Cabo: master con su número y F2 con el suyo; CCP no genera lote; cobros a ambos', () => {
+  it('Cabo: master con su número y F2 con el suyo; CCP no genera lote; un cobro de guía ajena no entra', () => {
     const plan = buildPastePlan({
       ...base,
       attachments: [att('a1', 'CARGA_305821242296_YAQUI_SJDA.xlsx', 'master', '305821242296'), att('a2', 'CCP.xlsx', 'ccp_ignored'), att('a3', 'F2.xlsx', 'f2')],
@@ -19,8 +19,8 @@ describe('paste-plan.util', () => {
     });
     expect(plan.map((b) => `${b.kind}:${b.consNumber}`)).toEqual(['master:305821242296', 'f2:305821512729']);
     expect(plan[0]).toMatchObject({ consDate: '2026-10-01', isAereo: false, rows: 2, blockedReason: null });
-    expect(plan[0].paymentsRaw).toContain('383905050153\t09/28/2026\tCOD-COLLECT CASH 2210 MXP');
-    expect(plan[1].paymentsRaw).toBe(plan[0].paymentsRaw);
+    // La guía del cobro (383905050153) no está en estos archivos: no se manda a ningún bloque.
+    expect(plan[0].paymentsRaw).toBe('');
   });
 
   it('Aéreo real (01/10 Cabo): número de la fila meta; las 17 de valor van completas en el mismo lote', () => {
@@ -131,6 +131,35 @@ describe('paste-plan.util', () => {
     expect(plan[0].paymentsRaw).toContain('COD-COLLECT CASH 2790.0 MXP');
     expect(plan[1].hvRaw).toBe('');
     expect(new Set(plan.map((b) => b.key)).size).toBe(2);
+  });
+
+  it('cada bloque recibe SOLO los cobros de sus guías; repetidos una vez; los ajenos quedan aparte', () => {
+    const T = String.fromCharCode(9);
+    const N = String.fromCharCode(10);
+    const tsv = (rows: string[][]) => rows.map((r) => r.join(T)).join(N);
+    const master = tsv([['Tracking No', 'Recip Name'], ['111111111111', 'A'], ['222222222222', 'B']]);
+    const f2 = tsv([['Tracking No', 'Recip Name'], ['333333333333', 'C']]);
+    const codSheet = tsv([
+      ['Tracking Number', 'Last COMM Scan Date', 'Last COMM Scan Update'],
+      ['222222222222', '09/24/2026', 'COD-COLLECT CASH 500.0 MXP'], // repetido con el del texto
+      ['333333333333', '09/24/2026', 'COD-COLLECT CASH 700.0 MXP'],
+    ]);
+    const input = {
+      ...base,
+      attachments: [att('m', 'CARGA.xlsx', 'master' as const, '305821242296', master), att('f', 'F2.xlsx', 'f2' as const, null, f2)],
+      announced: [{ consNumber: '305821512729', kind: 'f2' }],
+      cobros: [
+        { trackingNumber: '111111111111', date: '09/28/2026', concept: 'COD-COLLECT CASH', amount: 100 },
+        { trackingNumber: '222222222222', date: '09/28/2026', concept: 'COD-COLLECT CASH', amount: 500 },
+        { trackingNumber: '999999999999', date: '09/28/2026', concept: 'FTC-COLLECT CASH', amount: 50 },
+      ],
+      extraPaymentsRaw: codSheet,
+    };
+    const plan = buildPastePlan(input);
+    const cobrosOf = (b: { paymentsRaw: string }) => b.paymentsRaw.split(N).slice(1).map((l) => l.split(T)[0]);
+    expect(cobrosOf(plan[0])).toEqual(['111111111111', '222222222222']);
+    expect(cobrosOf(plan[1])).toEqual(['333333333333']);
+    expect(unmatchedCobros(input)).toEqual(['999999999999']);
   });
 
   it('libro de una sola hoja: sin cambios', () => {

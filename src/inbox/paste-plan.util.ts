@@ -102,6 +102,38 @@ export function cobrosToTsv(cobros: Cobro[]): string {
   return lines.join('\n');
 }
 
+const COBRO_HEADER = 'Tracking Number\tLast COMM Scan Date\tLast COMM Scan Update';
+
+/**
+ * Lista única de cobros [guía, fecha, concepto]: primero los del texto del correo y
+ * luego los de hojas COD (sin repetir guía). Solo filas con concepto de cobro.
+ */
+export function collectCobroRows(cobros: Cobro[], extra: string): string[][] {
+  const out = new Map<string, string[]>();
+  for (const c of cobros) out.set(c.trackingNumber, [c.trackingNumber, c.date ?? '', c.amount != null ? `${c.concept} ${c.amount} MXP` : c.concept]);
+  let idx: { t: number; d: number; u: number } | null = null;
+  for (const line of (extra ?? '').split('\n')) {
+    const cells = line.split('\t').map((s) => s.trim());
+    if (cells.some((c) => /^tracking/i.test(c))) {
+      idx = { t: cells.findIndex((c) => /^tracking/i.test(c)), d: cells.findIndex((c) => /date/i.test(c)), u: cells.findIndex((c) => /update|^cod$/i.test(c)) };
+      continue;
+    }
+    if (!idx || idx.u < 0) continue;
+    const t = cells[idx.t] ?? '';
+    const u = cells[idx.u] ?? '';
+    if (!/^\d{9,}$/.test(t) || !u || out.has(t)) continue;
+    out.set(t, [t, idx.d >= 0 ? cells[idx.d] ?? '' : '', u]);
+  }
+  return [...out.values()];
+}
+
+/** Cobros del correo cuya guía no está en ninguno de los archivos (no se pueden aplicar). */
+export function unmatchedCobros(i: Pick<PlanInput, 'cobros' | 'extraPaymentsRaw' | 'attachments'>): string[] {
+  const all = new Set<string>();
+  for (const a of i.attachments) tsvTrackings(a.tsv).trackings.forEach((t) => all.add(t));
+  return collectCobroRows(i.cobros, i.extraPaymentsRaw ?? '').map((r) => r[0]).filter((t) => !all.has(t));
+}
+
 const rowCount = (tsv: string | null) => (tsv ? Math.max(0, tsv.split('\n').length - 1) : 0);
 
 /** Número de consolidado en las filas ANTES del encabezado (fila "meta" de FedEx). */
@@ -146,7 +178,14 @@ function sameShipments(a: Set<string>, b: Set<string>): boolean {
 
 export function buildPastePlan(i: PlanInput): PasteBatch[] {
   const consDate = hmoDay(i.receivedAt);
-  const paymentsRaw = [cobrosToTsv(i.cobros), i.extraPaymentsRaw ?? ''].filter(Boolean).join('\n');
+  const cobroRows = collectCobroRows(i.cobros, i.extraPaymentsRaw ?? '');
+  /** Cobros que pertenecen a las guías del bloque (si no, el pegado los agregaría como guías sueltas). */
+  const cobrosFor = (...tsvs: (string | null)[]) => {
+    const own = new Set<string>();
+    for (const t of tsvs) tsvTrackings(t).trackings.forEach((x) => own.add(x));
+    const rows = cobroRows.filter((r) => own.has(r[0]));
+    return rows.length ? [COBRO_HEADER, ...rows.map((r) => r.join('\t'))].join('\n') : '';
+  };
   const hvRaw = i.attachments
     .filter((a) => a.kind === 'high_value' && a.tsv)
     .map((a) => a.tsv as string)
@@ -199,7 +238,7 @@ export function buildPastePlan(i: PlanInput): PasteBatch[] {
       consDate,
       isAereo: kind === 'aereo',
       raw: a.tsv ?? '',
-      paymentsRaw,
+      paymentsRaw: cobrosFor(a.tsv, a.id === hvOwnerId ? hvRaw : null),
       hvRaw: a.id === hvOwnerId ? hvRaw : '',
       rows: tsvTrackings(a.tsv).trackings.size || rowCount(a.tsv),
       blockedReason,
