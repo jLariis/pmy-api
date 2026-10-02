@@ -40,8 +40,6 @@ export interface PlanInput {
   attachments: PlanAttachment[];
   announced: { consNumber: string; kind: string }[];
   cobros: Cobro[];
-  /** Master ya conocido de esa sucursal ese día (subido o anunciado por otro correo). */
-  dayMasterConsNumber: string | null;
   /** Lotes ya mandados al pegado desde este correo (key). */
   doneKeys: string[];
 }
@@ -60,6 +58,18 @@ export function cobrosToTsv(cobros: Cobro[]): string {
 }
 
 const rowCount = (tsv: string | null) => (tsv ? Math.max(0, tsv.split('\n').length - 1) : 0);
+
+/** Número de consolidado en las filas ANTES del encabezado (fila "meta" de FedEx). */
+export function tsvMetaConsNumber(tsv: string | null): string | null {
+  if (!tsv) return null;
+  const lines = tsv.split('\n');
+  const h = lines.slice(0, 15).findIndex((l) => l.split('\t').some((c) => TRACKING_HEADER.test(c.trim())));
+  for (const l of lines.slice(0, h < 0 ? 0 : h)) {
+    const m = l.match(/(?<!\d)(\d{12,15})(?!\d)/);
+    if (m) return m[1];
+  }
+  return null;
+}
 
 const TRACKING_HEADER = /^(tracking\s*(number|no\.?)?|gu[ií]a)$/i;
 
@@ -99,6 +109,13 @@ export function buildPastePlan(i: PlanInput): PasteBatch[] {
   const announcedMaster = i.announced.find((a) => a.kind === 'master')?.consNumber ?? null;
   const announcedF2 = i.announced.find((a) => a.kind === 'f2')?.consNumber ?? null;
   const masterFiles = i.attachments.filter((a) => a.kind === 'master');
+  // Las guías de valor van COMPLETAS en un solo lote: el aéreo si hay; si no, el primer master;
+  // si el correo solo trae "valor", ese archivo es su propio lote.
+  const hvOwnerId =
+    i.attachments.find((a) => a.kind === 'master_aereo')?.id ??
+    masterFiles[0]?.id ??
+    i.attachments.find((a) => a.kind === 'high_value' && a.tsv)?.id ??
+    null;
   const out: PasteBatch[] = [];
 
   for (const a of i.attachments) {
@@ -106,19 +123,21 @@ export function buildPastePlan(i: PlanInput): PasteBatch[] {
     if (a.kind === 'master') kind = 'master';
     else if (a.kind === 'master_aereo') kind = 'aereo';
     else if (a.kind === 'f2') kind = 'f2';
+    else if (a.kind === 'high_value' && a.id === hvOwnerId) kind = 'master';
     if (!kind) continue;
 
     let consNumber = '';
     let blockedReason: string | null = null;
+    // Número de consolidado: el de la primera fila del archivo (FedEx lo pone ahí:
+    // "305821338193 … SALIDA AEREA"), luego el del nombre, luego el del cuerpo del correo.
+    // Si no aparece en ningún lado, el pegado lo pide.
+    const own = tsvMetaConsNumber(a.tsv) ?? a.consNumber;
     if (kind === 'master') {
-      // Un solo master en el correo → toma el número anunciado; si hay varios, el del archivo.
-      consNumber = a.consNumber ?? (masterFiles.length === 1 ? announcedMaster ?? '' : '');
+      consNumber = own ?? (masterFiles.length === 1 ? announcedMaster ?? '' : '');
     } else if (kind === 'f2') {
-      consNumber = announcedF2 ?? a.consNumber ?? announcedMaster ?? '';
+      consNumber = announcedF2 ?? own ?? announcedMaster ?? '';
     } else {
-      // Aéreo: va al master de esa sucursal ese día.
-      consNumber = announcedMaster ?? i.dayMasterConsNumber ?? '';
-      if (!consNumber) blockedReason = 'Esperando el master del día de esta sucursal';
+      consNumber = own ?? (!masterFiles.length ? announcedMaster ?? '' : '');
     }
     if (!a.tsv) blockedReason = 'No se pudieron leer las guías de este archivo';
     if (!i.subsidiaryId) blockedReason = blockedReason ?? 'Falta confirmar la sucursal';
@@ -135,8 +154,8 @@ export function buildPastePlan(i: PlanInput): PasteBatch[] {
       isAereo: kind === 'aereo',
       raw: a.tsv ?? '',
       paymentsRaw,
-      hvRaw: kind === 'f2' ? '' : hvRaw,
-      rows: rowCount(a.tsv),
+      hvRaw: a.id === hvOwnerId ? hvRaw : '',
+      rows: tsvTrackings(a.tsv).trackings.size || rowCount(a.tsv),
       blockedReason,
       done: i.doneKeys.includes(key),
     });

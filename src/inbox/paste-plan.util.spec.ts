@@ -3,7 +3,7 @@ import { buildPastePlan, cobrosToTsv, hmoDay, PlanAttachment } from './paste-pla
 import { workbookToTsv } from './attachment-classify.util';
 
 const att = (id: string, filename: string, kind: PlanAttachment['kind'], consNumber: string | null = null, tsv: string | null = 'Tracking Number\tRecip Postal\n1\t23450\n2\t23450'): PlanAttachment => ({ id, filename, kind, consNumber, tsv });
-const base = { subsidiaryId: 'cabo', receivedAt: new Date('2026-10-02T02:32:00Z'), cobros: [], dayMasterConsNumber: null, doneKeys: [] as string[] };
+const base = { subsidiaryId: 'cabo', receivedAt: new Date('2026-10-02T02:32:00Z'), cobros: [], doneKeys: [] as string[] };
 
 describe('paste-plan.util', () => {
   it('fecha de Hermosillo (UTC−7)', () => {
@@ -23,15 +23,41 @@ describe('paste-plan.util', () => {
     expect(plan[1].paymentsRaw).toBe(plan[0].paymentsRaw);
   });
 
-  it('Aéreo sin número: usa el master del día; si no hay, queda bloqueado', () => {
-    const attachments = [att('v1', 'salida valor.xlsx', 'high_value'), att('x1', 'salida aereo.xlsx', 'master_aereo')];
-    const blocked = buildPastePlan({ ...base, attachments, announced: [] });
-    expect(blocked).toHaveLength(1);
-    expect(blocked[0]).toMatchObject({ kind: 'aereo', consNumber: '', isAereo: true, blockedReason: 'Esperando el master del día de esta sucursal' });
-    expect(blocked[0].hvRaw).toContain('Tracking Number');
+  it('Aéreo real (01/10 Cabo): número de la fila meta; las 17 de valor van completas en el mismo lote', () => {
+    const T = String.fromCharCode(9);
+    const N = String.fromCharCode(10);
+    const tsv = (rows: string[][]) => rows.map((r) => r.join(T)).join(N);
+    const aereo = tsv([
+      ['', '305821338193', 'ALBERTO GUTIERREZ', 'SALIDA AEREA', '', '', '', '10/1/26'],
+      ['', 'Tracking No', 'Recip Name', 'Recip Addr', 'Recip Postal', 'Commit Date'],
+      ['1', '383495230427', '', '', '23406', '10/02/2026'],
+    ]);
+    const valor = tsv([
+      ['', '305821531470', 'ALBERTO GUTIERREZ', 'VALOR', '', '', '', '10/1/2026'],
+      ['', 'Tracking No', 'Recip Name', 'Recip Addr', 'Recip Postal', 'Commit Date'],
+      ['1', '383954974418', 'MARIA DE JESUS CORONEL LOPEZ', 'CALLE PERCEBES Y PLAYA #9', '23473', '10/02/2026'],
+    ]);
+    const plan = buildPastePlan({
+      ...base,
+      attachments: [att('c1', 'ccp aereo 01 oct.xlsx', 'ccp_ignored', null, null), att('v1', 'salida valor 10 oct.ods', 'high_value', null, valor), att('x1', 'salida aereo 01 oct.xlsx', 'master_aereo', null, aereo)],
+      announced: [],
+    });
+    expect(plan).toHaveLength(1);
+    expect(plan[0]).toMatchObject({ kind: 'aereo', consNumber: '305821338193', isAereo: true, rows: 1, blockedReason: null });
+    expect(plan[0].hvRaw).toContain('383954974418');
+    expect(plan[0].hvRaw).toContain('MARIA DE JESUS CORONEL LOPEZ');
+  });
 
-    const ok = buildPastePlan({ ...base, attachments, announced: [], dayMasterConsNumber: '305821242296' });
-    expect(ok[0]).toMatchObject({ consNumber: '305821242296', blockedReason: null });
+  it('Aéreo sin número en ningún lado: no se bloquea, el pegado lo pide', () => {
+    const plan = buildPastePlan({ ...base, attachments: [att('x1', 'salida aereo.xlsx', 'master_aereo')], announced: [] });
+    expect(plan[0]).toMatchObject({ consNumber: '', blockedReason: null });
+  });
+
+  it('Correo solo con "valor": ese archivo es su propio lote', () => {
+    const plan = buildPastePlan({ ...base, attachments: [att('v1', 'salida valor.xlsx', 'high_value', '305821531470')], announced: [] });
+    expect(plan).toHaveLength(1);
+    expect(plan[0]).toMatchObject({ kind: 'master', consNumber: '305821531470' });
+    expect(plan[0].hvRaw).toBe(plan[0].raw);
   });
 
   it('Varios master sin número (rutas locales): el usuario captura el consolidado', () => {

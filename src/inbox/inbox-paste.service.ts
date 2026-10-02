@@ -7,7 +7,7 @@ import { InboxMessage } from '../entities/inbox-message.entity';
 import { InboxAttachment } from '../entities/inbox-attachment.entity';
 import { InboxConsolidation } from '../entities/inbox-consolidation.entity';
 import { workbookToTsv } from './attachment-classify.util';
-import { buildPastePlan, hmoDay, PasteBatch, PasteBatchKind } from './paste-plan.util';
+import { buildPastePlan, PasteBatch, PasteBatchKind } from './paste-plan.util';
 import { uploadMinutes } from './zip-coverage.util';
 import { ConsolidationKind } from './inbox.types';
 
@@ -32,26 +32,6 @@ export class InboxPasteService {
     @InjectRepository(InboxConsolidation) private readonly consRepo: Repository<InboxConsolidation>,
     private readonly ds: DataSource,
   ) {}
-
-  /** Master de esa sucursal ese día: primero el subido al sistema, luego el anunciado por otro correo. */
-  private async dayMaster(subsidiaryId: string | null, day: string): Promise<string | null> {
-    if (!subsidiaryId) return null;
-    const uploaded: any[] = await this.ds.query(
-      `SELECT consNumber FROM consolidated
-       WHERE subsidiaryId = ? AND active = 1 AND consNumber IS NOT NULL AND consNumber <> ''
-         AND DATE(date) = ? ORDER BY createdAt DESC LIMIT 1`,
-      [subsidiaryId, day],
-    );
-    if (uploaded[0]?.consNumber) return uploaded[0].consNumber;
-    const start = new Date(`${day}T07:00:00.000Z`);
-    const end = new Date(start.getTime() + 86_400_000);
-    const announced = await this.consRepo
-      .createQueryBuilder('c')
-      .where('c.subsidiaryId = :s AND c.kind = :k AND c.receivedAt >= :a AND c.receivedAt < :b', { s: subsidiaryId, k: 'master', a: start, b: end })
-      .orderBy('c.receivedAt', 'DESC')
-      .getOne();
-    return announced?.consNumber ?? null;
-  }
 
   async plan(messageId: string): Promise<PastePlanResult> {
     const msg = await this.msgRepo.findOne({ where: { id: messageId } });
@@ -78,8 +58,7 @@ export class InboxPasteService {
       attachments: planAtts,
       announced: cons.map((c) => ({ consNumber: c.consNumber, kind: c.kind })),
       cobros: cons.flatMap((c) => c.cobros ?? []),
-      dayMasterConsNumber: await this.dayMaster(msg.subsidiaryId, hmoDay(msg.receivedAt)),
-      doneKeys: atts.filter((a) => a.pastedAt).map((a) => `${a.kind === 'master_aereo' ? 'aereo' : a.kind}:${a.id}`),
+      doneKeys: atts.filter((a) => a.pastedAt).map((a) => `${a.kind === 'master_aereo' ? 'aereo' : a.kind === 'high_value' ? 'master' : a.kind}:${a.id}`),
     });
 
     const ready = msg.status === 'confirmado' || msg.status === 'detectado';
