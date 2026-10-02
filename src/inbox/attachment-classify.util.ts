@@ -87,6 +87,36 @@ export function summarizeWorkbook(buf: Buffer): SheetSummary {
   return out;
 }
 
+/**
+ * Convierte el libro a texto TSV, tal como quedaría al copiar la hoja de Excel y
+ * pegarla en "Pegar FedEx". Elige la hoja con más filas bajo un encabezado FedEx.
+ */
+export function workbookToTsv(buf: Buffer): string | null {
+  let wb: XLSX.WorkBook;
+  try {
+    wb = XLSX.read(buf, { type: 'buffer', cellFormula: false, cellHTML: false, cellDates: false, sheetRows: MAX_ROWS + 20 });
+  } catch {
+    return null;
+  }
+  let best: { rows: string[][]; score: number } | null = null;
+  for (const name of wb.SheetNames) {
+    const rows = (XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, defval: '', blankrows: false, raw: false }) as unknown[][]).map((r) =>
+      r.map((c) => String(c ?? '').replace(/[\t\r\n]+/g, ' ').trim()),
+    );
+    const headerIdx = rows.slice(0, 15).findIndex((r) => r.some((c) => headerAliases[headerKey(c)] === 'trackingNumber'));
+    if (headerIdx < 0) continue;
+    const score = rows.length - headerIdx - 1;
+    if (!best || score > best.score) best = { rows, score };
+  }
+  if (!best || best.score <= 0) return null;
+  const trimEnd = (r: string[]) => {
+    let n = r.length;
+    while (n > 0 && r[n - 1] === '') n--;
+    return r.slice(0, n);
+  };
+  return best.rows.map((r) => trimEnd(r).join('\t')).join('\n');
+}
+
 export interface ClassifyItem {
   filename: string;
   byName: AttachmentKind | null;

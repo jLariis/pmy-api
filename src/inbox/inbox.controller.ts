@@ -10,6 +10,8 @@ import { InboxIngestService } from './inbox-ingest.service';
 import { InboxLinkService } from './inbox-link.service';
 import { ZipCoverageService } from './zip-coverage.service';
 import { AttachmentKind } from './inbox.types';
+import { InboxPasteService } from './inbox-paste.service';
+import { PasteBatchKind } from './paste-plan.util';
 
 /**
  * Bandeja de correos (sistemas@; FedEx y, más adelante, DHL): lista, detalle, revisión, tablero
@@ -27,6 +29,7 @@ export class InboxController {
     private readonly ingest: InboxIngestService,
     private readonly link: InboxLinkService,
     private readonly coverage: ZipCoverageService,
+    private readonly paste: InboxPasteService,
   ) {}
 
   private isSuper(req: any): boolean {
@@ -70,6 +73,21 @@ export class InboxController {
   async ignore(@Param('id') id: string, @Body() body: { reason?: string }, @Req() req: any) {
     await this.assertCanSee(req, id);
     return this.review.ignore(id, body?.reason);
+  }
+
+  @Get('messages/:id/paste-plan')
+  @ApiOperation({ summary: 'Lotes del correo para abrir el "Pegar FedEx" ya lleno' })
+  async pastePlan(@Param('id') id: string, @Req() req: any) {
+    await this.assertCanSee(req, id);
+    return this.paste.plan(id);
+  }
+
+  @Post('messages/:id/pasted')
+  @ApiOperation({ summary: 'Registrar que un lote del correo se subió desde el pegado' })
+  async pasted(@Param('id') id: string, @Body() body: { attachmentId: string; kind: PasteBatchKind; consNumber: string }, @Req() req: any) {
+    await this.assertCanSee(req, id);
+    await this.paste.markPasted(id, body, req?.user?.userId ?? null);
+    return { ok: true };
   }
 
   @Get('attachments/:id/download')

@@ -44,7 +44,7 @@ export class InboxConsolidation {
   uploadedById: string | null;
 
   @Column({ type: 'varchar', length: 10, nullable: true })
-  uploadedVia: 'manual' | 'auto' | null;
+  uploadedVia: 'manual' | 'auto' | 'correo' | null;
 
   @Column({ type: 'int', nullable: true })
   uploadMinutes: number | null;

@@ -47,4 +47,11 @@ export class InboxAttachment {
 
   @Column({ type: 'varchar', length: 255, nullable: true })
   parseError: string | null;
+
+  /** Cuándo se mandó este archivo al "Pegar FedEx" desde la bandeja. */
+  @Column({ type: 'datetime', nullable: true })
+  pastedAt: Date | null;
+
+  @Column({ type: 'varchar', length: 36, nullable: true })
+  pastedById: string | null;
 }

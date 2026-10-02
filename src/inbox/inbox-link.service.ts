@@ -43,7 +43,7 @@ export class InboxLinkService {
       if (!h) continue;
       p.uploadedAt = h.at;
       p.uploadedById = h.byId;
-      p.uploadedVia = 'manual';
+      p.uploadedVia = p.uploadedVia ?? 'manual';
       p.uploadMinutes = uploadMinutes(p.receivedAt, h.at);
       p.linkStatus = 'subido';
       await this.repo.save(p);

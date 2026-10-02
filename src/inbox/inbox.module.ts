@@ -16,6 +16,7 @@ import { InboxLinkService } from './inbox-link.service';
 import { InboxReviewService } from './inbox-review.service';
 import { InboxQueryService } from './inbox-query.service';
 import { InboxCrons } from './inbox.crons';
+import { InboxPasteService } from './inbox-paste.service';
 
 /** Bandeja de correos FedEx: lectura IMAP, detección de sucursal y recibido vs subido. */
 @Module({
@@ -40,6 +41,7 @@ import { InboxCrons } from './inbox.crons';
     InboxReviewService,
     InboxQueryService,
     InboxCrons,
+    InboxPasteService,
   ],
   exports: [InboxIngestService, KnowledgeService, ZipCoverageService],
 })

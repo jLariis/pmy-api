@@ -195,6 +195,7 @@ export class InboxQueryService {
         receivedAt: r.receivedAt,
         uploadedAt: r.uploadedAt,
         uploadedByName: r.uploadedById ? users.get(r.uploadedById) ?? null : null,
+        uploadedVia: r.uploadedVia,
         linkStatus: r.linkStatus,
         minutes: r.linkStatus === 'subido' ? r.uploadMinutes : Math.max(0, Math.round((now - r.receivedAt.getTime()) / 60_000)),
       });
