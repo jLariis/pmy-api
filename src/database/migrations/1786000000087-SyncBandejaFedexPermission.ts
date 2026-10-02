@@ -3,8 +3,8 @@ import { randomUUID } from 'crypto';
 import { RBAC_PERMISSIONS } from '../../auth/rbac/permission-catalog';
 
 /**
- * Sincroniza el catálogo de permisos para dar de alta `correo.bandejaFedex`
- * (bandeja de correos FedEx). Misma lógica idempotente de las
+ * Sincroniza el catálogo de permisos para dar de alta `correo.bandeja`
+ * (bandeja de correos de FedEx y DHL). Misma lógica idempotente de las
  * migraciones Sync*Permission anteriores: recorre el catálogo completo e inserta
  * lo que falte, sin duplicar.
  */
@@ -40,7 +40,7 @@ export class SyncBandejaFedexPermission1786000000087 implements MigrationInterfa
   }
 
   public async down(q: QueryRunner): Promise<void> {
-    const codes = ['correo.bandejaFedex'];
+    const codes = ['correo.bandeja'];
     const ph = codes.map(() => '?').join(',');
     const perms: any[] = await q.query(`SELECT id FROM \`permission\` WHERE code IN (${ph})`, codes);
     for (const p of perms) {

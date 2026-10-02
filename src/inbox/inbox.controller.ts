@@ -12,14 +12,14 @@ import { ZipCoverageService } from './zip-coverage.service';
 import { AttachmentKind } from './inbox.types';
 
 /**
- * Bandeja de correos FedEx (sistemas@): lista, detalle, revisión, tablero
+ * Bandeja de correos (sistemas@; FedEx y, más adelante, DHL): lista, detalle, revisión, tablero
  * recibido vs subido y cobertura de CP. Usuarios no superadmin solo ven sus sucursales.
  */
 @ApiTags('inbox')
 @ApiBearerAuth()
 @Controller('inbox')
 @UseGuards(PermissionsGuard)
-@RequirePermission('correo.bandejaFedex')
+@RequirePermission('correo.bandeja')
 export class InboxController {
   constructor(
     private readonly query: InboxQueryService,
