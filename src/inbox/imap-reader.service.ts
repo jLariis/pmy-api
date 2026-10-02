@@ -27,8 +27,26 @@ export class ImapReaderService {
 
   constructor(private readonly config: ConfigService) {}
 
+  /**
+   * Credenciales IMAP. Si no hay INBOX_IMAP_*, se usa la misma cuenta SMTP del
+   * sistema (EMAIL_SERVICE_*), que es sistemas@ en el mismo servidor de correo.
+   */
+  private creds(): { host?: string; user?: string; pass?: string } {
+    const g = (k: string) => (this.config.get<string>(k) ?? '').toString().trim() || undefined;
+    return {
+      host: g('INBOX_IMAP_HOST') ?? g('EMAIL_SERVICE_HOST'),
+      user: g('INBOX_IMAP_USER') ?? g('EMAIL_SERVICE_EMAIL'),
+      pass: g('INBOX_IMAP_PASSWORD') ?? g('EMAIL_SERVICE_PASSWORD'),
+    };
+  }
+
   isConfigured(): boolean {
-    return !!(this.config.get('INBOX_IMAP_HOST') && this.config.get('INBOX_IMAP_USER') && this.config.get('INBOX_IMAP_PASSWORD'));
+    const c = this.creds();
+    return !!(c.host && c.user && c.pass);
+  }
+
+  account(): string | null {
+    return this.creds().user ?? null;
   }
 
   mailbox(): string {
@@ -36,11 +54,12 @@ export class ImapReaderService {
   }
 
   private client(): ImapFlow {
+    const c = this.creds();
     return new ImapFlow({
-      host: this.config.get<string>('INBOX_IMAP_HOST'),
+      host: c.host,
       port: Number(this.config.get('INBOX_IMAP_PORT') ?? 993),
       secure: String(this.config.get('INBOX_IMAP_TLS') ?? 'true') !== 'false',
-      auth: { user: this.config.get<string>('INBOX_IMAP_USER'), pass: this.config.get<string>('INBOX_IMAP_PASSWORD') },
+      auth: { user: c.user as string, pass: c.pass as string },
       logger: false,
     });
   }

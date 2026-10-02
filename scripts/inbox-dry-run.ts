@@ -88,6 +88,12 @@ async function main() {
         reasons[key] = (reasons[key] ?? 0) + 1;
       }
       console.log(
+        (process.argv.includes('--verbose')
+          ? a.attachments
+              .filter((x) => x.summary)
+              .map((x) => `      · ${x.filename} [${x.kind}] filas=${x.summary!.rowCount} fedex=${x.summary!.looksFedex} cp=${JSON.stringify(Object.entries(x.summary!.zips).sort((p, q) => q[1] - p[1]).slice(0, 4))} ciudades=${JSON.stringify(Object.entries(x.summary!.cities).sort((p, q) => q[1] - p[1]).slice(0, 3))}${x.summary!.parseError ? ' ERROR ' + x.summary!.parseError : ''}`)
+              .join('\n') + '\n'
+          : '') +
         `${r.autoSafe ? '✅' : r.subsidiaryId ? '🟡' : '⚪'} ${(a.date ?? new Date()).toISOString().slice(0, 16)} | ${a.subject.slice(0, 55).padEnd(55)} | ${name.padEnd(18)} | ${a.attachments.map((x) => x.kind).join(',')} | ${a.consolidations.map((c) => c.consNumber).join(',')} | ${r.reason}`,
       );
     }
