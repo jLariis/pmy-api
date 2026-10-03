@@ -46,6 +46,7 @@ const CATALOG: Record<string, Partial<Presentation>> = {
   'operacion.inventarios':  { category: 'operacion', icon: 'clipboard-list', severity: 'info', channels: ['bell'] },
   'operacion.cierre_ruta':  { category: 'operacion', icon: 'flag',       severity: 'info', channels: ['bell'] },
   'operacion.traslados':    { category: 'operacion', icon: 'arrow-left-right', severity: 'info', channels: ['bell'] },
+  'operacion.alertas':      { category: 'operacion', icon: 'alarm-clock', severity: 'warning', channels: ['bell'] },
   'operacion.gastos':       { category: 'operacion', icon: 'receipt',    severity: 'info', channels: ['bell'] },
   // ---- Autorizaciones (borrado con aprobación) ----
   'aprobacion.solicitada': { category: 'operacion', icon: 'gavel',       severity: 'warning', channels: ['bell', 'email'] },

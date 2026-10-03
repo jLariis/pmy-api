@@ -91,3 +91,4 @@ export * from './inbox-consolidation.entity';
 export * from './inbox-signal-alias.entity';
 export * from './inbox-sync-state.entity';
 export * from './subsidiary-zip-coverage.entity';
+export * from './ops-alert.entity';

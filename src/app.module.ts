@@ -57,6 +57,7 @@ import { ImportFilesModule } from './import-files/import-files.module';
 import { ApprovalsModule } from './approvals/approvals.module';
 import { ConsolidadorModule } from './consolidador/consolidador.module';
 import { InboxModule } from './inbox/inbox.module';
+import { OpsAlertsModule } from './ops-alerts/ops-alerts.module';
 
 @Module({
   imports: [
@@ -135,6 +136,7 @@ import { InboxModule } from './inbox/inbox.module';
     ApprovalsModule,
     ConsolidadorModule,
     InboxModule,
+    OpsAlertsModule,
   ],
   controllers: [AppController],
   providers: [
