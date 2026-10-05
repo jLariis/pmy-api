@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository } from 'typeorm';
 import { promises as fs } from 'fs';
@@ -9,6 +9,8 @@ import { InboxConsolidation } from '../entities/inbox-consolidation.entity';
 import { workbookSheets } from './attachment-classify.util';
 import { buildPastePlan, expandWorkbook, PasteBatch, PasteBatchKind, PlanAttachment, tsvTrackings, unmatchedCobros, WorkbookSheet } from './paste-plan.util';
 import { uploadMinutes } from './zip-coverage.util';
+import { WhatsappGatewayService } from '../whatsapp-gateway/whatsapp-gateway.service';
+import { buildUploadMessage, DEFAULT_UPLOAD_GROUPS, UploadSummary } from './upload-message.util';
 import { ConsolidationKind } from './inbox.types';
 
 const TSV_KINDS = ['master', 'master_aereo', 'f2', 'high_value'];
@@ -49,7 +51,10 @@ export class InboxPasteService {
     @InjectRepository(InboxAttachment) private readonly attRepo: Repository<InboxAttachment>,
     @InjectRepository(InboxConsolidation) private readonly consRepo: Repository<InboxConsolidation>,
     private readonly ds: DataSource,
+    private readonly whatsapp: WhatsappGatewayService,
   ) {}
+
+  private readonly logger = new Logger(InboxPasteService.name);
 
   async plan(messageId: string): Promise<PastePlanResult> {
     const msg = await this.msgRepo.findOne({ where: { id: messageId } });
@@ -132,7 +137,7 @@ export class InboxPasteService {
   }
 
   /** Registra que un lote se mandó y subió desde el pegado. */
-  async markPasted(messageId: string, body: { attachmentId: string; kind: PasteBatchKind; consNumber: string; key?: string }, userId: string | null): Promise<void> {
+  async markPasted(messageId: string, body: MarkPastedBody, userId: string | null): Promise<void> {
     const msg = await this.msgRepo.findOne({ where: { id: messageId } });
     if (!msg) throw new NotFoundException('No se encontró ese correo');
     const att = await this.attRepo.findOne({ where: { id: body?.attachmentId, inboxMessageId: messageId } });
@@ -156,5 +161,61 @@ export class InboxPasteService {
     c.uploadMinutes = c.uploadMinutes ?? uploadMinutes(c.receivedAt, now);
     c.linkStatus = 'subido';
     await this.consRepo.save(c);
+
+    // Aviso a los grupos de monitoreo; nunca detiene la respuesta.
+    void this.notifyUpload(msg, att, body, consNumber, userId, now).catch((e) => this.logger.warn(`[inbox] aviso de subida: ${e?.message ?? e}`));
   }
+
+  /** WhatsApp a los grupos configurados (o por nombre: PMY Monitoreo / Sistemas PMY). */
+  private async notifyUpload(msg: InboxMessage, att: InboxAttachment, body: MarkPastedBody, consNumber: string, userId: string | null, now: Date): Promise<void> {
+    const cfg: any[] = await this.ds.query('SELECT uploadNotifyEnabled, uploadNotifyGroups FROM ops_alert_settings LIMIT 1');
+    if (cfg[0] && !Number(cfg[0].uploadNotifyEnabled)) return;
+    const raw = cfg[0]?.uploadNotifyGroups;
+    let groups: { id: string; name: string }[] = (typeof raw === 'string' ? JSON.parse(raw) : raw) ?? [];
+    if (!groups.length) {
+      for (const name of DEFAULT_UPLOAD_GROUPS) {
+        const id = await this.whatsapp.findGroupJid(name);
+        if (id && !groups.some((g) => g.id === id)) groups.push({ id, name });
+      }
+    }
+    if (!groups.length) {
+      this.logger.warn('[inbox] aviso de subida: no hay grupos de WhatsApp configurados ni encontrados por nombre');
+      return;
+    }
+    const [user]: any[] = userId ? await this.ds.query('SELECT name, lastName, email FROM `user` WHERE id = ?', [userId]) : [];
+    const [sub]: any[] = msg.subsidiaryId ? await this.ds.query('SELECT name FROM subsidiary WHERE id = ?', [msg.subsidiaryId]) : [];
+    const text = buildUploadMessage({
+      userName: user ? [user.name, user.lastName].filter(Boolean).join(' ') || user.email : 'Alguien',
+      filename: att.filename,
+      sheet: body.sheet ?? null,
+      subsidiaryName: sub?.name ?? 'Sin sucursal',
+      kind: body.kind === 'aereo' ? 'aereo' : body.kind === 'f2' ? 'f2' : 'master',
+      consNumber,
+      consDate: body.consDate ?? null,
+      fileRows: body.fileRows ?? null,
+      summary: body.summary ?? {},
+      cobrosInEmail: body.cobrosCount,
+      email: { subject: msg.subject, from: msg.fromName || msg.fromAddress, receivedAt: msg.receivedAt },
+      uploadedAt: now,
+    });
+    for (const g of groups) {
+      try {
+        await this.whatsapp.sendText(g.id, text);
+      } catch (e: any) {
+        this.logger.warn(`[inbox] aviso de subida a "${g.name}": ${e?.message ?? e}`);
+      }
+    }
+  }
+}
+
+export interface MarkPastedBody {
+  attachmentId: string;
+  kind: PasteBatchKind;
+  consNumber: string;
+  key?: string;
+  sheet?: string | null;
+  consDate?: string | null;
+  fileRows?: number | null;
+  cobrosCount?: number;
+  summary?: UploadSummary;
 }

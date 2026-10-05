@@ -79,6 +79,10 @@ export class OpsAlertsService {
     }
     if (s.completePct > 100) throw new BadRequestException('El porcentaje no puede pasar de 100');
     if (s.escalate2Min <= s.escalate1Min) throw new BadRequestException('El segundo aviso debe ser después del primero');
+    if (patch.uploadNotifyEnabled !== undefined) s.uploadNotifyEnabled = !!patch.uploadNotifyEnabled;
+    if (patch.uploadNotifyGroups !== undefined) {
+      s.uploadNotifyGroups = (patch.uploadNotifyGroups ?? []).filter((g) => g?.id?.endsWith('@g.us')).map((g) => ({ id: g.id, name: String(g.name ?? '') }));
+    }
     if (patch.enabled !== undefined) {
       if (!!patch.enabled && !s.enabled) s.enabledAt = new Date();
       s.enabled = !!patch.enabled;

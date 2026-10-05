@@ -19,6 +19,9 @@ export class OpsAlertSettings {
   @Column({ type: 'varchar', length: 5, default: '21:30' }) activeTo: string;
   /** Cuándo se prendieron: lo que ya venía vencido antes no se avisa (solo se muestra). */
   @Column({ type: 'datetime', nullable: true }) enabledAt: Date | null;
+  /** WhatsApp a grupos cuando alguien sube guías desde la bandeja de correos. */
+  @Column({ type: 'boolean', default: true }) uploadNotifyEnabled: boolean;
+  @Column({ type: 'json', nullable: true }) uploadNotifyGroups: { id: string; name: string }[] | null;
   @Column({ type: 'varchar', length: 36, nullable: true }) updatedById: string | null;
   @UpdateDateColumn() updatedAt: Date;
 }
