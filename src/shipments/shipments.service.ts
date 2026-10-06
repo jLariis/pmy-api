@@ -54,6 +54,7 @@ import { ShipmentToSaveDto } from './dto/shipment-to-save.dto';
 import * as ExcelJS from 'exceljs';
 import { DataSource } from 'typeorm';
 import pLimit from 'p-limit';
+import { onlyPhantomDeliveries, phantomDeliveryTimes, realDeliveryScan } from 'src/common/phantom-delivery.util';
 import { PackageDispatch } from 'src/entities/package-dispatch.entity';
 import * as fs from 'node:fs/promises'; // Para el código viejo (await)
 import * as fsSync from 'node:fs';
@@ -2998,6 +2999,16 @@ export class ShipmentsService {
       // 6. Procesar Historial (Mapea todos los eventos para la BD sin alterar el estatus principal)
       const histories = await this.processFedexScanEventsToStatusesResp(scanEvents, newShipment);
 
+      // Entrega FANTASMA (DL seguido de más movimiento): queda en el historial como tránsito,
+      // nunca como entregado (no marca ENTREGADO ni cobra). Caso 383915660048.
+      const phantomTimes = phantomDeliveryTimes(scanEvents);
+      for (const h of histories ?? []) {
+        if (h.status === ShipmentStatusType.ENTREGADO && phantomTimes.has(new Date(h.timestamp).getTime())) {
+          h.status = ShipmentStatusType.EN_TRANSITO;
+          h.notes = `Entrega sin efecto (FedEx siguió moviendo el paquete): ${h.notes ?? ''}`.slice(0, 255);
+        }
+      }
+
       // =================================================================================
       // 🛡️ SECCIÓN 7: LÓGICA DE INGRESO (BINARIA)
       // Todo paquete ingresado al sistema nace como PENDIENTE para ser trabajado,
@@ -3007,9 +3018,10 @@ export class ShipmentsService {
       let finalStatus = ShipmentStatusType.PENDIENTE;
 
       // SUPREMACÍA DE ENTREGA (DL manda sobre TODO)
-      const isDelivered = lsdHeader?.code === 'DL' || 
-                          lsdHeader?.derivedCode === 'DL' || 
-                          scanEvents.some(e => e.derivedStatusCode === 'DL' || e.eventType === 'DL');
+      // Solo una entrega REAL (sin movimiento después) cuenta; el header DL no vale si todas las
+      // entregas del historial son fantasma.
+      const isDelivered = !!realDeliveryScan(scanEvents) ||
+                          ((lsdHeader?.code === 'DL' || lsdHeader?.derivedCode === 'DL') && !onlyPhantomDeliveries(scanEvents));
       
       if (isDelivered) {
           finalStatus = ShipmentStatusType.ENTREGADO;
@@ -8517,6 +8529,7 @@ export class ShipmentsService {
 
             const trackResult = allTrackResults[0]; 
             const scanEvents = trackResult.scanEvents || [];
+            const phantomTimes = phantomDeliveryTimes(scanEvents); // entregas fantasma (DL + movimiento después)
             const lsdHeader = trackResult.latestStatusDetail;
 
             // --- 2. TRANSACCIÓN BD ---
@@ -8690,7 +8703,10 @@ export class ShipmentsService {
 
                     // 🛡️ BLINDAJE ANTI-COBROS FALSOS (salvo entrega en ruta nuestra ese día → ENTREGADO)
                     const isDeliveryEvent = event.eventType === 'DL' || dCode === 'DL' || eCode === '005';
-                    if (isDeliveryEvent && isOurDelivery(eventDate)) {
+                    if (isDeliveryEvent && phantomTimes.has(eventDate.getTime())) {
+                        // Entrega FANTASMA: FedEx siguió moviendo el paquete → tránsito, sin cobro.
+                        eventStatus = ShipmentStatusType.EN_TRANSITO;
+                    } else if (isDeliveryEvent && isOurDelivery(eventDate)) {
                         eventStatus = ShipmentStatusType.ENTREGADO;
                     } else if (hasODInHistory && isDeliveryEvent) {
                         eventStatus = ShipmentStatusType.ENTREGADO_POR_FEDEX;
@@ -8767,7 +8783,7 @@ export class ShipmentsService {
                 }
 
                 // 🚨 SAFETY NET: RESPALDO FINANCIERO (Header Backup)
-                const isDeliveredGlobal = (lsdHeader?.code === 'DL' || lsdHeader?.derivedCode === 'DL');
+                const isDeliveredGlobal = (lsdHeader?.code === 'DL' || lsdHeader?.derivedCode === 'DL') && !onlyPhantomDeliveries(scanEvents);
                 const headerDeliveryStr = trackResult.dateAndTimes?.find(d => d.type === 'ACTUAL_DELIVERY')?.dateTime;
                 if (isDeliveredGlobal && (!hasODInHistory || isOurDelivery(headerDeliveryStr ? new Date(headerDeliveryStr) : null))) {
                     const actualDeliveryDateStr = headerDeliveryStr;
@@ -8847,7 +8863,7 @@ export class ShipmentsService {
                 }
 
                 // 4. Prioridad de Entrega Absoluta (Garantía)
-                if (lsdHeader?.code === 'DL' || lsdHeader?.derivedCode === 'DL' || scanEvents.some(e => e.derivedStatusCode === 'DL' || e.eventType === 'DL')) {
+                if (realDeliveryScan(scanEvents) || ((lsdHeader?.code === 'DL' || lsdHeader?.derivedCode === 'DL') && !onlyPhantomDeliveries(scanEvents))) {
                     fedexProposedStatus = ShipmentStatusType.ENTREGADO;
                 }
 
@@ -9107,6 +9123,7 @@ export class ShipmentsService {
 
             const trackResult = allTrackResults[0]; 
             const scanEvents = trackResult.scanEvents || [];
+            const phantomTimes = phantomDeliveryTimes(scanEvents); // entregas fantasma (DL + movimiento después)
             const lsdHeader = trackResult.latestStatusDetail;
 
             // --- 2. TRANSACCIÓN BD ---
@@ -9231,7 +9248,10 @@ export class ShipmentsService {
 
                     // 🛡️ BLINDAJE ANTI-COBROS FALSOS
                     const isDeliveryEvent = event.eventType === 'DL' || dCode === 'DL' || eCode === '005';
-                    if (isDeliveryEvent && isOurDelivery(eventDate)) {
+                    if (isDeliveryEvent && phantomTimes.has(eventDate.getTime())) {
+                        // Entrega FANTASMA: FedEx siguió moviendo el paquete → tránsito, sin cobro.
+                        eventStatus = ShipmentStatusType.EN_TRANSITO;
+                    } else if (isDeliveryEvent && isOurDelivery(eventDate)) {
                         eventStatus = ShipmentStatusType.ENTREGADO;
                     } else if (hasODInHistory && isDeliveryEvent) {
                         eventStatus = ShipmentStatusType.ENTREGADO_POR_FEDEX;
@@ -9307,7 +9327,7 @@ export class ShipmentsService {
                 }
 
                 // Prioridad de Entrega Absoluta
-                if (lsdHeader?.code === 'DL' || lsdHeader?.derivedCode === 'DL' || scanEvents.some((e: any) => e.derivedStatusCode === 'DL' || e.eventType === 'DL')) {
+                if (realDeliveryScan(scanEvents) || ((lsdHeader?.code === 'DL' || lsdHeader?.derivedCode === 'DL') && !onlyPhantomDeliveries(scanEvents))) {
                     fedexProposedStatus = ShipmentStatusType.ENTREGADO;
                 }
 

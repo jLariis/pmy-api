@@ -303,3 +303,40 @@ describe('processChargeFedexUpdate — espejo del blindaje y commitDateTime', ()
     expect(new Date(record.commitDateTime).toISOString()).toBe(NEW_COMMIT);
   });
 });
+
+describe('processMasterFedexUpdate — entrega fantasma (DL seguido de movimiento)', () => {
+  const createdAt = her('2026-08-16T08:00:00');
+  const pend = { status: ShipmentStatusType.PENDIENTE, timestamp: her('2026-08-16T08:00:00'), exceptionCode: 'INIT' };
+
+  it('DL a mitad del trayecto y luego DP/AR → NO entregado, NO cobra (caso 383915660048)', async () => {
+    const { generateIncomes, record } = await runMaster({
+      allowPreReg: false,
+      status: ShipmentStatusType.PENDIENTE,
+      createdAt,
+      existingHistory: [pend],
+      scanEvents: [
+        { date: her('2026-08-16T09:00:00'), eventType: 'DL', derivedStatusCode: 'DL' },
+        { date: her('2026-08-16T15:00:00'), eventType: 'DP', derivedStatusCode: 'IT' },
+        { date: her('2026-08-16T17:00:00'), eventType: 'AR', derivedStatusCode: 'IT' },
+      ],
+    });
+    expect(generateIncomes).not.toHaveBeenCalled();
+    expect(record.status).not.toBe(ShipmentStatusType.ENTREGADO);
+  });
+
+  it('entrega real (sin movimiento después) sí marca ENTREGADO y cobra', async () => {
+    const { generateIncomes, record } = await runMaster({
+      allowPreReg: false,
+      status: ShipmentStatusType.EN_RUTA,
+      createdAt,
+      existingHistory: [pend],
+      scanEvents: [
+        { date: her('2026-08-16T10:00:00'), eventType: 'OD', derivedStatusCode: 'OD' },
+        { date: her('2026-08-16T13:00:00'), eventType: 'DL', derivedStatusCode: 'DL' },
+      ],
+      lsdHeader: { code: 'DL', derivedCode: 'DL', ancillaryDetails: [] },
+    });
+    expect(record.status).toBe(ShipmentStatusType.ENTREGADO);
+    expect(generateIncomes).toHaveBeenCalled();
+  });
+});
