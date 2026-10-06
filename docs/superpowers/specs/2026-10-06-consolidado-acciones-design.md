@@ -73,7 +73,7 @@ La familia se carga en el servicio (`ConsolidatedFamilyLoader`, con BD); el **pl
 2. **`consolidated_change_log`** (tabla nueva): una fila por registro cambiado — `approvalRequestId`, `action`, `consNumber`, `entityType` (consolidated|shipment|charge_shipment|charge|income|devolution), `entityId`, `trackingNumber`, `field`, `oldValue`, `newValue`, `userId`, `userName`, `createdAt`. Índices por `approvalRequestId` y `consNumber`. Inserción en lote dentro de la misma transacción.
 3. **`audit_log`** (módulo CONSOLIDADOS) vía `AuditService.log`: `consolidado_accion_solicitada`, `..._autorizada`, `..._rechazada`, `..._error`, con `beforeState/afterState` (impacto) y `metadata` (requestId, justificación, payload). Además cada ingreso tocado se registra en la bitácora del Consolidador (`ConsolidadorIncomeAudit.record`) para que su historial lo muestre.
 
-Endpoints de lectura: `GET /approvals/history/consolidated/:consNumber?subsidiaryId=` (solicitudes + log de cambios).
+Endpoints de lectura: `GET /approvals/history/consolidated?consNumber=&subsidiaryId=` (solicitudes + log de cambios).
 
 ## UI (app-pmy, solo shadcn + Tailwind, textos en llano)
 
