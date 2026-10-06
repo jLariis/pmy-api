@@ -54,6 +54,23 @@ describe('PersistentSyncSink.applyPlan', () => {
     expect(audit.log).toHaveBeenCalledTimes(1);
   });
 
+  it.each([ShipmentStatusType.ENTREGADO, ShipmentStatusType.DEVUELTO_A_FEDEX])(
+    'estatus final (%s): no escribe historial, estatus ni ingresos',
+    async (current) => {
+      const manager = fakeManager([]);
+      const audit = { log: jest.fn() } as any;
+      const income = { execute: jest.fn() } as any;
+      const ds = fakeDataSource(manager);
+      const sink = new PersistentSyncSink(ds, audit, income);
+      const ctx = ctxWith([ev(3000, ShipmentStatusType.ENTREGADO, null)], ShipmentStatusType.ENTREGADO, current);
+      const out = await sink.applyPlan(ctx, { userId: 'u1', role: 'system' });
+      expect(out.applied).toBe(false);
+      expect(out.skippedReason).toMatch(/final/i);
+      expect(ds.transaction).not.toHaveBeenCalled();
+      expect(income.execute).not.toHaveBeenCalled();
+    },
+  );
+
   it('is idempotent: events already present (by shadowKey) are not re-inserted', async () => {
     const existing = [{ timestamp: new Date(1000), exceptionCode: null, status: ShipmentStatusType.EN_RUTA }];
     const manager = fakeManager(existing);

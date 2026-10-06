@@ -12,8 +12,20 @@ describe('TerminalLockRule', () => {
     expect(ctx.notes.join(' ')).toContain('Escudo Terminal');
   });
 
-  it('always allows ENTREGADO to win', () => {
+  it('DEVUELTO_A_FEDEX es final: una entrega de FedEx NO lo revive', () => {
     const ctx = makeCtx({ current: ShipmentStatusType.DEVUELTO_A_FEDEX, proposed: ShipmentStatusType.ENTREGADO });
+    rule.apply(ctx);
+    expect(ctx.proposedStatus).toBe(ShipmentStatusType.DEVUELTO_A_FEDEX);
+  });
+
+  it('ENTREGADO es final: no pasa a ningún otro estatus (ni terminal)', () => {
+    const ctx = makeCtx({ current: ShipmentStatusType.ENTREGADO, proposed: ShipmentStatusType.DEVUELTO_A_FEDEX });
+    rule.apply(ctx);
+    expect(ctx.proposedStatus).toBe(ShipmentStatusType.ENTREGADO);
+  });
+
+  it('otros terminales (entregado por FedEx) sí pueden pasar a ENTREGADO', () => {
+    const ctx = makeCtx({ current: ShipmentStatusType.ENTREGADO_POR_FEDEX, proposed: ShipmentStatusType.ENTREGADO });
     rule.apply(ctx);
     expect(ctx.proposedStatus).toBe(ShipmentStatusType.ENTREGADO);
   });

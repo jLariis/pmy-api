@@ -340,3 +340,16 @@ describe('processMasterFedexUpdate — entrega fantasma (DL seguido de movimient
     expect(generateIncomes).toHaveBeenCalled();
   });
 });
+
+describe('estatus finales (entregado / devuelto a FedEx) ya no se actualizan', () => {
+  it.each(['master', 'charge'] as const)('%s: la lectura excluye finales y dados de baja', async (kind) => {
+    const h = buildHarness({ allowPreReg: false, createdAt: her('2026-08-16T08:00:00'), existingHistory: [], scanEvents: [] }, kind);
+    if (kind === 'master') await h.svc.processMasterFedexUpdate([{ id: 'ship-1', trackingNumber: 'TRK1' }]);
+    else await h.svc.processChargeFedexUpdate([{ id: 'ship-1', trackingNumber: 'TRK1' }]);
+    const manager = h.svc.dataSource.createQueryRunner().manager;
+    const where = manager.find.mock.calls[0][1].where;
+    expect(where.active).toBe(true);
+    expect(where.status._type).toBe('not');
+    expect(where.status._value._value).toEqual([ShipmentStatusType.ENTREGADO, ShipmentStatusType.DEVUELTO_A_FEDEX]);
+  });
+});

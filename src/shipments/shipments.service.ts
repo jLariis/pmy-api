@@ -4,9 +4,9 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { resolveChargeCost, chargeSecondAbordApplied, chargeDayRangeUtc, shouldSkipSameDayCharge } from './charge-cost';
 import { isSundayOrMexHoliday } from './sunday-holiday.util';
 import { HolidaysService } from 'src/holidays/holidays.service';
-import { Between, Brackets, EntityManager, In, Repository } from 'typeorm';
+import { Between, Brackets, EntityManager, In, Not, Repository } from 'typeorm';
 import { Shipment } from 'src/entities/shipment.entity';
-import { ShipmentStatusType, TERMINAL_SHIPMENT_STATUSES } from 'src/common/enums/shipment-status-type.enum';
+import { FINAL_SHIPMENT_STATUSES, isFinalShipmentStatus, ShipmentStatusType, TERMINAL_SHIPMENT_STATUSES } from 'src/common/enums/shipment-status-type.enum';
 import * as XLSX from 'xlsx';
 import { FedexService } from './fedex.service';
 import { ShipmentStatus } from 'src/entities/shipment-status.entity';
@@ -4310,7 +4310,17 @@ export class ShipmentsService {
 
             // 4. Buscar y actualizar el charge shipment
             this.logger.log(`🔎 Buscando charge shipment para ${trackingNumber}`);
-            const chargeShipment = await this.chargeShipmentRepository.findOneBy({ trackingNumber });
+            // El registro vigente (más reciente y activo). Si está en estatus FINAL (entregado /
+            // devuelto a FedEx) ya no se toca: ahí termina su vida.
+            const chargeShipment = await this.chargeShipmentRepository.findOne({
+              where: { trackingNumber, active: true } as any,
+              order: { createdAt: 'DESC' },
+            });
+
+            if (chargeShipment && isFinalShipmentStatus(chargeShipment.status)) {
+              this.logger.log(`🔒 ${trackingNumber}: estatus final (${chargeShipment.status}); no se actualiza.`);
+              continue;
+            }
 
             if (!chargeShipment) {
               const reason = `No se encontró el charge shipment con tracking number ${trackingNumber}`;
@@ -8540,9 +8550,10 @@ export class ShipmentsService {
             try {
                 const targetIds = shipmentsByTracking[tn];
                 
-                // active: las guías dadas de baja (consolidado eliminado) no se vuelven a procesar.
+                // Nunca se procesan: guías dadas de baja (consolidado eliminado) ni con estatus FINAL
+                // (entregado / devuelto a FedEx: ahí termina su vida, decisión 2026-10-06).
                 const shipmentList = await queryRunner.manager.find(Shipment, {
-                    where: { id: In(targetIds), active: true } as any,
+                    where: { id: In(targetIds), active: true, status: Not(In(FINAL_SHIPMENT_STATUSES)) } as any,
                     relations: ['subsidiary'],
                     lock: { mode: 'pessimistic_write' }
                 });
@@ -9134,9 +9145,9 @@ export class ShipmentsService {
             try {
                 const targetIds = shipmentsByTracking[tn];
                 
-                // active: las guías de carga dadas de baja no se vuelven a procesar.
+                // Nunca se procesan: guías de carga dadas de baja ni con estatus FINAL.
                 const chargeList = await queryRunner.manager.find(ChargeShipment, {
-                    where: { id: In(targetIds), active: true } as any,
+                    where: { id: In(targetIds), active: true, status: Not(In(FINAL_SHIPMENT_STATUSES)) } as any,
                     relations: ['subsidiary'],
                     lock: { mode: 'pessimistic_write' }
                 });

@@ -31,11 +31,11 @@ La vista previa devuelve `otherSubsidiary` para avisarlo antes de subir.
 ## Candado 3 — estatus finales
 
 `FINAL_STATUSES = [ENTREGADO, DEVUELTO_A_FEDEX]` (enum compartido, `isFinalStatus()`).
-- Selección de candidatos: `getShipmentsToValidate`/`getSimpleChargeShipments` ya los excluyen por lista; se agrega exclusión explícita.
+- Selección de candidatos: `getShipmentsToValidate`/`getSimpleChargeShipments` ya los excluyen por su lista de estatus.
 - `processMasterFedexUpdate` / `processChargeFedexUpdate`: al cargar (`find` por ids) se excluyen registros finales → no se escribe historial, estatus ni ingreso (cubre monitoreo por consolidado/despacho/desembarque, que llaman a estas funciones).
-- Motor nuevo: `TrackingCompareService.buildContext` devuelve null para finales; `TerminalLockRule` deja de permitir "ENTREGADO siempre gana" sobre DEVUELTO_A_FEDEX (defensa).
-- Cierre de ruta (`reconcileRouteWithFedex` → `applyByRoute`) queda cubierto por `buildContext`.
-- Ingresos: `generateIncomes` no crea si el estatus ANTERIOR del registro era final (defensa; solo vía automática).
+- `checkStatusOnFedexChargeShipment` (desembarque): toma el registro vigente (activo, más reciente) y no toca finales (antes sobrescribía el estatus sin protección).
+- Motor nuevo: `PersistentSyncSink.applyPlan` no escribe nada si el estatus actual es final (cubre cron, barrida, cierre de ruta y re-sync); `TerminalLockRule` deja de permitir "ENTREGADO siempre gana" sobre ENTREGADO/DEVUELTO_A_FEDEX (los demás terminales sí pueden pasar a ENTREGADO).
+- Ingresos: como los finales ya no llegan a `processMaster/Charge` ni a `applyPlan`, no se generan cobros nuevos para ellos.
 - Correcciones manuales (Consolidador `status_fix`, alta manual, devoluciones manuales) NO pasan por estos caminos: siguen funcionando.
 
 ## Candado 4 — entrega fantasma

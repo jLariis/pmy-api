@@ -10,7 +10,7 @@ import { SyncContext } from '../tracking-sync.types';
 import { ApplyOutcome } from '../compare.types';
 import { IncomeExecutor } from '../income/income-executor';
 import { isSubsidiaryInCutover } from '../cutover.config';
-import { ShipmentStatusType } from 'src/common/enums/shipment-status-type.enum';
+import { isFinalShipmentStatus, ShipmentStatusType } from 'src/common/enums/shipment-status-type.enum';
 
 export interface ApplyActor {
   userId?: string;
@@ -73,6 +73,21 @@ export class PersistentSyncSink {
     const isCharge = ctx.kind === 'charge';
     const fromStatus = shipment.status;
     const toStatus = ctx.proposedStatus;
+
+    // ENTREGADO / DEVUELTO_A_FEDEX son finales: ahí termina la vida del registro. Ningún proceso
+    // automático le escribe historial, estatus ni ingresos (decisión del usuario 2026-10-06).
+    if (isFinalShipmentStatus(fromStatus)) {
+      return {
+        shipmentId: shipment.id,
+        trackingNumber: shipment.trackingNumber,
+        applied: false,
+        fromStatus,
+        toStatus: fromStatus,
+        insertedEvents: 0,
+        kind: ctx.kind,
+        skippedReason: `Estatus final (${fromStatus}): no se actualiza`,
+      } as ApplyOutcome;
+    }
 
     try {
       let inserted = 0;

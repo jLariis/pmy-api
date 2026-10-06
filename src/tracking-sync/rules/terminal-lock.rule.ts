@@ -1,10 +1,11 @@
 import { Injectable } from '@nestjs/common';
-import { ShipmentStatusType, TERMINAL_SHIPMENT_STATUSES } from 'src/common/enums/shipment-status-type.enum';
+import { isFinalShipmentStatus, ShipmentStatusType, TERMINAL_SHIPMENT_STATUSES } from 'src/common/enums/shipment-status-type.enum';
 import { SyncContext, SyncRule } from '../tracking-sync.types';
 
 /**
  * Impide que un estatus terminal (entregado/devuelto/retorno) retroceda a uno operativo.
- * Excepción: ENTREGADO siempre gana (aunque el actual sea otro terminal).
+ * ENTREGADO y DEVUELTO_A_FEDEX son FINALES: no cambian a NADA (una entrega de FedEx no revive
+ * una devuelta). En los demás terminales, ENTREGADO sí gana (ej. entregado por FedEx → entregado).
  */
 @Injectable()
 export class TerminalLockRule implements SyncRule {
@@ -16,7 +17,15 @@ export class TerminalLockRule implements SyncRule {
     const proposed = ctx.proposedStatus;
     if (!proposed) return;
 
-    if (proposed === ShipmentStatusType.ENTREGADO) return; // entrega siempre gana
+    if (isFinalShipmentStatus(current)) {
+      if (proposed !== current) {
+        ctx.notes.push(`Escudo Terminal: ${current} es final, no cambia (propuesto ${proposed})`);
+        ctx.proposedStatus = current;
+      }
+      return;
+    }
+
+    if (proposed === ShipmentStatusType.ENTREGADO) return; // entrega gana sobre otros terminales
 
     const currentIsTerminal = TERMINAL_SHIPMENT_STATUSES.includes(current);
     const proposedIsTerminal = TERMINAL_SHIPMENT_STATUSES.includes(proposed);

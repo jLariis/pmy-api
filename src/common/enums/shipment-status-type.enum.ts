@@ -71,6 +71,21 @@ export const TERMINAL_SHIPMENT_STATUSES: ShipmentStatusType[] = [
 ];
 
 /**
+ * Estatus FINALES (decisión del usuario 2026-10-06): un registro ENTREGADO o DEVUELTO_A_FEDEX
+ * termina su vida — ningún proceso automático (actualización con FedEx, motor nuevo, monitoreo,
+ * cierre de ruta) le vuelve a cambiar estatus, historial ni ingresos. Una guía devuelta solo
+ * vuelve a la operación como REGISTRO NUEVO (consolidado nuevo). Las correcciones manuales sí
+ * pueden tocarlo.
+ */
+export const FINAL_SHIPMENT_STATUSES: ShipmentStatusType[] = [
+  ShipmentStatusType.ENTREGADO,
+  ShipmentStatusType.DEVUELTO_A_FEDEX,
+];
+
+export const isFinalShipmentStatus = (status: string | null | undefined): boolean =>
+  !!status && FINAL_SHIPMENT_STATUSES.includes(String(status).toLowerCase() as ShipmentStatusType);
+
+/**
  * Estados que GENERAN INGRESO al actualizar (espejo de la lógica de
  * processMasterFedexUpdate → isChargeable): ENTREGADO (DL), RECHAZADO (07) y
  * CLIENTE_NO_DISPONIBLE (08, cobra en la 3ra visita acumulada).
