@@ -30,9 +30,9 @@ describe('ImportJobsService.create (idempotencia)', () => {
         { provide: getRepositoryToken(Shipment), useValue: repoMock() },
         { provide: getRepositoryToken(ChargeShipment), useValue: repoMock() },
         { provide: DataSource, useValue: { createQueryRunner: jest.fn() } },
-        { provide: ConsolidatedService, useValue: { findByConsNumberScoped: jest.fn().mockResolvedValue(null) } },
+        { provide: ConsolidatedService, useValue: { findByConsNumberScoped: jest.fn().mockResolvedValue(null), findActiveInOtherSubsidiary: jest.fn().mockResolvedValue(null), assertNotInOtherSubsidiary: jest.fn().mockResolvedValue(undefined) } },
         { provide: HolidaysService, useValue: { getHolidayInputs: jest.fn().mockResolvedValue([]) } },
-        { provide: ShipmentsService, useValue: { processFileF2: jest.fn(), addChargeShipments: jest.fn(), processFileCharges: jest.fn() } },
+        { provide: ShipmentsService, useValue: { processFileF2: jest.fn(), addChargeShipments: jest.fn(), processFileCharges: jest.fn(), findExistingChargeTrackings: jest.fn().mockResolvedValue(new Set()) } },
       ],
     }).compile();
     service = moduleRef.get(ImportJobsService);
@@ -94,9 +94,9 @@ describe('ImportJobsService.processMasterJob', () => {
         { provide: getRepositoryToken(Shipment), useValue: repoMock({ find: jest.fn().mockResolvedValue([]) }) },
         { provide: getRepositoryToken(ChargeShipment), useValue: repoMock() },
         { provide: DataSource, useValue: { query: jest.fn().mockResolvedValue([{ l: 1 }]), manager: dsManager, createQueryRunner: () => qr } },
-        { provide: ConsolidatedService, useValue: { findByConsNumberScoped: jest.fn().mockResolvedValue(null) } },
+        { provide: ConsolidatedService, useValue: { findByConsNumberScoped: jest.fn().mockResolvedValue(null), findActiveInOtherSubsidiary: jest.fn().mockResolvedValue(null), assertNotInOtherSubsidiary: jest.fn().mockResolvedValue(undefined) } },
         { provide: HolidaysService, useValue: { getHolidayInputs: jest.fn().mockResolvedValue([]) } },
-        { provide: ShipmentsService, useValue: { processFileF2: jest.fn(), addChargeShipments: jest.fn(), processFileCharges: jest.fn() } },
+        { provide: ShipmentsService, useValue: { processFileF2: jest.fn(), addChargeShipments: jest.fn(), processFileCharges: jest.fn(), findExistingChargeTrackings: jest.fn().mockResolvedValue(new Set()) } },
       ],
     }).compile();
     service = moduleRef.get(ImportJobsService);
@@ -132,6 +132,34 @@ describe('ImportJobsService.processMasterJob', () => {
     expect(job.status).toBe('failed');
     expect(qr.rollbackTransaction).toHaveBeenCalled();
   });
+
+  it('candado: guías que ya son carga F2 de este consolidado NO entran como paquete', async () => {
+    (service as any).shipmentsService.findExistingChargeTrackings = jest.fn().mockResolvedValue(new Set(['B']));
+    const job: any = {
+      id: 'J3', kind: 'master', subsidiaryId: 'S1', consNumber: 'C1', isAereo: false,
+      payloadRows: JSON.stringify([{ trackingNumber: 'A' }, { trackingNumber: 'B' }]),
+      onlyTrackings: null, totalRows: 2, saved: 0, duplicated: 0, recycled: 0, failed: 0, hvMarked: 0,
+    };
+    await service.processMasterJob(job);
+    const saved = qr.manager.save.mock.calls
+      .filter((c: any[]) => Array.isArray(c[1]) && c[1][0]?.trackingNumber)
+      .flatMap((c: any[]) => c[1].map((x: any) => x.trackingNumber));
+    expect(saved).toEqual(['A']);
+    expect(JSON.parse(job.result).summary.skippedF2).toBe(1);
+  });
+
+  it('candado: si el consolidado ya está activo en OTRA sucursal, el job no inserta nada', async () => {
+    (service as any).consolidatedService.findActiveInOtherSubsidiary = jest.fn().mockResolvedValue({
+      subsidiaryName: 'Via Larga', createdByName: 'Alma', createdAt: new Date('2026-09-30T17:47:00Z'),
+    });
+    const job: any = {
+      id: 'J4', kind: 'master', subsidiaryId: 'S1', consNumber: 'C1', isAereo: true,
+      payloadRows: JSON.stringify([{ trackingNumber: 'A' }]),
+      onlyTrackings: null, totalRows: 1, saved: 0, duplicated: 0, recycled: 0, failed: 0, hvMarked: 0,
+    };
+    await expect(service.processMasterJob(job)).rejects.toThrow(/ya se subió en Via Larga/);
+    expect(job.saved).toBe(0);
+  });
 });
 
 describe('ImportJobsService.processChargeJob', () => {
@@ -153,7 +181,7 @@ describe('ImportJobsService.processChargeJob', () => {
         { provide: getRepositoryToken(Shipment), useValue: repoMock() },
         { provide: getRepositoryToken(ChargeShipment), useValue: repoMock() },
         { provide: DataSource, useValue: { query: jest.fn(), manager: {}, createQueryRunner: jest.fn() } },
-        { provide: ConsolidatedService, useValue: { findByConsNumberScoped: jest.fn() } },
+        { provide: ConsolidatedService, useValue: { findByConsNumberScoped: jest.fn(), findActiveInOtherSubsidiary: jest.fn().mockResolvedValue(null), assertNotInOtherSubsidiary: jest.fn().mockResolvedValue(undefined) } },
         { provide: HolidaysService, useValue: { getHolidayInputs: jest.fn().mockResolvedValue([]) } },
         { provide: ShipmentsService, useValue: shipments },
       ],

@@ -38,7 +38,7 @@ import { ShipmentAndChargeDto } from './dto/shipment-and-charge.dto';
 import { ChargeWithStatusDto } from './dto/charge-with-status.dto';
 import { IncomeSourceType } from 'src/common/enums/income-source-type.enum';
 import { GetShipmentKpisDto } from './dto/get-shipment-kpis.dto';
-import { ConsolidatedService } from 'src/consolidated/consolidated.service';
+import { ConsolidatedService, otherSubsidiaryMessage } from 'src/consolidated/consolidated.service';
 import { ConsolidatedType } from 'src/common/enums/consolidated-type.enum';
 import { formatInTimeZone, fromZonedTime, toDate, toZonedTime } from 'date-fns-tz';
 import { MailService } from 'src/mail/mail.service';
@@ -853,6 +853,9 @@ export class ShipmentsService {
     // (findExistingChargeTrackings). Sin él no hay dedup posible → obligatorio.
     if (!consNumber || !consNumber.trim()) throw new BadRequestException('El número de consolidado (consNumber) es obligatorio para cargas F2.');
 
+    // Candado: el mismo consolidado no puede estar activo en otra sucursal (doble cobro).
+    await this.consolidatedService.assertNotInOtherSubsidiary(consNumber, subsidiaryId);
+
     const { buffer } = file;
     const queryRunner = this.dataSource.createQueryRunner();
     await queryRunner.connect();
@@ -1080,6 +1083,9 @@ export class ShipmentsService {
     // consNumber obligatorio: agrupa las cargas y es la clave de dedup (defensa en
     // profundidad; el front ya lo exige).
     if (!consNumber || !consNumber.trim()) throw new BadRequestException('El número de consolidado (consNumber) es obligatorio para cargas F2.');
+
+    // Candado: el mismo consolidado no puede estar activo en otra sucursal (doble cobro).
+    await this.consolidatedService.assertNotInOtherSubsidiary(consNumber, subsidiaryId);
     console.log("📂 File received:", file.originalname, "Size:", file.size);
 
     let savedIncome: Income;
@@ -1504,7 +1510,7 @@ export class ShipmentsService {
    * Trackings del lote que YA existen como `charge_shipment` en este consolidado
    * (consNumber normalizado + sucursal). Sirve para omitir duplicados en re-subidas F2.
    */
-  private async findExistingChargeTrackings(
+  async findExistingChargeTrackings(
     manager: EntityManager,
     trackings: string[],
     consNumber: string,
@@ -1519,6 +1525,7 @@ export class ShipmentsService {
       .where('cs.trackingNumber IN (:...tns)', { tns })
       .andWhere('TRIM(UPPER(cs.consNumber)) = :norm', { norm })
       .andWhere('sub.id = :subsidiaryId', { subsidiaryId })
+      .andWhere('cs.active = 1')
       .getRawMany();
     return new Set(rows.map(r => String(r.trackingNumber).trim()));
   }
@@ -2516,6 +2523,9 @@ export class ShipmentsService {
       const predefinedSubsidiary = await this.subsidiaryService.findById(subsidiaryId);
       if (!predefinedSubsidiary) throw new BadRequestException(`La subsidiaria seleccionada no es válida.`);
 
+    // Candado: el mismo consolidado no puede estar activo en otra sucursal (doble cobro).
+    await this.consolidatedService.assertNotInOtherSubsidiary(consNumber, subsidiaryId);
+
       // Unicidad NORMALIZADA + por sucursal/carrier (evita falsos positivos entre
       // sucursales y atrapa variaciones de espacios/mayúsculas).
       const existingCons = await this.consolidatedService.findByConsNumberScoped(consNumber, subsidiaryId, ShipmentType.FEDEX);
@@ -2694,6 +2704,9 @@ export class ShipmentsService {
     const predefinedSubsidiary = await this.subsidiaryService.findById(subsidiaryId);
     if (!predefinedSubsidiary) throw new BadRequestException(`La subsidiaria seleccionada no es válida.`);
 
+    // Candado: el mismo consolidado no puede estar activo en otra sucursal (doble cobro).
+    await this.consolidatedService.assertNotInOtherSubsidiary(consNumber, subsidiaryId);
+
     // Normalización de zona horaria
     let normalizedDateStr: string;
     if (consDate) {
@@ -2730,7 +2743,7 @@ export class ShipmentsService {
         throw new BadRequestException(`Error en formato de Excel: ${excelError.message}`);
     }
 
-    const result = { saved: 0, failed: 0, duplicated: 0, recycled: 0, duplicatedTrackings: [], failedTrackings: [] };
+    const result = { saved: 0, failed: 0, duplicated: 0, recycled: 0, duplicatedTrackings: [], failedTrackings: [], skippedF2: 0, skippedF2Trackings: [] as string[] };
     const processedTrackingNumbers = new Set<string>();
     const shipmentsToGenerateIncomes: any[] = [];
     
@@ -2759,9 +2772,23 @@ export class ShipmentsService {
         const shipmentsToProcess: any[] = [];
         const now = new Date();
 
+        // Candado: una guía que ya es carga F2 de ESTE consolidado no entra también como paquete
+        // normal (cobraría doble: por carga y por paquete). Caso 305820438524.
+        const f2Set = await this.findExistingChargeTrackings(
+            transactionalEntityManager,
+            shipmentsToSave.map((sh) => String(sh.trackingNumber || sh.TrackingNumber || '').trim()),
+            consNumber,
+            subsidiaryId,
+        );
+
         for (const shipment of shipmentsToSave) {
             const tNum = String(shipment.trackingNumber || shipment.TrackingNumber || '').trim();
             if (!tNum) continue;
+            if (f2Set.has(tNum)) {
+                result.skippedF2++;
+                result.skippedF2Trackings.push(tNum);
+                continue;
+            }
             shipmentsToProcess.push(shipment);
         }
 
@@ -3400,6 +3427,10 @@ export class ShipmentsService {
     const sub = await this.subsidiaryService.findById(subsidiaryId);
     if (!sub) throw new BadRequestException('La sucursal seleccionada no es válida.');
 
+    // Candado: el consolidado ya está activo en OTRA sucursal → la subida se bloqueará.
+    const other = await this.consolidatedService.findActiveInOtherSubsidiary(consNumber, subsidiaryId);
+    const otherSubsidiary = other ? { ...other, message: otherSubsidiaryMessage(other) } : null;
+
     let rows: any[] = [];
     let parseError: string | null = null;
     try {
@@ -3436,6 +3467,7 @@ export class ShipmentsService {
         newCount: newF2.length,          // cargas a crear
         recycledCount: 0,                // F2 no maneja "reingreso"
         alreadyImportedCount: alreadyF2.length, // ya existen como carga en este consolidado
+        otherSubsidiary, // si no es null, la subida se bloqueará
         consNumberExists: exactConsMatchF2 ? {
           id: exactConsMatchF2.id,
           consNumber: exactConsMatchF2.consNumber,
@@ -3477,8 +3509,13 @@ export class ShipmentsService {
     const trulyIgnoredSet = new Set(trulyIgnored);
     const toRecycleSet = new Set(toRecycle);
 
-    // Las puramente nuevas son las que no están en ninguno de los dos sets anteriores
-    const purelyNewCount = uniqueTns.filter(t => !trulyIgnoredSet.has(t) && !toRecycleSet.has(t)).length;
+    // Candado: guías que ya son carga F2 de este consolidado → no entran como paquete.
+    const f2Set = (uniqueTns.length && consNumber)
+      ? await this.findExistingChargeTrackings(this.dataSource.manager, uniqueTns, consNumber, subsidiaryId)
+      : new Set<string>();
+
+    // Las puramente nuevas son las que no están en ninguno de los sets anteriores
+    const purelyNewCount = uniqueTns.filter(t => !trulyIgnoredSet.has(t) && !toRecycleSet.has(t) && !f2Set.has(t)).length;
 
     // Solo reportamos coincidencia EXACTA de consNumber (para avisar que se
     // reutilizará ese consolidado). Ya NO se marca conflicto por "otro
@@ -3501,6 +3538,8 @@ export class ShipmentsService {
       newCount: purelyNewCount, // Guías 100% nuevas
       recycledCount: toRecycle.length, // Guías de ayer que reingresarán
       alreadyImportedCount: trulyIgnored.length, // Guías que sí se van a ignorar
+      alreadyF2Count: f2Set.size, // Ya son carga F2 de este consolidado: no se agregan como paquete
+      otherSubsidiary, // si no es null, la subida se bloqueará
 
       consNumberExists: matchedConsolidate ? {
         id: matchedConsolidate.id, 

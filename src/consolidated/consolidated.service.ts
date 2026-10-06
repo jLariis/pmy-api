@@ -1,4 +1,4 @@
-import { forwardRef, Inject, Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, forwardRef, Inject, Injectable, Logger } from '@nestjs/common';
 import { CreateConsolidatedDto } from './dto/create-consolidated.dto';
 import { UpdateConsolidatedDto } from './dto/update-consolidated.dto';
 import { In, MoreThanOrEqual, Not, Repository } from 'typeorm';
@@ -14,6 +14,18 @@ import {
   OperationalConsolidatedRow,
   OperationalGroupRow,
 } from 'src/dashboard/consolidated-package-rollup';
+
+/** "Este consolidado ya se subió en Vía Larga (Alma, 30/09/2026 10:47). …" */
+export function otherSubsidiaryMessage(other: { subsidiaryName: string; createdByName: string | null; createdAt: Date }): string {
+  const when = other.createdAt
+    ? new Date(other.createdAt).toLocaleString('es-MX', { timeZone: 'America/Hermosillo', dateStyle: 'short', timeStyle: 'short' })
+    : '';
+  const who = [other.createdByName, when].filter(Boolean).join(', ');
+  return (
+    `Este consolidado ya se subió en ${other.subsidiaryName}${who ? ` (${who})` : ''}. ` +
+    'Si está en la sucursal equivocada, pide el cambio de sucursal o la eliminación desde Consolidados.'
+  );
+}
 
 @Injectable()
 export class ConsolidatedService {
@@ -603,7 +615,43 @@ export class ConsolidatedService {
       .where('TRIM(UPPER(c.consNumber)) = :norm', { norm });
     if (subsidiaryId) qb.andWhere('sub.id = :subsidiaryId', { subsidiaryId });
     if (carrier) qb.andWhere('c.carrier = :carrier', { carrier });
+    // Solo consolidados vivos: uno eliminado (con autorización) no se reutiliza al volver a subir.
+    qb.andWhere('c.active = 1');
     return qb.getOne();
+  }
+
+  /**
+   * ¿Este consolidado ya está ACTIVO en OTRA sucursal? (candado de subida, caso 305821198046:
+   * subido como F2 en Vía Larga y 2 h después como master en Cabo → doble cobro).
+   */
+  async findActiveInOtherSubsidiary(
+    consNumber: string,
+    subsidiaryId: string,
+  ): Promise<{ subsidiaryName: string; createdByName: string | null; createdAt: Date } | null> {
+    const norm = (consNumber || '').trim().toUpperCase().replace(/\s+/g, ' ');
+    if (!norm || !subsidiaryId) return null;
+    const c = await this.consolidatedRepository.createQueryBuilder('c')
+      .leftJoinAndSelect('c.subsidiary', 'sub')
+      .leftJoinAndSelect('c.createdBy', 'u')
+      .where('TRIM(UPPER(c.consNumber)) = :norm', { norm })
+      .andWhere('c.active = 1')
+      .andWhere('c.subsidiaryId <> :subsidiaryId', { subsidiaryId })
+      .orderBy('c.createdAt', 'ASC')
+      .getOne();
+    if (!c) return null;
+    const u: any = (c as any).createdBy;
+    return {
+      subsidiaryName: (c as any).subsidiary?.name ?? 'otra sucursal',
+      createdByName: u ? [u.name, u.lastName].filter(Boolean).join(' ') || u.email || null : null,
+      createdAt: c.createdAt,
+    };
+  }
+
+  /** Lanza un error en llano si el consolidado ya está activo en otra sucursal. */
+  async assertNotInOtherSubsidiary(consNumber: string, subsidiaryId: string): Promise<void> {
+    const other = await this.findActiveInOtherSubsidiary(consNumber, subsidiaryId);
+    if (!other) return;
+    throw new BadRequestException(otherSubsidiaryMessage(other));
   }
 
   async findByDateScoped(date: string, subsidiaryId?: string, carrier?: string): Promise<Consolidated | null> {

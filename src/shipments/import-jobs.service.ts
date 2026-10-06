@@ -8,7 +8,7 @@ import { Consolidated } from '../entities/consolidated.entity';
 import { Subsidiary } from '../entities/subsidiary.entity';
 import { ShipmentStatus } from '../entities/shipment-status.entity';
 import { Payment } from '../entities/payment.entity';
-import { ConsolidatedService } from 'src/consolidated/consolidated.service';
+import { ConsolidatedService, otherSubsidiaryMessage } from 'src/consolidated/consolidated.service';
 import { HolidaysService } from 'src/holidays/holidays.service';
 import { ShipmentType } from 'src/common/enums/shipment-type.enum';
 import { ShipmentStatusType } from 'src/common/enums/shipment-status-type.enum';
@@ -42,6 +42,8 @@ export class ImportJobsService {
   ) {}
 
   async create(dto: CreateImportJobDto, user?: { userId?: string; name?: string }) {
+    // Candado: el mismo consolidado no puede estar activo en otra sucursal (se rechaza antes de encolar).
+    await this.consolidatedService.assertNotInOtherSubsidiary(dto.consNumber, dto.subsidiaryId);
     const { rows, totalRows } = parsePastedRows(dto.rows, dto.kind);
     const payloadHash = hashRows(rows);
 
@@ -78,6 +80,8 @@ export class ImportJobsService {
     }
     const cons = await this.consolidatedService.findByConsNumberScoped(dto.consNumber, dto.subsidiaryId, ShipmentType.FEDEX);
     const targetConsId = cons?.id ?? '__none__';
+    const other = await this.consolidatedService.findActiveInOtherSubsidiary(dto.consNumber, dto.subsidiaryId);
+    const otherSubsidiary = other ? { ...other, message: otherSubsidiaryMessage(other) } : null;
     const tns = rows.map((r) => r.trackingNumber);
 
     // Para charge: dedup contra charge_shipment por consNumber; para master: contra shipment por sucursal.
@@ -90,6 +94,9 @@ export class ImportJobsService {
       for (const c of found) existing.set(c.trackingNumber, { consolidatedId: targetConsId, status: String(c.status) });
     }
 
+    const alreadyF2Count = dto.kind === 'master' && tns.length
+      ? (await this.shipmentsService.findExistingChargeTrackings(this.dataSource.manager, tns, dto.consNumber, dto.subsidiaryId)).size
+      : 0;
     const cls = classifyMasterRows(rows, existing, targetConsId, RETURN_STATUSES);
     const duplicatesInFile = rows.length - new Set(tns).size;
     const alreadyImported = cls.duplicated.length - duplicatesInFile;
@@ -99,6 +106,8 @@ export class ImportJobsService {
       recycledCount: dto.kind === 'master' ? cls.recycledTrackings.length : 0,
       alreadyImportedCount: alreadyImported < 0 ? 0 : alreadyImported,
       duplicatesInFile,
+      alreadyF2Count: alreadyF2Count, // ya son carga F2 de este consolidado: no se agregan como paquete
+      otherSubsidiary, // si no es null, la subida se bloqueará
       consNumberExists: cons ? { consNumber: cons.consNumber, isExactMatch: true } : null,
       parseError: null,
     };
@@ -159,6 +168,10 @@ export class ImportJobsService {
       const predefinedSub = await manager.findOne(Subsidiary, { where: { id: job.subsidiaryId } });
       if (!predefinedSub) throw new Error('Subsidiaria no encontrada');
 
+      // Candado (también aquí: el job pudo encolarse antes de que otra sucursal lo subiera).
+      const other = await this.consolidatedService.findActiveInOtherSubsidiary(job.consNumber, job.subsidiaryId);
+      if (other) throw new Error(otherSubsidiaryMessage(other));
+
       // Consolidado find-or-create (dentro del lock).
       const cons = await this.consolidatedService.findByConsNumberScoped(job.consNumber, job.subsidiaryId, ShipmentType.FEDEX);
       let consolidatedId = cons?.id ?? null;
@@ -175,7 +188,14 @@ export class ImportJobsService {
 
       // Subida sin reglas de paquete: se insertan TODAS las filas. La única regla es el
       // find-or-create del consolidado por consNumber (arriba). Sin dedup ni reingresos.
-      const cls = classifyMasterRows(work, new Map(), consolidatedId, RETURN_STATUSES);
+      // Candado: guías que ya son carga F2 de este consolidado no entran como paquete (doble cobro).
+      const f2Set = await this.shipmentsService.findExistingChargeTrackings(
+        manager, work.map((r) => r.trackingNumber), job.consNumber, job.subsidiaryId,
+      );
+      const skippedF2 = work.filter((r) => f2Set.has(r.trackingNumber)).map((r) => r.trackingNumber);
+      (result as any).skippedF2Trackings = skippedF2;
+      result.summary.skippedF2 = skippedF2.length;
+      const cls = classifyMasterRows(work.filter((r) => !f2Set.has(r.trackingNumber)), new Map(), consolidatedId, RETURN_STATUSES);
       job.duplicated = 0;
       job.recycled = 0;
 
