@@ -140,6 +140,9 @@ async function bootstrap() {
       'x-request-id',
     ],
     credentials: true,
+    // Sin esto el navegador no deja leer el nombre del archivo en las descargas
+    // (PDF/Excel de bodega, etc.) y todo baja como 'bodega.pdf'.
+    exposedHeaders: ['Content-Disposition'],
     preflightContinue: false,
     optionsSuccessStatus: 204
   });

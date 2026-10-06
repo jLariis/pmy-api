@@ -26,7 +26,7 @@ import { ShipmentStatusType } from 'src/common/enums';
 import { PaginatedResult, parsePagination, resolveDateRange } from 'src/common/pagination.util';
 import { CreateOutboundDto } from './dto/create-outbound.dto';
 import { assertOutboundConsistency } from './warehouse.validation';
-import { blankIfMissing, formatPaymentDisplay, hydratePackageIds, resolvePackagePayment, splitShipmentIds } from './warehouse.helpers';
+import { blankIfMissing, formatPaymentDisplay, hydratePackageIds, resolvePackagePayment, splitShipmentIds, warehousePackageCode } from './warehouse.helpers';
 import { MailService } from 'src/mail/mail.service';
 import { format, toZonedTime } from 'date-fns-tz';
 import axios from 'axios';
@@ -82,6 +82,11 @@ interface NotificationHeader {
    * sistema que espera la celda vacía.
    */
   blankMissing?: boolean;
+  /**
+   * Solo traspasos: los paquetes DHL se imprimen con su JD (`dhlUniqueId`) en
+   * vez de la guía maestra.
+   */
+  dhlShowsUniqueId?: boolean;
 }
 
 /**
@@ -113,7 +118,7 @@ export function buildWarehousePdfData(header: any, packages: any[], timeZone: st
     const venceHoy = dateStr === todayStr;
     return {
       index: i + 1,
-      trackingNumber: pkg.trackingNumber || pkg.dhlUniqueId || '',
+      trackingNumber: warehousePackageCode(pkg, !!header?.dhlShowsUniqueId),
       recipientName: txt(pkg.recipientName),
       recipientAddress: txt(pkg.recipientAddress),
       recipientZip: txt(pkg.recipientZip),
@@ -159,7 +164,7 @@ export function buildWarehouseExcelData(header: any, packages: any[], timeZone: 
     const commit = pkg.commitDateTime ? toZonedTime(new Date(pkg.commitDateTime), timeZone) : null;
     return {
       index: i + 1,
-      trackingNumber: pkg.trackingNumber || pkg.dhlUniqueId,
+      trackingNumber: warehousePackageCode(pkg, !!header?.dhlShowsUniqueId),
       recipientName: txt(pkg.recipientName),
       recipientAddress: txt(pkg.recipientAddress),
       recipientZip: txt(pkg.recipientZip),
@@ -209,6 +214,7 @@ export function buildTransferNotificationHeader(
     destinationName: dest, // el PDF lo muestra como "SUCURSAL DESTINO"
     title: `Traspaso desde ${origin}`,
     blankMissing: true, // Administración requiere celdas vacías, no "N/A"
+    dhlShowsUniqueId: true, // DHL se identifica por su JD, no por la guía maestra
   };
 }
 
@@ -1881,7 +1887,7 @@ export class WarehouseService {
         : null;
       sheet.addRow([
         index + 1,
-        pkg.trackingNumber || pkg.dhlUniqueId,
+        warehousePackageCode(pkg, !!header.dhlShowsUniqueId),
         txt(pkg.recipientName),
         txt(pkg.recipientAddress),
         txt(pkg.recipientZip),
@@ -1992,7 +1998,7 @@ export class WarehouseService {
 
         const rowData: TableCell[] = [
           { text: `${index + 1}`, color: '#cc0000', bold: true },
-          { text: this.toPdfSafe(pkg.trackingNumber), color: '#cc0000', bold: true },
+          { text: this.toPdfSafe(warehousePackageCode(pkg, !!header.dhlShowsUniqueId)), color: '#cc0000', bold: true },
           { text: pdfTxt(pkg.recipientName) },
           { text: pdfTxt(pkg.recipientAddress) },
           { text: pdfTxt(pkg.recipientZip) },

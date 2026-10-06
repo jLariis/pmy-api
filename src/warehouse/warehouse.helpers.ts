@@ -78,3 +78,19 @@ export function blankIfMissing(value: unknown): string {
     .replace(/\s+/g, ' ');
   return MISSING_PLACEHOLDERS.has(normalized) ? '' : text;
 }
+
+/**
+ * Código que se imprime en la columna de guía de los archivos de bodega.
+ * En TRASPASOS (`preferDhlUniqueId=true`) un paquete DHL muestra su JD
+ * (`dhlUniqueId`, único por pieza y lo que se escanea) en vez de la guía
+ * maestra, que se repite entre piezas. FedEx/cargas y salidas a ruta siguen
+ * con la guía de siempre.
+ */
+export function warehousePackageCode(
+  pkg: { trackingNumber?: string | null; dhlUniqueId?: string | null },
+  preferDhlUniqueId = false,
+): string {
+  // Solo los envíos DHL traen `dhlUniqueId` (las cargas y FedEx no).
+  if (preferDhlUniqueId && pkg?.dhlUniqueId) return pkg.dhlUniqueId;
+  return pkg?.trackingNumber || pkg?.dhlUniqueId || '';
+}
