@@ -45,6 +45,7 @@ export class RouteUniverseService {
       .where('DATE(pd.routeDate) = :day', { day })
       .andWhere('LOWER(s.shipmentType) = :fedex', { fedex: FEDEX_TYPE }) // solo FedEx: DHL se rastrea con su API nativa
       .andWhere('LOWER(s.status) NOT IN (:...term)', { term: TERMINAL_LC })
+      .andWhere('s.active = 1') // nunca guías dadas de baja
       .select(['s.id AS id', 's.status AS status', 'sub.id AS subid', 's.trackingNumber AS trackingnumber', 's.fedexUniqueId AS fedexuniqueid', 's.carrierCode AS carriercode'])
       .getRawMany();
     const charges = await this.chargeRepo
@@ -54,6 +55,7 @@ export class RouteUniverseService {
       .where('DATE(pd.routeDate) = :day', { day })
       .andWhere('LOWER(c.shipmentType) = :fedex', { fedex: FEDEX_TYPE }) // cargas F2 son siempre FedEx; nunca DHL
       .andWhere('LOWER(c.status) NOT IN (:...term)', { term: TERMINAL_LC })
+      .andWhere('c.active = 1') // nunca guías de carga dadas de baja
       .select(['c.id AS id', 'c.status AS status', 'sub.id AS subid', 'c.trackingNumber AS trackingnumber', 'c.fedexUniqueId AS fedexuniqueid', 'c.carrierCode AS carriercode'])
       .getRawMany();
     return [

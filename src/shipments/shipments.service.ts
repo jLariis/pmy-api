@@ -3076,6 +3076,12 @@ export class ShipmentsService {
     exceptionCode: string | undefined,
     transactionalEntityManager: EntityManager
   ): Promise<void> {
+    // 0. Una guía dada de baja (consolidado eliminado con autorización) nunca genera ingreso.
+    if ((shipment as any)?.active === false) {
+      this.logger.warn(`⛔ Guía ${shipment.trackingNumber} dada de baja: no genera ingreso.`);
+      return;
+    }
+
     // 1. Obtener costo de la sucursal SEGÚN EL TIPO (FedEx vs DHL).
     // Antes siempre cobraba fedexCostPackage aunque la guía fuera DHL.
     const subsidiaryId = shipment.subsidiary?.id;
@@ -4102,6 +4108,9 @@ export class ShipmentsService {
           // Filtro 3: Estatus permitidos
           .andWhere('LOWER(shipment.status) IN (:...statuses)', { statuses: statusList })
 
+          // Filtro 3b: nunca guías dadas de baja (consolidado eliminado con autorización)
+          .andWhere('shipment.active = 1')
+
         // Filtro 4 (opcional): scoping por sucursal (lo usa el backfill manual de código 44).
         const scopeIdsS = (subsidiaryIds || []).filter(Boolean);
         if (scopeIdsS.length) {
@@ -4158,6 +4167,9 @@ export class ShipmentsService {
 
           // Filtro 3: Estatus permitidos
           .andWhere('LOWER(chargeShipment.status) IN (:...statuses)', { statuses: statusList })
+
+          // Filtro 3b: nunca guías de carga dadas de baja
+          .andWhere('chargeShipment.active = 1')
 
         // Filtro 4 (opcional): scoping por sucursal (lo usa el backfill manual de código 44).
         const scopeIdsC = (subsidiaryIds || []).filter(Boolean);
@@ -4885,6 +4897,7 @@ export class ShipmentsService {
         .andWhere("TRIM(s.trackingNumber) != ''")
         .andWhere('s.createdAt > :cutoff', { cutoff: this.dhlTrackingCutoff() })
         .andWhere('LOWER(s.status) NOT IN (:...terminal)', { terminal })
+        .andWhere('s.active = 1') // nunca guías dadas de baja
         // Solo guías cuya ruta (salida) es reciente: "en ruta por día".
         .andWhere('pd.routeDate IS NOT NULL')
         .andWhere('pd.routeDate >= :routeFrom', {
@@ -8514,8 +8527,9 @@ export class ShipmentsService {
             try {
                 const targetIds = shipmentsByTracking[tn];
                 
+                // active: las guías dadas de baja (consolidado eliminado) no se vuelven a procesar.
                 const shipmentList = await queryRunner.manager.find(Shipment, {
-                    where: { id: In(targetIds) },
+                    where: { id: In(targetIds), active: true } as any,
                     relations: ['subsidiary'],
                     lock: { mode: 'pessimistic_write' }
                 });
@@ -9103,8 +9117,9 @@ export class ShipmentsService {
             try {
                 const targetIds = shipmentsByTracking[tn];
                 
+                // active: las guías de carga dadas de baja no se vuelven a procesar.
                 const chargeList = await queryRunner.manager.find(ChargeShipment, {
-                    where: { id: In(targetIds) },
+                    where: { id: In(targetIds), active: true } as any,
                     relations: ['subsidiary'],
                     lock: { mode: 'pessimistic_write' }
                 });

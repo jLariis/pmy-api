@@ -176,4 +176,19 @@ describe('TrackingCompareService.applyMany', () => {
     expect(sink.applyPlan).toHaveBeenCalledTimes(1);
     expect(out[0].applied).toBe(true);
   });
+
+  it('guía dada de baja (consolidado eliminado): ni consulta FedEx ni persiste', async () => {
+    const shipment = { id: 's1', trackingNumber: 'TN1', status: 'en_ruta', active: false };
+    const shipmentRepo = { findOne: jest.fn().mockResolvedValue(shipment), find: jest.fn() } as any;
+    const chargeRepo = { findOne: jest.fn().mockResolvedValue(null), find: jest.fn().mockResolvedValue([]) } as any;
+    const statusRepo = { find: jest.fn().mockResolvedValue([]) } as any;
+    const source = { fetch: jest.fn() } as any;
+    const sink = { applyPlan: jest.fn() } as any;
+    const historyRepo = { find: jest.fn().mockResolvedValue([]) } as any;
+    const svc = new TrackingCompareService(shipmentRepo, chargeRepo, statusRepo, historyRepo, source, {} as any, {} as any, {} as any, sink);
+    const out = await svc.applyMany(['s1'], { role: 'superadmin' });
+    expect(source.fetch).not.toHaveBeenCalled();
+    expect(sink.applyPlan).not.toHaveBeenCalled();
+    expect(out[0].applied).toBe(false);
+  });
 });

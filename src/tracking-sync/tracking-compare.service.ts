@@ -314,6 +314,8 @@ export class TrackingCompareService {
     entity: Trackable,
     kind: TrackableKind,
   ): Promise<{ ctx: SyncContext; ourLastEventAt: string | null } | null> {
+    // Guía dada de baja (consolidado eliminado con autorización): no se consulta ni se persiste.
+    if ((entity as any)?.active === false) return null;
     const [raw] = await this.source.fetch([
       { trackingNumber: entity.trackingNumber, fedexUniqueId: entity.fedexUniqueId, carrierCode: entity.carrierCode },
     ]);
