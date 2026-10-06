@@ -20,6 +20,8 @@ export interface PlanBatchView extends PasteBatch {
   cobrosCount: number;
   /** Ya está en el sistema (por esta bandeja o subido por otro camino). */
   uploaded: { at: Date; byName: string | null; minutes: number | null; via: string | null } | null;
+  /** F2: guías de este bloque que ya se subieron como paquete en el master de ESTE mismo correo. */
+  alreadyInMaster?: { count: number; consNumber: string };
 }
 
 export interface PastePlanResult {
@@ -102,6 +104,7 @@ export class InboxPasteService {
     const consKind = (k: PasteBatchKind) => (k === 'aereo' ? 'aereo' : k === 'f2' ? 'f2' : 'master');
     const elsewhere = await this.activeInOtherSubsidiary(batches.map((b) => b.consNumber).filter(Boolean), msg.subsidiaryId);
     const sentFrom = await this.alreadySentFromOtherEmail(atts, messageId);
+    const f2InMaster = await this.f2GuidesAlreadyInEmailMaster(batches);
     const views: PlanBatchView[] = batches.map((b) => {
       const c = b.consNumber
         ? cons.find((x) => x.consNumber === b.consNumber && x.kind === consKind(b.kind) && x.linkStatus === 'subido')
@@ -119,6 +122,7 @@ export class InboxPasteService {
       return {
         ...b,
         blockedReason: lock ?? b.blockedReason,
+        alreadyInMaster: f2InMaster.get(b.key),
         hvCount: tsvTrackings(b.hvRaw).trackings.size,
         cobrosCount: b.paymentsRaw ? b.paymentsRaw.split('\n').length - 1 : 0,
         uploaded: c?.uploadedAt ? { at: c.uploadedAt, byName: nameOf(c.uploadedById), minutes: c.uploadMinutes, via: c.uploadedVia } : null,
@@ -147,6 +151,31 @@ export class InboxPasteService {
       }));
     const orphanCobros = unmatchedCobros({ cobros: cons.flatMap((c) => c.cobros ?? []), extraPaymentsRaw: extraPayments, attachments: planAtts });
     return { ready, reason, batches: views, announcedOnly, unmatchedCobros: orphanCobros };
+  }
+
+  /**
+   * Validación dentro del correo, lado F2 → master: guías de cada bloque F2 que ya están como
+   * paquete activo en el consolidado master de ESTE mismo correo (subido antes, o por otro camino
+   * sin quitar la F2). Solo compara contra el master del correo, nunca contra el historial.
+   */
+  private async f2GuidesAlreadyInEmailMaster(batches: PasteBatch[]): Promise<Map<string, { count: number; consNumber: string }>> {
+    const out = new Map<string, { count: number; consNumber: string }>();
+    const masters = [...new Set(batches.filter((b) => b.kind !== 'f2' && b.consNumber).map((b) => b.consNumber.trim()))];
+    if (!masters.length) return out;
+    for (const b of batches.filter((x) => x.kind === 'f2')) {
+      const tns = [...tsvTrackings(b.raw).trackings];
+      if (!tns.length) continue;
+      const rows: any[] = await this.ds.query(
+        `SELECT TRIM(c.consNumber) AS cons, COUNT(DISTINCT s.trackingNumber) AS n
+         FROM shipment s JOIN consolidated c ON c.id = s.consolidatedId
+         WHERE s.active = 1 AND c.active = 1 AND TRIM(c.consNumber) IN (${masters.map(() => '?').join(',')})
+           AND s.trackingNumber IN (${tns.map(() => '?').join(',')})
+         GROUP BY TRIM(c.consNumber) ORDER BY n DESC LIMIT 1`,
+        [...masters, ...tns],
+      );
+      if (rows[0] && Number(rows[0].n) > 0) out.set(b.key, { count: Number(rows[0].n), consNumber: rows[0].cons });
+    }
+    return out;
   }
 
   /** Consolidados activos con ese número en OTRA sucursal (master/aéreo en consolidated, F2 en charge). */

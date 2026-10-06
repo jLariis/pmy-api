@@ -921,26 +921,17 @@ export class ShipmentsService {
           if (tnF2 && (dupSet.has(tnF2) || seenF2.has(tnF2))) { duplicatedF2++; continue; }
           if (tnF2) seenF2.add(tnF2);
 
-          // ¿Ya es paquete normal en ESTA sucursal (activo y reciente)? Entonces se pasa a carga.
-          // Antes buscaba la guía en cualquier sucursal/fecha (FedEx reutiliza números) y borraba
-          // todos los ingresos con ese número; ahora solo el paquete correcto y SUS ingresos.
-          const original = await queryRunner.manager
-            .createQueryBuilder(Shipment, 's')
-            .leftJoinAndSelect('s.statusHistory', 'sh')
-            .leftJoinAndSelect('s.payment', 'pay')
-            .leftJoin('s.subsidiary', 'sub')
-            .where('s.trackingNumber = :tn', { tn: data.trackingNumber })
-            .andWhere('sub.id = :subsidiaryId', { subsidiaryId })
-            .andWhere('s.active = 1')
-            .andWhere('s.createdAt >= :since', { since: new Date(Date.now() - ShipmentsService.CROSS_CONS_DAYS * 86_400_000) })
-            .orderBy('s.createdAt', 'DESC')
-            .getOne();
+          // Buscamos si existe en la tabla original de Shipments
+          const original = await queryRunner.manager.findOne(Shipment, {
+            where: { trackingNumber: data.trackingNumber },
+            relations: ['statusHistory', 'payment']
+          });
 
           let savedCS: ChargeShipment;
 
           if (original) {
             // --- ESCENARIO A: EXISTE -> MIGRAR ---
-            await queryRunner.manager.createQueryBuilder().delete().from(Income).where('shipmentId = :id', { id: original.id }).execute();
+            await queryRunner.manager.delete(Income, { trackingNumber: original.trackingNumber });
 
             const chargeShipment = this.chargeShipmentRepository.create({
               ...original,
@@ -1516,10 +1507,8 @@ export class ShipmentsService {
   }
 
   /**
-   * Trackings del lote que YA son carga (`charge_shipment` activo) en la sucursal: del mismo
-   * consolidado (re-subidas F2) o de CUALQUIER consolidado de los últimos
-   * `CROSS_CONS_DAYS` días. Una guía es carga una sola vez por sucursal: FedEx manda la F2
-   * con su PROPIO número y repite esas guías en el master (doble cobro paquete + carga).
+   * Trackings del lote que YA existen como `charge_shipment` en este consolidado
+   * (consNumber normalizado + sucursal). Sirve para omitir duplicados en re-subidas F2.
    */
   async findExistingChargeTrackings(
     manager: EntityManager,
@@ -1529,40 +1518,16 @@ export class ShipmentsService {
   ): Promise<Set<string>> {
     const norm = (consNumber || '').trim().toUpperCase().replace(/\s+/g, ' ');
     const tns = Array.from(new Set(trackings.map(t => String(t || '').trim()).filter(Boolean)));
-    if (!subsidiaryId || tns.length === 0) return new Set();
-    const since = new Date(Date.now() - ShipmentsService.CROSS_CONS_DAYS * 86_400_000);
+    if (!norm || tns.length === 0) return new Set();
     const rows = await manager.createQueryBuilder(ChargeShipment, 'cs')
       .select('cs.trackingNumber', 'trackingNumber')
       .leftJoin('cs.subsidiary', 'sub')
       .where('cs.trackingNumber IN (:...tns)', { tns })
-      .andWhere('(TRIM(UPPER(cs.consNumber)) = :norm OR cs.createdAt >= :since)', { norm, since })
+      .andWhere('TRIM(UPPER(cs.consNumber)) = :norm', { norm })
       .andWhere('sub.id = :subsidiaryId', { subsidiaryId })
       .andWhere('cs.active = 1')
       .getRawMany();
     return new Set(rows.map(r => String(r.trackingNumber).trim()));
-  }
-
-  /** Ventana para considerar "la misma guía" entre consolidados distintos de una sucursal. */
-  static readonly CROSS_CONS_DAYS = 30;
-
-  /**
-   * El otro lado del candado: trackings del lote que YA son paquete normal (`shipment`
-   * activo) en la sucursal, de los últimos `CROSS_CONS_DAYS` días. Al subir una F2 estas
-   * guías se pasan a carga (no deben quedar en los dos lados).
-   */
-  async findActiveShipmentTrackings(manager: EntityManager, trackings: string[], subsidiaryId: string): Promise<Set<string>> {
-    const tns = Array.from(new Set(trackings.map((t) => String(t || '').trim()).filter(Boolean)));
-    if (!subsidiaryId || tns.length === 0) return new Set();
-    const since = new Date(Date.now() - ShipmentsService.CROSS_CONS_DAYS * 86_400_000);
-    const rows = await manager.createQueryBuilder(Shipment, 's')
-      .select('s.trackingNumber', 'trackingNumber')
-      .leftJoin('s.subsidiary', 'sub')
-      .where('s.trackingNumber IN (:...tns)', { tns })
-      .andWhere('sub.id = :subsidiaryId', { subsidiaryId })
-      .andWhere('s.active = 1')
-      .andWhere('s.createdAt >= :since', { since })
-      .getRawMany();
-    return new Set(rows.map((r) => String(r.trackingNumber).trim()));
   }
 
   /**
@@ -3492,9 +3457,6 @@ export class ShipmentsService {
         : new Set<string>();
       const alreadyF2 = uniqueTns.filter((t) => dupChargeSet.has(t));
       const newF2 = uniqueTns.filter((t) => !dupChargeSet.has(t));
-      // El otro lado: guías de esta F2 que ya están como paquete normal en la sucursal.
-      // Con "quitar del master" (default) se pasan a carga; con "no quitar" quedarían dobles.
-      const masterSet = newF2.length ? await this.findActiveShipmentTrackings(this.dataSource.manager, newF2, subsidiaryId) : new Set<string>();
       return {
         fileName: file.originalname,
         parseError,
@@ -3504,8 +3466,7 @@ export class ShipmentsService {
         duplicatesInFile: dupInFile.size,
         newCount: newF2.length,          // cargas a crear
         recycledCount: 0,                // F2 no maneja "reingreso"
-        alreadyImportedCount: alreadyF2.length, // ya son carga en la sucursal (este consolidado u otro reciente)
-        alreadyMasterCount: masterSet.size, // ya son paquete normal en la sucursal: se pasan a carga
+        alreadyImportedCount: alreadyF2.length, // ya existen como carga en este consolidado
         otherSubsidiary, // si no es null, la subida se bloqueará
         consNumberExists: exactConsMatchF2 ? {
           id: exactConsMatchF2.id,
