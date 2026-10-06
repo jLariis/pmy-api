@@ -303,6 +303,22 @@ describe('RouteclosureService.reconcileRouteWithFedex — (3) revalidación FedE
     expect(savedIncomes[0].incomeType).toBe(IncomeStatus.NO_ENTREGADO);
   });
 
+  it('CASO 383934486493: evento FedEx de OTRO día que la ruta NO cobra en este cierre; el del día sí', async () => {
+    const outcomes = [
+      // La guía volvió a salir el 05/10 y FedEx reportó un rechazo ese día → no es de esta ruta.
+      { shipmentId: 's1', trackingNumber: 'TN1', applied: true, fromStatus: 'en_ruta', toStatus: ShipmentStatusType.RECHAZADO, insertedEvents: 1, kind: 'shipment', exceptionCode: '07', eventAt: '2026-10-05T18:41:00Z' },
+      // Rechazo del 03/10 (día de la ruta) → sí cobra.
+      { shipmentId: 's2', trackingNumber: 'TN2', applied: true, fromStatus: 'en_ruta', toStatus: ShipmentStatusType.RECHAZADO, insertedEvents: 1, kind: 'shipment', exceptionCode: '07', eventAt: '2026-10-03T19:16:00Z' },
+    ];
+    const { svc, savedIncomes } = makeService(
+      { id: 'PD-1', is315: false, subsidiary, routeDate: '2026-10-03' },
+      { outcomes },
+    );
+    await svc.reconcileRouteWithFedex('PD-1', { userId: 'U1' });
+
+    expect(savedIncomes.map((i) => i.trackingNumber)).toEqual(['TN2']);
+  });
+
   it('skip charge: un outcome kind=charge NO genera ni toca ingresos', async () => {
     const outcomes = [
       { shipmentId: 'c9', trackingNumber: 'TN9', applied: true, fromStatus: 'en_ruta', toStatus: ShipmentStatusType.ENTREGADO, insertedEvents: 1, kind: 'charge', exceptionCode: null, eventAt: '2026-08-12T20:00:00Z' },

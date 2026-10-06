@@ -15,6 +15,7 @@ import { DispatchStatus } from 'src/common/enums/dispatch-enum';
 import { MailService } from 'src/mail/mail.service';
 import { fromZonedTime } from 'date-fns-tz';
 import { hermosilloDayStartFromInstant, toHermosilloDateString } from 'src/common/utils';
+import { routeDayOf } from 'src/tracking-sync/closure-stuck-resolver.util';
 import { ShipmentType } from 'src/common/enums/shipment-type.enum';
 import { IncomeStatus } from 'src/common/enums/income-status.enum';
 import { IncomeSourceType } from 'src/common/enums/income-source-type.enum';
@@ -171,7 +172,21 @@ export class RouteclosureService {
       return { incomeCreated: 0, incomeSuperseded: 0 };
     }
 
-    const shipmentOutcomes = outcomes.filter((o) => o.kind !== 'charge');
+    // Regla del cierre: "hasta el último estatus del día en que se realizó la ruta". Un evento
+    // FedEx de OTRO día (la guía volvió a salir, DEX posterior) no cobra en el cierre de esta
+    // ruta: le toca a la ruta/cron de ese día (caso 383934486493).
+    const routeDay = routeDayOf(dispatch.routeDate ?? dispatch.createdAt ?? null);
+    const shipmentOutcomes = outcomes.filter((o) => {
+      if (o.kind === 'charge') return false;
+      if (!o.eventAt || !routeDay) return true;
+      const sameDay = toHermosilloDateString(new Date(o.eventAt)) === routeDay;
+      if (!sameDay) {
+        this.logger.log(
+          `⏭️ [RouteClosure] ${o.trackingNumber}: evento FedEx ${o.eventAt} fuera del día de la ruta (${routeDay}); no cobra en este cierre.`,
+        );
+      }
+      return sameDay;
+    });
     const cost = dispatch.subsidiary?.fedexCostPackage ?? 0;
     const incomeRepo = this.dataSource.getRepository(Income);
     let incomeCreated = 0;

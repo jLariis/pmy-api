@@ -22,6 +22,53 @@ export function isResolvedFedexOutcome(status: ShipmentStatusType | null | undef
   return !!status && !OPERATIONAL_OR_UNKNOWN.has(status);
 }
 
+/**
+ * Día operativo (yyyy-MM-dd Hermosillo) de la ruta. `routeDate` es columna DATE: llega como
+ * 'yyyy-MM-dd' o como Date a medianoche UTC (día calendario flotante, NO un instante: pasarlo
+ * por la zona Hermosillo lo correría al día anterior). `createdAt` sí es un instante.
+ */
+export function routeDayOf(anchor: Date | string | null | undefined): string | null {
+  if (!anchor) return null;
+  if (anchor instanceof Date) {
+    if (isNaN(anchor.getTime())) return null;
+    const iso = anchor.toISOString();
+    if (iso.endsWith('T00:00:00.000Z')) return iso.slice(0, 10);
+  }
+  return toHermosilloDateString(anchor);
+}
+
+/** Entrada del historial (shipment_status) mínima para el estatus del cierre. */
+export interface ClosureHistoryEntry {
+  status: ShipmentStatusType | string;
+  timestamp: Date | string | null;
+  exceptionCode?: string | null;
+}
+
+/**
+ * Estatus con el que el CIERRE clasifica una guía: el de FedEx/interno "hasta el último
+ * estatus del día en que se realizó la ruta" (decisión del usuario 2026-10-06). Lo que pasó
+ * DESPUÉS (otra salida, devolución registrada días después, nuevo DEX) NO cambia el cierre de
+ * esa ruta. Toma el último desenlace del día; si no hubo, el último evento del día; si el día
+ * no tiene eventos, `null` (el llamador usa el estatus vivo).
+ */
+export function resolveRouteDayClosureStatus(
+  history: ClosureHistoryEntry[] | null | undefined,
+  routeAnchor: Date | string | null,
+): RouteDayFedexEvent | null {
+  const events: RouteDayFedexEvent[] = [];
+  for (const h of history ?? []) {
+    if (!h?.timestamp || !h.status) continue;
+    const occurredAt = h.timestamp instanceof Date ? h.timestamp : new Date(h.timestamp);
+    if (isNaN(occurredAt.getTime())) continue;
+    events.push({
+      status: h.status as ShipmentStatusType,
+      occurredAt,
+      exceptionCode: h.exceptionCode ?? null,
+    });
+  }
+  return selectRouteDayFedexEvent(events, routeAnchor);
+}
+
 /** Evento FedEx mínimo para elegir el estatus del día operativo. */
 export interface RouteDayFedexEvent {
   status: ShipmentStatusType;
@@ -31,7 +78,8 @@ export interface RouteDayFedexEvent {
 
 /**
  * Elige el estatus de FedEx "tal como estaba al cierre del DÍA OPERATIVO de la ruta": el ÚLTIMO
- * evento de FedEx que ocurrió EN ese día (zona Hermosillo). Semántica ESTRICTA del cierre —
+ * DESENLACE real de FedEx que ocurrió EN ese día (zona Hermosillo); si el día no tuvo ningún
+ * desenlace, el último evento del día (operativo, que nunca fuerza nada). Semántica ESTRICTA del cierre —
  * cerrar la ruta de ayer NO debe tomar estatus de hoy, sino los del día en que se creó la ruta.
  *
  * - Eventos de días POSTERIORES a la ruta se ignoran (p. ej. una entrega al día siguiente no
@@ -42,17 +90,22 @@ export interface RouteDayFedexEvent {
  */
 export function selectRouteDayFedexEvent(
   events: RouteDayFedexEvent[],
-  routeAnchor: Date | null,
+  routeAnchor: Date | string | null,
 ): RouteDayFedexEvent | null {
-  if (!routeAnchor) return null;
-  const routeDay = toHermosilloDateString(routeAnchor);
-  let picked: RouteDayFedexEvent | null = null;
+  const routeDay = routeDayOf(routeAnchor);
+  if (!routeDay) return null;
+  let lastAny: RouteDayFedexEvent | null = null;
+  let lastOutcome: RouteDayFedexEvent | null = null;
   for (const e of events) {
     if (!e?.occurredAt) continue;
     if (toHermosilloDateString(e.occurredAt) !== routeDay) continue;
-    if (!picked || e.occurredAt.getTime() > picked.occurredAt.getTime()) picked = e;
+    const t = e.occurredAt.getTime();
+    if (!lastAny || t > lastAny.occurredAt.getTime()) lastAny = e;
+    if (isResolvedFedexOutcome(e.status) && (!lastOutcome || t > lastOutcome.occurredAt.getTime())) lastOutcome = e;
   }
-  return picked;
+  // Tras un DEX, FedEx escanea el paquete de regreso en estación (AR "At local FedEx facility",
+  // a veces con 44) ese mismo día: es operativo y NO borra el desenlace (caso 383934486493).
+  return lastOutcome ?? lastAny;
 }
 
 export interface StuckResolveInput {
