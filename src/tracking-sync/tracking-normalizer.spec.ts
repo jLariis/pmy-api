@@ -49,4 +49,23 @@ describe('TrackingNormalizer', () => {
     expect(out.validation.ok).toBe(false);
     expect(out.latest).toBeNull();
   });
+
+  it('entrega FANTASMA (DL seguido de salida/llegada) queda como tránsito y el header no cuenta como entregado', () => {
+    const out = n.normalize({
+      trackingNumber: 'TN2',
+      trackResults: [{
+        latestStatusDetail: { derivedCode: 'IT', code: 'AR' },
+        scanEvents: [
+          { date: '2026-09-30T18:07:00Z', eventType: 'PU', derivedStatusCode: 'PU' },
+          { date: '2026-09-30T23:56:00Z', eventType: 'DL', derivedStatusCode: 'DL' },
+          { date: '2026-10-01T05:40:00Z', eventType: 'DP', derivedStatusCode: 'IT' },
+        ],
+      }],
+    } as any);
+    const dl = out.events.find((e) => e.eventType === 'DL')!;
+    expect(dl.status).toBe(ShipmentStatusType.EN_TRANSITO);
+    expect(out.events.some((e) => e.status === ShipmentStatusType.ENTREGADO)).toBe(false);
+    expect(out.header.isDeliveredHeader).toBe(false);
+  });
 });
+

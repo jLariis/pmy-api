@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { ShipmentStatusType } from 'src/common/enums/shipment-status-type.enum';
 import { resolveCanonicalStatus } from 'src/fedex-status/fedex-status.mapping';
 import { resolveCode44ScanTime } from 'src/utils/fedex-local-scan.util';
+import { isPhantomDelivery, onlyPhantomDeliveries } from 'src/common/phantom-delivery.util';
 import { buildEventKey, buildShadowKey } from './event-key.util';
 import { NormalizedEvent, NormalizedTracking, RawTrackingResult, StatusValidation, TrackingHeader } from './tracking-sync.types';
 
@@ -20,6 +21,15 @@ export class TrackingNormalizer {
       .filter((e): e is NormalizedEvent => e !== null)
       .sort((a, b) => a.occurredAt.getTime() - b.occurredAt.getTime());
 
+    // Entrega FANTASMA (DL seguido de más movimiento, caso 383915660048): no es entrega → tránsito.
+    const scanLike = events.map((e) => ({ date: e.occurredAt, eventType: e.eventType, derivedStatusCode: e.derivedCode }));
+    for (const e of events) {
+      if (e.status !== ShipmentStatusType.ENTREGADO) continue;
+      if (!isPhantomDelivery(scanLike, { date: e.occurredAt, eventType: e.eventType, derivedStatusCode: e.derivedCode })) continue;
+      e.status = ShipmentStatusType.EN_TRANSITO;
+      e.shadowKey = buildShadowKey(e.occurredAt.getTime(), e.exceptionCode, e.status);
+    }
+
     const latest = events.length ? events[events.length - 1] : null;
 
     return {
@@ -27,13 +37,13 @@ export class TrackingNormalizer {
       events,
       latest,
       commitDateTime: this.extractCommitDateTime(track),
-      header: this.buildHeader(track, scanEvents),
+      header: this.buildHeader(track, scanEvents, onlyPhantomDeliveries(scanLike)),
       validation: this.validate(track, events),
     };
   }
 
   /** Extrae los datos del encabezado de FedEx (para reglas de header/44/metadata). */
-  private buildHeader(track: any, scanEvents: any[]): TrackingHeader {
+  private buildHeader(track: any, scanEvents: any[], onlyPhantom = false): TrackingHeader {
     const lsd = track?.latestStatusDetail ?? null;
     const code: string | null = lsd?.code ?? null;
     const derivedCode: string | null = lsd?.derivedCode ?? null;
@@ -45,7 +55,8 @@ export class TrackingNormalizer {
       code,
       derivedCode,
       ancillaryReason,
-      isDeliveredHeader: code === 'DL' || derivedCode === 'DL',
+      // Un header DL no vale si todas las entregas del historial son fantasma.
+      isDeliveredHeader: (code === 'DL' || derivedCode === 'DL') && !onlyPhantom,
       actualDeliveryAt: actualDeliveryAt && !isNaN(actualDeliveryAt.getTime()) ? actualDeliveryAt : null,
       receivedByName: track?.deliveryDetails?.receivedByName ?? null,
       uniqueId: track?.trackingNumberInfo?.trackingNumberUniqueId ?? null,
