@@ -24,6 +24,10 @@ export class Charge{
     @Column({ default: false })
     isHalfTon: boolean;
 
+    // Baja lógica: al borrar el consolidado (con autorización) la carga deja de contar.
+    @Column({ default: true })
+    active: boolean;
+
     @Column({ type: 'datetime', default: () => 'CURRENT_TIMESTAMP' })
     createdAt: Date;
 
