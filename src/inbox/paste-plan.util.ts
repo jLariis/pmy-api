@@ -24,6 +24,8 @@ export interface PasteBatch {
   blockedReason: string | null;
   done: boolean; // ya se mandó desde el correo
   duplicateOf?: string; // key del lote con las mismas guías
+  /** Guías que también vienen en la F2 del mismo correo y por eso NO van en este bloque. */
+  movedToF2?: number;
   sheet?: string; // hoja del libro (cuando el archivo trae varias)
 }
 
@@ -148,6 +150,26 @@ export function tsvMetaConsNumber(tsv: string | null): string | null {
   return null;
 }
 
+/** Quita de un TSV las filas cuya guía está en `drop` (conserva encabezado y fila meta). */
+export function dropTrackings(tsv: string | null, drop: Set<string>): { tsv: string | null; removed: number } {
+  if (!tsv) return { tsv, removed: 0 };
+  const lines = tsv.split('\n');
+  const h = lines.slice(0, 15).findIndex((l) => l.split('\t').some((c) => TRACKING_HEADER.test(c.trim())));
+  if (h < 0) return { tsv, removed: 0 };
+  const col = lines[h].split('\t').findIndex((c) => TRACKING_HEADER.test(c.trim()));
+  let removed = 0;
+  const kept = lines.filter((l, idx) => {
+    if (idx <= h) return true;
+    const t = (l.split('\t')[col] ?? '').trim();
+    if (t && drop.has(t)) {
+      removed++;
+      return false;
+    }
+    return true;
+  });
+  return { tsv: kept.join('\n'), removed };
+}
+
 const TRACKING_HEADER = /^(tracking\s*(number|no\.?)?|gu[ií]a)$/i;
 
 /** Guías (columna de tracking) y número de columnas del encabezado de un TSV. */
@@ -202,7 +224,15 @@ export function buildPastePlan(i: PlanInput): PasteBatch[] {
     null;
   const out: PasteBatch[] = [];
 
-  for (const a of i.attachments) {
+  // Una guía vive en UN solo bloque: las que vienen en la F2 son carga y salen del master/aéreo
+  // (FedEx las repite en el master; subirlas en los dos cobraría por paquete y por carga).
+  const f2Trackings = new Set<string>();
+  for (const a of i.attachments) if (a.kind === 'f2') tsvTrackings(a.tsv).trackings.forEach((t) => f2Trackings.add(t));
+
+  for (const original of i.attachments) {
+    const isPackageBlock = original.kind === 'master' || original.kind === 'master_aereo' || original.kind === 'high_value';
+    const cleaned = isPackageBlock && f2Trackings.size ? dropTrackings(original.tsv, f2Trackings) : { tsv: original.tsv, removed: 0 };
+    const a = { ...original, tsv: cleaned.tsv };
     let kind: PasteBatchKind | null = null;
     if (a.kind === 'master') kind = 'master';
     else if (a.kind === 'master_aereo') kind = 'aereo';
@@ -243,6 +273,7 @@ export function buildPastePlan(i: PlanInput): PasteBatch[] {
       rows: tsvTrackings(a.tsv).trackings.size || rowCount(a.tsv),
       blockedReason,
       done: i.doneKeys.includes(key),
+      movedToF2: cleaned.removed || undefined,
     });
   }
   // Archivos repetidos (p. ej. "367.xlsx" y "PREALERTA … RUTA 367.xlsx"): se deja el más completo.

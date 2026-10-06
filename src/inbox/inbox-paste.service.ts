@@ -100,12 +100,25 @@ export class InboxPasteService {
       return u ? [u.name, u.lastName].filter(Boolean).join(' ') : null;
     };
     const consKind = (k: PasteBatchKind) => (k === 'aereo' ? 'aereo' : k === 'f2' ? 'f2' : 'master');
+    const elsewhere = await this.activeInOtherSubsidiary(batches.map((b) => b.consNumber).filter(Boolean), msg.subsidiaryId);
+    const sentFrom = await this.alreadySentFromOtherEmail(atts, messageId);
     const views: PlanBatchView[] = batches.map((b) => {
       const c = b.consNumber
         ? cons.find((x) => x.consNumber === b.consNumber && x.kind === consKind(b.kind) && x.linkStatus === 'subido')
         : undefined;
+      // Candados previos a subir (no esperar al error del guardado):
+      //  · el consolidado ya está activo en OTRA sucursal (el backend también lo bloquea);
+      //  · el mismo archivo ya se subió desde otro correo (reenvíos).
+      const other = b.consNumber ? elsewhere.get(b.consNumber) : undefined;
+      const resent = sentFrom.get(b.attachmentId);
+      const lock = other
+        ? `Ya está subido en ${other.subsidiaryName}${other.byName ? ` por ${other.byName}` : ''} (${other.at.toLocaleString('es-MX', { timeZone: 'America/Hermosillo', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}). Si va en esta sucursal, primero hay que moverlo desde Consolidados.`
+        : resent && !c
+          ? `Este mismo archivo ya se subió desde el correo "${resent}".`
+          : null;
       return {
         ...b,
+        blockedReason: lock ?? b.blockedReason,
         hvCount: tsvTrackings(b.hvRaw).trackings.size,
         cobrosCount: b.paymentsRaw ? b.paymentsRaw.split('\n').length - 1 : 0,
         uploaded: c?.uploadedAt ? { at: c.uploadedAt, byName: nameOf(c.uploadedById), minutes: c.uploadMinutes, via: c.uploadedVia } : null,
@@ -134,6 +147,41 @@ export class InboxPasteService {
       }));
     const orphanCobros = unmatchedCobros({ cobros: cons.flatMap((c) => c.cobros ?? []), extraPaymentsRaw: extraPayments, attachments: planAtts });
     return { ready, reason, batches: views, announcedOnly, unmatchedCobros: orphanCobros };
+  }
+
+  /** Consolidados activos con ese número en OTRA sucursal (master/aéreo en consolidated, F2 en charge). */
+  private async activeInOtherSubsidiary(consNumbers: string[], subsidiaryId: string | null): Promise<Map<string, { subsidiaryName: string; byName: string | null; at: Date }>> {
+    const out = new Map<string, { subsidiaryName: string; byName: string | null; at: Date }>();
+    const list = [...new Set(consNumbers.map((c) => c.trim()).filter(Boolean))];
+    if (!list.length || !subsidiaryId) return out;
+    const ph = list.map(() => '?').join(',');
+    const rows: any[] = await this.ds.query(
+      `SELECT TRIM(x.consNumber) AS cons, s.name AS sub, x.createdAt AS at, TRIM(CONCAT(COALESCE(u.name, ''), ' ', COALESCE(u.lastName, ''))) AS byName
+       FROM (SELECT consNumber, subsidiaryId, createdAt, createdById FROM consolidated WHERE active = 1 AND TRIM(consNumber) IN (${ph})
+             UNION ALL SELECT consNumber, subsidiaryId, createdAt, createdById FROM charge WHERE TRIM(consNumber) IN (${ph})) x
+       JOIN subsidiary s ON s.id = x.subsidiaryId LEFT JOIN \`user\` u ON u.id = x.createdById
+       WHERE x.subsidiaryId <> ? ORDER BY x.createdAt ASC`,
+      [...list, ...list, subsidiaryId],
+    );
+    for (const r of rows) if (!out.has(r.cons)) out.set(r.cons, { subsidiaryName: r.sub, byName: r.byName || null, at: new Date(r.at) });
+    return out;
+  }
+
+  /** Adjuntos idénticos (mismo contenido) que ya se subieron desde OTRO correo → asunto de ese correo. */
+  private async alreadySentFromOtherEmail(atts: InboxAttachment[], messageId: string): Promise<Map<string, string>> {
+    const out = new Map<string, string>();
+    const hashes = [...new Set(atts.map((a) => a.sha256).filter(Boolean))];
+    if (!hashes.length) return out;
+    const rows: any[] = await this.ds.query(
+      `SELECT a.sha256, m.subject FROM inbox_attachment a JOIN inbox_message m ON m.id = a.inboxMessageId
+       WHERE a.sha256 IN (${hashes.map(() => '?').join(',')}) AND a.inboxMessageId <> ? AND a.pastedAt IS NOT NULL`,
+      [...hashes, messageId],
+    );
+    for (const a of atts) {
+      const hit = rows.find((r) => r.sha256 === a.sha256);
+      if (hit) out.set(a.id, hit.subject || '(sin asunto)');
+    }
+    return out;
   }
 
   /** Registra que un lote se mandó y subió desde el pegado. */

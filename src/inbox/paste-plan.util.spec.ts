@@ -13,7 +13,7 @@ describe('paste-plan.util', () => {
   it('Cabo: master con su número y F2 con el suyo; CCP no genera lote; un cobro de guía ajena no entra', () => {
     const plan = buildPastePlan({
       ...base,
-      attachments: [att('a1', 'CARGA_305821242296_YAQUI_SJDA.xlsx', 'master', '305821242296'), att('a2', 'CCP.xlsx', 'ccp_ignored'), att('a3', 'F2.xlsx', 'f2')],
+      attachments: [att('a1', 'CARGA_305821242296_YAQUI_SJDA.xlsx', 'master', '305821242296'), att('a2', 'CCP.xlsx', 'ccp_ignored'), att('a3', 'F2.xlsx', 'f2', null, `Tracking Number${String.fromCharCode(10)}9`)],
       announced: [{ consNumber: '305821242296', kind: 'master' }, { consNumber: '305821512729', kind: 'f2' }],
       cobros: [{ trackingNumber: '383905050153', date: '09/28/2026', concept: 'COD-COLLECT CASH', amount: 2210 }],
     });
@@ -160,6 +160,27 @@ describe('paste-plan.util', () => {
     expect(cobrosOf(plan[0])).toEqual(['111111111111', '222222222222']);
     expect(cobrosOf(plan[1])).toEqual(['333333333333']);
     expect(unmatchedCobros(input)).toEqual(['999999999999']);
+  });
+
+  it('una guía vive en un solo bloque: las de la F2 salen del master (mismo correo)', () => {
+    const T = String.fromCharCode(9);
+    const N = String.fromCharCode(10);
+    const tsv = (rows: string[][]) => rows.map((r) => r.join(T)).join(N);
+    const master = tsv([['Tracking No', 'Recip Name'], ['111111111111', 'A'], ['222222222222', 'B'], ['333333333333', 'C']]);
+    const f2 = tsv([['Tracking No', 'Recip Name'], ['333333333333', 'C']]);
+    const plan = buildPastePlan({
+      ...base,
+      attachments: [att('m', 'YAQUI.xlsx', 'master', '305820438524', master), att('f', 'F2.xlsx', 'f2', null, f2)],
+      announced: [{ consNumber: '305820283793', kind: 'f2' }],
+      cobros: [{ trackingNumber: '333333333333', date: '09/28/2026', concept: 'COD-COLLECT CASH', amount: 700 }],
+    });
+    const [m, f] = plan;
+    expect(m.rows).toBe(2);
+    expect(m.movedToF2).toBe(1);
+    expect(m.raw).not.toContain('333333333333');
+    expect(m.paymentsRaw).toBe(''); // el cobro de esa guía va con la F2
+    expect(f.rows).toBe(1);
+    expect(f.paymentsRaw).toContain('333333333333');
   });
 
   it('libro de una sola hoja: sin cambios', () => {
