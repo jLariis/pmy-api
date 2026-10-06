@@ -71,7 +71,8 @@ export const TERMINAL_SHIPMENT_STATUSES: ShipmentStatusType[] = [
 ];
 
 /**
- * Estatus FINALES (decisión del usuario 2026-10-06): un registro ENTREGADO o DEVUELTO_A_FEDEX
+ * Estatus FINALES (decisión del usuario 2026-10-06): un registro ENTREGADO, DEVUELTO_A_FEDEX o
+ * RETORNO_ABANDONO_FEDEX
  * termina su vida — ningún proceso automático (actualización con FedEx, motor nuevo, monitoreo,
  * cierre de ruta) le vuelve a cambiar estatus, historial ni ingresos. Una guía devuelta solo
  * vuelve a la operación como REGISTRO NUEVO (consolidado nuevo). Las correcciones manuales sí
@@ -80,6 +81,7 @@ export const TERMINAL_SHIPMENT_STATUSES: ShipmentStatusType[] = [
 export const FINAL_SHIPMENT_STATUSES: ShipmentStatusType[] = [
   ShipmentStatusType.ENTREGADO,
   ShipmentStatusType.DEVUELTO_A_FEDEX,
+  ShipmentStatusType.RETORNO_ABANDONO_FEDEX,
 ];
 
 export const isFinalShipmentStatus = (status: string | null | undefined): boolean =>

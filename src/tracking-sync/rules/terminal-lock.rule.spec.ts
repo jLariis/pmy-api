@@ -35,4 +35,10 @@ describe('TerminalLockRule', () => {
     rule.apply(ctx);
     expect(ctx.proposedStatus).toBe(ShipmentStatusType.EN_BODEGA);
   });
+
+  it('RETORNO_ABANDONO_FEDEX es final: una entrega de FedEx no lo revive', () => {
+    const ctx = makeCtx({ current: ShipmentStatusType.RETORNO_ABANDONO_FEDEX, proposed: ShipmentStatusType.ENTREGADO });
+    rule.apply(ctx);
+    expect(ctx.proposedStatus).toBe(ShipmentStatusType.RETORNO_ABANDONO_FEDEX);
+  });
 });

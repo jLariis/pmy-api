@@ -350,6 +350,6 @@ describe('estatus finales (entregado / devuelto a FedEx) ya no se actualizan', (
     const where = manager.find.mock.calls[0][1].where;
     expect(where.active).toBe(true);
     expect(where.status._type).toBe('not');
-    expect(where.status._value._value).toEqual([ShipmentStatusType.ENTREGADO, ShipmentStatusType.DEVUELTO_A_FEDEX]);
+    expect(where.status._value._value).toEqual([ShipmentStatusType.ENTREGADO, ShipmentStatusType.DEVUELTO_A_FEDEX, ShipmentStatusType.RETORNO_ABANDONO_FEDEX]);
   });
 });

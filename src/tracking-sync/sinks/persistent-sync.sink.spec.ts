@@ -54,7 +54,7 @@ describe('PersistentSyncSink.applyPlan', () => {
     expect(audit.log).toHaveBeenCalledTimes(1);
   });
 
-  it.each([ShipmentStatusType.ENTREGADO, ShipmentStatusType.DEVUELTO_A_FEDEX])(
+  it.each([ShipmentStatusType.ENTREGADO, ShipmentStatusType.DEVUELTO_A_FEDEX, ShipmentStatusType.RETORNO_ABANDONO_FEDEX])(
     'estatus final (%s): no escribe historial, estatus ni ingresos',
     async (current) => {
       const manager = fakeManager([]);

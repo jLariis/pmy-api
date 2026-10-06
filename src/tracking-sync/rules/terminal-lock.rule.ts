@@ -4,7 +4,7 @@ import { SyncContext, SyncRule } from '../tracking-sync.types';
 
 /**
  * Impide que un estatus terminal (entregado/devuelto/retorno) retroceda a uno operativo.
- * ENTREGADO y DEVUELTO_A_FEDEX son FINALES: no cambian a NADA (una entrega de FedEx no revive
+ * ENTREGADO, DEVUELTO_A_FEDEX y RETORNO_ABANDONO_FEDEX son FINALES: no cambian a NADA (una entrega de FedEx no revive
  * una devuelta). En los demás terminales, ENTREGADO sí gana (ej. entregado por FedEx → entregado).
  */
 @Injectable()
