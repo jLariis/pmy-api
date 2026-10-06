@@ -1,9 +1,11 @@
 import { Body, Controller, Get, Param, Post, Query, Req } from '@nestjs/common';
 import { ApprovalsService, ApprovalActor } from './approvals.service';
 import { ApprovalType } from 'src/entities/approval-request.entity';
+import { ConsolidatedActionPayload } from './consolidated-actions.service';
 
 /**
- * Borrado con aprobación. La autenticación la aplica el JwtAuthGuard global.
+ * Solicitudes con autorización: borrar consolidado / salida a ruta, cambiar sucursal o fecha de
+ * un consolidado. La autenticación la aplica el JwtAuthGuard global.
  */
 @Controller('approvals')
 export class ApprovalsController {
@@ -14,13 +16,33 @@ export class ApprovalsController {
   }
 
   @Get('impact')
-  impact(@Query('type') type: ApprovalType, @Query('targetId') targetId: string) {
-    return this.service.getImpact(type, targetId);
+  impact(
+    @Query('type') type: ApprovalType,
+    @Query('targetId') targetId: string,
+    @Query('newSubsidiaryId') newSubsidiaryId?: string,
+    @Query('newDate') newDate?: string,
+  ) {
+    return this.service.getImpact(type, targetId, { newSubsidiaryId, newDate });
   }
 
   @Post()
-  create(@Body() body: { type: ApprovalType; targetId: string }, @Req() req: any) {
-    return this.service.createRequest({ type: body.type, targetId: body.targetId, actor: this.actor(req) });
+  create(
+    @Body() body: { type: ApprovalType; targetId: string; justification?: string; payload?: ConsolidatedActionPayload },
+    @Req() req: any,
+  ) {
+    return this.service.createRequest({
+      type: body.type,
+      targetId: body.targetId,
+      actor: this.actor(req),
+      justification: body.justification,
+      payload: body.payload,
+    });
+  }
+
+  /** Historial de un consolidado: solicitudes (quién, cuándo, por qué) y cada cambio aplicado. */
+  @Get('history/consolidated')
+  history(@Query('consNumber') consNumber: string, @Query('subsidiaryId') subsidiaryId: string) {
+    return this.service.history(consNumber, subsidiaryId);
   }
 
   @Get('mine')

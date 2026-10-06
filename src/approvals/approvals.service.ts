@@ -1,7 +1,19 @@
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  HttpException,
+  Injectable,
+  InternalServerErrorException,
+  NotFoundException,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, Repository } from 'typeorm';
-import { ApprovalRequest, ApprovalType } from 'src/entities/approval-request.entity';
+import { ApprovalRequest, ApprovalType, CONSOLIDATED_ACTION_TYPES } from 'src/entities/approval-request.entity';
+import { ConsolidatedChangeLog } from 'src/entities/consolidated-change-log.entity';
+import { AuditService } from 'src/audit/audit.service';
+import { AuditAction, AuditModule, AuditResult, AuditSeverity } from 'src/common/enums/audit.enum';
+import { ConsolidatedActionPayload, ConsolidatedActionsService, ConsolidatedImpact } from './consolidated-actions.service';
+import { familyKey } from './consolidated-family.loader';
 import { Subsidiary } from 'src/entities/subsidiary.entity';
 import { User } from 'src/entities/user.entity';
 import { Consolidated } from 'src/entities/consolidated.entity';
@@ -14,6 +26,8 @@ import { NotificationsService } from 'src/notifications/notifications.service';
 export type ApprovalActor = { userId: string; name?: string; role?: string };
 
 const isSuperRole = (r?: string) => r === 'superadmin' || r === 'superamin';
+const isConsolidatedAction = (t: ApprovalType) => CONSOLIDATED_ACTION_TYPES.includes(t);
+const MIN_JUSTIFICATION = 10;
 
 /**
  * Flujo de borrado con aprobación: solicitar → notificar al supervisor de la
@@ -32,7 +46,57 @@ export class ApprovalsService {
     @InjectRepository(ChargeShipment) private readonly chargeRepo: Repository<ChargeShipment>,
     private readonly impact: ApprovalImpactService,
     private readonly notifier: NotificationsService,
+    private readonly consolidatedActions: ConsolidatedActionsService,
+    private readonly audit: AuditService,
+    @InjectRepository(ConsolidatedChangeLog) private readonly changeLogRepo: Repository<ConsolidatedChangeLog>,
   ) {}
+
+  /** Bitácora general (pantalla de Auditoría, módulo Consolidados). Nunca rompe la operación. */
+  private auditLog(
+    actor: ApprovalActor,
+    r: Partial<ApprovalRequest>,
+    action: AuditAction,
+    description: string,
+    extra: { result?: AuditResult; errorMessage?: string; afterState?: any } = {},
+  ) {
+    try {
+      this.audit.log({
+        userId: actor.userId,
+        userName: actor.name,
+        role: actor.role,
+        module: AuditModule.CONSOLIDADOS,
+        action,
+        result: extra.result ?? AuditResult.SUCCESS,
+        severity: extra.result === AuditResult.ERROR ? AuditSeverity.WARNING : AuditSeverity.INFO,
+        entityName: 'Consolidado',
+        entityId: r.targetId,
+        subsidiaryId: r.subsidiaryId ?? undefined,
+        description: description.slice(0, 500),
+        beforeState: r.impactSnapshot ?? undefined,
+        afterState: extra.afterState,
+        errorMessage: extra.errorMessage,
+        metadata: {
+          approvalRequestId: r.id,
+          type: r.type,
+          justification: r.justification,
+          payload: r.payload,
+          requestedBy: r.requestedByName,
+          approver: r.approverName,
+        },
+      });
+    } catch {
+      /* la bitácora general nunca bloquea */
+    }
+  }
+
+  /** "Juan pidió cambiar de sucursal Consolidado 305… (Obregón → Cabo)". */
+  private describe(r: Partial<ApprovalRequest>, verb: string): string {
+    const imp = r.impactSnapshot as ConsolidatedImpact | undefined;
+    const label = r.targetLabel ?? imp?.label ?? r.targetId;
+    const action = r.type ? ConsolidatedActionsService.actionLabel(r.type) : 'modificar';
+    const change = imp?.change ? ` (${imp.change.from} → ${imp.change.to})` : '';
+    return `${verb} ${action} ${label}${change}`;
+  }
 
   private userLabel(u: any): string {
     return [u?.name, u?.lastName].filter(Boolean).join(' ') || u?.email || u?.id;
@@ -62,7 +126,15 @@ export class ApprovalsService {
     return { active: (d as any).active !== false, subsidiaryId: (d as any).subsidiary?.id ?? null };
   }
 
-  async createRequest(input: { type: ApprovalType; targetId: string; actor: ApprovalActor }): Promise<ApprovalRequest> {
+  async createRequest(input: {
+    type: ApprovalType;
+    targetId: string;
+    actor: ApprovalActor;
+    justification?: string;
+    payload?: ConsolidatedActionPayload;
+  }): Promise<ApprovalRequest> {
+    if (isConsolidatedAction(input.type)) return this.createConsolidatedRequest(input);
+
     const { type, targetId, actor } = input;
     const target = await this.loadTargetActive(type, targetId);
     if (!target.active) throw new BadRequestException('El elemento ya fue dado de baja.');
@@ -81,6 +153,8 @@ export class ApprovalsService {
       approverName: supervisor?.name ?? null,
       status: 'pendiente',
       impactSnapshot: snapshot,
+      justification: input.justification?.trim() || null,
+      targetLabel: snapshot.label,
     }));
 
     await this.notifier.emit({
@@ -97,11 +171,71 @@ export class ApprovalsService {
     return row;
   }
 
+  /** Borrar / cambiar sucursal / cambiar fecha de un consolidado (familia consNumber+sucursal). */
+  private async createConsolidatedRequest(input: {
+    type: ApprovalType;
+    targetId: string;
+    actor: ApprovalActor;
+    justification?: string;
+    payload?: ConsolidatedActionPayload;
+  }): Promise<ApprovalRequest> {
+    const { type, targetId, actor } = input;
+    const justification = (input.justification ?? '').trim();
+    if (justification.length < MIN_JUSTIFICATION) {
+      throw new BadRequestException(`Escribe por qué (mínimo ${MIN_JUSTIFICATION} caracteres).`);
+    }
+    const payload: ConsolidatedActionPayload = {};
+    if (type === 'change_subsidiary_consolidado') payload.newSubsidiaryId = input.payload?.newSubsidiaryId;
+    if (type === 'change_date_consolidado') payload.newDate = input.payload?.newDate;
+
+    // Valida y calcula el impacto (si no se puede, el mensaje sale de aquí).
+    const impact = await this.consolidatedActions.impact(type, targetId, payload);
+    const pending = await this.repo.findOne({ where: { targetKey: impact.targetKey, status: 'pendiente' } });
+    if (pending) throw new BadRequestException('Ya hay una solicitud pendiente para este consolidado.');
+
+    const supervisor = await this.resolveSupervisor(impact.approverSubsidiaryId);
+    const row = await this.repo.save(this.repo.create({
+      type,
+      targetId,
+      subsidiaryId: impact.subsidiaryId,
+      requestedById: actor.userId,
+      requestedByName: actor.name ?? null,
+      approverId: supervisor?.id ?? null,
+      approverName: supervisor?.name ?? null,
+      status: 'pendiente',
+      impactSnapshot: impact,
+      justification,
+      payload,
+      targetKey: impact.targetKey,
+      targetLabel: impact.label,
+    }));
+
+    const action = ConsolidatedActionsService.actionLabel(type);
+    const change = impact.change ? ` (${impact.change.from} → ${impact.change.to})` : '';
+    await this.notifier.emit({
+      type: 'aprobacion.solicitada',
+      audience: supervisor ? { userId: supervisor.id } : { role: 'superadmin' },
+      title: `Autorización requerida: ${action} ${impact.label}${change}`,
+      body: `${actor.name ?? 'Un usuario'} pide ${action} ${impact.label}${change}. Motivo: ${justification}`,
+      link: `/?approval=${row.id}`,
+      entityId: row.id,
+      subsidiaryId: impact.approverSubsidiaryId,
+      actor: { id: actor.userId, name: actor.name },
+      data: { impact },
+    });
+    this.auditLog(actor, row, AuditAction.OTHER, this.describe(row, `${actor.name ?? 'Un usuario'} pidió`));
+    return row;
+  }
+
   private async loadForDecision(id: string, actor: ApprovalActor): Promise<ApprovalRequest> {
     const r = await this.repo.findOne({ where: { id } });
     if (!r) throw new NotFoundException('Solicitud no encontrada');
     if (r.status !== 'pendiente') throw new BadRequestException('La solicitud ya fue resuelta.');
-    const allowed = isSuperRole(actor.role) || (!!r.approverId && r.approverId === actor.userId);
+    const isSuper = isSuperRole(actor.role);
+    if (!isSuper && !!r.requestedById && r.requestedById === actor.userId) {
+      throw new ForbiddenException('No puedes autorizar tu propia solicitud.');
+    }
+    const allowed = isSuper || (!!r.approverId && r.approverId === actor.userId);
     if (!allowed) throw new ForbiddenException('No tienes permiso para autorizar esta solicitud.');
     return r;
   }
@@ -118,6 +252,8 @@ export class ApprovalsService {
 
   async approve(id: string, actor: ApprovalActor): Promise<void> {
     const r = await this.loadForDecision(id, actor);
+    if (isConsolidatedAction(r.type)) return this.approveConsolidated(r, actor);
+
     await this.executeLogicalDelete(r);
     await this.repo.update(id, {
       status: 'aprobado',
@@ -136,6 +272,49 @@ export class ApprovalsService {
     });
   }
 
+  private async approveConsolidated(r: ApprovalRequest, actor: ApprovalActor): Promise<void> {
+    let result: Awaited<ReturnType<ConsolidatedActionsService['execute']>>;
+    try {
+      result = await this.consolidatedActions.execute(r, actor);
+    } catch (err: any) {
+      // Nada se aplicó (transacción): la solicitud sigue pendiente con el motivo visible.
+      const message = err?.response?.message ?? err?.message ?? 'Error desconocido';
+      await this.repo.update(r.id, { executionError: String(message).slice(0, 2000) });
+      this.auditLog(actor, r, AuditAction.OTHER, this.describe(r, 'No se pudo aplicar: autorizar'), {
+        result: AuditResult.ERROR,
+        errorMessage: String(message).slice(0, 1000),
+      });
+      if (err instanceof HttpException) throw err;
+      throw new InternalServerErrorException(`No se pudo aplicar el cambio: ${message}`);
+    }
+
+    await this.repo.update(r.id, {
+      status: 'aprobado',
+      approverId: actor.userId,
+      approverName: actor.name ?? r.approverName,
+      resolvedAt: new Date(),
+      executedAt: new Date(),
+      executionError: null,
+      impactAfter: result.impactAfter as any,
+      resultSummary: result.summary as any,
+    });
+    this.auditLog(
+      actor,
+      { ...r, approverName: actor.name ?? r.approverName },
+      r.type === 'delete_consolidado' ? AuditAction.DELETE : AuditAction.UPDATE,
+      this.describe(r, `${actor.name ?? 'El encargado'} autorizó`),
+      { afterState: { impact: result.impactAfter, summary: result.summary } },
+    );
+    await this.notifier.emit({
+      type: 'aprobacion.aprobada',
+      audience: r.requestedById ? { userId: r.requestedById } : { role: 'superadmin' },
+      title: this.describe(r, 'Autorizado:'),
+      body: `${actor.name ?? 'El encargado'} autorizó y se aplicó el cambio.`,
+      entityId: r.id,
+      actor: { id: actor.userId, name: actor.name },
+    });
+  }
+
   async reject(id: string, actor: ApprovalActor, reason: string): Promise<void> {
     const r = await this.loadForDecision(id, actor);
     await this.repo.update(id, {
@@ -146,6 +325,14 @@ export class ApprovalsService {
       resolvedAt: new Date(),
     });
     const label = (r.impactSnapshot as any)?.label ?? r.targetId;
+    if (isConsolidatedAction(r.type)) {
+      this.auditLog(
+        actor,
+        { ...r, approverName: actor.name ?? r.approverName },
+        AuditAction.OTHER,
+        `${this.describe(r, `${actor.name ?? 'El encargado'} rechazó`)}. Motivo: ${reason?.trim() || '—'}`,
+      );
+    }
     await this.notifier.emit({
       type: 'aprobacion.rechazada',
       audience: r.requestedById ? { userId: r.requestedById } : { role: 'superadmin' },
@@ -163,7 +350,26 @@ export class ApprovalsService {
     return this.repo.find({ where, order: { createdAt: 'DESC' } });
   }
 
-  async getImpact(type: ApprovalType, targetId: string) {
+  /** Solicitudes de la familia (quién pidió, por qué, quién autorizó) + cada cambio aplicado. */
+  async history(consNumber: string, subsidiaryId: string) {
+    if (!consNumber || !subsidiaryId) throw new BadRequestException('Falta el consolidado o la sucursal.');
+    const requests = await this.repo.find({
+      where: { targetKey: familyKey(consNumber, subsidiaryId) },
+      order: { createdAt: 'DESC' },
+    });
+    const ids = requests.map((r) => r.id);
+    const changes = ids.length
+      ? await this.changeLogRepo.find({ where: { approvalRequestId: In(ids) }, order: { createdAt: 'DESC' }, take: 5000 })
+      : [];
+    return { requests, changes };
+  }
+
+  async getImpact(type: ApprovalType, targetId: string, payload?: ConsolidatedActionPayload) {
+    if (isConsolidatedAction(type)) {
+      const impact = await this.consolidatedActions.impact(type, targetId, payload ?? {});
+      const approver = await this.resolveSupervisor(impact.approverSubsidiaryId);
+      return { ...impact, approver };
+    }
     const snapshot = await this.impact.build(type, targetId);
     const supervisor = await this.resolveSupervisor(snapshot.subsidiaryId);
     return { ...snapshot, approver: supervisor };

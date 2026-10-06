@@ -9,7 +9,13 @@ import { Shipment } from 'src/entities/shipment.entity';
 import { ChargeShipment } from 'src/entities/charge-shipment.entity';
 import { Income } from 'src/entities/income.entity';
 import { RouteClosure } from 'src/entities/route-closure.entity';
+import { Charge } from 'src/entities/charge.entity';
+import { ConsolidatedChangeLog } from 'src/entities/consolidated-change-log.entity';
 import { NotificationsModule } from 'src/notifications/notifications.module';
+import { HolidaysModule } from 'src/holidays/holidays.module';
+import { ConsolidatedFamilyLoader } from './consolidated-family.loader';
+import { ConsolidatedActionsExecutor } from './consolidated-actions.executor';
+import { ConsolidatedActionsService } from './consolidated-actions.service';
 import { ApprovalsService } from './approvals.service';
 import { ApprovalImpactService } from './impact.service';
 import { ApprovalsController } from './approvals.controller';
@@ -18,11 +24,13 @@ import { ApprovalsController } from './approvals.controller';
   imports: [
     TypeOrmModule.forFeature([
       ApprovalRequest, Subsidiary, User, Consolidated, PackageDispatch, Shipment, ChargeShipment, Income, RouteClosure,
+      Charge, ConsolidatedChangeLog,
     ]),
     NotificationsModule,
+    HolidaysModule,
   ],
   controllers: [ApprovalsController],
-  providers: [ApprovalsService, ApprovalImpactService],
+  providers: [ApprovalsService, ApprovalImpactService, ConsolidatedFamilyLoader, ConsolidatedActionsExecutor, ConsolidatedActionsService],
   exports: [ApprovalsService],
 })
 export class ApprovalsModule {}
