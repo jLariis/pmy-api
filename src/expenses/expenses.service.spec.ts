@@ -35,6 +35,15 @@ describe('ExpensesService.create date coercion', () => {
     expect(saved[0].periodEnd).toBe('2026-07-03');
   });
 
+  it('recorta el "hasta" capturado fecha a fecha (semana de 8 días → 7)', async () => {
+    const { service, saved } = makeService();
+    await service.create({
+      date: '2026-08-17', amount: 1820, frequency: 'Semanal',
+      periodStart: '2026-08-14', periodEnd: '2026-08-21',
+    } as any);
+    expect(saved[0].periodEnd).toBe('2026-08-20');
+  });
+
   it('rejects a period with only one bound', async () => {
     const { service } = makeService();
     await expect(

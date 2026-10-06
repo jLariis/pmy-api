@@ -4,6 +4,8 @@ import {
   dailyShareForDay,
   consultedRangeLabel,
   ProratableExpense,
+  normalizePeriodEnd,
+  suggestedPeriodEnd,
 } from './expense-proration.util';
 
 describe('expense-proration', () => {
@@ -56,5 +58,43 @@ describe('expense-proration', () => {
 
   it('consultedRangeLabel: empty string when a bound is missing', () => {
     expect(consultedRangeLabel(null, '2026-08-20')).toBe('');
+  });
+});
+
+describe('normalizePeriodEnd (convención "fecha a fecha")', () => {
+  it('semana capturada vie→vie (8 días) se recorta a 7', () => {
+    expect(normalizePeriodEnd('Semanal', '2026-08-14', '2026-08-21')).toBe('2026-08-20');
+  });
+  it('mes capturado 27→27 (32 días) se recorta al día anterior', () => {
+    expect(normalizePeriodEnd('Mensual', '2026-07-27', '2026-08-27')).toBe('2026-08-26');
+  });
+  it('mes de 30 días capturado 1→1 se recorta a 30', () => {
+    expect(normalizePeriodEnd('Mensual', '2026-09-01', '2026-10-01')).toBe('2026-09-30');
+  });
+  it('fin de mes: 31 ene → 28 feb (mismo "día" ajustado) se recorta', () => {
+    expect(normalizePeriodEnd('Mensual', '2026-01-31', '2026-02-28')).toBe('2026-02-27');
+  });
+  it('año capturado fecha a fecha se recorta', () => {
+    expect(normalizePeriodEnd('Anual', '2026-03-10', '2027-03-10')).toBe('2027-03-09');
+  });
+  it('periodos ya correctos no cambian', () => {
+    expect(normalizePeriodEnd('Semanal', '2026-08-14', '2026-08-20')).toBe('2026-08-20');
+    expect(normalizePeriodEnd('Mensual', '2026-09-01', '2026-09-30')).toBe('2026-09-30');
+    expect(normalizePeriodEnd('Mensual', '2026-08-01', '2026-08-31')).toBe('2026-08-31');
+    expect(normalizePeriodEnd('Semanal', '2026-08-21', '2026-08-24')).toBe('2026-08-24');
+  });
+  it('otras frecuencias no se tocan', () => {
+    expect(normalizePeriodEnd('Diario', '2026-08-14', '2026-08-21')).toBe('2026-08-21');
+    expect(normalizePeriodEnd(undefined, '2026-08-14', '2026-08-21')).toBe('2026-08-21');
+  });
+});
+
+describe('suggestedPeriodEnd', () => {
+  it('calcula el último día incluido del periodo', () => {
+    expect(suggestedPeriodEnd('Semanal', '2026-09-28')).toBe('2026-10-04');
+    expect(suggestedPeriodEnd('Mensual', '2026-09-01')).toBe('2026-09-30');
+    expect(suggestedPeriodEnd('Mensual', '2026-07-27')).toBe('2026-08-26');
+    expect(suggestedPeriodEnd('Anual', '2026-03-10')).toBe('2027-03-09');
+    expect(suggestedPeriodEnd('Diario', '2026-03-10')).toBeNull();
   });
 });

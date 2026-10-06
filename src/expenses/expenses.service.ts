@@ -6,7 +6,7 @@ import { In, Repository } from 'typeorm';
 import * as XLSX from 'xlsx';
 import { Frequency } from 'src/common/enums/frequency-enum';
 import { toHermosilloDateString } from 'src/common/utils';
-import { proratedAmountInRange } from 'src/common/expense-proration.util';
+import { normalizePeriodEnd, proratedAmountInRange } from 'src/common/expense-proration.util';
 
 @Injectable()
 export class ExpensesService {
@@ -36,7 +36,8 @@ export class ExpensesService {
         throw new BadRequestException('periodStart no puede ser posterior a periodEnd.');
       }
       createExpenseDto.periodStart = start;
-      createExpenseDto.periodEnd = end;
+      // "Hasta" capturado fecha a fecha (vie→vie, 27→27) = un día de más al prorratear.
+      createExpenseDto.periodEnd = normalizePeriodEnd(createExpenseDto.frequency, start, end);
     }
 
     const newExpense = this.expenseRepository.create(createExpenseDto);
