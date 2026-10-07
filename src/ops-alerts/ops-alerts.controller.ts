@@ -1,4 +1,4 @@
-import { Body, Controller, ForbiddenException, Get, Param, Post, Put, Query, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Put, Query, Req, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { PermissionsGuard } from 'src/auth/guards/permissions.guard';
 import { RequirePermission } from 'src/auth/decorators/require-permission.decorator';
@@ -23,9 +23,6 @@ export class OpsAlertsController {
   }
   private scope(req: any): string[] | null {
     return this.isSuper(req) ? null : ((req?.user?.subsidiaryIds as string[] | undefined) ?? []);
-  }
-  private requireSuper(req: any) {
-    if (!this.isSuper(req)) throw new ForbiddenException('Solo el superadministrador puede cambiar esta configuración');
   }
 
   @Get('tracking')
@@ -53,34 +50,34 @@ export class OpsAlertsController {
     return this.service.getSettings();
   }
 
+  @RequirePermission('correo.configurar')
   @Put('settings')
   updateSettings(@Body() body: Partial<OpsAlertSettings>, @Req() req: any) {
-    this.requireSuper(req);
     return this.service.updateSettings(body ?? {}, req?.user?.userId ?? null);
   }
 
+  @RequirePermission('correo.configurar')
   @Get('subsidiaries')
   subsidiaries(@Req() req: any) {
-    this.requireSuper(req);
     return this.service.listSubsidiaryConfig();
   }
 
+  @RequirePermission('correo.configurar')
   @Put('subsidiaries/:id')
   updateSubsidiary(@Param('id') id: string, @Body() body: Partial<OpsAlertSubsidiary>, @Req() req: any) {
-    this.requireSuper(req);
     return this.service.updateSubsidiaryConfig(id, body ?? {});
   }
 
+  @RequirePermission('correo.configurar')
   @Get('whatsapp-groups')
   groups(@Req() req: any) {
-    this.requireSuper(req);
     return this.service.whatsappGroups();
   }
 
+  @RequirePermission('correo.configurar')
   @Post('evaluate')
   @ApiOperation({ summary: 'Revisar ahora (aunque las alertas estén apagadas no envía nada si no están activas)' })
   evaluate(@Req() req: any) {
-    this.requireSuper(req);
     return this.service.evaluate(new Date(), false);
   }
 }
