@@ -7,6 +7,7 @@ import { InboxDetection } from '../entities/inbox-detection.entity';
 import { InboxConsolidation } from '../entities/inbox-consolidation.entity';
 import { InboxIngestService } from './inbox-ingest.service';
 import { ImapReaderService } from './imap-reader.service';
+import { RouteDay, routeOf, summarizeRoutes } from './route-cons.util';
 
 /** Hermosillo no tiene horario de verano: UTC−7 fijo. */
 const TZ_OFFSET_MS = 7 * 3_600_000;
@@ -244,6 +245,43 @@ export class InboxQueryService {
         };
       })
       .sort((a, b) => b.day.localeCompare(a.day) || b.pending - a.pending || a.subsidiaryName.localeCompare(b.subsidiaryName));
+  }
+
+  /** Rutas locales: por número de ruta, los días que llegó por correo contra lo que se subió (por guías). */
+  async routes(f: { from?: string; to?: string; subsidiaryId?: string }, scope: Scope) {
+    const today = localDay(new Date());
+    const to = f.to || today;
+    const from = f.from || localDay(new Date(dayStartUtc(to).getTime() - 13 * 86_400_000));
+    const qb = this.attRepo
+      .createQueryBuilder('a')
+      .innerJoin(InboxMessage, 'm', 'm.id = a.inboxMessageId')
+      .select(['a.filename AS filename', 'a.systemMatch AS systemMatch', 'm.receivedAt AS receivedAt'])
+      .where('m.receivedAt >= :from AND m.receivedAt < :to', { from: dayStartUtc(from), to: new Date(dayStartUtc(to).getTime() + 86_400_000) })
+      .andWhere("m.status <> 'ignorado'")
+      .andWhere('a.systemMatch IS NOT NULL');
+    if (scope !== null) qb.andWhere(scope.length ? 'm.subsidiaryId IN (:...scope)' : '1 = 0', { scope });
+    if (f.subsidiaryId) qb.andWhere('m.subsidiaryId = :sid', { sid: f.subsidiaryId });
+    const raw: any[] = await qb.getRawMany();
+    const days: RouteDay[] = [];
+    for (const r of raw) {
+      const sm = (typeof r.systemMatch === 'string' ? JSON.parse(r.systemMatch) : r.systemMatch) ?? {};
+      for (const [sheet, m] of Object.entries<any>(sm)) {
+        const route = routeOf(sheet === '_' ? r.filename : sheet) ?? routeOf(r.filename);
+        if (!route || !m?.total) continue;
+        const top = [...(m.groups ?? [])].sort((a: any, b: any) => b.count - a.count)[0] ?? null;
+        days.push({
+          route,
+          day: localDay(new Date(r.receivedAt)),
+          total: m.total,
+          found: m.found,
+          complete: !!m.complete,
+          type: top?.type ?? null,
+          subsidiaryName: top?.subsidiaryName ?? null,
+          consNumber: top?.consNumber ?? null,
+        });
+      }
+    }
+    return { from, to, routes: summarizeRoutes(days) };
   }
 
   async status() {

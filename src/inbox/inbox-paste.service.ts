@@ -12,6 +12,7 @@ import { uploadMinutes } from './zip-coverage.util';
 import { WhatsappGatewayService } from '../whatsapp-gateway/whatsapp-gateway.service';
 import { buildUploadMessage, DEFAULT_UPLOAD_GROUPS, UploadSummary } from './upload-message.util';
 import { MatchGroup } from './system-match.util';
+import { buildConsNumber, detectRoutePattern, routeOf, RoutePattern } from './route-cons.util';
 import { ConsolidationKind } from './inbox.types';
 
 const TSV_KINDS = ['master', 'master_aereo', 'f2', 'high_value'];
@@ -25,6 +26,8 @@ export interface PlanBatchView extends PasteBatch {
   alreadyInMaster?: { count: number; consNumber: string };
   /** Revisión por guías: cuántas del bloque ya están en el sistema y en qué consolidados. */
   inSystem: { found: number; total: number; complete: boolean; groups: MatchGroup[] } | null;
+  /** El número se armó con el formato de la sucursal (fecha+ruta o ruta+fecha); revisar antes de subir. */
+  consSuggested?: { pattern: RoutePattern; route: string } | null;
 }
 
 export interface PastePlanResult {
@@ -108,6 +111,7 @@ export class InboxPasteService {
     const elsewhere = await this.activeInOtherSubsidiary(batches.map((b) => b.consNumber).filter(Boolean), msg.subsidiaryId);
     const sentFrom = await this.alreadySentFromOtherEmail(atts, messageId);
     const f2InMaster = await this.f2GuidesAlreadyInEmailMaster(batches);
+    const routePattern = await this.routePatternOf(msg.subsidiaryId);
     const views: PlanBatchView[] = batches.map((b) => {
       const c = b.consNumber
         ? cons.find((x) => x.consNumber === b.consNumber && x.kind === consKind(b.kind) && x.linkStatus === 'subido')
@@ -124,6 +128,9 @@ export class InboxPasteService {
           : null;
       // Revisión por guías (sirve aunque la sucursal suba con un número propio que el correo no trae).
       const sm = atts.find((a) => a.id === b.attachmentId)?.systemMatch?.[b.sheet ?? '_'] ?? null;
+      // Rutas locales sin número: se arma con el formato que usa la sucursal (p. ej. Hermosillo 071026364).
+      const route = b.consNumber ? null : routeOf(b.sheet ?? b.filename.replace(/ · hoja ".*"$/, ''));
+      const suggested = route && routePattern ? { pattern: routePattern, route, consNumber: buildConsNumber(routePattern, route, b.consDate) } : null;
       const top = sm?.groups?.[0];
       const byGuides =
         !c && sm?.complete && top
@@ -131,7 +138,8 @@ export class InboxPasteService {
           : null;
       return {
         ...b,
-        consNumber: b.consNumber || (sm?.complete && top && top.consNumber !== '(sin número)' ? top.consNumber : b.consNumber),
+        consNumber: b.consNumber || (sm?.complete && top && top.consNumber !== '(sin número)' ? top.consNumber : suggested?.consNumber ?? b.consNumber),
+        consSuggested: !b.consNumber && !sm?.complete && suggested ? { pattern: suggested.pattern, route: suggested.route } : null,
         blockedReason: lock ?? b.blockedReason,
         alreadyInMaster: f2InMaster.get(b.key),
         hvCount: tsvTrackings(b.hvRaw).trackings.size,
@@ -188,6 +196,26 @@ export class InboxPasteService {
       if (rows[0] && Number(rows[0].n) > 0) out.set(b.key, { count: Number(rows[0].n), consNumber: rows[0].cons });
     }
     return out;
+  }
+
+  private patternCache = new Map<string, { at: number; pattern: RoutePattern | null }>();
+
+  /** Formato de número propio que usa la sucursal (de sus consolidados y cargas de los últimos 30 días). */
+  private async routePatternOf(subsidiaryId: string | null): Promise<RoutePattern | null> {
+    if (!subsidiaryId) return null;
+    const hit = this.patternCache.get(subsidiaryId);
+    if (hit && Date.now() - hit.at < 10 * 60_000) return hit.pattern;
+    const rows: any[] = await this.ds.query(
+      `SELECT TRIM(consNumber) AS cons, DATE_FORMAT(DATE_SUB(createdAt, INTERVAL 7 HOUR), '%Y-%m-%d') AS day FROM consolidated
+        WHERE subsidiaryId = ? AND active = 1 AND createdAt >= DATE_SUB(NOW(), INTERVAL 30 DAY)
+       UNION ALL
+       SELECT TRIM(consNumber), DATE_FORMAT(DATE_SUB(createdAt, INTERVAL 7 HOUR), '%Y-%m-%d') FROM charge
+        WHERE subsidiaryId = ? AND createdAt >= DATE_SUB(NOW(), INTERVAL 30 DAY)`,
+      [subsidiaryId, subsidiaryId],
+    );
+    const pattern = detectRoutePattern(rows.map((r) => ({ consNumber: String(r.cons ?? ''), day: String(r.day) })));
+    this.patternCache.set(subsidiaryId, { at: Date.now(), pattern });
+    return pattern;
   }
 
   /** Consolidados activos con ese número en OTRA sucursal (master/aéreo en consolidated, F2 en charge). */

@@ -145,6 +145,12 @@ export class InboxController {
     return this.query.board(q, this.scope(req));
   }
 
+  @Get('routes')
+  @ApiOperation({ summary: 'Rutas locales: días que llegó el archivo de la ruta contra días que se subió' })
+  routes(@Query() q: { from?: string; to?: string; subsidiaryId?: string }, @Req() req: any) {
+    return this.query.routes(q, this.scope(req));
+  }
+
   @Get('zip-coverage')
   zipCoverage(@Query('subsidiaryId') subsidiaryId?: string) {
     return this.coverage.list(subsidiaryId);
