@@ -157,9 +157,18 @@ describe('planChangeType', () => {
   it('carga nueva respeta "solo la 1ª carga del día" y 1.5 ton en domingo/festivo', () => {
     const skip = planChangeType(input({ packages: [pkg('s1', 'A')], tariff: { ...tariff, chargeOnlyFirstOfDay: true }, otherChargeIncomeOnDay: true }));
     expect(skip.inserts!.find((i) => i.table === 'income')!.values).toMatchObject({ cost: 0, chargeNotChargedSameDay: 1 });
+    const noTariff = planChangeType(input({ packages: [pkg('s1', 'A')], tariff: { ...tariff, name: 'Loreto', chargeCost: 0 } }));
+    expect(noTariff.warnings.join(' ')).toContain('Loreto no tiene tarifa de carga');
     const half = planChangeType(input({ packages: [pkg('s1', 'A')], isHalfTon: true, isSundayHoliday: true }));
     expect(half.inserts!.find((i) => i.table === 'income')!.values.cost).toBe(4000);
     expect(half.inserts!.find((i) => i.table === 'charge')!.values.isHalfTon).toBe(1);
+  });
+
+  it('por guías a carga sin destino: crea consolidado y carga con el número de la F2 del correo', () => {
+    const plan = planChangeType(input({ whole: false, packages: [pkg('s1', 'A')], destConsNumber: '305821316556' }));
+    expect(plan.inserts!.find((i) => i.table === 'consolidated')!.values.consNumber).toBe('305821316556');
+    expect(plan.inserts!.find((i) => i.table === 'charge')!.values.consNumber).toBe('305821316556');
+    expect(plan.inserts!.find((i) => i.table === 'charge_shipment')!.values.consNumber).toBe('305821316556');
   });
 
   it('por guías a paquete sin master en la familia: crea el consolidado ordinario', () => {

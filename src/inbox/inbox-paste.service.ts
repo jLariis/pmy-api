@@ -14,6 +14,7 @@ import { buildUploadMessage, DEFAULT_UPLOAD_GROUPS, UploadSummary } from './uplo
 import { MatchGroup } from './system-match.util';
 import { buildConsNumber, detectRoutePattern, routeOf, RoutePattern } from './route-cons.util';
 import { ConsolidationKind } from './inbox.types';
+import { familyKey } from '../approvals/consolidated-family.loader';
 
 const TSV_KINDS = ['master', 'master_aereo', 'f2', 'high_value'];
 
@@ -28,6 +29,27 @@ export interface PlanBatchView extends PasteBatch {
   inSystem: { found: number; total: number; complete: boolean; groups: MatchGroup[] } | null;
   /** El número se armó con el formato de la sucursal (fecha+ruta o ruta+fecha); revisar antes de subir. */
   consSuggested?: { pattern: RoutePattern; route: string } | null;
+  /** Las guías del bloque están subidas con el OTRO tipo (F2 como paquete o master como carga). */
+  typeMismatch?: TypeMismatch | null;
+}
+
+/** Guías del correo subidas con el tipo equivocado → lo que hace falta para pedir "Cambiar tipo". */
+export interface TypeMismatch {
+  toType: 'carga' | 'paquete';
+  consolidatedId: string;
+  consNumber: string;
+  subsidiaryName: string;
+  count: number;
+  trackingNumbers: string[];
+  /** Son TODAS las guías de ese consolidado con ese tipo (se pide el cambio completo). */
+  whole: boolean;
+  /** Consolidado donde esas guías ya están con el tipo correcto (si existe). */
+  targetConsolidatedId: string | null;
+  targetConsNumber: string | null;
+  /** Número de FedEx del bloque del correo (para crear el destino si no existe). */
+  emailConsNumber: string | null;
+  /** Ya hay una solicitud pendiente para ese consolidado. */
+  pending: boolean;
 }
 
 export interface PastePlanResult {
@@ -112,6 +134,8 @@ export class InboxPasteService {
     const sentFrom = await this.alreadySentFromOtherEmail(atts, messageId);
     const f2InMaster = await this.f2GuidesAlreadyInEmailMaster(batches);
     const routePattern = await this.routePatternOf(msg.subsidiaryId);
+    const announcedF2 = new Set(cons.filter((c) => c.kind === 'f2').map((c) => c.consNumber.trim()));
+    const mismatches = await this.typeMismatches(batches, msg.receivedAt, announcedF2);
     const views: PlanBatchView[] = batches.map((b) => {
       const c = b.consNumber
         ? cons.find((x) => x.consNumber === b.consNumber && x.kind === consKind(b.kind) && x.linkStatus === 'subido')
@@ -142,6 +166,7 @@ export class InboxPasteService {
         consSuggested: !b.consNumber && !sm?.complete && suggested ? { pattern: suggested.pattern, route: suggested.route } : null,
         blockedReason: lock ?? b.blockedReason,
         alreadyInMaster: f2InMaster.get(b.key),
+        typeMismatch: mismatches.get(b.key) ?? null,
         hvCount: tsvTrackings(b.hvRaw).trackings.size,
         cobrosCount: b.paymentsRaw ? b.paymentsRaw.split('\n').length - 1 : 0,
         uploaded: c?.uploadedAt ? { at: c.uploadedAt, byName: nameOf(c.uploadedById), minutes: c.uploadMinutes, via: c.uploadedVia } : byGuides,
@@ -194,6 +219,68 @@ export class InboxPasteService {
         [...masters, ...tns],
       );
       if (rows[0] && Number(rows[0].n) > 0) out.set(b.key, { count: Number(rows[0].n), consNumber: rows[0].cons });
+    }
+    return out;
+  }
+
+  /**
+   * ¿Las guías de cada bloque se subieron con el OTRO tipo? F2 del correo que quedó como paquete,
+   * o master que quedó como carga (sin contar las guías que el correo trae en su F2). Misma ventana
+   * que la revisión por guías (6 h antes a 5 días después del correo). Si el correo anuncia como F2
+   * ese mismo número (p. ej. "CARGA SUR": toda la carga), que esté como carga es lo correcto.
+   */
+  private async typeMismatches(batches: PasteBatch[], receivedAt: Date, announcedF2 = new Set<string>()): Promise<Map<string, TypeMismatch>> {
+    const out = new Map<string, TypeMismatch>();
+    const from = new Date(receivedAt.getTime() - 6 * 3_600_000);
+    const to = new Date(receivedAt.getTime() + 5 * 86_400_000);
+    const f2Guides = new Set(batches.filter((b) => b.kind === 'f2').flatMap((b) => [...tsvTrackings(b.raw).trackings]));
+    for (const b of batches) {
+      const toType: 'carga' | 'paquete' = b.kind === 'f2' ? 'carga' : 'paquete';
+      const wrongTable = toType === 'carga' ? 'shipment' : 'charge_shipment';
+      const rightTable = toType === 'carga' ? 'charge_shipment' : 'shipment';
+      const tns = [...tsvTrackings(b.raw).trackings].filter((t) => toType === 'carga' || !f2Guides.has(t));
+      if (!tns.length) continue;
+      const ph = tns.map(() => '?').join(',');
+      const wrong: any[] = await this.ds.query(
+        `SELECT x.consolidatedId AS cid, TRIM(c.consNumber) AS cons, c.subsidiaryId AS sid, s.name AS sname, COUNT(*) AS n
+           FROM \`${wrongTable}\` x JOIN consolidated c ON c.id = x.consolidatedId JOIN subsidiary s ON s.id = c.subsidiaryId
+          WHERE x.active = 1 AND c.active = 1 AND x.trackingNumber IN (${ph}) AND x.createdAt BETWEEN ? AND ?
+          GROUP BY x.consolidatedId, c.consNumber, c.subsidiaryId, s.name ORDER BY n DESC LIMIT 1`,
+        [...tns, from, to],
+      );
+      const w = wrong[0];
+      if (!w || !Number(w.n)) continue;
+      // A paquete solo si es el MISMO número de FedEx del correo: las rutas locales (Hermosillo 367–369)
+      // suben como carga con número propio a propósito; y si el correo lo anuncia como F2, es carga.
+      if (toType === 'paquete' && (w.cons !== b.consNumber?.trim() || announcedF2.has(w.cons) || batches.some((x) => x.kind === 'f2' && x.consNumber?.trim() === w.cons))) continue;
+      const found: string[] = (
+        await this.ds.query(`SELECT DISTINCT TRIM(trackingNumber) AS t FROM \`${wrongTable}\` WHERE consolidatedId = ? AND active = 1 AND trackingNumber IN (${ph})`, [w.cid, ...tns])
+      ).map((r: any) => r.t);
+      const [{ total }] = await this.ds.query(`SELECT COUNT(*) AS total FROM \`${wrongTable}\` WHERE consolidatedId = ? AND active = 1`, [w.cid]);
+      const right: any[] = await this.ds.query(
+        `SELECT x.consolidatedId AS cid, TRIM(c.consNumber) AS cons, COUNT(*) AS n
+           FROM \`${rightTable}\` x JOIN consolidated c ON c.id = x.consolidatedId
+          WHERE x.active = 1 AND c.active = 1 AND c.subsidiaryId = ? AND x.trackingNumber IN (${found.map(() => '?').join(',')})
+          GROUP BY x.consolidatedId, c.consNumber ORDER BY n DESC LIMIT 1`,
+        [w.sid, ...found],
+      );
+      const pend: any[] = await this.ds.query(
+        "SELECT 1 FROM approval_request WHERE status = 'pendiente' AND targetKey = ? LIMIT 1",
+        [familyKey(w.cons, w.sid)],
+      );
+      out.set(b.key, {
+        toType,
+        consolidatedId: w.cid,
+        consNumber: w.cons,
+        subsidiaryName: w.sname,
+        count: found.length,
+        trackingNumbers: found,
+        whole: found.length >= Number(total),
+        targetConsolidatedId: right[0]?.cid ?? null,
+        targetConsNumber: right[0]?.cons ?? null,
+        emailConsNumber: b.consNumber?.trim() || null,
+        pending: pend.length > 0,
+      });
     }
     return out;
   }

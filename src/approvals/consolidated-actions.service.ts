@@ -20,6 +20,8 @@ export interface ConsolidatedActionPayload {
   trackingNumbers?: string[];
   /** Consolidado al que pasan las guías elegidas (p. ej. la F2 del mismo correo). */
   targetConsolidatedId?: string;
+  /** Número del consolidado/carga destino cuando no existe (p. ej. el de la F2 del correo). */
+  destConsNumber?: string;
   /** Si se crea carga nueva: ¿es de 1.5 ton? */
   isHalfTon?: boolean;
 }
@@ -135,7 +137,7 @@ export class ConsolidatedActionsService {
     if (type === 'change_type_consolidado') {
       const toType = payload.toType!;
       const whole = !payload.trackingNumbers?.length;
-      const d = await this.loader.loadTypeDetails(f, { toType, trackingNumbers: payload.trackingNumbers, targetConsolidatedId: payload.targetConsolidatedId }, manager);
+      const d = await this.loader.loadTypeDetails(f, { toType, trackingNumbers: payload.trackingNumbers, targetConsolidatedId: payload.targetConsolidatedId, destConsNumber: payload.destConsNumber }, manager);
       if (d.missing.length) {
         const shown = d.missing.slice(0, 5).join(', ');
         throw new BadRequestException(`Estas guías no están como ${toType === 'carga' ? 'paquete' : 'carga'} en el consolidado: ${shown}${d.missing.length > 5 ? '…' : ''}`);
@@ -151,6 +153,7 @@ export class ConsolidatedActionsService {
         whole,
         destConsolidated: d.destConsolidated,
         destChargeId: d.destChargeId,
+        destConsNumber: payload.destConsNumber ?? null,
         alreadyInDest: d.alreadyInDest,
         tariff: origin,
         isHalfTon: d.familyIsHalfTon ?? !!payload.isHalfTon,

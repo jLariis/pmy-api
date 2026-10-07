@@ -166,7 +166,7 @@ export class ConsolidatedFamilyLoader {
    */
   async loadTypeDetails(
     f: ConsolidatedFamily,
-    opts: { toType: TargetType; trackingNumbers?: string[] | null; targetConsolidatedId?: string | null },
+    opts: { toType: TargetType; trackingNumbers?: string[] | null; targetConsolidatedId?: string | null; destConsNumber?: string | null },
     manager?: EntityManager,
   ): Promise<{
     familyConsolidated: TypeConsolidated[];
@@ -230,6 +230,14 @@ export class ConsolidatedFamilyLoader {
       if (!kindOk(destConsolidated)) {
         throw new BadRequestException(`El consolidado destino no es de ${opts.toType === 'carga' ? 'carga (F2)' : 'paquetes'}.`);
       }
+    } else if (opts.destConsNumber?.trim() && norm(opts.destConsNumber) !== norm(f.consNumber)) {
+      // Número de la F2 del correo: si ya existe en la sucursal se usa ese consolidado; si no, se crea.
+      const rows: any[] = await q.query(
+        `SELECT c.id, c.consNumber, c.subsidiaryId, c.date, c.type, c.carrier, ${kindSql} AS kind FROM consolidated c
+          WHERE c.subsidiaryId = ? AND c.active = 1 AND TRIM(UPPER(c.consNumber)) = ? ORDER BY c.createdAt`,
+        [f.subsidiaryId, norm(opts.destConsNumber)],
+      );
+      destConsolidated = rows.map(toCons).find((c) => kindOk(c)) ?? null;
     } else {
       destConsolidated = familyConsolidated.find((c) => c.kind === opts.toType) ?? null;
     }

@@ -53,6 +53,8 @@ export interface ChangeTypeInput {
   whole: boolean;
   /** Consolidado destino: el elegido, el de la misma familia con el tipo correcto, o null (se crea). */
   destConsolidated: TypeConsolidated | null;
+  /** Número para el consolidado/carga que se crea (p. ej. el de la F2 del correo). Por defecto, el del origen. */
+  destConsNumber?: string | null;
   /** Carga activa del destino (solo a carga). null → se crea con su ingreso. */
   destChargeId: string | null;
   /** Guías que YA están activas en la tabla destino de ese consolidado → id del registro (se quita el duplicado). */
@@ -120,9 +122,10 @@ export function planChangeType(input: ChangeTypeInput): ActionPlan {
   } else if (!dest) {
     // Igual que la subida F2: fila nueva 'ordinario' con el mismo número (el tipo no distingue la F2).
     const id = newId();
-    dest = { id, consNumber: base.consNumber, subsidiaryId: base.subsidiaryId, date: base.date, type: 'ordinario', kind: toType };
+    const consNumber = input.destConsNumber?.trim() || base.consNumber;
+    dest = { id, consNumber, subsidiaryId: base.subsidiaryId, date: base.date, type: 'ordinario', kind: toType };
     b.insert('consolidated', id, null, {
-      date: base.date, type: 'ordinario', numberOfPackages: 0, isCompleted: 0, consNumber: base.consNumber,
+      date: base.date, type: 'ordinario', numberOfPackages: 0, isCompleted: 0, consNumber,
       createdAt: now, subsidiaryId: base.subsidiaryId, createdById: input.userId, carrier: base.carrier ?? 'fedex', active: 1,
     });
     summary.consolidated++;
@@ -150,6 +153,7 @@ export function planChangeType(input: ChangeTypeInput): ActionPlan {
     summary.incomesCreated!++;
     amount += cost;
     if (skip) warnings.push('La sucursal solo cobra la primera carga del día y ese día ya hay otra: la carga nueva queda en $0.');
+    else if (cost <= 0) warnings.push(`La sucursal ${tariff.name} no tiene tarifa de carga: la carga nueva queda en $0 y los ingresos por paquete de estas guías se pierden.`);
   }
 
   // 3) A paquete y completo: la carga y su ingreso se dan de baja (cobraba por todo el consolidado).

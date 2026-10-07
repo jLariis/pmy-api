@@ -191,6 +191,7 @@ export class ApprovalsService {
       payload.toType = input.payload?.toType;
       if (input.payload?.trackingNumbers?.length) payload.trackingNumbers = input.payload.trackingNumbers.map((t) => String(t).trim()).filter(Boolean);
       if (input.payload?.targetConsolidatedId) payload.targetConsolidatedId = input.payload.targetConsolidatedId;
+      if (input.payload?.destConsNumber && /^\w{6,30}$/.test(String(input.payload.destConsNumber).trim())) payload.destConsNumber = String(input.payload.destConsNumber).trim();
       if (input.payload?.isHalfTon !== undefined) payload.isHalfTon = !!input.payload.isHalfTon;
     }
 
