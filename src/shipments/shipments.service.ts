@@ -57,6 +57,7 @@ import { DataSource, QueryRunner } from 'typeorm';
 import pLimit from 'p-limit';
 import { onlyPhantomDeliveries, phantomDeliveryTimes, realDeliveryScan } from 'src/common/phantom-delivery.util';
 import { needsBackingHistory, selectBackingScan } from 'src/common/backing-scan.util';
+import { canMigrateShipmentToCharge } from './f2-migration.util';
 import { PackageDispatch } from 'src/entities/package-dispatch.entity';
 import * as fs from 'node:fs/promises'; // Para el código viejo (await)
 import * as fsSync from 'node:fs';
@@ -923,17 +924,26 @@ export class ShipmentsService {
           if (tnF2 && (dupSet.has(tnF2) || seenF2.has(tnF2))) { duplicatedF2++; continue; }
           if (tnF2) seenF2.add(tnF2);
 
-          // Buscamos si existe en la tabla original de Shipments
-          const original = await queryRunner.manager.findOne(Shipment, {
-            where: { trackingNumber: data.trackingNumber },
-            relations: ['statusHistory', 'payment']
+          // ¿Ya es paquete normal VIVO en ESTA sucursal? Entonces se pasa a carga. Un registro
+          // devuelto/entregado (estatus final), de otra sucursal o viejo NO se toca: la guía que
+          // vuelve en otra F2 es un registro nuevo (ver canMigrateShipmentToCharge).
+          const latestShipment = await queryRunner.manager.findOne(Shipment, {
+            where: { trackingNumber: data.trackingNumber, subsidiary: { id: subsidiaryId } },
+            relations: ['statusHistory', 'payment', 'subsidiary'],
+            order: { createdAt: 'DESC' },
           });
+          const original = canMigrateShipmentToCharge(
+            latestShipment && { ...latestShipment, subsidiaryId: latestShipment.subsidiary?.id },
+            { subsidiaryId },
+          ) ? latestShipment : null;
 
           let savedCS: ChargeShipment;
 
           if (original) {
             // --- ESCENARIO A: EXISTE -> MIGRAR ---
-            await queryRunner.manager.delete(Income, { trackingNumber: original.trackingNumber });
+            // Solo los ingresos de ESTE paquete (no todos los que alguna vez usaron el número).
+            await queryRunner.manager.createQueryBuilder().delete().from(Income)
+              .where('shipmentId = :id', { id: original.id }).execute();
 
             const chargeShipment = this.chargeShipmentRepository.create({
               ...original,
