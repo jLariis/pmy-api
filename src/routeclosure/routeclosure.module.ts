@@ -10,10 +10,11 @@ import { Income } from 'src/entities/income.entity';
 import { FedexService } from 'src/shipments/fedex.service';
 import { DocumentsModule } from 'src/documents/documents.module';
 import { TrackingSyncModule } from 'src/tracking-sync/tracking-sync.module';
+import { ClosureDoctorService } from './closure-doctor.service';
 
 @Module({
   imports: [TypeOrmModule.forFeature([RouteClosure, PackageDispatch, Income]), DocumentsModule, TrackingSyncModule, VehicleKmsModule],
   controllers: [RouteclosureController],
-  providers: [RouteclosureService, MailService, FedexService],
+  providers: [RouteclosureService, ClosureDoctorService, MailService, FedexService],
 })
 export class RouteclosureModule {}

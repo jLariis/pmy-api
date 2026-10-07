@@ -1,6 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { RouteclosureController } from './routeclosure.controller';
 import { RouteclosureService } from './routeclosure.service';
+import { ClosureDoctorService } from './closure-doctor.service';
 
 describe('RouteclosureController', () => {
   let controller: RouteclosureController;
@@ -10,7 +11,10 @@ describe('RouteclosureController', () => {
       controllers: [RouteclosureController],
       // Mockeamos el servicio inyectado (evita resolver los repos TypeORM del
       // RouteclosureService real). Suficiente para el smoke test `should be defined`.
-      providers: [{ provide: RouteclosureService, useValue: {} }],
+      providers: [
+        { provide: RouteclosureService, useValue: {} },
+        { provide: ClosureDoctorService, useValue: {} },
+      ],
     }).compile();
 
     controller = module.get<RouteclosureController>(RouteclosureController);

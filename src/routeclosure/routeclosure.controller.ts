@@ -1,14 +1,20 @@
-import { Controller, Get, Post, Body, Param, Delete, BadRequestException, UploadedFiles, UseInterceptors, Req } from '@nestjs/common';
+import { Controller, Get, Post, Body, Param, Delete, BadRequestException, UploadedFiles, UseInterceptors, Req, UseGuards } from '@nestjs/common';
 import { RouteclosureService } from './routeclosure.service';
 import { CreateRouteclosureDto } from './dto/create-routeclosure.dto';
 import { ValidateTrackingsForClosureDto } from './dto/validate-trackings-for-closure';
 import { FilesInterceptor } from '@nestjs/platform-express';
 import { ApiOperation, ApiConsumes, ApiBody } from '@nestjs/swagger';
 import { NoAudit } from 'src/audit/audit.decorator';
+import { SuperAdminGuard } from 'src/audit/super-admin.guard';
+import { ClosureDoctorService } from './closure-doctor.service';
+import { ApplyClosureFixesDto } from './dto/apply-closure-fixes.dto';
 
 @Controller('route-closure')
 export class RouteclosureController {
-  constructor(private readonly routeclosureService: RouteclosureService) {}
+  constructor(
+    private readonly routeclosureService: RouteclosureService,
+    private readonly closureDoctor: ClosureDoctorService,
+  ) {}
 
   @Post()
   create(@Body() createRouteclosureDto: CreateRouteclosureDto, @Req() req: any) {
@@ -47,6 +53,29 @@ export class RouteclosureController {
     @Req() req: any,
   ) {
     return this.routeclosureService.reconcileRouteWithFedex(packageDispatchId, {
+      userId: req.user?.userId,
+      userName: req.user?.name ?? req.user?.userName,
+      role: req.user?.role,
+    });
+  }
+
+  // "Paquetes con problema" (solo superadmin): diagnóstico contra FedEx, sin escribir nada.
+  @NoAudit()
+  @UseGuards(SuperAdminGuard)
+  @Post(':packageDispatchId/diagnose')
+  diagnose(@Param('packageDispatchId') packageDispatchId: string) {
+    return this.closureDoctor.diagnoseRoute(packageDispatchId);
+  }
+
+  // Aplica los arreglos que el superadmin confirmó (re-diagnostica y compara la huella).
+  @UseGuards(SuperAdminGuard)
+  @Post(':packageDispatchId/apply-fixes')
+  applyFixes(
+    @Param('packageDispatchId') packageDispatchId: string,
+    @Body() dto: ApplyClosureFixesDto,
+    @Req() req: any,
+  ) {
+    return this.closureDoctor.applyFixes(packageDispatchId, dto.items, {
       userId: req.user?.userId,
       userName: req.user?.name ?? req.user?.userName,
       role: req.user?.role,
