@@ -57,7 +57,6 @@ import { DataSource, QueryRunner } from 'typeorm';
 import pLimit from 'p-limit';
 import { onlyPhantomDeliveries, phantomDeliveryTimes, realDeliveryScan } from 'src/common/phantom-delivery.util';
 import { needsBackingHistory, selectBackingScan } from 'src/common/backing-scan.util';
-import { canMigrateShipmentToCharge } from './f2-migration.util';
 import { PackageDispatch } from 'src/entities/package-dispatch.entity';
 import * as fs from 'node:fs/promises'; // Para el código viejo (await)
 import * as fsSync from 'node:fs';
@@ -864,7 +863,7 @@ export class ShipmentsService {
     await queryRunner.connect();
     await queryRunner.startTransaction();
 
-    const migrated: any[] = [];
+    const migrated: any[] = []; // ya no se migra (siempre registro nuevo); se conserva en el resumen
     const createdFromScratch: any[] = [];
     const errors: any[] = [];
 
@@ -924,101 +923,53 @@ export class ShipmentsService {
           if (tnF2 && (dupSet.has(tnF2) || seenF2.has(tnF2))) { duplicatedF2++; continue; }
           if (tnF2) seenF2.add(tnF2);
 
-          // ¿Ya es paquete normal VIVO en ESTA sucursal? Entonces se pasa a carga. Un registro
-          // devuelto/entregado (estatus final), de otra sucursal o viejo NO se toca: la guía que
-          // vuelve en otra F2 es un registro nuevo (ver canMigrateShipmentToCharge).
-          const latestShipment = await queryRunner.manager.findOne(Shipment, {
-            where: { trackingNumber: data.trackingNumber, subsidiary: { id: subsidiaryId } },
-            relations: ['statusHistory', 'payment', 'subsidiary'],
-            order: { createdAt: 'DESC' },
-          });
-          const original = canMigrateShipmentToCharge(
-            latestShipment && { ...latestShipment, subsidiaryId: latestShipment.subsidiary?.id },
-            { subsidiaryId },
-          ) ? latestShipment : null;
-
-          let savedCS: ChargeShipment;
-
-          if (original) {
-            // --- ESCENARIO A: EXISTE -> MIGRAR ---
-            // Solo los ingresos de ESTE paquete (no todos los que alguna vez usaron el número).
-            await queryRunner.manager.createQueryBuilder().delete().from(Income)
-              .where('shipmentId = :id', { id: original.id }).execute();
-
-            const chargeShipment = this.chargeShipmentRepository.create({
-              ...original,
-              id: undefined, // Nuevo UUID para la tabla charge_shipment
-              charge: savedCharge,
-              subsidiary: chargeSubsidiary,
-              status: original.status || ShipmentStatusType.PENDIENTE,
-              createdById: userId ?? null,
-            });
-
-            savedCS = await queryRunner.manager.save(chargeShipment);
-
-            // Mover Historial si existe
-            if (original.statusHistory?.length > 0) {
-              const newHistory = original.statusHistory.map(old => 
-                this.shipmentStatusRepository.create({
-                  ...old,
-                  id: undefined,
-                  chargeShipment: { id: savedCS.id },
-                  shipment: null
-                })
-              );
-              await queryRunner.manager.save(newHistory);
-            }
-
-            // Eliminar el original solo después de salvar el nuevo y su historia
-            await queryRunner.manager.delete(Shipment, original.id);
-            migrated.push(savedCS.trackingNumber);
-
-          } else {
-            // --- ESCENARIO B: NO EXISTE -> INSERTAR DIRECTO ---
-            // commitDateTime (columna NOT NULL): del Excel o fallback hoy 18:00.
-            let csCommitDateTime: Date | undefined;
-            if (data.commitDate) {
-              csCommitDateTime = commitInstantHermosillo(data.commitDate, data.commitTime) ?? undefined;
-            }
-            if (!csCommitDateTime) csCommitDateTime = todayDefaultCommitHermosillo();
-
-            // Lazy: crea/reutiliza el consolidado en la primera guía nueva del archivo.
-            if (!chargeConsolidated) {
-              chargeConsolidated = await this.findOrCreateChargeConsolidated(queryRunner.manager, {
-                consNumber, subsidiaryId, date: consDate, userId,
-              });
-            }
-
-            const newCS = this.chargeShipmentRepository.create({
-              trackingNumber: data.trackingNumber,
-              recipientName: data.recipientName || 'N/A',
-              recipientAddress: data.recipientAddress || 'N/A',
-              recipientZip: data.recipientZip || 'N/A',
-              recipientCity: data.recipientCity || 'N/A',
-              recipientPhone: data.recipientPhone || 'N/A',
-              commitDateTime: csCommitDateTime,
-              shipmentType: ShipmentType.FEDEX,
-              status: ShipmentStatusType.PENDIENTE,
-              charge: savedCharge,
-              subsidiary: chargeSubsidiary,
-              createdById: userId ?? null,
-              consNumber: consNumber || null, // para que el paso "Cobros" haga match por consNumber
-              consolidatedId: chargeConsolidated?.id ?? null, // liga la guía nueva al consolidado
-            });
-
-            savedCS = await queryRunner.manager.save(newCS);
-
-            // Crear un historial inicial para este paquete nuevo
-            const initialStatus = this.shipmentStatusRepository.create({
-              status: ShipmentStatusType.PENDIENTE,
-              notes: 'Cargado directamente desde archivo F2 (No existía en sistema)',
-              timestamp: new Date(),
-              chargeShipment: { id: savedCS.id }
-            });
-            await queryRunner.manager.save(initialStatus);
-            
-            createdFromScratch.push(savedCS.trackingNumber);
+          // SIEMPRE registro nuevo (regla del negocio): la guía de la F2 nace como carga limpia.
+          // Nunca se clona ni se borra un paquete/carga existente: un registro devuelto o
+          // entregado termina su vida en su consolidado (bug 2026-10-07: la migración
+          // paquete→carga clonaba registros devueltos y la salida a ruta los rechazaba).
+          // commitDateTime (columna NOT NULL): del Excel o fallback hoy 18:00.
+          let csCommitDateTime: Date | undefined;
+          if (data.commitDate) {
+            csCommitDateTime = commitInstantHermosillo(data.commitDate, data.commitTime) ?? undefined;
           }
+          if (!csCommitDateTime) csCommitDateTime = todayDefaultCommitHermosillo();
+
+          // Lazy: crea/reutiliza el consolidado en la primera guía nueva del archivo.
+          if (!chargeConsolidated) {
+            chargeConsolidated = await this.findOrCreateChargeConsolidated(queryRunner.manager, {
+              consNumber, subsidiaryId, date: consDate, userId,
+            });
+          }
+
+          const newCS = this.chargeShipmentRepository.create({
+            trackingNumber: data.trackingNumber,
+            recipientName: data.recipientName || 'N/A',
+            recipientAddress: data.recipientAddress || 'N/A',
+            recipientZip: data.recipientZip || 'N/A',
+            recipientCity: data.recipientCity || 'N/A',
+            recipientPhone: data.recipientPhone || 'N/A',
+            commitDateTime: csCommitDateTime,
+            shipmentType: ShipmentType.FEDEX,
+            status: ShipmentStatusType.PENDIENTE,
+            charge: savedCharge,
+            subsidiary: chargeSubsidiary,
+            createdById: userId ?? null,
+            consNumber: consNumber || null, // para que el paso "Cobros" haga match por consNumber
+            consolidatedId: chargeConsolidated?.id ?? null, // liga la guía nueva al consolidado
+          });
+
+          const savedCS = await queryRunner.manager.save(newCS);
+
+          // Crear un historial inicial para este paquete nuevo
+          const initialStatus = this.shipmentStatusRepository.create({
+            status: ShipmentStatusType.PENDIENTE,
+            notes: 'Cargado desde archivo F2',
+            timestamp: new Date(),
+            chargeShipment: { id: savedCS.id }
+          });
+          await queryRunner.manager.save(initialStatus);
+
+          createdFromScratch.push(savedCS.trackingNumber);
 
         } catch (err) {
           this.logger.error(`❌ Error procesando tracking ${data.trackingNumber}: ${err.message}`);
