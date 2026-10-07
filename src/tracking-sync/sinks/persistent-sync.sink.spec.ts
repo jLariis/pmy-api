@@ -71,6 +71,52 @@ describe('PersistentSyncSink.applyPlan', () => {
     },
   );
 
+  // Bug 2026-10-07 (cargas F2 31.5 / Loreto): el pre-registro vetaba el evento de entrega
+  // (anterior a la subida) pero el estatus SÍ pasaba a ENTREGADO → estatus sin historial.
+  it('guarda SIEMPRE el evento que respalda el nuevo estatus aunque esté vetado por pre-registro', async () => {
+    const manager = fakeManager([]);
+    const sink = new PersistentSyncSink(fakeDataSource(manager), { log: jest.fn() } as any, { execute: jest.fn() } as any);
+    const transit = ev(1000, ShipmentStatusType.EN_TRANSITO, null);
+    const dl = ev(2000, ShipmentStatusType.ENTREGADO, null);
+    const ctx = ctxWith([transit, dl], ShipmentStatusType.ENTREGADO, ShipmentStatusType.EN_RUTA, 'charge');
+    ctx.normalized.events = [transit, dl] as any;
+    ctx.vetoedEventKeys = new Set([transit.eventKey, dl.eventKey]);
+
+    const out = await sink.applyPlan(ctx, { userId: 'u1', role: 'system' });
+
+    const rows = manager.saved.filter((x: any) => x.timestamp);
+    expect(rows.map((r: any) => r.status)).toEqual([ShipmentStatusType.ENTREGADO]); // el tránsito vetado sigue fuera
+    expect(out.insertedEvents).toBe(1);
+    expect(out.toStatus).toBe(ShipmentStatusType.ENTREGADO);
+  });
+
+  it('el evento respaldo vetado se guarda con el estatus FINAL (entrega por FedEx → entregado en ruta nuestra)', async () => {
+    const manager = fakeManager([]);
+    const sink = new PersistentSyncSink(fakeDataSource(manager), { log: jest.fn() } as any, { execute: jest.fn() } as any);
+    const dl = ev(2000, ShipmentStatusType.ENTREGADO_POR_FEDEX, null);
+    const ctx = ctxWith([dl], ShipmentStatusType.ENTREGADO, ShipmentStatusType.EN_RUTA);
+    ctx.normalized.events = [dl] as any;
+    ctx.vetoedEventKeys = new Set([dl.eventKey]);
+
+    await sink.applyPlan(ctx, { userId: 'u1', role: 'system' });
+
+    const rows = manager.saved.filter((x: any) => x.timestamp);
+    expect(rows.map((r: any) => r.status)).toEqual([ShipmentStatusType.ENTREGADO]);
+  });
+
+  it('no duplica: si el historial ya tiene una fila con el estatus nuevo, no agrega el respaldo vetado', async () => {
+    const manager = fakeManager([{ timestamp: new Date(1500), exceptionCode: null, status: ShipmentStatusType.ENTREGADO }]);
+    const sink = new PersistentSyncSink(fakeDataSource(manager), { log: jest.fn() } as any, { execute: jest.fn() } as any);
+    const dl = ev(2000, ShipmentStatusType.ENTREGADO, null);
+    const ctx = ctxWith([dl], ShipmentStatusType.ENTREGADO, ShipmentStatusType.EN_RUTA);
+    ctx.normalized.events = [dl] as any;
+    ctx.vetoedEventKeys = new Set([dl.eventKey]);
+
+    await sink.applyPlan(ctx, { userId: 'u1', role: 'system' });
+
+    expect(manager.saved.filter((x: any) => x.timestamp)).toHaveLength(0);
+  });
+
   it('is idempotent: events already present (by shadowKey) are not re-inserted', async () => {
     const existing = [{ timestamp: new Date(1000), exceptionCode: null, status: ShipmentStatusType.EN_RUTA }];
     const manager = fakeManager(existing);

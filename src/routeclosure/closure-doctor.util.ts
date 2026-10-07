@@ -255,6 +255,17 @@ export function diagnosePackage(input: DoctorInput): PackageDiagnosis {
   const plan: DoctorPlan = { setStatus: null, insertEvents: [], income: null };
   const known = new Set(historyRows.map((r) => r.shadowKey));
 
+  // Entregado (o devuelto) ANTES del día de la ruta (caso Loreto): se marca aunque el estatus
+  // ya coincida, para que el superadmin vea que se revisó y si quedó algo pendiente.
+  const eventDay = eventAt ? toHermosilloDateString(eventAt) : null;
+  const beforeRoute =
+    (target === ShipmentStatusType.ENTREGADO || target === ShipmentStatusType.DEVUELTO_A_FEDEX) &&
+    !!eventDay && !!routeDay && eventDay < routeDay;
+  const beforeRouteLine = () => {
+    const n = daysBetween(eventDay!, routeDay!);
+    return `La guía se puso en la ruta del ${fmtDay(routeDay!)}, ${n} ${n === 1 ? 'día' : 'días'} después de que FedEx la marcó como ${statusLabel(target)}.`;
+  };
+
   if (target !== current) {
     result.problems.push('STATUS_BEHIND');
     plan.setStatus = target;
@@ -264,16 +275,9 @@ export function diagnosePackage(input: DoctorInput): PackageDiagnosis {
       else if (!e.vetoed) plan.insertEvents.push(toInsert(e));
     }
     const lines = [`${fedexSays} En el sistema la guía dice ${statusLabel(current)}.`];
-    const eventDay = eventAt ? toHermosilloDateString(eventAt) : null;
-    if (
-      (target === ShipmentStatusType.ENTREGADO || target === ShipmentStatusType.DEVUELTO_A_FEDEX) &&
-      eventDay && routeDay && eventDay < routeDay
-    ) {
+    if (beforeRoute) {
       result.problems.push('DELIVERED_BEFORE_ROUTE');
-      const n = daysBetween(eventDay, routeDay);
-      lines.push(
-        `La guía se puso en la ruta del ${fmtDay(routeDay)}, ${n} ${n === 1 ? 'día' : 'días'} después de que FedEx la marcó como ${statusLabel(target)}.`,
-      );
+      lines.push(beforeRouteLine());
     }
     lines.push(
       `Se corrige el estatus a ${statusLabel(target)}` +
@@ -288,6 +292,10 @@ export function diagnosePackage(input: DoctorInput): PackageDiagnosis {
     result.explanation.push(
       `${fedexSays} La guía ya dice ${statusLabel(current)}, pero falta ese evento en su historial. Se agrega el evento de FedEx del ${fmt(backing.occurredAt)}.`,
     );
+    if (beforeRoute) {
+      result.problems.push('DELIVERED_BEFORE_ROUTE');
+      result.explanation.push(beforeRouteLine());
+    }
   }
 
   // ── Ingreso ──
@@ -354,6 +362,15 @@ export function diagnosePackage(input: DoctorInput): PackageDiagnosis {
         result.explanation.push('No se crea ingreso porque ya existe uno.');
       }
     }
+  }
+
+  if (beforeRoute && !result.problems.includes('DELIVERED_BEFORE_ROUTE')) {
+    if (!result.problems.length) {
+      result.explanation.push(`${fedexSays} ${beforeRouteLine()}`, 'Ya tiene estatus, historial e ingreso correctos: no hay nada que corregir.');
+    } else {
+      result.explanation.push(beforeRouteLine());
+    }
+    result.problems.push('DELIVERED_BEFORE_ROUTE');
   }
 
   const hasPlan = !!plan.setStatus || plan.insertEvents.length > 0 || !!plan.income;

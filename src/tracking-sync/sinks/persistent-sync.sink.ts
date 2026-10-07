@@ -6,6 +6,7 @@ import { ShipmentStatus } from 'src/entities/shipment-status.entity';
 import { AuditService } from 'src/audit/audit.service';
 import { AuditModule as AuditModuleEnum, AuditAction, AuditResult, AuditSeverity } from 'src/common/enums/audit.enum';
 import { buildShadowKey } from '../event-key.util';
+import { selectBackingEvent } from '../backing-event.util';
 import { SyncContext } from '../tracking-sync.types';
 import { ApplyOutcome } from '../compare.types';
 import { IncomeExecutor } from '../income/income-executor';
@@ -107,6 +108,22 @@ export class PersistentSyncSink {
         const toInsert = ctx.reconcile.newEvents.filter(
           (e) => !ctx.vetoedEventKeys.has(e.eventKey) && !known.has(e.shadowKey),
         );
+
+        // Estatus y historial deben cuadrar: si el estatus cambia y ninguna fila lo respalda, se
+        // guarda el evento FedEx que lo respalda aunque el pre-registro lo haya vetado (se graba
+        // con el estatus FINAL: p. ej. entrega "por FedEx" que en ruta nuestra cuenta como entregado).
+        if (
+          toStatus && toStatus !== fromStatus &&
+          !rows.some((r) => r.status === toStatus) &&
+          !toInsert.some((e) => e.status === toStatus)
+        ) {
+          const pool = ctx.normalized.events?.length ? ctx.normalized.events : ctx.reconcile.newEvents;
+          const backing = selectBackingEvent(pool, toStatus);
+          if (backing && !known.has(backing.shadowKey) && !toInsert.includes(backing)) {
+            toInsert.push({ ...backing, status: toStatus });
+            toInsert.sort((a, b) => a.occurredAt.getTime() - b.occurredAt.getTime());
+          }
+        }
 
         for (const e of toInsert) {
           const row = m.create(ShipmentStatus, {

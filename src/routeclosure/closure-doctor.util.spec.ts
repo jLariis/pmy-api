@@ -180,4 +180,32 @@ describe('diagnosePackage', () => {
     const input = base({ fedex: { events: [dl], shieldedStatus: S.ENTREGADO, rawStatus: S.ENTREGADO, headerDeliveredAt: null } });
     expect(diagnosePackage(input).fingerprint).toBe(diagnosePackage(input).fingerprint);
   });
+
+  it('entregado antes de la ruta y ya corregido (estatus, historial e ingreso) → se marca solo como revisado', () => {
+    const dl = ev('2026-09-30T18:05:00.000Z', S.ENTREGADO);
+    const d = diagnosePackage(
+      base({
+        entity: { id: 's1', trackingNumber: '111', kind: 'shipment', status: S.ENTREGADO },
+        fedex: { events: [dl], shieldedStatus: S.ENTREGADO, rawStatus: S.ENTREGADO, headerDeliveredAt: null },
+        historyRows: [row('2026-09-30T18:05:00.000Z', S.ENTREGADO), row('2026-10-06T15:00:00.000Z', S.EN_RUTA)],
+        incomes: [{ id: 'i1', incomeType: IncomeStatus.ENTREGADO, date: new Date('2026-09-30T18:05:00.000Z') }],
+      }),
+    );
+    expect(d.problems).toEqual(['DELIVERED_BEFORE_ROUTE']);
+    expect(d.plan).toBeNull();
+    expect(d.explanation.join(' ')).toContain('no hay nada que corregir');
+  });
+
+  it('entregado antes de la ruta con historial faltante → etiqueta + arreglo', () => {
+    const dl = ev('2026-09-30T18:05:00.000Z', S.ENTREGADO);
+    const d = diagnosePackage(
+      base({
+        entity: { id: 's1', trackingNumber: '111', kind: 'shipment', status: S.ENTREGADO },
+        fedex: { events: [dl], shieldedStatus: S.ENTREGADO, rawStatus: S.ENTREGADO, headerDeliveredAt: null },
+        incomes: [{ id: 'i1', incomeType: IncomeStatus.ENTREGADO, date: new Date('2026-09-30T18:05:00.000Z') }],
+      }),
+    );
+    expect(d.problems).toEqual(['HISTORY_MISSING', 'DELIVERED_BEFORE_ROUTE']);
+    expect(d.plan!.insertEvents).toHaveLength(1);
+  });
 });

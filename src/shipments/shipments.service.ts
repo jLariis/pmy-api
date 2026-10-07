@@ -53,9 +53,10 @@ import { ShipmentStatusForReportDto } from 'src/mail/dtos/shipment.dto';
 import { SearchShipmentDto } from './dto/search-package.dto';
 import { ShipmentToSaveDto } from './dto/shipment-to-save.dto';
 import * as ExcelJS from 'exceljs';
-import { DataSource } from 'typeorm';
+import { DataSource, QueryRunner } from 'typeorm';
 import pLimit from 'p-limit';
 import { onlyPhantomDeliveries, phantomDeliveryTimes, realDeliveryScan } from 'src/common/phantom-delivery.util';
+import { needsBackingHistory, selectBackingScan } from 'src/common/backing-scan.util';
 import { PackageDispatch } from 'src/entities/package-dispatch.entity';
 import * as fs from 'node:fs/promises'; // Para el código viejo (await)
 import * as fsSync from 'node:fs';
@@ -4365,12 +4366,32 @@ export class ShipmentsService {
             }
 
             // 5. Actualizar y guardar
+            const prevChargeStatus = chargeShipment.status;
             chargeShipment.status = mappedStatus;
             chargeShipment.exceptionCode = exceptionCode;
 
             this.logger.log(`💾 Guardando cambios para ${trackingNumber}`);
             const updatedChargeShipment = await this.chargeShipmentRepository.save(chargeShipment);
             updatedChargeShipments.push(updatedChargeShipment);
+
+            // Estatus y historial deben cuadrar: este flujo cambia el estatus sin escribir historial;
+            // si nada respalda el estatus nuevo, se guarda el escaneo FedEx que lo respalda.
+            const chargeHistory = await this.shipmentStatusRepository.find({
+              where: { chargeShipment: { id: chargeShipment.id } },
+              select: ['status'],
+            });
+            if (needsBackingHistory({ prevStatus: prevChargeStatus, finalStatus: mappedStatus, historyStatuses: chargeHistory.map((h) => h.status) })) {
+              const scan = selectBackingScan(latestTrackResult.scanEvents ?? [], mappedStatus);
+              if (scan?.date) {
+                await this.shipmentStatusRepository.save(this.shipmentStatusRepository.create({
+                  status: mappedStatus,
+                  exceptionCode: (scan.exceptionCode || '').trim(),
+                  timestamp: new Date(scan.date),
+                  notes: `${scan.eventDescription || 'FedEx Scan'} (respaldo del estatus)`,
+                  chargeShipment: { id: chargeShipment.id } as ChargeShipment,
+                }));
+              }
+            }
             this.logger.log(`✅ Actualizado exitosamente: ${trackingNumber}`);
 
           } catch (error) {
@@ -8483,6 +8504,43 @@ export class ShipmentsService {
       // Evaluar migrar este método al pipeline de tracking-sync o, como mínimo, alinear su
       // criterio de "evento más nuevo" al de FedexStatusResolver/EventReconciler.
       // (Aplica igual a processChargeFedexUpdate, más abajo.)
+      /**
+       * Estatus y historial deben cuadrar (bug 2026-10-07, F2 31.5 de La Paz): el estatus final
+       * se decide con TODOS los escaneos, pero el historial solo guarda los que pasan el candado
+       * de pre-registro. Si el estatus cambió y ninguna fila lo respalda, se guarda el escaneo
+       * FedEx que lo respalda (con el estatus final). Solo historial: no genera ingresos.
+       */
+      private async saveBackingHistory(
+        queryRunner: QueryRunner,
+        kind: 'shipment' | 'charge',
+        entities: (Shipment | ChargeShipment)[],
+        prevStatus: string,
+        finalStatus: string,
+        existingHistory: { status: string }[],
+        insertedStatuses: Set<string>,
+        scanEvents: any[],
+        processedSignatures: Set<string>,
+        tn: string,
+      ): Promise<void> {
+        const historyStatuses = [...existingHistory.map((h) => h.status), ...insertedStatuses];
+        if (!needsBackingHistory({ prevStatus, finalStatus, historyStatuses })) return;
+        const scan = selectBackingScan(scanEvents ?? [], finalStatus);
+        if (!scan?.date) return;
+        const at = new Date(scan.date);
+        const code = (scan.exceptionCode || '').trim();
+        if (processedSignatures.has(`${at.getTime()}_${code}`)) return;
+        for (const entity of entities) {
+          await queryRunner.manager.save(queryRunner.manager.create(ShipmentStatus, {
+            status: finalStatus as ShipmentStatusType,
+            exceptionCode: code,
+            timestamp: at,
+            notes: `${scan.eventDescription || 'FedEx Scan'} (respaldo del estatus)`,
+            ...(kind === 'charge' ? { chargeShipment: entity as ChargeShipment } : { shipment: entity as Shipment }),
+          }));
+        }
+        this.logger.log(`🧾 [${tn}] Historial: se guardó el escaneo que respalda ${finalStatus} (${at.toISOString()}).`);
+      }
+
       async processMasterFedexUpdate(shipmentsToUpdate: Shipment[]) {
         this.logger.log(`💎 Master Update (Titanium - Shield & Income Edition): Procesando ${shipmentsToUpdate.length} guías...`);
 
@@ -8726,6 +8784,8 @@ export class ShipmentsService {
                 const isOurDelivery = (at: Date | null) =>
                     isOurRouteDelivery({ deliveredAt: at, routeDays: ourRouteDays, hasConsolidado: !!mainShipment.consolidatedId });
 
+                // Estatus que quedaron respaldados por una fila nueva del historial (ver saveBackingHistory).
+                const insertedStatuses = new Set<string>();
                 for (const event of newEvents) {
                     const eventDate = new Date(event.date);
                     const dCode = event.derivedStatusCode || '';
@@ -8771,6 +8831,7 @@ export class ShipmentsService {
                         }
                     }
 
+                    insertedStatuses.add(eventStatus);
                     // GUARDAR HISTORIA
                     for (const ship of shipmentList) {
                         const historyEntry = queryRunner.manager.create(ShipmentStatus, {
@@ -9039,6 +9100,11 @@ export class ShipmentsService {
                     }
                 }
 
+                if (!isLocked) {
+                    await this.saveBackingHistory(queryRunner, 'shipment', shipmentList, prevStatus, finalStatus,
+                        existingHistory, insertedStatuses, scanEvents, processedSignatures, tn);
+                }
+
                 // Log por paquete SOLO cuando cambia el estatus (la señal que importa).
                 if (!isLocked && prevStatus !== finalStatus) {
                     this.logger.log(`📦 [${tn}] ${prevStatus} → ${finalStatus}`);
@@ -9281,6 +9347,8 @@ export class ShipmentsService {
                 // ¿Algún evento nuevo es "cambio de fecha solicitada" (FedEx 17/84)?
                 let sawDateChange = false;
 
+                // Estatus que quedaron respaldados por una fila nueva del historial (ver saveBackingHistory).
+                const insertedStatuses = new Set<string>();
                 for (const event of newEvents) {
                     const eventDate = new Date(event.date);
                     const dCode = event.derivedStatusCode || '';
@@ -9310,6 +9378,7 @@ export class ShipmentsService {
                         eventStatus = subConfig.trackExternalDelivery ? ShipmentStatusType.ACARGO_DE_FEDEX : ShipmentStatusType.EN_RUTA;
                     }
 
+                    insertedStatuses.add(eventStatus);
                     // GUARDAR HISTORIA (Para ChargeShipments)
                     for (const charge of chargeList) {
                         const historyEntry = queryRunner.manager.create(ShipmentStatus, {
@@ -9476,6 +9545,11 @@ export class ShipmentsService {
                             await queryRunner.manager.save(ChargeShipment, charge);
                         }
                     }
+                }
+
+                if (!isLocked) {
+                    await this.saveBackingHistory(queryRunner, 'charge', chargeList, prevStatus, finalStatus,
+                        existingHistory, insertedStatuses, scanEvents, processedSignatures, tn);
                 }
 
                 // Log por paquete SOLO cuando cambia el estatus (la señal que importa).
