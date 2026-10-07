@@ -41,9 +41,6 @@ export class InboxController {
     return (req?.user?.subsidiaryIds as string[] | undefined) ?? [];
   }
 
-  private requireSuper(req: any): void {
-    if (!this.isSuper(req)) throw new ForbiddenException('Solo el superadministrador puede hacer esto');
-  }
 
   private async assertCanSee(req: any, messageId: string): Promise<void> {
     await this.query.detail(messageId, this.scope(req)); // lanza 404 si no lo puede ver
@@ -60,6 +57,7 @@ export class InboxController {
     return this.query.detail(id, this.scope(req));
   }
 
+  @RequirePermission('correo.subir')
   @Post('messages/:id/confirm')
   @ApiOperation({ summary: 'Confirmar o corregir la sucursal (y el tipo de archivos); el sistema aprende' })
   async confirm(@Param('id') id: string, @Body() body: { subsidiaryId: string; attachmentKinds?: Record<string, AttachmentKind> }, @Req() req: any) {
@@ -69,6 +67,7 @@ export class InboxController {
     return this.review.confirm(id, body?.subsidiaryId, req?.user?.userId ?? null, body?.attachmentKinds);
   }
 
+  @RequirePermission('correo.subir')
   @Post('messages/:id/ignore')
   async ignore(@Param('id') id: string, @Body() body: { reason?: string }, @Req() req: any) {
     await this.assertCanSee(req, id);
@@ -82,6 +81,7 @@ export class InboxController {
     return this.paste.plan(id);
   }
 
+  @RequirePermission('correo.subir')
   @Post('messages/:id/pasted')
   @ApiOperation({ summary: 'Registrar que un lote del correo se subió desde el pegado' })
   async pasted(@Param('id') id: string, @Body() body: MarkPastedBody, @Req() req: any) {
@@ -110,17 +110,17 @@ export class InboxController {
     res.send(f.buffer);
   }
 
+  @RequirePermission('correo.configurar')
   @Post('redetect')
   @ApiOperation({ summary: 'Volver a evaluar correos no confirmados' })
   redetect(@Body() body: { ids?: string[] }, @Req() req: any) {
-    this.requireSuper(req);
     return this.ingest.redetect(body?.ids);
   }
 
+  @RequirePermission('correo.configurar')
   @Post('sync')
   @ApiOperation({ summary: 'Leer el buzón ahora' })
   async sync(@Req() req: any) {
-    this.requireSuper(req);
     const r = await this.ingest.runSync(true);
     await this.link.linkPending();
     return r;
@@ -131,9 +131,9 @@ export class InboxController {
     return this.query.status();
   }
 
+  @RequirePermission('correo.configurar')
   @Put('status')
   async setStatus(@Body() body: { enabled: boolean }, @Req() req: any) {
-    this.requireSuper(req);
     if (typeof body?.enabled !== 'boolean') throw new BadRequestException('Indica si se activa o se pausa');
     await this.ingest.setEnabled(body.enabled);
     return this.query.status();
@@ -156,21 +156,21 @@ export class InboxController {
     return this.coverage.list(subsidiaryId);
   }
 
+  @RequirePermission('correo.configurar')
   @Put('zip-coverage/:id')
   setZipStatus(@Param('id') id: string, @Body() body: { status: 'sugerido' | 'confirmado' | 'excluido' }, @Req() req: any) {
-    this.requireSuper(req);
     return this.coverage.setStatus(id, body?.status);
   }
 
+  @RequirePermission('correo.configurar')
   @Post('zip-coverage')
   addZip(@Body() body: { zip: string; subsidiaryId: string; city?: string }, @Req() req: any) {
-    this.requireSuper(req);
     return this.coverage.addManual(body ?? ({} as any));
   }
 
+  @RequirePermission('correo.configurar')
   @Post('zip-coverage/rebuild')
   rebuildZip(@Req() req: any) {
-    this.requireSuper(req);
     return this.coverage.rebuildFromHistory();
   }
 }

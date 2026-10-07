@@ -316,7 +316,7 @@ export class OpsAlertsService {
       body,
       severity: (level >= 2 ? 'error' : 'warning') as 'error' | 'warning',
       category: 'operacion' as const,
-      link: '/operaciones/bandeja-correos',
+      link: '/correos/bandeja',
       entityId: alert.inboxConsolidationId ?? undefined,
       subsidiaryId: alert.subsidiaryId,
       excludeActor: false,

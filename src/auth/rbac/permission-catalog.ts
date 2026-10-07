@@ -67,7 +67,10 @@ export const RBAC_PERMISSIONS: RbacPermissionDef[] = [
   { code: 'operaciones.traslados', name: 'Traslados', groupName: 'Operaciones', roles: OPERATIVE },
   { code: 'operaciones.salidasARutas', name: 'Salidas a Rutas', groupName: 'Operaciones', roles: OPERATIVE },
   { code: 'operaciones.pegarFedex', name: 'Pegar FedEx (experimental)', groupName: 'Operaciones', roles: ['superadmin'] },
-  { code: 'correo.bandeja', name: 'Bandeja de correos', groupName: 'Operaciones', roles: ['superadmin'] },
+  // Correos (bandeja de FedEx y DHL)
+  { code: 'correo.bandeja', name: 'Ver bandeja de correos', groupName: 'Correos', roles: ['superadmin'] },
+  { code: 'correo.subir', name: 'Confirmar sucursal y subir guías', groupName: 'Correos', roles: ['superadmin'] },
+  { code: 'correo.configurar', name: 'Configurar bandeja (buzón, cobertura, alertas)', groupName: 'Correos', roles: ['superadmin'] },
   // Finanzas
   { code: 'finanzas.gastos', name: 'Gastos', groupName: 'Finanzas', roles: ['admin', 'subadmin', 'superadmin', 'auxiliar'] },
   { code: 'finanzas.ingresos', name: 'Ingresos', groupName: 'Finanzas', roles: ['admin', 'subadmin', 'superadmin', 'auxiliar'] },
