@@ -58,4 +58,8 @@ export class InboxAttachment {
   /** Bloques de este archivo ya subidos (un libro puede tener hojas YAQUI / F2 / HV). */
   @Column({ type: 'json', nullable: true })
   pastedKeys: string[] | null;
+
+  /** Por hoja (o '_' si el archivo es de una hoja): guías ya registradas en el sistema. */
+  @Column({ type: 'json', nullable: true })
+  systemMatch: Record<string, import('../inbox/system-match.util').MatchSummary> | null;
 }

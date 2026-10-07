@@ -75,6 +75,14 @@ export class InboxMessage {
   @Column({ type: 'datetime', nullable: true })
   confirmedAt: Date | null;
 
+  /** ¿Ya están en el sistema las guías del correo? (por guías, no por número) */
+  @Index('IDX_inbox_message_coverage')
+  @Column({ type: 'varchar', length: 10, nullable: true })
+  uploadCoverage: 'ninguno' | 'parcial' | 'completo' | null;
+
+  @Column({ type: 'datetime', nullable: true })
+  matchedAt: Date | null;
+
   @CreateDateColumn()
   createdAt: Date;
 

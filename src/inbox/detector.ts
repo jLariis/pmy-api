@@ -14,6 +14,7 @@ export const DETECTOR_VERSION = 1;
 
 export const WEIGHTS = {
   consolidado_conocido: 1.0,
+  guias_registradas: 1.0,
   cp_archivo: 1.0,
   ciudad_archivo: 0.6,
   asunto_o_archivo: 0.8,
@@ -32,7 +33,7 @@ export const ALIAS_MIN_HITS = 3;
 export const MIN_CONCENTRATION = 0.9;
 export const MIN_ALIAS_PRECISION = 0.7;
 
-const STRONG: SignalType[] = ['consolidado_conocido', 'cp_archivo'];
+const STRONG: SignalType[] = ['consolidado_conocido', 'guias_registradas', 'cp_archivo'];
 
 /** Palabras que aparecen en casi todos los correos y no identifican sucursal. */
 export const GENERIC_TERMS = new Set([
@@ -45,6 +46,7 @@ export const GENERIC_TERMS = new Set([
 
 const SIGNAL_LABEL: Record<SignalType, string> = {
   consolidado_conocido: 'consolidado ya registrado',
+  guias_registradas: 'guías ya registradas',
   cp_archivo: 'códigos postales del archivo',
   ciudad_archivo: 'ciudades del archivo',
   asunto_o_archivo: 'asunto o nombre del archivo',
@@ -233,6 +235,15 @@ export function detect(input: DetectionInput): DetectionResult {
     if (hit && !signals.some((s) => s.type === 'consolidado_conocido' && s.subsidiaryId === hit.subsidiaryId)) {
       signals.push({ type: 'consolidado_conocido', value: cons, subsidiaryId: hit.subsidiaryId, weight: WEIGHTS.consolidado_conocido, note: `El consolidado ${cons} ya está registrado en ${nameOf(hit.subsidiaryId)}` });
     }
+  }
+
+  // 1b) Guías del correo que YA están en el sistema: la pista más fuerte. Si se reparten entre
+  // sucursales, cada una vota según su proporción (así un correo con rutas de dos sucursales va a revisión).
+  const sysTotal = (input.systemSubsidiaries ?? []).reduce((acc, x) => acc + x.count, 0);
+  for (const x of input.systemSubsidiaries ?? []) {
+    const share = sysTotal ? x.count / sysTotal : 0;
+    if (x.count < 3 || share < 0.15) continue;
+    signals.push({ type: 'guias_registradas', value: `${x.count}`, subsidiaryId: x.subsidiaryId, weight: +(WEIGHTS.guias_registradas * share).toFixed(3), note: `${x.count} guías del correo ya están registradas en ${nameOf(x.subsidiaryId)}` });
   }
 
   // 2) CP del archivo

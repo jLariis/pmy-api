@@ -35,17 +35,19 @@ const HAS_GUIDES = `EXISTS (SELECT 1 FROM inbox_attachment ua WHERE ua.inboxMess
 const ALL_UPLOADED = `(EXISTS (SELECT 1 FROM inbox_consolidation uc WHERE uc.inboxMessageId = m.id)
   AND NOT EXISTS (SELECT 1 FROM inbox_consolidation uc WHERE uc.inboxMessageId = m.id AND uc.linkStatus = 'pendiente'))`;
 const READY = "m.status IN ('detectado','confirmado')";
+const UPLOADED = `(m.uploadCoverage = 'completo' OR ${ALL_UPLOADED})`;
 
 const VIEW_WHERE: Record<InboxViewKey, string> = {
-  falta_confirmar: "m.status IN ('revision','nuevo')",
-  listos: `${READY} AND ${HAS_GUIDES} AND NOT ${ALL_UPLOADED}`,
-  subidos: `${READY} AND ${ALL_UPLOADED}`,
+  // Lo que ya está en el sistema (por guías o por número) es "Subido" aunque nadie haya confirmado la sucursal.
+  falta_confirmar: `m.status IN ('revision','nuevo') AND NOT ${UPLOADED}`,
+  listos: `${READY} AND ${HAS_GUIDES} AND NOT ${UPLOADED}`,
+  subidos: `m.status NOT IN ('ignorado','error') AND ${UPLOADED}`,
   todos: "m.status <> 'ignorado'",
   ignorado: "m.status = 'ignorado'",
 };
 
 /** Estado simple de un correo para la lista. */
-export type UploadState = 'falta_confirmar' | 'listo' | 'subido' | 'sin_guias' | 'ignorado' | 'error';
+export type UploadState = 'falta_confirmar' | 'listo' | 'subido' | 'parcial' | 'sin_guias' | 'ignorado' | 'error';
 
 @Injectable()
 export class InboxQueryService {
@@ -115,7 +117,7 @@ export class InboxQueryService {
     const qb = base();
     const view: InboxViewKey = VIEW_KEYS.includes(f.status as InboxViewKey) ? (f.status as InboxViewKey) : 'falta_confirmar';
     qb.andWhere(VIEW_WHERE[view]);
-    qb.select(['m.id', 'm.receivedAt', 'm.fromAddress', 'm.fromName', 'm.subject', 'm.status', 'm.subsidiaryId', 'm.ignoreReason', 'm.errorMessage'])
+    qb.select(['m.id', 'm.receivedAt', 'm.fromAddress', 'm.fromName', 'm.subject', 'm.status', 'm.subsidiaryId', 'm.ignoreReason', 'm.errorMessage', 'm.uploadCoverage'])
       .orderBy('m.receivedAt', 'DESC')
       .skip((page - 1) * pageSize)
       .take(pageSize);
@@ -135,9 +137,10 @@ export class InboxQueryService {
       const uploadState: UploadState =
         m.status === 'ignorado' ? 'ignorado'
         : m.status === 'error' ? 'error'
+        : m.uploadCoverage === 'completo' || (mc.length > 0 && mc.every((c) => c.linkStatus !== 'pendiente')) ? 'subido'
+        : m.uploadCoverage === 'parcial' ? 'parcial'
         : m.status === 'revision' || m.status === 'nuevo' ? 'falta_confirmar'
         : !hasGuides ? 'sin_guias'
-        : mc.length && mc.every((c) => c.linkStatus !== 'pendiente') ? 'subido'
         : 'listo';
       return {
         uploadState,

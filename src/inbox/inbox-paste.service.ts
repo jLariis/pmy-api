@@ -11,6 +11,7 @@ import { buildPastePlan, expandWorkbook, PasteBatch, PasteBatchKind, PlanAttachm
 import { uploadMinutes } from './zip-coverage.util';
 import { WhatsappGatewayService } from '../whatsapp-gateway/whatsapp-gateway.service';
 import { buildUploadMessage, DEFAULT_UPLOAD_GROUPS, UploadSummary } from './upload-message.util';
+import { MatchGroup } from './system-match.util';
 import { ConsolidationKind } from './inbox.types';
 
 const TSV_KINDS = ['master', 'master_aereo', 'f2', 'high_value'];
@@ -22,6 +23,8 @@ export interface PlanBatchView extends PasteBatch {
   uploaded: { at: Date; byName: string | null; minutes: number | null; via: string | null } | null;
   /** F2: guías de este bloque que ya se subieron como paquete en el master de ESTE mismo correo. */
   alreadyInMaster?: { count: number; consNumber: string };
+  /** Revisión por guías: cuántas del bloque ya están en el sistema y en qué consolidados. */
+  inSystem: { found: number; total: number; complete: boolean; groups: MatchGroup[] } | null;
 }
 
 export interface PastePlanResult {
@@ -119,13 +122,22 @@ export class InboxPasteService {
         : resent && !c
           ? `Este mismo archivo ya se subió desde el correo "${resent}".`
           : null;
+      // Revisión por guías (sirve aunque la sucursal suba con un número propio que el correo no trae).
+      const sm = atts.find((a) => a.id === b.attachmentId)?.systemMatch?.[b.sheet ?? '_'] ?? null;
+      const top = sm?.groups?.[0];
+      const byGuides =
+        !c && sm?.complete && top
+          ? { at: new Date(top.at), byName: top.byName, minutes: uploadMinutes(msg.receivedAt, new Date(top.at)), via: 'manual' as string | null }
+          : null;
       return {
         ...b,
+        consNumber: b.consNumber || (sm?.complete && top && top.consNumber !== '(sin número)' ? top.consNumber : b.consNumber),
         blockedReason: lock ?? b.blockedReason,
         alreadyInMaster: f2InMaster.get(b.key),
         hvCount: tsvTrackings(b.hvRaw).trackings.size,
         cobrosCount: b.paymentsRaw ? b.paymentsRaw.split('\n').length - 1 : 0,
-        uploaded: c?.uploadedAt ? { at: c.uploadedAt, byName: nameOf(c.uploadedById), minutes: c.uploadMinutes, via: c.uploadedVia } : null,
+        uploaded: c?.uploadedAt ? { at: c.uploadedAt, byName: nameOf(c.uploadedById), minutes: c.uploadMinutes, via: c.uploadedVia } : byGuides,
+        inSystem: sm && sm.found > 0 ? { found: sm.found, total: sm.total, complete: sm.complete, groups: sm.groups.slice(0, 4) } : null,
       };
     });
 

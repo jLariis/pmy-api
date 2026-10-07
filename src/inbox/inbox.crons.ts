@@ -4,6 +4,7 @@ import { DataSource } from 'typeorm';
 import { InboxIngestService } from './inbox-ingest.service';
 import { InboxLinkService } from './inbox-link.service';
 import { ZipCoverageService } from './zip-coverage.service';
+import { SystemMatchService } from './system-match.service';
 
 /** Crons de la bandeja FedEx (hora de Hermosillo). La lectura respeta el interruptor. */
 @Injectable()
@@ -16,6 +17,7 @@ export class InboxCrons implements OnApplicationBootstrap {
     private readonly ingest: InboxIngestService,
     private readonly link: InboxLinkService,
     private readonly coverage: ZipCoverageService,
+    private readonly systemMatch: SystemMatchService,
     private readonly ds: DataSource,
   ) {}
 
@@ -44,6 +46,8 @@ export class InboxCrons implements OnApplicationBootstrap {
     this.linking = true;
     try {
       await this.link.linkPending();
+      // Por guías: detecta subidas con número propio de la sucursal (Hermosillo, rutas locales).
+      await this.systemMatch.matchRecent();
     } catch (e: any) {
       this.logger.error(`🔗 [inbox] ligado: ${e?.message ?? e}`);
     } finally {

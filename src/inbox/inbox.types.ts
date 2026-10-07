@@ -40,6 +40,7 @@ export interface SheetSummary {
 
 export type SignalType =
   | 'consolidado_conocido'
+  | 'guias_registradas'
   | 'cp_archivo'
   | 'ciudad_archivo'
   | 'asunto_o_archivo'
@@ -95,6 +96,8 @@ export interface DetectionInput {
   ccAddresses: string[];
   attachments: DetectionAttachment[];
   consNumbers: string[];
+  /** Guías del correo que ya están en el sistema, por sucursal (revisión por guías). */
+  systemSubsidiaries?: { subsidiaryId: string; count: number }[];
   knowledge: Knowledge;
 }
 

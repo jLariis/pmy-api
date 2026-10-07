@@ -226,6 +226,7 @@ export class InboxIngestService {
       ccAddresses: msg.ccAddresses ?? [],
       attachments: atts.map((a) => ({ filename: a.filename, kind: a.kind, zips: a.zipSummary ?? {}, cities: a.citySummary ?? {} })),
       consNumbers,
+      systemSubsidiaries: systemSubsidiariesOf(atts),
       knowledge,
     });
     await this.detRepo.save(
@@ -334,4 +335,19 @@ export class InboxIngestService {
     }
     return { updated };
   }
+}
+
+/** Suma por sucursal las guías ya registradas (revisión por guías); archivos repetidos cuentan una vez. */
+export function systemSubsidiariesOf(atts: { systemMatch?: Record<string, { total: number; bySubsidiary: { subsidiaryId: string; count: number }[] }> | null }[]) {
+  const seen = new Set<string>();
+  const acc = new Map<string, number>();
+  for (const a of atts) {
+    for (const m of Object.values(a.systemMatch ?? {})) {
+      const sig = `${m.total}|${m.bySubsidiary.map((x) => `${x.subsidiaryId}:${x.count}`).join(',')}`;
+      if (seen.has(sig)) continue;
+      seen.add(sig);
+      for (const x of m.bySubsidiary) acc.set(x.subsidiaryId, (acc.get(x.subsidiaryId) ?? 0) + x.count);
+    }
+  }
+  return [...acc.entries()].map(([subsidiaryId, count]) => ({ subsidiaryId, count }));
 }
