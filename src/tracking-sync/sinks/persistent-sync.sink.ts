@@ -112,8 +112,10 @@ export class PersistentSyncSink {
         // Estatus y historial deben cuadrar: si el estatus cambia y ninguna fila lo respalda, se
         // guarda el evento FedEx que lo respalda aunque el pre-registro lo haya vetado (se graba
         // con el estatus FINAL: p. ej. entrega "por FedEx" que en ruta nuestra cuenta como entregado).
+        // SOLO entregas (un DEX anterior al registro no se respalda: ensuciaría el historial).
         if (
           toStatus && toStatus !== fromStatus &&
+          (toStatus === ShipmentStatusType.ENTREGADO || toStatus === ShipmentStatusType.ENTREGADO_POR_FEDEX) &&
           !rows.some((r) => r.status === toStatus) &&
           !toInsert.some((e) => e.status === toStatus)
         ) {

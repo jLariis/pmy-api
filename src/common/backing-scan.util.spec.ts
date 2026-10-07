@@ -8,6 +8,10 @@ describe('needsBackingHistory', () => {
   it('ya hay una fila con el estatus final → no', () => {
     expect(needsBackingHistory({ prevStatus: S.EN_RUTA, finalStatus: S.ENTREGADO, historyStatuses: [S.ENTREGADO] })).toBe(false);
   });
+  it('DEX (no entrega) → nunca se respalda, aunque falte en el historial', () => {
+    expect(needsBackingHistory({ prevStatus: S.PENDIENTE, finalStatus: S.CLIENTE_NO_DISPONIBLE, historyStatuses: [] })).toBe(false);
+    expect(needsBackingHistory({ prevStatus: S.EN_RUTA, finalStatus: S.RECHAZADO, historyStatuses: [S.EN_RUTA] })).toBe(false);
+  });
   it('el estatus no cambia → no', () => {
     expect(needsBackingHistory({ prevStatus: S.ENTREGADO, finalStatus: S.ENTREGADO, historyStatuses: [] })).toBe(false);
   });

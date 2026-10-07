@@ -104,6 +104,19 @@ describe('PersistentSyncSink.applyPlan', () => {
     expect(rows.map((r: any) => r.status)).toEqual([ShipmentStatusType.ENTREGADO]);
   });
 
+  it('un DEX vetado por pre-registro NO se respalda (evento de antes de que el paquete fuera nuestro)', async () => {
+    const manager = fakeManager([]);
+    const sink = new PersistentSyncSink(fakeDataSource(manager), { log: jest.fn() } as any, { execute: jest.fn() } as any);
+    const dex = ev(2000, ShipmentStatusType.CLIENTE_NO_DISPONIBLE, '08');
+    const ctx = ctxWith([dex], ShipmentStatusType.CLIENTE_NO_DISPONIBLE, ShipmentStatusType.PENDIENTE);
+    ctx.normalized.events = [dex] as any;
+    ctx.vetoedEventKeys = new Set([dex.eventKey]);
+
+    await sink.applyPlan(ctx, { userId: 'u1', role: 'system' });
+
+    expect(manager.saved.filter((x: any) => x.timestamp)).toHaveLength(0);
+  });
+
   it('no duplica: si el historial ya tiene una fila con el estatus nuevo, no agrega el respaldo vetado', async () => {
     const manager = fakeManager([{ timestamp: new Date(1500), exceptionCode: null, status: ShipmentStatusType.ENTREGADO }]);
     const sink = new PersistentSyncSink(fakeDataSource(manager), { log: jest.fn() } as any, { execute: jest.fn() } as any);

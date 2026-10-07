@@ -29,6 +29,10 @@ export function needsBackingHistory(input: {
 }): boolean {
   const { prevStatus, finalStatus } = input;
   if (!finalStatus || finalStatus === prevStatus) return false;
+  // SOLO entregas: es el único estatus que gana sobre el escudo de tiempo con un evento viejo.
+  // Un DEX anterior al registro (guías sin fila interna) NO se respalda: ensuciaría el historial
+  // (p. ej. sumaría visitas 08) con eventos de cuando el paquete aún no era nuestro.
+  if (!DELIVERED.has(finalStatus)) return false;
   for (const s of input.historyStatuses) if (s === finalStatus) return false;
   return true;
 }
