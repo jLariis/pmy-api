@@ -1,6 +1,6 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Between, LessThanOrEqual, MoreThanOrEqual, Repository } from 'typeorm';
+import { Repository } from 'typeorm';
 import { promises as fs } from 'fs';
 import { join } from 'path';
 import { randomUUID } from 'crypto';
@@ -77,14 +77,22 @@ export class ImportFilesService {
     return this.repo.save(row);
   }
 
-  async list(params: { subsidiaryId?: string; kind?: string; from?: Date; to?: Date; limit?: number } = {}): Promise<ImportFile[]> {
-    const where: any = {};
-    if (params.subsidiaryId) where.subsidiaryId = params.subsidiaryId;
-    if (params.kind) where.kind = params.kind;
-    if (params.from && params.to) where.createdAt = Between(params.from, params.to);
-    else if (params.from) where.createdAt = MoreThanOrEqual(params.from);
-    else if (params.to) where.createdAt = LessThanOrEqual(params.to);
-    return this.repo.find({ where, order: { createdAt: 'DESC' }, take: params.limit ?? 200 });
+  /**
+   * `from`/`to` son días de calendario de Hermosillo (`yyyy-MM-dd`), ambos inclusive.
+   * `createdAt` lo llena MySQL con CURRENT_TIMESTAMP en la zona de la sesión (local en una
+   * máquina, UTC en otra), así que se normaliza a Hermosillo (-07:00, sin horario de verano)
+   * en SQL antes de comparar el día. Antes `to=hoy` se volvía `hoy 00:00` y dejaba fuera
+   * todo lo subido en el día.
+   */
+  async list(params: { subsidiaryId?: string; kind?: string; from?: string; to?: string; limit?: number } = {}): Promise<ImportFile[]> {
+    const day = /^\d{4}-\d{2}-\d{2}$/;
+    const localDay = `DATE(CONVERT_TZ(f.createdAt, @@session.time_zone, '-07:00'))`;
+    const qb = this.repo.createQueryBuilder('f');
+    if (params.subsidiaryId) qb.andWhere('f.subsidiaryId = :subsidiaryId', { subsidiaryId: params.subsidiaryId });
+    if (params.kind) qb.andWhere('f.kind = :kind', { kind: params.kind });
+    if (params.from && day.test(params.from)) qb.andWhere(`${localDay} >= :from`, { from: params.from });
+    if (params.to && day.test(params.to)) qb.andWhere(`${localDay} <= :to`, { to: params.to });
+    return qb.orderBy('f.createdAt', 'DESC').take(params.limit ?? 200).getMany();
   }
 
   async findByConsolidated(consolidatedId: string): Promise<ImportFile[]> {

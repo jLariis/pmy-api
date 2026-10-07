@@ -15,8 +15,8 @@ export class ImportFilesController {
     return this.service.list({
       subsidiaryId: q.subsidiaryId,
       kind: q.kind,
-      from: q.from ? new Date(q.from) : undefined,
-      to: q.to ? new Date(q.to) : undefined,
+      from: q.from || undefined,
+      to: q.to || undefined,
       limit: q.limit ? Number(q.limit) : undefined,
     });
   }
