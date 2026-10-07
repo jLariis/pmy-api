@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { DataSource, EntityManager } from 'typeorm';
 import { ConsolidatedFamily, SubsidiaryTariff } from './consolidated-actions.types';
+import { TargetType, TypeConsolidated, TypePackage } from './consolidated-type.plan';
 
 const norm = (s: string | null | undefined) => String(s ?? '').trim().toUpperCase().replace(/\s+/g, ' ');
 const num = (v: unknown) => Number(v ?? 0) || 0;
@@ -155,6 +156,107 @@ export class ConsolidatedFamilyLoader {
       chargeSecondAbord: bool(s.chargeSecondAbord),
       secondAbordAmount: num(s.secondAbordAmount),
       chargeOnlyFirstOfDay: bool(s.chargeOnlyFirstOfDay),
+    };
+  }
+
+  /**
+   * Cambio de tipo: lo que el plan necesita además de la familia. Guías de la tabla ORIGEN (todas o
+   * las elegidas) con fila completa, último evento y pago COD; consolidado y carga destino; y guías
+   * que ya están en la tabla destino de ese consolidado.
+   */
+  async loadTypeDetails(
+    f: ConsolidatedFamily,
+    opts: { toType: TargetType; trackingNumbers?: string[] | null; targetConsolidatedId?: string | null },
+    manager?: EntityManager,
+  ): Promise<{
+    familyConsolidated: TypeConsolidated[];
+    packages: TypePackage[];
+    missing: string[];
+    destConsolidated: TypeConsolidated | null;
+    destChargeId: string | null;
+    alreadyInDest: Map<string, string>;
+    familyIsHalfTon: boolean | null;
+  }> {
+    const q = this.m(manager);
+    const toCons = (r: any): TypeConsolidated => ({
+      id: r.id, consNumber: String(r.consNumber ?? '').trim(), subsidiaryId: r.subsidiaryId, date: new Date(r.date), type: r.type, carrier: r.carrier,
+      kind: r.kind ?? null,
+    });
+    // Qué trae cada fila: el campo `type` no sirve (la subida F2 crea 'ordinario'), se ve por contenido.
+    const kindSql = `CASE WHEN EXISTS (SELECT 1 FROM charge_shipment cs WHERE cs.consolidatedId = c.id AND cs.active = 1) THEN 'carga'
+                          WHEN EXISTS (SELECT 1 FROM shipment s WHERE s.consolidatedId = c.id AND s.active = 1) THEN 'paquete' END`;
+    const familyConsolidated: TypeConsolidated[] = f.consolidated.length
+      ? (await q.query(`SELECT c.id, c.consNumber, c.subsidiaryId, c.date, c.type, c.carrier, ${kindSql} AS kind FROM consolidated c WHERE c.id IN (?) ORDER BY c.createdAt`, [f.consolidated.map((c) => c.id)])).map(toCons)
+      : [];
+
+    const fromTable = opts.toType === 'carga' ? 'shipment' : 'charge_shipment';
+    const source = opts.toType === 'carga' ? f.shipments : f.chargeShipments;
+    const wanted = opts.trackingNumbers?.length ? new Set(opts.trackingNumbers.map((t) => String(t).trim())) : null;
+    const chosen = wanted ? source.filter((s) => wanted.has(String(s.trackingNumber).trim())) : source;
+    const found = new Set(chosen.map((s) => String(s.trackingNumber).trim()));
+    const missing = wanted ? [...wanted].filter((t) => !found.has(t)) : [];
+
+    const ids = chosen.map((s) => s.id);
+    const rows: any[] = ids.length ? await q.query(`SELECT * FROM \`${fromTable}\` WHERE id IN (?)`, [ids]) : [];
+    const fk = fromTable === 'shipment' ? 'shipmentId' : 'chargeShipmentId';
+    const events: any[] = ids.length
+      ? await q.query(`SELECT ${fk} AS pid, status, exceptionCode, timestamp FROM shipment_status WHERE ${fk} IN (?) ORDER BY timestamp DESC, createdAt DESC`, [ids])
+      : [];
+    const last = new Map<string, any>();
+    for (const e of events) if (!last.has(e.pid)) last.set(e.pid, e);
+    const payments = new Map<string, string>();
+    if (fromTable === 'charge_shipment' && ids.length) {
+      for (const p of await q.query('SELECT id, chargeShipmentId FROM payment WHERE chargeShipmentId IN (?)', [ids])) payments.set(p.chargeShipmentId, p.id);
+    }
+    const packages: TypePackage[] = rows.map((r) => {
+      const e = last.get(r.id);
+      return {
+        id: r.id,
+        trackingNumber: String(r.trackingNumber).trim(),
+        row: r,
+        lastEvent: e ? { status: e.status, exceptionCode: e.exceptionCode ?? null, timestamp: new Date(e.timestamp) } : null,
+        paymentId: fromTable === 'shipment' ? r.paymentId ?? null : payments.get(r.id) ?? null,
+      };
+    });
+
+    // Destino: el elegido, o el de la familia con el tipo correcto.
+    const kindOk = (c: TypeConsolidated) => c.kind === opts.toType || c.kind === null;
+    let destConsolidated: TypeConsolidated | null = null;
+    if (opts.targetConsolidatedId) {
+      const [r] = await q.query(`SELECT c.id, c.consNumber, c.subsidiaryId, c.date, c.type, c.carrier, c.active, ${kindSql} AS kind FROM consolidated c WHERE c.id = ?`, [opts.targetConsolidatedId]);
+      if (!r || !bool(r.active)) throw new BadRequestException('El consolidado destino no existe o está dado de baja.');
+      if (r.subsidiaryId !== f.subsidiaryId) throw new BadRequestException('El consolidado destino es de otra sucursal.');
+      destConsolidated = toCons(r);
+      if (!kindOk(destConsolidated)) {
+        throw new BadRequestException(`El consolidado destino no es de ${opts.toType === 'carga' ? 'carga (F2)' : 'paquetes'}.`);
+      }
+    } else {
+      destConsolidated = familyConsolidated.find((c) => c.kind === opts.toType) ?? null;
+    }
+
+    let destChargeId: string | null = null;
+    if (opts.toType === 'carga') {
+      if (destConsolidated) {
+        const [c] = await q.query(
+          `SELECT id FROM charge WHERE active = 1 AND (id IN (SELECT chargeId FROM charge_shipment WHERE consolidatedId = ? AND chargeId IS NOT NULL)
+              OR (subsidiaryId = ? AND TRIM(UPPER(consNumber)) = ?)) ORDER BY createdAt LIMIT 1`,
+          [destConsolidated.id, destConsolidated.subsidiaryId, norm(destConsolidated.consNumber)],
+        );
+        destChargeId = c?.id ?? null;
+      }
+      if (!destChargeId && !opts.targetConsolidatedId) destChargeId = f.charges[0]?.id ?? null;
+    }
+
+    const alreadyInDest = new Map<string, string>();
+    if (destConsolidated) {
+      const toTable = opts.toType === 'carga' ? 'charge_shipment' : 'shipment';
+      for (const r of await q.query(`SELECT id, trackingNumber FROM \`${toTable}\` WHERE consolidatedId = ? AND active = 1`, [destConsolidated.id])) {
+        alreadyInDest.set(String(r.trackingNumber).trim(), r.id);
+      }
+    }
+    return {
+      familyConsolidated, packages, missing, destConsolidated, destChargeId, alreadyInDest,
+      familyIsHalfTon: f.charges.length ? f.charges[0].isHalfTon : null,
     };
   }
 

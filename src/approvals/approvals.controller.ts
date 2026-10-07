@@ -25,6 +25,18 @@ export class ApprovalsController {
     return this.service.getImpact(type, targetId, { newSubsidiaryId, newDate });
   }
 
+  /** Impacto con payload en el cuerpo (cambio de tipo: la lista de guías puede ser larga). */
+  @Post('impact')
+  impactPost(@Body() body: { type: ApprovalType; targetId: string; payload?: ConsolidatedActionPayload }) {
+    return this.service.getImpact(body.type, body.targetId, body.payload ?? {});
+  }
+
+  /** Para el diálogo "Cambiar tipo": guías del consolidado por tipo y estatus. */
+  @Get('consolidated/:id/type-options')
+  typeOptions(@Param('id') id: string) {
+    return this.service.typeOptions(id);
+  }
+
   @Post()
   create(
     @Body() body: { type: ApprovalType; targetId: string; justification?: string; payload?: ConsolidatedActionPayload },

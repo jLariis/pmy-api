@@ -14,7 +14,7 @@ export class ConsolidatedChangeLog {
   @Column({ type: 'char', length: 36, nullable: true })
   approvalRequestId: string | null;
 
-  /** delete_consolidado | change_subsidiary_consolidado | change_date_consolidado */
+  /** delete_consolidado | change_subsidiary_consolidado | change_date_consolidado | change_type_consolidado */
   @Column({ type: 'varchar', length: 40 })
   action: string;
 

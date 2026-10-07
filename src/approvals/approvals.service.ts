@@ -187,6 +187,12 @@ export class ApprovalsService {
     const payload: ConsolidatedActionPayload = {};
     if (type === 'change_subsidiary_consolidado') payload.newSubsidiaryId = input.payload?.newSubsidiaryId;
     if (type === 'change_date_consolidado') payload.newDate = input.payload?.newDate;
+    if (type === 'change_type_consolidado') {
+      payload.toType = input.payload?.toType;
+      if (input.payload?.trackingNumbers?.length) payload.trackingNumbers = input.payload.trackingNumbers.map((t) => String(t).trim()).filter(Boolean);
+      if (input.payload?.targetConsolidatedId) payload.targetConsolidatedId = input.payload.targetConsolidatedId;
+      if (input.payload?.isHalfTon !== undefined) payload.isHalfTon = !!input.payload.isHalfTon;
+    }
 
     // Valida y calcula el impacto (si no se puede, el mensaje sale de aquí).
     const impact = await this.consolidatedActions.impact(type, targetId, payload);
@@ -362,6 +368,10 @@ export class ApprovalsService {
       ? await this.changeLogRepo.find({ where: { approvalRequestId: In(ids) }, order: { createdAt: 'DESC' }, take: 5000 })
       : [];
     return { requests, changes };
+  }
+
+  typeOptions(targetId: string) {
+    return this.consolidatedActions.typeOptions(targetId);
   }
 
   async getImpact(type: ApprovalType, targetId: string, payload?: ConsolidatedActionPayload) {

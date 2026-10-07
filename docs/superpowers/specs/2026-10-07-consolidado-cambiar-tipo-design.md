@@ -13,6 +13,7 @@ registros, consolidado, carga, cobros COD e ingresos.
 ## Decisiones (aprobadas)
 
 - **Alcance:** consolidado completo **o** guías elegidas.
+- **Tipo del consolidado:** `consolidated.type` NO se toca: no distingue la F2 (la subida F2 crea `ordinario`); el tipo real es si la fila trae paquetes o cargas.
 - **Registros:** nunca se borra ni se clona historial. El original queda `active=0` con su historial;
   nace el registro en la otra tabla con los mismos datos y su **estatus actual**, más UNA línea de
   historial "Cambio de tipo …" fechada al último evento del original.
@@ -43,7 +44,7 @@ Tipo nuevo `type: 'change_type_consolidado'`, payload:
    - si no, se crea `charge` (consNumber, sucursal, `chargeDate` = día del consolidado, `isHalfTon`)
      con su ingreso de carga: tarifa de la sucursal, domingo/festivo, segundo a bordo y "solo la 1ª
      carga del día" (mismas funciones que la subida F2).
-5. Consolidado completo: `consolidated.type` → `carga`.
+5. Consolidado completo: las guías se quedan en la misma fila de consolidado.
 
 ### B carga → paquete
 
@@ -54,7 +55,7 @@ Tipo nuevo `type: 'change_type_consolidado'`, payload:
 3. Ingreso por paquete: si el estatus actual es cobrable (entregado / rechazado / devuelto / cliente no
    disponible — `deriveRepairIncome`) se crea, fechado al último evento, costo por paquete de la
    sucursal (FedEx/DHL). Los que siguen en tránsito cobran normal en su cierre.
-4. Consolidado completo: la carga y su ingreso se anulan (`active=0`) y `consolidated.type` →
+4. Consolidado completo: la carga y su ingreso se anulan (`active=0`) (el consolidado se queda igual).
    `ordinario`. Por guías la carga sigue (cobró por el resto).
 
 ### Avisos (no bloquean)
@@ -66,7 +67,7 @@ En ruta ahora · salió a ruta antes · guía ya existe activa en la tabla desti
 
 - `consolidated-type.plan.ts` (puro): recibe la familia extendida (guías con datos completos, último
   evento, pago, ruta) + tarifa + destino y devuelve `ActionPlan` con `changes` (UPDATE, lista blanca
-  ampliada: `type`, `numberOfPackages`, `shipmentId`, `chargeShipmentId`, `paymentId`) **e `inserts`**
+  ampliada: `shipmentId`, `chargeShipmentId`, `paymentId`) **e `inserts`**
   (filas nuevas con id ya generado: `shipment`, `charge_shipment`, `charge`, `income`,
   `shipment_status`, `package_dispatch_history`).
 - `ConsolidatedActionsExecutor.apply` aplica `inserts` (lista blanca de tablas) antes de los UPDATE;

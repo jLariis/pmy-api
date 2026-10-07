@@ -6,12 +6,22 @@ import { isSundayOrMexHoliday } from 'src/shipments/sunday-holiday.util';
 import { toHermosilloDateString } from 'src/common/utils';
 import { ConsolidatedFamilyLoader, familyKey } from './consolidated-family.loader';
 import { ConsolidatedActionsExecutor } from './consolidated-actions.executor';
+import { randomUUID } from 'crypto';
 import { planChangeDate, planChangeSubsidiary, planDelete } from './consolidated-actions.plan';
+import { planChangeType, TargetType } from './consolidated-type.plan';
 import { ActionPlan, ConsolidatedFamily, PlanSummary } from './consolidated-actions.types';
 
 export interface ConsolidatedActionPayload {
   newSubsidiaryId?: string;
   newDate?: string;
+  /** Cambio de tipo: a carga (F2) o a paquete (master). */
+  toType?: TargetType;
+  /** Solo estas guías (vacío = consolidado completo). */
+  trackingNumbers?: string[];
+  /** Consolidado al que pasan las guías elegidas (p. ej. la F2 del mismo correo). */
+  targetConsolidatedId?: string;
+  /** Si se crea carga nueva: ¿es de 1.5 ton? */
+  isHalfTon?: boolean;
 }
 
 /** Impacto que ve quien pide y quien autoriza (antes → después). */
@@ -37,6 +47,7 @@ const ACTION_LABEL: Partial<Record<ApprovalType, string>> = {
   delete_consolidado: 'eliminar',
   change_subsidiary_consolidado: 'cambiar de sucursal',
   change_date_consolidado: 'cambiar la fecha de',
+  change_type_consolidado: 'cambiar el tipo de',
 };
 
 /**
@@ -89,6 +100,14 @@ export class ConsolidatedActionsService {
       }
       return;
     }
+    if (type === 'change_type_consolidado') {
+      if (payload?.toType !== 'carga' && payload?.toType !== 'paquete') throw new BadRequestException('Elige si pasa a carga (F2) o a paquete.');
+      const source = payload.toType === 'carga' ? f.shipments : f.chargeShipments;
+      if (!source.length) {
+        throw new BadRequestException(payload.toType === 'carga' ? 'Este consolidado no tiene paquetes que pasar a carga.' : 'Este consolidado no tiene cargas que pasar a paquete.');
+      }
+      return;
+    }
     throw new BadRequestException('Acción no válida para un consolidado.');
   }
 
@@ -97,6 +116,7 @@ export class ConsolidatedActionsService {
     f: ConsolidatedFamily,
     payload: ConsolidatedActionPayload,
     manager?: EntityManager,
+    actorId: string | null = null,
   ): Promise<{ plan: ActionPlan; change: ConsolidatedImpact['change']; approverSubsidiaryId: string; originName: string }> {
     const origin = await this.loader.loadTariff(f.subsidiaryId, manager);
     if (type === 'delete_consolidado') {
@@ -109,6 +129,42 @@ export class ConsolidatedActionsService {
         plan: planChangeSubsidiary(f, dest, (day) => isSundayOrMexHoliday(day, extra)),
         change: { from: origin.name, to: dest.name },
         approverSubsidiaryId: dest.id,
+        originName: origin.name,
+      };
+    }
+    if (type === 'change_type_consolidado') {
+      const toType = payload.toType!;
+      const whole = !payload.trackingNumbers?.length;
+      const d = await this.loader.loadTypeDetails(f, { toType, trackingNumbers: payload.trackingNumbers, targetConsolidatedId: payload.targetConsolidatedId }, manager);
+      if (d.missing.length) {
+        const shown = d.missing.slice(0, 5).join(', ');
+        throw new BadRequestException(`Estas guías no están como ${toType === 'carga' ? 'paquete' : 'carga'} en el consolidado: ${shown}${d.missing.length > 5 ? '…' : ''}`);
+      }
+      if (!d.packages.length) throw new BadRequestException('No hay guías que cambiar.');
+      const destDay = (d.destConsolidated ?? d.familyConsolidated[0])?.date.toISOString().slice(0, 10) ?? toHermosilloDateString(new Date());
+      const other = toType === 'carga' ? await this.loader.otherChargeIncomeOnDay(f.subsidiaryId, destDay, f.charges.map((c) => c.id), manager) : false;
+      const plan = planChangeType({
+        family: f,
+        familyConsolidated: d.familyConsolidated,
+        toType,
+        packages: d.packages,
+        whole,
+        destConsolidated: d.destConsolidated,
+        destChargeId: d.destChargeId,
+        alreadyInDest: d.alreadyInDest,
+        tariff: origin,
+        isHalfTon: d.familyIsHalfTon ?? !!payload.isHalfTon,
+        isSundayHoliday: isSundayOrMexHoliday(destDay, extra),
+        otherChargeIncomeOnDay: other,
+        userId: actorId,
+        now: new Date(),
+        newId: randomUUID,
+      });
+      const what = whole ? '' : ` (${d.packages.length} guía${d.packages.length === 1 ? '' : 's'})`;
+      return {
+        plan,
+        change: toType === 'carga' ? { from: `Paquete${what}`, to: `Carga F2${d.destConsolidated && !whole ? ` ${d.destConsolidated.consNumber}` : ''}` } : { from: `Carga F2${what}`, to: 'Paquete' },
+        approverSubsidiaryId: f.subsidiaryId,
         originName: origin.name,
       };
     }
@@ -146,6 +202,23 @@ export class ConsolidatedActionsService {
     };
   }
 
+  /** Guías del consolidado (paquete y carga) para elegir en "Cambiar tipo". */
+  async typeOptions(targetId: string) {
+    const f = await this.loader.load(targetId);
+    const q = this.dataSource.manager;
+    const statusOf = async (table: 'shipment' | 'charge_shipment', ids: string[]) =>
+      ids.length ? new Map<string, string>((await q.query(`SELECT id, status FROM \`${table}\` WHERE id IN (?)`, [ids])).map((r: any) => [r.id, r.status])) : new Map<string, string>();
+    const [ss, cs] = await Promise.all([statusOf('shipment', f.shipments.map((s) => s.id)), statusOf('charge_shipment', f.chargeShipments.map((s) => s.id))]);
+    return {
+      consNumber: f.consNumber,
+      subsidiaryId: f.subsidiaryId,
+      packages: f.shipments.map((s) => ({ trackingNumber: s.trackingNumber, status: ss.get(s.id) ?? null })),
+      charges: f.chargeShipments.map((s) => ({ trackingNumber: s.trackingNumber, status: cs.get(s.id) ?? null })),
+      hasCharge: f.charges.length > 0,
+      isHalfTon: f.charges[0]?.isHalfTon ?? null,
+    };
+  }
+
   /** Impacto para mostrar antes de pedir (también valida: si no se puede, avisa desde aquí). */
   async impact(type: ApprovalType, targetId: string, payload: ConsolidatedActionPayload = {}): Promise<ConsolidatedImpact> {
     const f = await this.loader.load(targetId);
@@ -163,7 +236,7 @@ export class ConsolidatedActionsService {
       const payload: ConsolidatedActionPayload = req.payload ?? {};
       const f = await this.loader.load(req.targetId, manager);
       await this.validate(req.type, f, payload, manager);
-      const built = await this.buildPlan(req.type, f, payload, manager);
+      const built = await this.buildPlan(req.type, f, payload, manager, actor.userId ?? null);
       const reasonBase = `${ConsolidatedActionsService.actionLabel(req.type)} consolidado ${f.consNumber}`;
       await this.executor.apply(manager, built.plan, {
         requestId: req.id,

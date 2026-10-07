@@ -2,7 +2,18 @@
  * Tipos de las acciones sobre consolidado con autorización. La "familia" son todas las filas
  * `consolidated` con el mismo consNumber + sucursal, más todo lo que cuelga de ellas.
  */
-export type ChangeEntity = 'consolidated' | 'shipment' | 'charge_shipment' | 'charge' | 'income' | 'devolution';
+export type ChangeEntity = 'consolidated' | 'shipment' | 'charge_shipment' | 'charge' | 'income' | 'devolution' | 'payment';
+
+/** Tablas donde el plan puede crear filas nuevas (cambio de tipo). */
+export type InsertTable = 'shipment' | 'charge_shipment' | 'charge' | 'income' | 'shipment_status' | 'package_dispatch_history' | 'consolidated';
+
+/** Fila nueva con su id ya generado: `values` son las columnas tal cual van a la BD. */
+export interface RowInsert {
+  table: InsertTable;
+  id: string;
+  trackingNumber: string | null;
+  values: Record<string, unknown>;
+}
 
 export interface FamilyConsolidated { id: string; consNumber: string; subsidiaryId: string; date: Date }
 export interface FamilyPackage { id: string; trackingNumber: string; subsidiaryId: string | null; shipmentType?: string | null }
@@ -73,6 +84,9 @@ export interface PlanSummary {
   incomesMoved: number;
   incomesRecosted: number;
   incomesRedated: number;
+  /** Cambio de tipo: guías que pasan a la otra tabla e ingresos que se crean. */
+  converted?: number;
+  incomesCreated?: number;
   /** Suma de ingresos activos de la familia antes del cambio. */
   amountBefore: number;
   /** Suma de ingresos activos de la familia después del cambio. */
@@ -81,6 +95,8 @@ export interface PlanSummary {
 
 export interface ActionPlan {
   changes: FieldChange[];
+  /** Filas nuevas (solo cambio de tipo). Se insertan antes de los UPDATE. */
+  inserts?: RowInsert[];
   summary: PlanSummary;
   warnings: string[];
 }
