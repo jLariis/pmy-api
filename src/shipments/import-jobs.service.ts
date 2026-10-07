@@ -20,6 +20,7 @@ import * as XLSX from 'xlsx';
 import { ShipmentsService } from './shipments.service';
 import { CreateImportJobDto, PreviewImportDto } from './import-jobs.dto';
 import { CanonicalRow } from './import-jobs.types';
+import { commitInstantHermosillo, readCommitCells, refIsoOf, todayDefaultCommitHermosillo } from 'src/utils/commit-date.util';
 import { parsePastedRows, hashRows, classifyMasterRows } from './import-jobs.util';
 
 const IDEMPOTENCY_WINDOW_MS = 30 * 60 * 1000;
@@ -208,8 +209,10 @@ export class ImportJobsService {
           const prepared: { entity: any; payment: any | null; isHighValue: boolean }[] = [];
           for (const row of batch) {
             try {
-              const commit = row.commitDate && row.commitTime ? new Date(`${row.commitDate}T${row.commitTime}`) : new Date();
-              const commitDateTime = isNaN(commit.getTime()) ? now : commit;
+              // Vencimiento en hora de Hermosillo; sin fecha → hoy 18:00 (antes "ahora" → vencida al subir).
+              const commit = readCommitCells(row.commitDate, row.commitTime, refIsoOf(job.consDate));
+              const commitDateTime = (commit.commitDate && commitInstantHermosillo(commit.commitDate, commit.commitTime))
+                || todayDefaultCommitHermosillo(now);
               const entity = qr.manager.create(Shipment, {
                 trackingNumber: row.trackingNumber, shipmentType: ShipmentType.FEDEX,
                 recipientName: row.recipientName || 'N/A', recipientAddress: row.recipientAddress || 'N/A',

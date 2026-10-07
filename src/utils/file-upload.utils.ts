@@ -1,5 +1,6 @@
 import * as XLSX from 'xlsx';
 import { getHeaderIndexMap } from './header-detector.util';
+import { commitIssueOf, readCommitCells } from './commit-date.util';
 import { ParsedShipmentDto } from 'src/shipments/dto/parsed-shipment.dto';
 import { Priority } from 'src/common/enums/priority.enum';
 import { Payment } from 'src/entities/payment.entity';
@@ -9,6 +10,8 @@ import { PaymentTypeEnum } from 'src/common/enums/payment-type.enum';
 interface ParseOptions {
     fileName: string;
     sheetName?: string;
+    /** Fecha del consolidado (`yyyy-MM-dd`): desempata vencimientos D/M vs M/D. */
+    refDate?: string | null;
 }
 
 /**
@@ -48,35 +51,6 @@ export function getPriority(commitDate: Date): Priority {
     if (diff <= 0) return Priority.ALTA;
     if (diff <= 3) return Priority.MEDIA;
     return Priority.BAJA;
-}
-
-function formatExcelDateToMySQL(dateStr?: string): string | null {
-    if (!dateStr || typeof dateStr !== 'string') return null;
-    const parts = dateStr.split('/');
-    if (parts.length !== 3) return null;
-    const [month, day, year] = parts;
-    return `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
-}
-
-function formatExcelTimeToMySQL(timeStr?: string): string {
-  if (!timeStr) {
-    return '18:00:00'; // valor por defecto si no viene nada
-  }
-
-  const timeNumber = typeof timeStr === 'string' ? parseFloat(timeStr) : timeStr;
-
-  // Si no es un número válido, regresa 18:00:00
-  if (isNaN(timeNumber)) {
-    return '18:00:00';
-  }
-
-  // Convierte el número de Excel a milisegundos desde el inicio del día
-  const totalSeconds = Math.round(timeNumber * 86400);
-  const hours = Math.floor(totalSeconds / 3600).toString().padStart(2, '0');
-  const minutes = Math.floor((totalSeconds % 3600) / 60).toString().padStart(2, '0');
-  const seconds = (totalSeconds % 60).toString().padStart(2, '0');
-
-  return `${hours}:${minutes}:${seconds}`;
 }
 
 /**
@@ -190,8 +164,7 @@ export function parseDynamicSheet(workbook: XLSX.WorkBook, options: ParseOptions
     const dataRows = allRows.slice(headerRowIndex + 1);
 
     return dataRows.map(row => {
-        const rawDate = row[headerMap['commitDate']];
-        const commitDate = formatExcelDateToMySQL(rawDate) ?? null;
+        const commit = readCommitCells(row[headerMap['commitDate']], row[headerMap['commitTime']], options.refDate);
         const recipientCity = row[headerMap['recipientCity']] ?? null;
         const payment = row[headerMap['cod']]
 
@@ -202,8 +175,9 @@ export function parseDynamicSheet(workbook: XLSX.WorkBook, options: ParseOptions
             recipientAddress: row[headerMap['recipientAddress']] ?? 'Sin Dirección',
             recipientCity,
             recipientZip: row[headerMap['recipientZip']] ?? 'N/A',
-            commitDate: commitDate,
-            commitTime: formatExcelTimeToMySQL(row[headerMap['commitTime']]),
+            commitDate: commit.commitDate,
+            commitTime: commit.commitTime,
+            commitIssue: commitIssueOf(commit),
             recipientPhone: phone || 'Sin Teléfono',
             payment,
             consNumber: row[headerMap['consNumber']] ?? null,
@@ -212,7 +186,7 @@ export function parseDynamicSheet(workbook: XLSX.WorkBook, options: ParseOptions
     }).filter(r => String(r.trackingNumber ?? '').trim() !== ''); // ignora filas sin guía (basura / 2ª hoja)
 }
 
-export function parseDynamicFileF2(sheet: XLSX.Sheet) {    
+export function parseDynamicFileF2(sheet: XLSX.Sheet, refDate?: string | null) {    
     const allRows: any[][] = XLSX.utils.sheet_to_json(sheet, {
         header: 1,
         range: 0,
@@ -223,17 +197,16 @@ export function parseDynamicFileF2(sheet: XLSX.Sheet) {
     const dataRows = allRows.slice(headerRowIndex + 1);
 
     return dataRows.map(row => {
-        const rawDate = row[headerMap['commitDate']];
-        const commitDate = formatExcelDateToMySQL(rawDate) ?? null;
-
+        const commit = readCommitCells(row[headerMap['commitDate']], row[headerMap['commitTime']], refDate);
 
         return {
             trackingNumber: normalizeTrackingValue(row[headerMap['trackingNumber']]),
             recipientName: row[headerMap['recipientName']] ?? 'Sin Nombre',
             recipientAddress: row[headerMap['recipientAddress']] ?? 'Sin Dirección',
             recipientZip: row[headerMap['recipientZip']] ?? 'N/A',
-            commitDate: commitDate, // ISO format string o null
-            commitTime: formatExcelTimeToMySQL(row[headerMap['commitTime']]),
+            commitDate: commit.commitDate, // yyyy-MM-dd o null
+            commitTime: commit.commitTime,
+            commitIssue: commitIssueOf(commit),
             recipientPhone: normalizePhoneValue(row[headerMap['recipientPhone']]),
             recipientCity: row[headerMap['recipientCity']] ?? ''
         };

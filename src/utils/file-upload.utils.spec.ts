@@ -124,6 +124,32 @@ describe('parseDynamicSheet', () => {
     expect(() => parseDynamicSheet(wb, { fileName: 'x.xlsx' })).toThrow(/columnas necesarias/i);
   });
 
+  it('fecha como celda real de Excel (número) ya NO se descarta (caso Loreto 305821676711)', () => {
+    const r = row('111111111111');
+    r[5] = 46301 as any;   // 6-oct-2026 como fecha de Excel
+    r[6] = 0.75 as any;    // 18:00 como hora de Excel
+    const res = parseDynamicSheet(makeWorkbook({ Datos: [HEADERS, r] }), { fileName: 'x.xlsx' });
+    expect(res[0]).toMatchObject({ commitDate: '2026-10-06', commitTime: '18:00:00', commitIssue: null });
+  });
+
+  it('hora en texto no tira la fecha (caso pegado/correo Cabos 305822137864)', () => {
+    const wb = makeWorkbook({ Datos: [HEADERS, row('222222222222', { date: '10/7/2026', time: '6:00 PM' })] });
+    const res = parseDynamicSheet(wb, { fileName: 'x.xlsx' });
+    expect(res[0]).toMatchObject({ commitDate: '2026-10-07', commitTime: '18:00:00' });
+  });
+
+  it('fecha D/M se resuelve con la fecha del consolidado', () => {
+    const wb = makeWorkbook({ Datos: [HEADERS, row('333333333333', { date: '07/10/2026' })] });
+    const res = parseDynamicSheet(wb, { fileName: 'x.xlsx', refDate: '2026-10-06' });
+    expect(res[0]).toMatchObject({ commitDate: '2026-10-07', commitIssue: null });
+  });
+
+  it('marca sin fecha / fecha inválida', () => {
+    const wb = makeWorkbook({ Datos: [HEADERS, row('444444444444', { date: '' }), row('555555555555', { date: 'pendiente' })] });
+    const res = parseDynamicSheet(wb, { fileName: 'x.xlsx' });
+    expect(res.map((x) => x.commitIssue)).toEqual(['sin_fecha', 'fecha_invalida']);
+  });
+
   it('default de campos faltantes', () => {
     const headersMin = ['Tracking Number'];
     const wb = makeWorkbook({ Datos: [headersMin, ['555555555555']] });

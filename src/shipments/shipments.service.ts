@@ -10,6 +10,7 @@ import { FINAL_SHIPMENT_STATUSES, isFinalShipmentStatus, ShipmentStatusType, TER
 import * as XLSX from 'xlsx';
 import { FedexService } from './fedex.service';
 import { ShipmentStatus } from 'src/entities/shipment-status.entity';
+import { commitInstantHermosillo, refIsoOf, summarizeCommitDates, todayDefaultCommitHermosillo } from 'src/utils/commit-date.util';
 import { getPriority, parseDynamicFileF2, parseDynamicHighValue, parseDynamicSheet, parseDynamicSheetCharge, parseDynamicSheetDHL, pickSheetWithHeaders, parsePaymentCell } from 'src/utils/file-upload.utils';
 import { combineDhlWorkbook, combinedToDhlShipmentDto, isThreeSheetDhlWorkbook } from 'src/utils/dhl-excel.util';
 import { scanEventsFilter } from 'src/utils/scan-events-filter';
@@ -869,7 +870,7 @@ export class ShipmentsService {
       // 1. Lectura de Excel
       const workbook = XLSX.read(buffer, { type: 'buffer', cellDates: true, cellText: false });
       const { sheet } = pickSheetWithHeaders(workbook); // multi-hoja: toma la hoja con datos
-      const shipmentsToProcess = parseDynamicFileF2(sheet);
+      const shipmentsToProcess = parseDynamicFileF2(sheet, refIsoOf(consDate));
 
       if (shipmentsToProcess.length === 0) return { message: 'Archivo vacío.' };
 
@@ -965,14 +966,10 @@ export class ShipmentsService {
             // --- ESCENARIO B: NO EXISTE -> INSERTAR DIRECTO ---
             // commitDateTime (columna NOT NULL): del Excel o fallback hoy 18:00.
             let csCommitDateTime: Date | undefined;
-            if (data.commitDate && data.commitTime) {
-              const d = new Date(`${data.commitDate}T${data.commitTime}`);
-              if (!isNaN(d.getTime())) csCommitDateTime = d;
+            if (data.commitDate) {
+              csCommitDateTime = commitInstantHermosillo(data.commitDate, data.commitTime) ?? undefined;
             }
-            if (!csCommitDateTime || isNaN(csCommitDateTime.getTime())) {
-              csCommitDateTime = new Date();
-              csCommitDateTime.setHours(18, 0, 0, 0);
-            }
+            if (!csCommitDateTime) csCommitDateTime = todayDefaultCommitHermosillo();
 
             // Lazy: crea/reutiliza el consolidado en la primera guía nueva del archivo.
             if (!chargeConsolidated) {
@@ -1103,7 +1100,7 @@ export class ShipmentsService {
       const { sheet } = pickSheetWithHeaders(workbook); // multi-hoja: toma la hoja con datos
 
       console.log("🟢 Step 2: Parsing file data");
-      const chargeShipmentsToSave = parseDynamicFileF2(sheet);
+      const chargeShipmentsToSave = parseDynamicFileF2(sheet, refIsoOf(consDate));
       console.log("📦 Found", chargeShipmentsToSave.length, "shipments to save");
 
       if (chargeShipmentsToSave.length === 0) {
@@ -1181,14 +1178,10 @@ export class ShipmentsService {
           // que en shipments: del Excel (date+time) y, si no viene/ inválido,
           // fallback a hoy 18:00.
           let commitDateTime: Date | undefined;
-          if (shipment.commitDate && shipment.commitTime) {
-            const d = new Date(`${shipment.commitDate}T${shipment.commitTime}`);
-            if (!isNaN(d.getTime())) commitDateTime = d;
+          if (shipment.commitDate) {
+            commitDateTime = commitInstantHermosillo(shipment.commitDate, shipment.commitTime) ?? undefined;
           }
-          if (!commitDateTime || isNaN(commitDateTime.getTime())) {
-            commitDateTime = new Date();
-            commitDateTime.setHours(18, 0, 0, 0);
-          }
+          if (!commitDateTime) commitDateTime = todayDefaultCommitHermosillo();
 
           const chargeShipment = this.chargeShipmentRepository.create({
             ...shipment,
@@ -2737,7 +2730,7 @@ export class ShipmentsService {
     let shipmentsToSave: any[] = [];
     try {
         const workbook = XLSX.read(file.buffer, { type: 'buffer' });
-        shipmentsToSave = parseDynamicSheet(workbook, { fileName: file.originalname });
+        shipmentsToSave = parseDynamicSheet(workbook, { fileName: file.originalname, refDate: normalizedDateStr });
         if (!shipmentsToSave || shipmentsToSave.length === 0) throw new Error('El archivo no contiene filas de datos.');
     } catch (excelError) {
         throw new BadRequestException(`Error en formato de Excel: ${excelError.message}`);
@@ -2988,17 +2981,15 @@ export class ShipmentsService {
 
     // 4. Determinación de Fecha de Compromiso (TimeZone Hermosillo)
     let finalCommitDate: Date;
-    if (shipment.commitDate && shipment.commitTime) {
-      try {
-        const timeZone = 'America/Hermosillo';
-        finalCommitDate = toDate(`${shipment.commitDate}T${shipment.commitTime}`, { timeZone });
-      } catch (e) { /* fallback if custom date fails */ }
+    if (shipment.commitDate) {
+      finalCommitDate = commitInstantHermosillo(shipment.commitDate, shipment.commitTime) ?? undefined;
     }
     if (!finalCommitDate || isNaN(finalCommitDate.getTime())) {
       const rawFedexDate = trackResult?.standardTransitTimeWindow?.window?.ends;
       if (rawFedexDate) finalCommitDate = parse(rawFedexDate, "yyyy-MM-dd'T'HH:mm:ssXXX", new Date());
     }
-    if (!finalCommitDate || isNaN(finalCommitDate.getTime())) finalCommitDate = new Date();
+    // Sin fecha en el archivo ni en FedEx: hoy 18:00 Hermosillo (antes "ahora" → vencida al subir).
+    if (!finalCommitDate || isNaN(finalCommitDate.getTime())) finalCommitDate = todayDefaultCommitHermosillo();
 
     try {
       // 5. Mapeo de Entidad Shipment
@@ -3435,7 +3426,7 @@ export class ShipmentsService {
     let parseError: string | null = null;
     try {
       const wb = XLSX.read(file.buffer, { type: 'buffer' });
-      rows = parseDynamicSheet(wb, { fileName: file.originalname }) || [];
+      rows = parseDynamicSheet(wb, { fileName: file.originalname, refDate: refIsoOf(date) }) || [];
     } catch (e: any) {
       parseError = e?.message ?? 'No se pudo leer el archivo.';
     }
@@ -3446,6 +3437,8 @@ export class ShipmentsService {
     const dupInFile = new Set<string>();
     withTn.forEach((t) => { if (seen.has(t)) dupInFile.add(t); else seen.add(t); });
     const uniqueTns = [...seen];
+    // Vencimientos leídos del archivo: avisa sin fecha / inválidas / antes del consolidado.
+    const commitCheck = summarizeCommitDates(rows, refIsoOf(date));
 
     // --- F2 / CARGAS: deduplica contra `charge_shipment` (no contra `shipment`) por
     // consNumber+sucursal, igual que el flujo de escritura (findExistingChargeTrackings).
@@ -3467,6 +3460,7 @@ export class ShipmentsService {
         newCount: newF2.length,          // cargas a crear
         recycledCount: 0,                // F2 no maneja "reingreso"
         alreadyImportedCount: alreadyF2.length, // ya existen como carga en este consolidado
+        commitCheck,
         otherSubsidiary, // si no es null, la subida se bloqueará
         consNumberExists: exactConsMatchF2 ? {
           id: exactConsMatchF2.id,
@@ -3540,6 +3534,7 @@ export class ShipmentsService {
       alreadyImportedCount: trulyIgnored.length, // Guías que sí se van a ignorar
       alreadyF2Count: f2Set.size, // Ya son carga F2 de este consolidado: no se agregan como paquete
       otherSubsidiary, // si no es null, la subida se bloqueará
+      commitCheck,
 
       consNumberExists: matchedConsolidate ? {
         id: matchedConsolidate.id, 
