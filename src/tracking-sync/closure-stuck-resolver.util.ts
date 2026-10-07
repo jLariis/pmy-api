@@ -138,3 +138,28 @@ export function shouldForceFedexAtClosure(input: StuckResolveInput): boolean {
   if (input.currentStatus !== ShipmentStatusType.EN_RUTA) return false;
   return isResolvedFedexOutcome(input.routeDayStatus);
 }
+
+/**
+ * Excepción por sucursal (`subsidiary.closureAcceptsAnyDayDelivery`, hoy solo Loreto, decisión
+ * del usuario 2026-10-07): si la guía YA está ENTREGADA, el cierre la toma como entregada aunque
+ * la entrega haya sido ANTES del día de la ruta (Loreto saca a ruta paquetes que FedEx ya marcó
+ * entregados) o DESPUÉS (ruta capturada en la tarde y entregada al día siguiente). Solo
+ * entregados: una devolución de otro día sigue sin cambiar el cierre (regla del día de la ruta).
+ *
+ * Devuelve el estatus del cierre (el del día de la ruta si no aplica la excepción).
+ */
+export function applyAnyDayDeliveryToClosure(
+  routeDay: RouteDayFedexEvent | null,
+  live: { status?: ShipmentStatusType | string | null; history?: ClosureHistoryEntry[] | null },
+  enabled: boolean,
+): { status: ShipmentStatusType; occurredAt: Date | null; exceptionCode: string | null } | null {
+  if (!enabled || live.status !== ShipmentStatusType.ENTREGADO) return routeDay;
+  if (routeDay?.status === ShipmentStatusType.ENTREGADO) return routeDay;
+  let deliveredAt: Date | null = null;
+  for (const h of live.history ?? []) {
+    if (h?.status !== ShipmentStatusType.ENTREGADO || !h.timestamp) continue;
+    const t = h.timestamp instanceof Date ? h.timestamp : new Date(h.timestamp);
+    if (!isNaN(t.getTime()) && (!deliveredAt || t > deliveredAt)) deliveredAt = t;
+  }
+  return { status: ShipmentStatusType.ENTREGADO, occurredAt: deliveredAt, exceptionCode: null };
+}

@@ -255,6 +255,15 @@ export class Subsidiary {
   allowRouteClosureWithOtherStatus: boolean;
 
   /**
+   * Cierre de ruta: si está activo, una guía YA ENTREGADA cuenta como entregada en el cierre
+   * aunque la entrega haya sido antes o después del día de la ruta (solo entregados; ver
+   * applyAnyDayDeliveryToClosure). Default false = regla del día de la ruta. Se siembra en
+   * true solo para Loreto (no Bodega Loreto) en la migración 1786000000095.
+   */
+  @Column({ default: false })
+  closureAcceptsAnyDayDelivery: boolean;
+
+  /**
    * Encargado/Supervisor que autoriza los borrados (consolidado / salida a ruta)
    * de esta sucursal. Es un usuario registrado, configurable en Configuración.
    * Si es null, el aprobador cae al primer superadmin activo (Admin Principal).

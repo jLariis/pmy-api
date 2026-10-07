@@ -28,7 +28,7 @@ import { EmailLogService, EmailFile } from 'src/email-log/email-log.service';
 import { EmailStatus } from 'src/common/enums/email-status.enum';
 import { EmailLog } from 'src/entities/email-log.entity';
 import { hermosilloDayStartFromInstant } from 'src/common/utils';
-import { resolveRouteDayClosureStatus } from 'src/tracking-sync/closure-stuck-resolver.util';
+import { applyAnyDayDeliveryToClosure, resolveRouteDayClosureStatus } from 'src/tracking-sync/closure-stuck-resolver.util';
 
 /** Módulo con el que se etiquetan bitácora y adjuntos de correo de salidas a ruta. */
 const EMAIL_MODULE = 'package_dispatch';
@@ -1597,13 +1597,20 @@ export class PackageDispatchService {
     // pasó después (otra salida, devolución días después) no cambia el cierre de ESTA ruta
     // (caso 383934486493). `status` sigue siendo el vivo; el cierre usa `routeDayStatus`.
     const routeAnchor = packageDispatch.routeDate ?? packageDispatch.createdAt ?? null;
+    // Excepción por sucursal (hoy Loreto): una guía ya ENTREGADA cuenta como entregada aunque la
+    // entrega no haya sido el día de la ruta.
+    const acceptAnyDayDelivery = !!packageDispatch.subsidiary?.closureAcceptsAnyDayDelivery;
 
     // Marca de reasignación: el envío ya no apunta a ESTA salida (su `routeId`/dispatch
     // actual es otro, o null). `currentDispatchTrackingNumber` = folio de la ruta nueva.
     const annotate = (pkg: any) => {
       const currentDispatchId = pkg?.packageDispatch?.id ?? null;
       const movedToAnotherRoute = !!currentDispatchId && currentDispatchId !== packageDispatchId;
-      const routeDay = resolveRouteDayClosureStatus(pkg?.statusHistory, routeAnchor);
+      const routeDay = applyAnyDayDeliveryToClosure(
+        resolveRouteDayClosureStatus(pkg?.statusHistory, routeAnchor),
+        { status: pkg?.status, history: pkg?.statusHistory },
+        acceptAnyDayDelivery,
+      );
       return {
         ...pkg,
         routeDayStatus: routeDay?.status ?? null,

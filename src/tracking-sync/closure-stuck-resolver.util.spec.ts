@@ -1,5 +1,6 @@
 import { ShipmentStatusType } from 'src/common/enums/shipment-status-type.enum';
 import {
+  applyAnyDayDeliveryToClosure,
   isResolvedFedexOutcome,
   resolveRouteDayClosureStatus,
   routeDayOf,
@@ -163,5 +164,44 @@ describe('resolveRouteDayClosureStatus — estatus del cierre = hasta el último
     expect(resolveRouteDayClosureStatus(history, '2026-10-04')).toBeNull();
     expect(resolveRouteDayClosureStatus([], '2026-10-03')).toBeNull();
     expect(resolveRouteDayClosureStatus(undefined, '2026-10-03')).toBeNull();
+  });
+});
+
+// Ruta 152171165233 de Loreto (routeDate 06-oct, creada ese día 19:33 Hermosillo).
+describe('applyAnyDayDeliveryToClosure (solo sucursales con la opción, p. ej. Loreto)', () => {
+  const S = ShipmentStatusType;
+  const ROUTE = '2026-10-06';
+  const enRuta = { status: S.EN_RUTA, timestamp: '2026-10-07T02:33:00.000Z' };
+
+  it('entregado ANTES de la ruta (30-sep): el cierre lo toma como entregado', () => {
+    const history = [{ status: S.ENTREGADO, timestamp: '2026-09-30T22:35:00.000Z' }, enRuta];
+    const routeDay = resolveRouteDayClosureStatus(history, ROUTE);
+    expect(routeDay?.status).toBe(S.EN_RUTA);
+    const r = applyAnyDayDeliveryToClosure(routeDay, { status: S.ENTREGADO, history }, true);
+    expect(r?.status).toBe(S.ENTREGADO);
+    expect(r?.occurredAt?.toISOString()).toBe('2026-09-30T22:35:00.000Z');
+  });
+
+  it('entregado al DÍA SIGUIENTE de la ruta (07-oct): el cierre lo toma como entregado', () => {
+    const history = [enRuta, { status: S.ENTREGADO, timestamp: '2026-10-07T16:56:00.000Z' }];
+    const r = applyAnyDayDeliveryToClosure(resolveRouteDayClosureStatus(history, ROUTE), { status: S.ENTREGADO, history }, true);
+    expect(r?.status).toBe(S.ENTREGADO);
+  });
+
+  it('sucursal sin la opción: se queda la regla del día de la ruta', () => {
+    const history = [{ status: S.ENTREGADO, timestamp: '2026-09-30T22:35:00.000Z' }, enRuta];
+    const routeDay = resolveRouteDayClosureStatus(history, ROUTE);
+    expect(applyAnyDayDeliveryToClosure(routeDay, { status: S.ENTREGADO, history }, false)?.status).toBe(S.EN_RUTA);
+  });
+
+  it('devuelto de otro día: NO cambia el cierre (solo entregados)', () => {
+    const history = [enRuta, { status: S.DEVUELTO_A_FEDEX, timestamp: '2026-10-09T07:00:00.000Z' }];
+    const routeDay = resolveRouteDayClosureStatus(history, ROUTE);
+    expect(applyAnyDayDeliveryToClosure(routeDay, { status: S.DEVUELTO_A_FEDEX, history }, true)).toBe(routeDay);
+  });
+
+  it('entregado sin fila de entrega en el historial: igual cuenta, sin hora', () => {
+    const r = applyAnyDayDeliveryToClosure(null, { status: S.ENTREGADO, history: [] }, true);
+    expect(r).toEqual({ status: S.ENTREGADO, occurredAt: null, exceptionCode: null });
   });
 });
