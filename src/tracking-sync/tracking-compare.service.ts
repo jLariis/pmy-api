@@ -19,7 +19,7 @@ import { computeEffectiveLastOpTime, DispatchAnchor } from './route-op-time.util
 import { routeDaysOf } from 'src/common/our-route-delivery.util';
 import { selectRouteDayFedexEvent, shouldForceFedexAtClosure } from './closure-stuck-resolver.util';
 
-interface CompareItem {
+export interface CompareItem {
   entity: Trackable;
   kind: TrackableKind;
 }
@@ -314,6 +314,57 @@ export class TrackingCompareService {
     entity: Trackable,
     kind: TrackableKind,
   ): Promise<{ ctx: SyncContext; ourLastEventAt: string | null } | null> {
+    const prepared = await this.prepareContext(entity, kind);
+    if (!prepared) return null;
+    const ctx = prepared.newContext();
+    await this.pipeline.run(ctx);
+    return { ctx, ourLastEventAt: prepared.ourLastEventAt };
+  }
+
+  /**
+   * Foto de FedEx para el diagnóstico del cierre ("Paquetes con problema", superadmin). NO
+   * persiste nada. Corre el pipeline dos veces sobre contextos independientes: completo
+   * (`shieldedStatus`) y sin Time Shield ni Escudo Terminal (`rawStatus`, lo que FedEx dice de
+   * verdad); el diagnóstico decide cuál usar. `null` si FedEx no dio datos.
+   */
+  async buildDoctorSnapshot(entity: Trackable, kind: TrackableKind): Promise<{
+    events: NormalizedEvent[];
+    vetoedEventKeys: Set<string>;
+    shieldedStatus: ShipmentStatusType | null;
+    rawStatus: ShipmentStatusType | null;
+    headerDeliveredAt: Date | null;
+  } | null> {
+    const prepared = await this.prepareContext(entity, kind);
+    if (!prepared) return null;
+    const shielded = prepared.newContext();
+    await this.pipeline.run(shielded);
+    const raw = prepared.newContext();
+    await this.pipeline.run(raw, { skip: ['time-shield', 'terminal-lock'] });
+    return {
+      events: shielded.normalized.events,
+      vetoedEventKeys: shielded.vetoedEventKeys,
+      shieldedStatus: shielded.proposedStatus,
+      rawStatus: raw.proposedStatus,
+      headerDeliveredAt: shielded.normalized.header?.actualDeliveryAt ?? null,
+    };
+  }
+
+  /** Rastreables de una salida (pertenencia histórica), opcionalmente filtrados por tipo. */
+  async listRouteItems(routeId: string, kinds?: TrackableKind[]): Promise<CompareItem[]> {
+    const items = await this.gatherRouteItems(routeId);
+    if (!kinds?.length) return items;
+    const allowed = new Set(kinds);
+    return items.filter((it) => allowed.has(it.kind));
+  }
+
+  /**
+   * Consulta FedEx, normaliza y carga nuestro historial. Devuelve una fábrica de contextos
+   * frescos (sin pipeline) para poder correr las reglas más de una vez sin compartir estado.
+   */
+  private async prepareContext(
+    entity: Trackable,
+    kind: TrackableKind,
+  ): Promise<{ newContext: () => SyncContext; ourLastEventAt: string | null } | null> {
     // Guía dada de baja (consolidado eliminado con autorización): no se consulta ni se persiste.
     if ((entity as any)?.active === false) return null;
     const [raw] = await this.source.fetch([
@@ -342,24 +393,24 @@ export class TrackingCompareService {
     for (const r of rows) if ((r.exceptionCode ?? '').trim() === '08') count08++;
     const existing = { lastOpTime, count08, ourRouteDays: routeDaysOf(dispatches) };
 
-    const reconcile = this.reconciler.reconcile(
-      normalized, knownKeys, entity.status, (e: NormalizedEvent) => e.shadowKey,
-    );
-
-    const ctx: SyncContext = {
-      shipment: entity,
-      kind,
-      normalized,
-      reconcile,
-      existing,
-      proposedStatus: reconcile.proposedStatus,
-      vetoedEventKeys: new Set<string>(),
-      deferredEffects: [],
-      notes: [],
+    const newContext = (): SyncContext => {
+      const reconcile = this.reconciler.reconcile(
+        normalized, knownKeys, entity.status, (e: NormalizedEvent) => e.shadowKey,
+      );
+      return {
+        shipment: entity,
+        kind,
+        normalized,
+        reconcile,
+        existing,
+        proposedStatus: reconcile.proposedStatus,
+        vetoedEventKeys: new Set<string>(),
+        deferredEffects: [],
+        notes: [],
+      };
     };
-    await this.pipeline.run(ctx);
 
-    return { ctx, ourLastEventAt };
+    return { newContext, ourLastEventAt };
   }
 
   /**

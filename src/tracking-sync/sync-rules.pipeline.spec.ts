@@ -26,4 +26,14 @@ describe('SyncRulesPipeline', () => {
     await new SyncRulesPipeline([readIt, setDelivered]).run(ctx);
     expect(ctx.notes).toContain('seen');
   });
+
+  it('skips rules listed in opts.skip', async () => {
+    const order: string[] = [];
+    const pipeline = new SyncRulesPipeline([
+      recordingRule('time-shield', 80, order),
+      recordingRule('other', 10, order),
+    ]);
+    await pipeline.run(makeCtx({ current: ShipmentStatusType.EN_RUTA, proposed: ShipmentStatusType.EN_RUTA }), { skip: ['time-shield'] });
+    expect(order).toEqual(['other']);
+  });
 });

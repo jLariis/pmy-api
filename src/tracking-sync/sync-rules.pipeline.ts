@@ -15,8 +15,10 @@ export class SyncRulesPipeline {
     this.ordered = [...(rules ?? [])].sort((a, b) => b.priority - a.priority);
   }
 
-  async run(ctx: SyncContext): Promise<void> {
+  async run(ctx: SyncContext, opts: { skip?: string[] } = {}): Promise<void> {
+    const skip = new Set(opts.skip ?? []);
     for (const rule of this.ordered) {
+      if (skip.has(rule.name)) continue;
       try {
         await rule.apply(ctx);
       } catch (err: any) {
