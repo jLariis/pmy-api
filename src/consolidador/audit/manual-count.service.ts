@@ -155,7 +155,7 @@ export class ManualCountService {
           AND i.date >= ? AND i.date < ? AND i.trackingNumber IS NOT NULL
        UNION
        SELECT s.trackingNumber FROM shipment s JOIN shipment_status ss ON ss.shipmentId = s.id
-        WHERE s.subsidiaryId = ? AND LOWER(s.shipmentType) = 'fedex' AND ss.timestamp >= ? AND ss.timestamp < ?
+        WHERE s.active = 1 AND s.subsidiaryId = ? AND LOWER(s.shipmentType) = 'fedex' AND ss.timestamp >= ? AND ss.timestamp < ?
           AND (LOWER(ss.status) IN ('entregado','entregado_en_bodega','rechazado') OR ss.exceptionCode IN ('07','08'))
        UNION
        SELECT wd.trackingNumber FROM warehouse_delivery wd
@@ -163,8 +163,8 @@ export class ManualCountService {
        UNION
        SELECT COALESCE(s.trackingNumber, cs.trackingNumber) FROM package_dispatch pd
          JOIN package_dispatch_history h ON h.dispatchId = pd.id
-         LEFT JOIN shipment s ON s.id = h.shipmentId
-         LEFT JOIN charge_shipment cs ON cs.id = h.chargeShipmentId
+         LEFT JOIN shipment s ON s.id = h.shipmentId AND s.active = 1
+         LEFT JOIN charge_shipment cs ON cs.id = h.chargeShipmentId AND cs.active = 1
         WHERE pd.subsidiaryId = ? AND pd.routeDate >= ? AND pd.routeDate <= ?`,
       [subsidiaryId, start, end, subsidiaryId, start, end, subsidiaryId, start, end, subsidiaryId, fromDay, toDay],
     );
@@ -189,12 +189,12 @@ export class ManualCountService {
       `SELECT s.id, s.trackingNumber AS tn, s.subsidiaryId, s.status, s.createdAt,
               c.id AS consId, c.consNumber, DATE(c.date) AS consDay, 'shipment' AS kind
          FROM shipment s LEFT JOIN consolidated c ON c.id = s.consolidatedId
-        WHERE s.trackingNumber IN (${ph})
+        WHERE s.active = 1 AND s.trackingNumber IN (${ph})
        UNION ALL
        SELECT cs.id, cs.trackingNumber, cs.subsidiaryId, cs.status, cs.createdAt,
               ch.id, ch.consNumber, DATE(ch.chargeDate), 'charge'
          FROM charge_shipment cs LEFT JOIN charge ch ON ch.id = cs.chargeId
-        WHERE cs.trackingNumber IN (${ph})`,
+        WHERE cs.active = 1 AND cs.trackingNumber IN (${ph})`,
       [...tns, ...tns],
     );
 

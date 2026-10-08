@@ -38,13 +38,13 @@ export async function loadRouteWindowContext(
          FROM shipment s2
          JOIN package_dispatch_history h2 ON h2.shipmentId = s2.id
          JOIN package_dispatch p2 ON p2.id = h2.dispatchId AND p2.active = 1
-        WHERE s2.trackingNumber IN (SELECT tn FROM mine) AND h2.dispatchId <> ?
+        WHERE s2.active = 1 AND s2.trackingNumber IN (SELECT tn FROM mine) AND h2.dispatchId <> ?
        UNION ALL
        SELECT c2.trackingNumber AS tn, p2.createdAt AS at
          FROM charge_shipment c2
          JOIN package_dispatch_history h2 ON h2.chargeShipmentId = c2.id
          JOIN package_dispatch p2 ON p2.id = h2.dispatchId AND p2.active = 1
-        WHERE c2.trackingNumber IN (SELECT tn FROM mine) AND h2.dispatchId <> ?
+        WHERE c2.active = 1 AND c2.trackingNumber IN (SELECT tn FROM mine) AND h2.dispatchId <> ?
      )
      SELECT m.sid, m.cid, MIN(o.at) AS nextAt
        FROM mine m

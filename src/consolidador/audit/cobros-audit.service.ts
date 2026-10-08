@@ -70,11 +70,12 @@ export class CobrosAuditService {
       `SELECT s.trackingNumber AS trackingNumber, s.id AS shipmentId, s.status AS currentStatus,
               s.consolidatedId AS consolidatedId, c.consNumber AS consNumber,
               ss.status AS evStatus, ss.exceptionCode AS exceptionCode, ss.timestamp AS ts,
-              (SELECT 1 FROM charge_shipment cs WHERE cs.trackingNumber = s.trackingNumber LIMIT 1) AS isF2
+              (SELECT 1 FROM charge_shipment cs WHERE cs.trackingNumber = s.trackingNumber AND cs.active = 1 LIMIT 1) AS isF2
          FROM shipment s
          JOIN shipment_status ss ON ss.shipmentId = s.id
          LEFT JOIN consolidated c ON c.id = s.consolidatedId
-        WHERE s.subsidiaryId = ?
+        WHERE s.active = 1
+          AND s.subsidiaryId = ?
           AND LOWER(s.shipmentType) = 'fedex'
           AND ss.timestamp BETWEEN ? AND ?
           AND (LOWER(ss.status) IN ('entregado','entregado_en_bodega','rechazado') OR ss.exceptionCode IN ('07','08'))`,
@@ -86,8 +87,10 @@ export class CobrosAuditService {
       `SELECT s.trackingNumber AS trackingNumber, s.id AS shipmentId, s.status AS currentStatus,
               s.consolidatedId AS consolidatedId, c.consNumber AS consNumber,
               i.id AS incomeId, i.incomeType AS incomeType, i.nonDeliveryStatus AS nonDeliveryStatus, i.date AS date,
-              (SELECT 1 FROM charge_shipment cs WHERE cs.trackingNumber = s.trackingNumber LIMIT 1) AS isF2
+              (SELECT 1 FROM charge_shipment cs WHERE cs.trackingNumber = s.trackingNumber AND cs.active = 1 LIMIT 1) AS isF2
          FROM income i
+         -- Sin filtrar s.active: un ingreso activo sobre una guía dada de baja es justo un
+         -- cobro de más que esta auditoría debe mostrar.
          JOIN shipment s ON s.id = i.shipmentId
          LEFT JOIN consolidated c ON c.id = s.consolidatedId
         WHERE s.subsidiaryId = ?

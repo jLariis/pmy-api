@@ -1,4 +1,4 @@
-import { BeforeInsert, Column, Entity, Index, JoinColumn, ManyToOne, OneToMany, OneToOne, PrimaryGeneratedColumn } from "typeorm";
+import { DeleteDateColumn, BeforeInsert, Column, Entity, Index, JoinColumn, ManyToOne, OneToMany, OneToOne, PrimaryGeneratedColumn } from "typeorm";
 import { Shipment } from "./shipment.entity";
 import { Charge } from "./charge.entity";
 import { PackageDispatch } from "./package-dispatch.entity";
@@ -100,6 +100,15 @@ export class ChargeShipment {
       /** Baja lógica en cascada al dar de baja su consolidado. */
       @Column({ default: true })
       active: boolean;
+
+      /**
+       * Calculada en MySQL a partir de `active` (columna VIRTUAL, mig 1786000000098). Como
+       * @DeleteDateColumn, TypeORM oculta solas las guías dadas de baja en find/QueryBuilder/joins.
+       * Nunca se escribe: la baja/alta sigue siendo `active`. Para verlas: `withDeleted: true`.
+       */
+      @DeleteDateColumn({ type: 'datetime', nullable: true, insert: false, update: false, select: false,
+        generatedType: 'VIRTUAL', asExpression: "IF(`active` = 0, '2000-01-01 00:00:00', NULL)" })
+      inactiveAt?: Date | null;
 
       @Column({ nullable: true, default: false})
       isHighValue: boolean;

@@ -53,7 +53,7 @@ export class CobrosReconciliationService {
     // Dedup por GUÍA: cuenta guías distintas, no filas (evita falsos por reciclaje en varios consolidados).
     const deliveredRow = await this.dataSource.query(
       `SELECT COUNT(DISTINCT trackingNumber) AS c FROM shipment
-        WHERE LOWER(status) = 'entregado' AND createdAt >= ?`,
+        WHERE active = 1 AND LOWER(status) = 'entregado' AND createdAt >= ?`,
       [since],
     );
     const deliveredShipments = Number(deliveredRow?.[0]?.c ?? 0);
@@ -73,8 +73,8 @@ export class CobrosReconciliationService {
            ON i.trackingNumber = s.trackingNumber AND LOWER(i.incomeType) = 'entregado'
          LEFT JOIN subsidiary sub ON sub.id = s.subsidiaryId
          LEFT JOIN shipment_status ss ON ss.shipmentId = s.id AND LOWER(ss.status) = 'entregado'
-         LEFT JOIN charge_shipment cs ON cs.trackingNumber = s.trackingNumber
-        WHERE LOWER(s.status) = 'entregado' AND s.createdAt >= ? AND i.id IS NULL
+         LEFT JOIN charge_shipment cs ON cs.trackingNumber = s.trackingNumber AND cs.active = 1
+        WHERE s.active = 1 AND LOWER(s.status) = 'entregado' AND s.createdAt >= ? AND i.id IS NULL
         GROUP BY s.trackingNumber
         LIMIT ?`,
       [since, CobrosReconciliationService.SAMPLE_CAP + 1],
@@ -88,9 +88,9 @@ export class CobrosReconciliationService {
               MAX(i.date) AS date, MAX(i.date) AS deliveredAt, MAX(i.cost) AS cost,
               MAX(CASE WHEN cs.trackingNumber IS NOT NULL THEN 1 ELSE 0 END) AS isF2
          FROM income i
-         JOIN shipment s ON s.id = i.shipmentId
+         JOIN shipment s ON s.id = i.shipmentId AND s.active = 1
          LEFT JOIN subsidiary sub ON sub.id = s.subsidiaryId
-         LEFT JOIN charge_shipment cs ON cs.trackingNumber = i.trackingNumber
+         LEFT JOIN charge_shipment cs ON cs.trackingNumber = i.trackingNumber AND cs.active = 1
         WHERE LOWER(i.incomeType) = 'entregado' AND i.date >= ? AND LOWER(s.status) <> 'entregado'
         GROUP BY i.trackingNumber
         LIMIT ?`,
