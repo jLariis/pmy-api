@@ -635,6 +635,7 @@ export class PackageDispatchService {
         'pd.trackingNumber',
         'pd.status',
         'pd.routeDate',
+        'pd.is315',
         'pd.createdAt',
         'pd.closedAt',
         'pd.emailStatus',
