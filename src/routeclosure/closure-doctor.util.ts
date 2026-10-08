@@ -9,6 +9,7 @@ import { IncomeStatus } from 'src/common/enums/income-status.enum';
 import { toHermosilloDateString } from 'src/common/utils';
 import { noVanIncomeDecision } from './novan-income.util';
 import { reconcileShipmentIncomeAction } from './income-reconcile.util';
+import { routeDayOf } from 'src/tracking-sync/closure-stuck-resolver.util';
 
 /**
  * "Paquetes con problema" del cierre de ruta (herramienta de superadmin).
@@ -26,6 +27,7 @@ export type DoctorProblemCode =
   | 'DELIVERED_BEFORE_ROUTE'
   | 'HISTORY_MISSING'
   | 'INCOME_MISSING'
+  | 'CLOSURE_STALE'
   | 'WARNING';
 
 export interface DoctorEvent {
@@ -56,6 +58,19 @@ export interface DoctorInput {
   /** Ingresos SHIPMENT activos de la guía (de cualquier día / ruta). */
   incomes: { id: string; incomeType: IncomeStatus; date: Date }[];
   dispatch: { routeDate: Date | null; createdAt: Date | null; is315: boolean; cost: number };
+  /**
+   * Cómo la ve HOY el cierre de esta salida (`resolveClosureStatus`) y cuándo volvió a salir en
+   * otra ruta (fin de la ventana). Opcional: sin esto no se revisa el estatus del cierre.
+   */
+  closure?: { status: ShipmentStatusType | null; nextDispatchAt: Date | null };
+}
+
+/** Estatus con el que ESTA salida debe cerrar la guía (se guarda en package_dispatch_history). */
+export interface DoctorClosurePlan {
+  status: ShipmentStatusType;
+  /** ISO del instante real del evento que lo respalda. */
+  occurredAt: string;
+  exceptionCode: string | null;
 }
 
 export interface DoctorEventToInsert {
@@ -82,6 +97,7 @@ export interface DoctorPlan {
   setStatus: ShipmentStatusType | null;
   insertEvents: DoctorEventToInsert[];
   income: DoctorIncomePlan | null;
+  closure?: DoctorClosurePlan | null;
 }
 
 export interface PackageDiagnosis {
@@ -90,6 +106,8 @@ export interface PackageDiagnosis {
   kind: 'shipment' | 'charge';
   currentStatus: ShipmentStatusType;
   targetStatus: ShipmentStatusType | null;
+  /** Estatus con el que el cierre muestra hoy la guía (null = no se revisó). */
+  closureStatus: ShipmentStatusType | null;
   fedexEventAt: string | null;
   problems: DoctorProblemCode[];
   plan: DoctorPlan | null;
@@ -198,6 +216,7 @@ export function fingerprintOf(plan: DoctorPlan | null): string | null {
     i: plan.income
       ? [plan.income.type, plan.income.incomeId ?? '', plan.income.incomeType, plan.income.nonDeliveryStatus ?? '', plan.income.date, plan.income.cost]
       : null,
+    c: plan.closure ? [plan.closure.status, plan.closure.occurredAt, plan.closure.exceptionCode ?? ''] : null,
   };
   return createHash('sha1').update(JSON.stringify(stable)).digest('hex');
 }
@@ -210,6 +229,7 @@ export function diagnosePackage(input: DoctorInput): PackageDiagnosis {
     kind: entity.kind,
     currentStatus: entity.status,
     targetStatus: null,
+    closureStatus: input.closure?.status ?? null,
     fedexEventAt: null,
     problems: [],
     plan: null,
@@ -240,19 +260,32 @@ export function diagnosePackage(input: DoctorInput): PackageDiagnosis {
 
   const current = entity.status;
   const routeAnchor = dispatch.routeDate ?? dispatch.createdAt;
-  const routeDay = routeAnchor ? toHermosilloDateString(routeAnchor) : null;
+  // routeDate es DATE (00:00Z flotante): routeDayOf no lo corre al día anterior.
+  const routeDay = routeDayOf(routeAnchor);
   const fedexSays = `FedEx reporta ${statusLabel(target).toUpperCase()}${eventAt ? ` el ${fmt(eventAt)}` : ''}.`;
 
-  // Un estatus final nunca se degrada desde aquí.
+  const plan: DoctorPlan = { setStatus: null, insertEvents: [], income: null, closure: null };
+
+  // Un estatus final nunca se degrada desde aquí. Lo único que sí se ofrece es que el CIERRE de
+  // esta salida tome ese estatus final si ocurrió dentro de la ventana de la ruta.
+  // Devuelto a FedEx después de un DEX es lo normal (se registra la devolución tras el intento
+  // fallido): no es una discrepancia.
+  const returnedAfterDex =
+    current === ShipmentStatusType.DEVUELTO_A_FEDEX && isOutcomeStatus(target) && !isDelivered(target);
   if (isFinalShipmentStatus(current) && target !== current) {
-    warn(
-      `${fedexSays} En el sistema la guía está ${statusLabel(current)}, que es un estatus final. ` +
-        'No se cambia desde aquí; revísala a mano.',
-    );
-    return result;
+    if (!returnedAfterDex) {
+      warn(
+        `${fedexSays} En el sistema la guía está ${statusLabel(current)}, que es un estatus final. ` +
+          'No se cambia desde aquí; revísala a mano.',
+      );
+    }
+    const lastFinal = [...historyRows]
+      .filter((r) => r.status === current)
+      .sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime())[0];
+    if (lastFinal) checkClosure(input, result, plan, current, lastFinal.timestamp, lastFinal.exceptionCode, routeDay);
+    return finish(result, plan);
   }
 
-  const plan: DoctorPlan = { setStatus: null, insertEvents: [], income: null };
   const known = new Set(historyRows.map((r) => r.shadowKey));
 
   // Entregado (o devuelto) ANTES del día de la ruta (caso Loreto): se marca aunque el estatus
@@ -364,6 +397,8 @@ export function diagnosePackage(input: DoctorInput): PackageDiagnosis {
     }
   }
 
+  if (eventAt) checkClosure(input, result, plan, target, eventAt, backing?.exceptionCode ?? null, routeDay);
+
   if (beforeRoute && !result.problems.includes('DELIVERED_BEFORE_ROUTE')) {
     if (!result.problems.length) {
       result.explanation.push(`${fedexSays} ${beforeRouteLine()}`, 'Ya tiene estatus, historial e ingreso correctos: no hay nada que corregir.');
@@ -373,10 +408,49 @@ export function diagnosePackage(input: DoctorInput): PackageDiagnosis {
     result.problems.push('DELIVERED_BEFORE_ROUTE');
   }
 
-  const hasPlan = !!plan.setStatus || plan.insertEvents.length > 0 || !!plan.income;
+  return finish(result, plan);
+}
+
+function finish(result: PackageDiagnosis, plan: DoctorPlan): PackageDiagnosis {
+  const hasPlan = !!plan.setStatus || plan.insertEvents.length > 0 || !!plan.income || !!plan.closure;
   if (hasPlan) {
     result.plan = plan;
     result.fingerprint = fingerprintOf(plan);
   }
   return result;
+}
+
+/**
+ * ¿El cierre de ESTA salida muestra otra cosa que el desenlace real? Pasa cuando FedEx reportó el
+ * entregado/DEX después del día de la ruta (p. ej. al día siguiente) en una sucursal sin la opción
+ * "hasta la siguiente salida": el cierre la sigue viendo "en ruta". Solo si el evento cae desde el
+ * día de la ruta y antes de que la guía saliera en otra ruta. El arreglo se guarda para esta
+ * salida; no toca el estatus vivo.
+ */
+function checkClosure(
+  input: DoctorInput,
+  result: PackageDiagnosis,
+  plan: DoctorPlan,
+  status: ShipmentStatusType,
+  at: Date,
+  exceptionCode: string | null,
+  routeDay: string | null,
+): void {
+  const closure = input.closure;
+  if (!closure || !routeDay || !isOutcomeStatus(status)) return;
+  if (closure.status === status) return;
+  // Solo se rescata lo que el cierre ve SIN desenlace (en ruta, pendiente…). Si ya muestra un
+  // DEX del día, ese es el resultado de la ruta: la devolución registrada después no lo cambia.
+  if (isOutcomeStatus(closure.status)) return;
+  const day = toHermosilloDateString(at);
+  if (day < routeDay) return;
+  if (closure.nextDispatchAt && at >= closure.nextDispatchAt) return;
+  plan.closure = { status, occurredAt: at.toISOString(), exceptionCode: exceptionCode || null };
+  result.problems.push('CLOSURE_STALE');
+  const n = daysBetween(routeDay, day);
+  const when = n === 0 ? 'el mismo día de la ruta' : n === 1 ? 'al día siguiente de la ruta' : `${n} días después de la ruta`;
+  result.explanation.push(
+    `El cierre la muestra como ${statusLabel(closure.status)}, pero quedó ${statusLabel(status)} el ${fmt(at)} (${when}). ` +
+      `Se toma ${statusLabel(status)} para el cierre de esta salida.`,
+  );
 }

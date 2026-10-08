@@ -1,6 +1,8 @@
 import { ShipmentStatusType } from 'src/common/enums/shipment-status-type.enum';
 import {
   applyAnyDayDeliveryToClosure,
+  resolveClosureStatus,
+  resolveRouteWindowClosureStatus,
   isResolvedFedexOutcome,
   resolveRouteDayClosureStatus,
   routeDayOf,
@@ -203,5 +205,79 @@ describe('applyAnyDayDeliveryToClosure (solo sucursales con la opción, p. ej. L
   it('entregado sin fila de entrega en el historial: igual cuenta, sin hora', () => {
     const r = applyAnyDayDeliveryToClosure(null, { status: S.ENTREGADO, history: [] }, true);
     expect(r).toEqual({ status: S.ENTREGADO, occurredAt: null, exceptionCode: null });
+  });
+});
+
+describe('selectRouteWindowEvent — desde el día de la ruta hasta la siguiente salida (Vía Larga 929567984667)', () => {
+  const routeDate = '2026-10-07';
+  const enRuta = { status: ShipmentStatusType.EN_RUTA, timestamp: '2026-10-07T17:09:17.000Z' };
+
+  it('entregado al DÍA SIGUIENTE cuenta para esta ruta (383870018494)', () => {
+    const h = [enRuta, { status: ShipmentStatusType.ENTREGADO, timestamp: '2026-10-08T16:02:00.000Z' }];
+    expect(resolveRouteWindowClosureStatus(h, routeDate, null)?.status).toBe(ShipmentStatusType.ENTREGADO);
+    // Con la regla del día sigue en ruta (por eso es opción por sucursal).
+    expect(resolveRouteDayClosureStatus(h, routeDate)?.status).toBe(ShipmentStatusType.EN_RUTA);
+  });
+
+  it('DEX del día siguiente cuenta para esta ruta (383887769537)', () => {
+    const h = [enRuta, { status: ShipmentStatusType.CAMBIO_FECHA_SOLICITADO, timestamp: '2026-10-08T15:37:00.000Z', exceptionCode: '17' }];
+    const r = resolveRouteWindowClosureStatus(h, routeDate, null);
+    expect(r?.status).toBe(ShipmentStatusType.CAMBIO_FECHA_SOLICITADO);
+    expect(r?.exceptionCode).toBe('17');
+  });
+
+  it('lo que pasa DESPUÉS de que la guía sale en otra ruta no cuenta (caso 383934486493)', () => {
+    const h = [
+      enRuta,
+      { status: ShipmentStatusType.CLIENTE_NO_DISPONIBLE, timestamp: '2026-10-08T18:00:00.000Z', exceptionCode: '08' },
+      { status: ShipmentStatusType.EN_RUTA, timestamp: '2026-10-09T17:00:00.000Z' },
+      { status: ShipmentStatusType.ENTREGADO, timestamp: '2026-10-09T20:00:00.000Z' },
+    ];
+    const r = resolveRouteWindowClosureStatus(h, routeDate, new Date('2026-10-09T17:00:00.000Z'));
+    expect(r?.status).toBe(ShipmentStatusType.CLIENTE_NO_DISPONIBLE);
+  });
+
+  it('eventos de días ANTERIORES a la ruta no cuentan', () => {
+    const h = [{ status: ShipmentStatusType.RECHAZADO, timestamp: '2026-10-06T20:00:00.000Z' }, enRuta];
+    expect(resolveRouteWindowClosureStatus(h, routeDate, null)?.status).toBe(ShipmentStatusType.EN_RUTA);
+  });
+
+  it('desenlace de la mañana del día de la ruta, antes de capturar la salida, sí cuenta (captura tardía)', () => {
+    const h = [{ status: ShipmentStatusType.RECHAZADO, timestamp: '2026-10-07T15:00:00.000Z' }, enRuta];
+    expect(resolveRouteWindowClosureStatus(h, routeDate, null)?.status).toBe(ShipmentStatusType.RECHAZADO);
+  });
+
+  it('DEX y luego entregado: gana el último desenlace (383871972253)', () => {
+    const h = [
+      enRuta,
+      { status: ShipmentStatusType.DIRECCION_INCORRECTA, timestamp: '2026-10-07T18:33:00.000Z', exceptionCode: '03' },
+      { status: ShipmentStatusType.ENTREGADO, timestamp: '2026-10-07T18:45:00.000Z' },
+    ];
+    expect(resolveRouteWindowClosureStatus(h, routeDate, null)?.status).toBe(ShipmentStatusType.ENTREGADO);
+  });
+});
+
+describe('resolveClosureStatus — estatus final que ve el cierre', () => {
+  const routeDate = '2026-10-07';
+  const history = [
+    { status: ShipmentStatusType.EN_RUTA, timestamp: '2026-10-07T17:09:17.000Z' },
+    { status: ShipmentStatusType.ENTREGADO, timestamp: '2026-10-08T16:02:00.000Z' },
+  ];
+  const base = {
+    history, routeAnchor: routeDate, liveStatus: ShipmentStatusType.ENTREGADO,
+    untilNextDispatch: false, nextDispatchAt: null, acceptAnyDayDelivery: false, override: null,
+  };
+
+  it('sin opción: regla del día de la ruta', () => {
+    expect(resolveClosureStatus(base)?.status).toBe(ShipmentStatusType.EN_RUTA);
+  });
+
+  it('con opción "hasta la siguiente salida": toma el entregado del día siguiente', () => {
+    expect(resolveClosureStatus({ ...base, untilNextDispatch: true })?.status).toBe(ShipmentStatusType.ENTREGADO);
+  });
+
+  it('el arreglo manual del superadmin (override) gana sobre todo', () => {
+    const override = { status: ShipmentStatusType.RECHAZADO, occurredAt: new Date('2026-10-08T16:00:00.000Z'), exceptionCode: '07' };
+    expect(resolveClosureStatus({ ...base, override })?.status).toBe(ShipmentStatusType.RECHAZADO);
   });
 });

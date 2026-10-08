@@ -2,6 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { RouteclosureController } from './routeclosure.controller';
 import { RouteclosureService } from './routeclosure.service';
 import { ClosureDoctorService } from './closure-doctor.service';
+import { RouteRiskReportService } from './risk-report/route-risk-report.service';
 
 describe('RouteclosureController', () => {
   let controller: RouteclosureController;
@@ -14,6 +15,7 @@ describe('RouteclosureController', () => {
       providers: [
         { provide: RouteclosureService, useValue: {} },
         { provide: ClosureDoctorService, useValue: {} },
+        { provide: RouteRiskReportService, useValue: {} },
       ],
     }).compile();
 

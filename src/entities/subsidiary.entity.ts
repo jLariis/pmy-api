@@ -264,6 +264,15 @@ export class Subsidiary {
   closureAcceptsAnyDayDelivery: boolean;
 
   /**
+   * Cierre de ruta: si está activo, el cierre cuenta lo que pasó desde el día de la ruta hasta
+   * que la guía sale en OTRA ruta (entregados y DEX del día siguiente se quedan en esta ruta; ver
+   * selectRouteWindowEvent). Default false = regla del día de la ruta. Se siembra en Vía Larga,
+   * Caborca, Sonoyta, Puerto Peñasco y Santa Ana en la migración 1786000000097.
+   */
+  @Column({ default: false })
+  closureUntilNextDispatch: boolean;
+
+  /**
    * Encargado/Supervisor que autoriza los borrados (consolidado / salida a ruta)
    * de esta sucursal. Es un usuario registrado, configurable en Configuración.
    * Si es null, el aprobador cae al primer superadmin activo (Admin Principal).

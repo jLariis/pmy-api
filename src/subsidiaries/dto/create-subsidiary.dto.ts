@@ -105,6 +105,7 @@ export class CreateSubsidiaryDto {
   // Cierre de ruta: permitir cerrar con paquetes en "otros estatus" (solo Hermosillo por ahora).
   @IsBoolean() @IsOptional() allowRouteClosureWithOtherStatus?: boolean;
   @IsBoolean() @IsOptional() closureAcceptsAnyDayDelivery?: boolean;
+  @IsBoolean() @IsOptional() closureUntilNextDispatch?: boolean;
 
   // Encargado/Supervisor que autoriza los borrados de esta sucursal (usuario registrado).
   @IsString() @IsOptional() supervisorUserId?: string | null;

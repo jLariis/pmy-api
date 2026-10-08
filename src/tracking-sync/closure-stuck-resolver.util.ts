@@ -163,3 +163,84 @@ export function applyAnyDayDeliveryToClosure(
   }
   return { status: ShipmentStatusType.ENTREGADO, occurredAt: deliveredAt, exceptionCode: null };
 }
+
+/** Convierte el historial (shipment_status) a eventos válidos. */
+function toClosureEvents(history: ClosureHistoryEntry[] | null | undefined): RouteDayFedexEvent[] {
+  const events: RouteDayFedexEvent[] = [];
+  for (const h of history ?? []) {
+    if (!h?.timestamp || !h.status) continue;
+    const occurredAt = h.timestamp instanceof Date ? h.timestamp : new Date(h.timestamp);
+    if (isNaN(occurredAt.getTime())) continue;
+    events.push({ status: h.status as ShipmentStatusType, occurredAt, exceptionCode: h.exceptionCode ?? null });
+  }
+  return events;
+}
+
+/**
+ * Estatus del cierre con la regla de VENTANA (opción por sucursal
+ * `subsidiary.closureUntilNextDispatch`, decisión del usuario 2026-10-08, salida Vía Larga
+ * 929567984667): cuenta todo lo que pasó desde el inicio del DÍA de la ruta (zona Hermosillo,
+ * para no perder desenlaces de la mañana en sucursales de captura tardía) hasta que la guía sale
+ * en OTRA ruta (`windowEnd`, exclusivo; `null` = no ha vuelto a salir). Así los entregados y DEX
+ * que FedEx reporta al día siguiente quedan en esta ruta, y lo de una salida nueva no se cruza
+ * (caso 383934486493). Último desenlace de la ventana; si no hubo, último evento; si nada, null.
+ */
+export function selectRouteWindowEvent(
+  events: RouteDayFedexEvent[],
+  routeAnchor: Date | string | null,
+  windowEnd: Date | null,
+): RouteDayFedexEvent | null {
+  const routeDay = routeDayOf(routeAnchor);
+  if (!routeDay) return null;
+  const endMs = windowEnd ? windowEnd.getTime() : Infinity;
+  let lastAny: RouteDayFedexEvent | null = null;
+  let lastOutcome: RouteDayFedexEvent | null = null;
+  for (const e of events) {
+    if (!e?.occurredAt) continue;
+    if (toHermosilloDateString(e.occurredAt) < routeDay) continue;
+    const t = e.occurredAt.getTime();
+    if (t >= endMs) continue;
+    if (!lastAny || t > lastAny.occurredAt.getTime()) lastAny = e;
+    if (isResolvedFedexOutcome(e.status) && (!lastOutcome || t > lastOutcome.occurredAt.getTime())) lastOutcome = e;
+  }
+  return lastOutcome ?? lastAny;
+}
+
+export function resolveRouteWindowClosureStatus(
+  history: ClosureHistoryEntry[] | null | undefined,
+  routeAnchor: Date | string | null,
+  windowEnd: Date | null,
+): RouteDayFedexEvent | null {
+  return selectRouteWindowEvent(toClosureEvents(history), routeAnchor, windowEnd);
+}
+
+export interface ClosureStatusInput {
+  history: ClosureHistoryEntry[] | null | undefined;
+  routeAnchor: Date | string | null;
+  liveStatus: ShipmentStatusType | string | null | undefined;
+  /** Opción de sucursal: ventana hasta la siguiente salida en vez del día de la ruta. */
+  untilNextDispatch: boolean;
+  /** Cuándo salió la guía en la siguiente ruta (null = no ha vuelto a salir). */
+  nextDispatchAt: Date | null;
+  /** Opción de sucursal (Loreto): entregado de cualquier día cuenta. */
+  acceptAnyDayDelivery: boolean;
+  /** Arreglo manual del superadmin ("Paquetes con problema") guardado para ESTA salida. */
+  override: RouteDayFedexEvent | null;
+}
+
+/**
+ * Estatus con el que el cierre clasifica una guía. Orden: arreglo manual del superadmin >
+ * regla de la sucursal (ventana hasta la siguiente salida, o día de la ruta) > excepción de
+ * entregados de cualquier día (Loreto). Fuente única para la vista del cierre y el diagnóstico.
+ */
+export function resolveClosureStatus(input: ClosureStatusInput): RouteDayFedexEvent | null {
+  if (input.override) return input.override;
+  const base = input.untilNextDispatch
+    ? resolveRouteWindowClosureStatus(input.history, input.routeAnchor, input.nextDispatchAt)
+    : resolveRouteDayClosureStatus(input.history, input.routeAnchor);
+  return applyAnyDayDeliveryToClosure(
+    base,
+    { status: input.liveStatus, history: input.history },
+    input.acceptAnyDayDelivery,
+  );
+}

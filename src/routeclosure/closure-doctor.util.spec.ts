@@ -209,3 +209,84 @@ describe('diagnosePackage', () => {
     expect(d.plan!.insertEvents).toHaveLength(1);
   });
 });
+
+describe('diagnosePackage — estatus del CIERRE fuera del día de la ruta (Vía Larga 929567984667)', () => {
+  const ROUTE7 = new Date('2026-10-07T00:00:00.000Z'); // routeDate DATE 2026-10-07
+  const enRuta = row('2026-10-07T17:09:17.000Z', S.EN_RUTA);
+  const dispatch = { routeDate: ROUTE7, createdAt: new Date('2026-10-07T17:09:17.000Z'), is315: false, cost: 59 };
+
+  it('carga entregada al día siguiente: DB ya entregado, el cierre la ve en ruta → se fija entregado para el cierre', () => {
+    const dl = ev('2026-10-08T16:02:00.000Z', S.ENTREGADO);
+    const d = diagnosePackage({
+      entity: { id: 'c1', trackingNumber: '383870018494', kind: 'charge', status: S.ENTREGADO },
+      fedex: { events: [dl], shieldedStatus: S.ENTREGADO, rawStatus: S.ENTREGADO, headerDeliveredAt: null },
+      historyRows: [enRuta, row('2026-10-08T16:02:00.000Z', S.ENTREGADO)],
+      incomes: [],
+      dispatch,
+      closure: { status: S.EN_RUTA, nextDispatchAt: null },
+    });
+    expect(d.problems).toEqual(['CLOSURE_STALE']);
+    expect(d.closureStatus).toBe(S.EN_RUTA);
+    expect(d.plan).toMatchObject({ setStatus: null, insertEvents: [], income: null });
+    expect(d.plan!.closure).toEqual({ status: S.ENTREGADO, occurredAt: '2026-10-08T16:02:00.000Z', exceptionCode: null });
+    expect(d.explanation.join(' ')).toContain('al día siguiente');
+    expect(d.fingerprint).toMatch(/^[0-9a-f]{40}$/);
+  });
+
+  it('devuelto tras DEX03 de FedEx al día siguiente: sin "revisar a mano", fija el cierre como devuelto', () => {
+    const de = ev('2026-10-08T16:03:00.000Z', S.DIRECCION_INCORRECTA, '03');
+    const d = diagnosePackage({
+      entity: { id: 'c2', trackingNumber: '877713622069', kind: 'charge', status: S.DEVUELTO_A_FEDEX },
+      fedex: { events: [de], shieldedStatus: S.DEVUELTO_A_FEDEX, rawStatus: S.DIRECCION_INCORRECTA, headerDeliveredAt: null },
+      historyRows: [enRuta, row('2026-10-08T07:00:00.000Z', S.DEVUELTO_A_FEDEX)],
+      incomes: [],
+      dispatch,
+      closure: { status: S.EN_RUTA, nextDispatchAt: null },
+    });
+    expect(d.problems).toEqual(['CLOSURE_STALE']);
+    expect(d.plan!.setStatus).toBeNull();
+    expect(d.plan!.closure!.status).toBe(S.DEVUELTO_A_FEDEX);
+  });
+
+  it('el evento es posterior a que la guía salió en otra ruta → no se toca el cierre de esta salida', () => {
+    const dl = ev('2026-10-09T20:00:00.000Z', S.ENTREGADO);
+    const d = diagnosePackage({
+      entity: { id: 'c3', trackingNumber: '999', kind: 'charge', status: S.ENTREGADO },
+      fedex: { events: [dl], shieldedStatus: S.ENTREGADO, rawStatus: S.ENTREGADO, headerDeliveredAt: null },
+      historyRows: [enRuta, row('2026-10-09T20:00:00.000Z', S.ENTREGADO)],
+      incomes: [],
+      dispatch,
+      closure: { status: S.EN_RUTA, nextDispatchAt: new Date('2026-10-09T17:00:00.000Z') },
+    });
+    expect(d.problems).not.toContain('CLOSURE_STALE');
+    expect(d.plan).toBeNull();
+  });
+
+  it('el cierre ya coincide (sucursal con la opción) → nada que corregir', () => {
+    const dl = ev('2026-10-08T16:02:00.000Z', S.ENTREGADO);
+    const d = diagnosePackage({
+      entity: { id: 'c1', trackingNumber: '383870018494', kind: 'charge', status: S.ENTREGADO },
+      fedex: { events: [dl], shieldedStatus: S.ENTREGADO, rawStatus: S.ENTREGADO, headerDeliveredAt: null },
+      historyRows: [enRuta, row('2026-10-08T16:02:00.000Z', S.ENTREGADO)],
+      incomes: [],
+      dispatch,
+      closure: { status: S.ENTREGADO, nextDispatchAt: null },
+    });
+    expect(d.problems).toEqual([]);
+    expect(d.plan).toBeNull();
+  });
+
+  it('el cierre ya muestra el DEX del día de la ruta: la devolución del día siguiente no lo cambia', () => {
+    const de = ev('2026-10-07T22:24:00.000Z', S.DIRECCION_INCORRECTA, '03');
+    const d = diagnosePackage({
+      entity: { id: 'c4', trackingNumber: '878070716817', kind: 'charge', status: S.DEVUELTO_A_FEDEX },
+      fedex: { events: [de], shieldedStatus: S.DEVUELTO_A_FEDEX, rawStatus: S.DIRECCION_INCORRECTA, headerDeliveredAt: null },
+      historyRows: [enRuta, row('2026-10-07T22:24:00.000Z', S.DIRECCION_INCORRECTA, '03'), row('2026-10-08T07:00:00.000Z', S.DEVUELTO_A_FEDEX)],
+      incomes: [],
+      dispatch,
+      closure: { status: S.DIRECCION_INCORRECTA, nextDispatchAt: null },
+    });
+    expect(d.problems).toEqual([]);
+    expect(d.plan).toBeNull();
+  });
+});

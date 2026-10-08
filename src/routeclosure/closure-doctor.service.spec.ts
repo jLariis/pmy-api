@@ -38,6 +38,7 @@ function setup(opts: { snapshotFor?: (id: string) => any } = {}) {
   const dataSource = {
     getRepository: jest.fn(() => ({ find: jest.fn().mockResolvedValue([]) })),
     transaction: jest.fn(async (cb: any) => cb(tx)),
+    query: jest.fn().mockResolvedValue([]),
   };
   const dispatchRepo = { findOne: jest.fn().mockResolvedValue(dispatch) };
   const svc = new ClosureDoctorService(dispatchRepo as any, dataSource as any, compare as any);

@@ -13,7 +13,7 @@ import { SyncRulesPipeline } from './sync-rules.pipeline';
 import { PersistentSyncSink, ApplyActor } from './sinks/persistent-sync.sink';
 import { createLimit } from './concurrency.util';
 import { buildShadowKey } from './event-key.util';
-import { NormalizedEvent, SyncContext, Trackable, TrackableKind } from './tracking-sync.types';
+import { NormalizedEvent, SyncContext, Trackable, TrackableKind, RawTrackingResult } from './tracking-sync.types';
 import { ApplyOutcome, CompareResult, NormalizedEventDto } from './compare.types';
 import { computeEffectiveLastOpTime, DispatchAnchor } from './route-op-time.util';
 import { routeDaysOf } from 'src/common/our-route-delivery.util';
@@ -327,14 +327,27 @@ export class TrackingCompareService {
    * (`shieldedStatus`) y sin Time Shield ni Escudo Terminal (`rawStatus`, lo que FedEx dice de
    * verdad); el diagnóstico decide cuál usar. `null` si FedEx no dio datos.
    */
-  async buildDoctorSnapshot(entity: Trackable, kind: TrackableKind): Promise<{
+  /**
+   * Consulta FedEx en LOTES (30 por llamada) para varias guías; para precargar antes de
+   * `buildDoctorSnapshot` y no gastar una llamada por guía (evita 429 en rutas grandes).
+   */
+  async prefetchRaw(entities: Trackable[]): Promise<Map<string, RawTrackingResult>> {
+    const refs = entities
+      .filter((e) => (e as any)?.active !== false)
+      .map((e) => ({ trackingNumber: e.trackingNumber, fedexUniqueId: e.fedexUniqueId, carrierCode: e.carrierCode }));
+    const out = new Map<string, RawTrackingResult>();
+    for (const r of await this.source.fetch(refs)) if (r?.trackingNumber) out.set(r.trackingNumber, r);
+    return out;
+  }
+
+  async buildDoctorSnapshot(entity: Trackable, kind: TrackableKind, prefetched?: RawTrackingResult): Promise<{
     events: NormalizedEvent[];
     vetoedEventKeys: Set<string>;
     shieldedStatus: ShipmentStatusType | null;
     rawStatus: ShipmentStatusType | null;
     headerDeliveredAt: Date | null;
   } | null> {
-    const prepared = await this.prepareContext(entity, kind);
+    const prepared = await this.prepareContext(entity, kind, prefetched);
     if (!prepared) return null;
     const shielded = prepared.newContext();
     await this.pipeline.run(shielded);
@@ -364,12 +377,17 @@ export class TrackingCompareService {
   private async prepareContext(
     entity: Trackable,
     kind: TrackableKind,
+    prefetched?: RawTrackingResult,
   ): Promise<{ newContext: () => SyncContext; ourLastEventAt: string | null } | null> {
     // Guía dada de baja (consolidado eliminado con autorización): no se consulta ni se persiste.
     if ((entity as any)?.active === false) return null;
-    const [raw] = await this.source.fetch([
-      { trackingNumber: entity.trackingNumber, fedexUniqueId: entity.fedexUniqueId, carrierCode: entity.carrierCode },
-    ]);
+    const raw =
+      prefetched ??
+      (
+        await this.source.fetch([
+          { trackingNumber: entity.trackingNumber, fedexUniqueId: entity.fedexUniqueId, carrierCode: entity.carrierCode },
+        ])
+      )[0];
     if (!raw || raw.trackResults.length === 0) return null;
 
     const normalized = this.normalizer.normalize(raw);

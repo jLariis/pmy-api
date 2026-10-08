@@ -28,7 +28,8 @@ import { EmailLogService, EmailFile } from 'src/email-log/email-log.service';
 import { EmailStatus } from 'src/common/enums/email-status.enum';
 import { EmailLog } from 'src/entities/email-log.entity';
 import { hermosilloDayStartFromInstant } from 'src/common/utils';
-import { applyAnyDayDeliveryToClosure, resolveRouteDayClosureStatus } from 'src/tracking-sync/closure-stuck-resolver.util';
+import { resolveClosureStatus } from 'src/tracking-sync/closure-stuck-resolver.util';
+import { loadRouteWindowContext, routeWindowKey } from './route-window.query';
 
 /** Módulo con el que se etiquetan bitácora y adjuntos de correo de salidas a ruta. */
 const EMAIL_MODULE = 'package_dispatch';
@@ -1601,19 +1602,30 @@ export class PackageDispatchService {
     // Excepción por sucursal (hoy Loreto): una guía ya ENTREGADA cuenta como entregada aunque la
     // entrega no haya sido el día de la ruta.
     const acceptAnyDayDelivery = !!packageDispatch.subsidiary?.closureAcceptsAnyDayDelivery;
+    // Opción por sucursal (Vía Larga, Caborca…): cuenta hasta que la guía sale en otra ruta, así
+    // los entregados/DEX del día siguiente no se quedan "en ruta". + arreglos manuales del cierre.
+    const untilNextDispatch = !!packageDispatch.subsidiary?.closureUntilNextDispatch;
+    const windowCtx = await loadRouteWindowContext(this.dataSource, packageDispatchId);
 
     // Marca de reasignación: el envío ya no apunta a ESTA salida (su `routeId`/dispatch
     // actual es otro, o null). `currentDispatchTrackingNumber` = folio de la ruta nueva.
-    const annotate = (pkg: any) => {
+    const annotate = (pkg: any, kind: 'shipment' | 'charge') => {
       const currentDispatchId = pkg?.packageDispatch?.id ?? null;
       const movedToAnotherRoute = !!currentDispatchId && currentDispatchId !== packageDispatchId;
-      const routeDay = applyAnyDayDeliveryToClosure(
-        resolveRouteDayClosureStatus(pkg?.statusHistory, routeAnchor),
-        { status: pkg?.status, history: pkg?.statusHistory },
+      const key = routeWindowKey(kind, pkg?.id);
+      const override = windowCtx.overrides.get(key) ?? null;
+      const routeDay = resolveClosureStatus({
+        history: pkg?.statusHistory,
+        routeAnchor,
+        liveStatus: pkg?.status,
+        untilNextDispatch,
+        nextDispatchAt: windowCtx.nextDispatchAt.get(key) ?? null,
         acceptAnyDayDelivery,
-      );
+        override,
+      });
       return {
         ...pkg,
+        closureFixedManually: !!override,
         routeDayStatus: routeDay?.status ?? null,
         routeDayExceptionCode: routeDay?.exceptionCode ?? null,
         routeDayStatusAt: routeDay?.occurredAt?.toISOString() ?? null,
@@ -1630,9 +1642,9 @@ export class PackageDispatchService {
       return items.filter((it) => (it?.id && !seen.has(it.id) ? (seen.add(it.id), true) : false));
     };
 
-    const shipments = dedupById(history.filter((h) => h.shipment).map((h) => annotate(h.shipment)));
+    const shipments = dedupById(history.filter((h) => h.shipment).map((h) => annotate(h.shipment, 'shipment')));
     const chargeShipments = dedupById(
-      history.filter((h) => h.chargeShipment).map((h) => annotate(h.chargeShipment)),
+      history.filter((h) => h.chargeShipment).map((h) => annotate(h.chargeShipment, 'charge')),
     );
 
     // Ordenar los envíos según la config de la sucursal (CP o orden de escaneo).

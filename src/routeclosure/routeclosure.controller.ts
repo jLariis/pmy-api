@@ -8,12 +8,15 @@ import { NoAudit } from 'src/audit/audit.decorator';
 import { SuperAdminGuard } from 'src/audit/super-admin.guard';
 import { ClosureDoctorService } from './closure-doctor.service';
 import { ApplyClosureFixesDto } from './dto/apply-closure-fixes.dto';
+import { RouteRiskReportDto } from './dto/route-risk-report.dto';
+import { RouteRiskReportService } from './risk-report/route-risk-report.service';
 
 @Controller('route-closure')
 export class RouteclosureController {
   constructor(
     private readonly routeclosureService: RouteclosureService,
     private readonly closureDoctor: ClosureDoctorService,
+    private readonly riskReportService: RouteRiskReportService,
   ) {}
 
   @Post()
@@ -57,6 +60,15 @@ export class RouteclosureController {
       userName: req.user?.name ?? req.user?.userName,
       role: req.user?.role,
     });
+  }
+
+  // Reporte "Rutas del día con posibles problemas" (sale solo a las 7 pm); aquí se puede
+  // generar a mano (dryRun = solo vista previa, sin correo). Solo superadmin.
+  @NoAudit()
+  @UseGuards(SuperAdminGuard)
+  @Post('risk-report')
+  riskReport(@Body() dto: RouteRiskReportDto) {
+    return this.riskReportService.send(dto.date, { dryRun: !!dto.dryRun });
   }
 
   // "Paquetes con problema" (solo superadmin): diagnóstico contra FedEx, sin escribir nada.

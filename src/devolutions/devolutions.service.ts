@@ -142,7 +142,9 @@ export class DevolutionsService {
     }
 
     // Marcar DEVUELTO_A_FEDEX en TODAS las filas de la guía + historial por fila (idempotente).
-    const note = `Devolución registrada en sucursal: ${subsidiary}. Motivo: ${status || 'No especificado'}`;
+    // `subsidiary` es objeto (entidad o { id }): interpolarlo directo dejaba "[object Object]".
+    const subsidiaryLabel = subsidiary?.name ?? subsidiary?.id ?? 'sin sucursal';
+    const note = `Devolución registrada en sucursal: ${subsidiaryLabel}. Motivo: ${status || 'No especificado'}`;
 
     for (const s of shipments) {
       if (s.status === ShipmentStatusType.DEVUELTO_A_FEDEX) continue;

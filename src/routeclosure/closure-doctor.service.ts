@@ -9,10 +9,17 @@ import { IncomeStatus } from 'src/common/enums/income-status.enum';
 import { toHermosilloDateString } from 'src/common/utils';
 import { TrackingCompareService, CompareItem } from 'src/tracking-sync/tracking-compare.service';
 import { ApplyActor } from 'src/tracking-sync/sinks/persistent-sync.sink';
-import { TrackableKind } from 'src/tracking-sync/tracking-sync.types';
+import { RawTrackingResult, TrackableKind } from 'src/tracking-sync/tracking-sync.types';
 import { buildShadowKey } from 'src/tracking-sync/event-key.util';
 import { createLimit } from 'src/tracking-sync/concurrency.util';
 import { diagnosePackage, DoctorInput, PackageDiagnosis } from './closure-doctor.util';
+import { isResolvedFedexOutcome, resolveClosureStatus, routeDayOf } from 'src/tracking-sync/closure-stuck-resolver.util';
+import { PackageDispatchHistory } from 'src/entities/package-dispatch-history.entity';
+import {
+  loadRouteWindowContext,
+  RouteWindowContext,
+  routeWindowKey,
+} from 'src/package-dispatch/route-window.query';
 
 export interface ClosureFixItem {
   shipmentId: string;
@@ -53,8 +60,18 @@ export class ClosureDoctorService {
   async diagnoseRoute(packageDispatchId: string) {
     const dispatch = await this.loadDispatch(packageDispatchId);
     const items = await this.routeItems(dispatch);
+    const windowCtx = await loadRouteWindowContext(this.dataSource, dispatch.id);
+    // FedEx en lotes de 30 (no una llamada por guía): evita 429 y acelera rutas grandes.
+    let raw = new Map<string, RawTrackingResult>();
+    try {
+      raw = await this.compare.prefetchRaw(items.map((it) => it.entity));
+    } catch (err: any) {
+      this.logger.warn(`🩺 [Cierre] Precarga FedEx falló (${err?.message}); se consulta guía por guía.`);
+    }
     const limit = createLimit(6);
-    const all = await Promise.all(items.map((it) => limit(() => this.diagnoseItem(it, dispatch))));
+    const all = await Promise.all(
+      items.map((it) => limit(() => this.diagnoseItem(it, dispatch, windowCtx, raw.get(it.entity.trackingNumber)))),
+    );
     const packages = all.filter((d) => d.problems.length > 0);
     this.logger.log(
       `🩺 [Cierre] Diagnóstico de ${packageDispatchId}: ${packages.length}/${items.length} paquetes con problema.`,
@@ -63,16 +80,19 @@ export class ClosureDoctorService {
     return {
       packageDispatchId,
       is315: !!dispatch.is315,
-      routeDay: anchor ? toHermosilloDateString(anchor) : null,
+      routeDay: routeDayOf(anchor ?? null),
       subsidiaryName: dispatch.subsidiary?.name ?? null,
       total: items.length,
       packages,
+      /** Guías que el cierre hoy vería sin resultado (en ruta, pendiente…). */
+      withoutOutcome: all.filter((d) => !isResolvedFedexOutcome(d.closureStatus)).map((d) => d.trackingNumber),
     };
   }
 
   async applyFixes(packageDispatchId: string, fixes: ClosureFixItem[], actor: ApplyActor) {
     const dispatch = await this.loadDispatch(packageDispatchId);
     const byKey = new Map((await this.routeItems(dispatch)).map((it) => [`${it.kind}:${it.entity.id}`, it]));
+    const windowCtx = await loadRouteWindowContext(this.dataSource, dispatch.id);
     const results: ClosureFixResult[] = [];
 
     // Secuencial: son pocos y así cada paquete ve lo que escribió el anterior (misma guía repetida).
@@ -83,7 +103,7 @@ export class ClosureDoctorService {
         continue;
       }
       try {
-        const diagnosis = await this.diagnoseItem(it, dispatch);
+        const diagnosis = await this.diagnoseItem(it, dispatch, windowCtx);
         if (!diagnosis.plan) {
           results.push({ ...this.base(fix, it), status: 'nothing', message: 'Ya no hay nada que corregir.' });
           continue;
@@ -127,12 +147,17 @@ export class ClosureDoctorService {
     return items.filter((it) => (it.entity as any)?.active !== false);
   }
 
-  private async diagnoseItem(it: CompareItem, dispatch: PackageDispatch): Promise<PackageDiagnosis> {
+  private async diagnoseItem(
+    it: CompareItem,
+    dispatch: PackageDispatch,
+    windowCtx: RouteWindowContext,
+    prefetched?: RawTrackingResult,
+  ): Promise<PackageDiagnosis> {
     const { entity, kind } = it;
     let fedex: DoctorInput['fedex'] = null;
     let fedexError: string | null = null;
     try {
-      const snap = await this.compare.buildDoctorSnapshot(entity, kind);
+      const snap = await this.compare.buildDoctorSnapshot(entity, kind, prefetched);
       if (snap) {
         fedex = {
           events: snap.events.map((e) => ({
@@ -157,6 +182,20 @@ export class ClosureDoctorService {
       where: kind === 'charge' ? { chargeShipment: { id: entity.id } } : { shipment: { id: entity.id } },
       select: ['timestamp', 'exceptionCode', 'status'],
     });
+
+    // Cómo ve HOY el cierre esta guía: misma regla que la vista del cierre (resolveClosureStatus).
+    const key = routeWindowKey(kind, entity.id);
+    const nextDispatchAt = windowCtx.nextDispatchAt.get(key) ?? null;
+    const closureNow = resolveClosureStatus({
+      history: rows.map((r) => ({ status: r.status, timestamp: r.timestamp, exceptionCode: r.exceptionCode })),
+      routeAnchor: dispatch.routeDate ?? dispatch.createdAt ?? null,
+      liveStatus: entity.status,
+      untilNextDispatch: !!dispatch.subsidiary?.closureUntilNextDispatch,
+      nextDispatchAt,
+      acceptAnyDayDelivery: !!dispatch.subsidiary?.closureAcceptsAnyDayDelivery,
+      override: windowCtx.overrides.get(key) ?? null,
+    });
+
     const incomes =
       kind === 'shipment'
         ? await this.dataSource.getRepository(Income).find({
@@ -182,6 +221,7 @@ export class ClosureDoctorService {
         is315: !!dispatch.is315,
         cost: Number(dispatch.subsidiary?.fedexCostPackage ?? 0),
       },
+      closure: { status: closureNow?.status ?? null, nextDispatchAt },
     });
   }
 
@@ -212,6 +252,22 @@ export class ClosureDoctorService {
             }),
           );
         }
+      }
+
+      if (plan.closure) {
+        await m.update(
+          PackageDispatchHistory,
+          isCharge
+            ? { dispatch: { id: dispatch.id }, chargeShipment: { id: it.entity.id } }
+            : { dispatch: { id: dispatch.id }, shipment: { id: it.entity.id } },
+          {
+            closureStatus: plan.closure.status,
+            closureExceptionCode: plan.closure.exceptionCode,
+            closureStatusAt: new Date(plan.closure.occurredAt),
+            closureFixedById: actor.userId ?? null,
+            closureFixedAt: new Date(),
+          },
+        );
       }
 
       if (plan.setStatus) {

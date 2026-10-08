@@ -16,6 +16,7 @@ import { MailService } from 'src/mail/mail.service';
 import { fromZonedTime } from 'date-fns-tz';
 import { hermosilloDayStartFromInstant, toHermosilloDateString } from 'src/common/utils';
 import { routeDayOf } from 'src/tracking-sync/closure-stuck-resolver.util';
+import { loadRouteWindowContext, routeWindowKey } from 'src/package-dispatch/route-window.query';
 import { ShipmentType } from 'src/common/enums/shipment-type.enum';
 import { IncomeStatus } from 'src/common/enums/income-status.enum';
 import { IncomeSourceType } from 'src/common/enums/income-source-type.enum';
@@ -175,17 +176,28 @@ export class RouteclosureService {
     // Regla del cierre: "hasta el último estatus del día en que se realizó la ruta". Un evento
     // FedEx de OTRO día (la guía volvió a salir, DEX posterior) no cobra en el cierre de esta
     // ruta: le toca a la ruta/cron de ese día (caso 383934486493).
+    // Con la opción de sucursal `closureUntilNextDispatch` (Vía Larga, Caborca…) la ventana va
+    // desde el día de la ruta hasta que la guía sale en otra ruta: el entregado/DEX del día
+    // siguiente sí cobra aquí (misma regla que la vista del cierre, ver selectRouteWindowEvent).
     const routeDay = routeDayOf(dispatch.routeDate ?? dispatch.createdAt ?? null);
+    const untilNextDispatch = !!dispatch.subsidiary?.closureUntilNextDispatch;
+    const windowCtx = untilNextDispatch ? await loadRouteWindowContext(this.dataSource, dispatch.id) : null;
     const shipmentOutcomes = outcomes.filter((o) => {
       if (o.kind === 'charge') return false;
       if (!o.eventAt || !routeDay) return true;
-      const sameDay = toHermosilloDateString(new Date(o.eventAt)) === routeDay;
-      if (!sameDay) {
+      const eventAt = new Date(o.eventAt);
+      const eventDay = toHermosilloDateString(eventAt);
+      let inWindow = eventDay === routeDay;
+      if (windowCtx) {
+        const end = windowCtx.nextDispatchAt.get(routeWindowKey('shipment', o.shipmentId));
+        inWindow = eventDay >= routeDay && (!end || eventAt < end);
+      }
+      if (!inWindow) {
         this.logger.log(
-          `⏭️ [RouteClosure] ${o.trackingNumber}: evento FedEx ${o.eventAt} fuera del día de la ruta (${routeDay}); no cobra en este cierre.`,
+          `⏭️ [RouteClosure] ${o.trackingNumber}: evento FedEx ${o.eventAt} fuera de ${windowCtx ? 'la ventana' : 'el día'} de la ruta (${routeDay}); no cobra en este cierre.`,
         );
       }
-      return sameDay;
+      return inWindow;
     });
     const cost = dispatch.subsidiary?.fedexCostPackage ?? 0;
     const incomeRepo = this.dataSource.getRepository(Income);
