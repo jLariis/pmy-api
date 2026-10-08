@@ -30,6 +30,7 @@ import { EmailLog } from 'src/entities/email-log.entity';
 import { hermosilloDayStartFromInstant } from 'src/common/utils';
 import { resolveClosureStatus } from 'src/tracking-sync/closure-stuck-resolver.util';
 import { loadRouteWindowContext, routeWindowKey } from './route-window.query';
+import { DispatchListFilters } from './dispatch-list-filters.util';
 
 /** Módulo con el que se etiquetan bitácora y adjuntos de correo de salidas a ruta. */
 const EMAIL_MODULE = 'package_dispatch';
@@ -600,8 +601,9 @@ export class PackageDispatchService {
       from?: string;
       to?: string;
       search?: string;
+      filters?: DispatchListFilters;
     } = {},
-  ): Promise<PaginatedResult<any>> {
+  ): Promise<PaginatedResult<any> & { facets: { drivers: { id: string; name: string }[]; days: string[] } }> {
     const { fromDay, toDay } = resolveDayRange(opts.from, opts.to);
     const { page, limit, skip } = parsePagination(opts.page, opts.limit);
     const search = (opts.search || '').trim();
@@ -618,15 +620,60 @@ export class PackageDispatchService {
       return qb;
     };
 
-    const total = await applyFilters(
+    // Filtros de la tabla (estatus, chofer, día, 31.5). Van APARTE de los de la semana para que
+    // las opciones de los filtros (facets) salgan de toda la semana, no solo de lo ya filtrado.
+    const f = opts.filters;
+    const applyTableFilters = <T extends import('typeorm').SelectQueryBuilder<PackageDispatch>>(qb: T): T => {
+      if (f?.statuses.length) qb.andWhere('pd.status IN (:...fStatuses)', { fStatuses: f.statuses });
+      if (f?.days.length) qb.andWhere(`${ROUTE_DAY_SQL} IN (:...fDays)`, { fDays: f.days });
+      if (f && f.is315 !== null) qb.andWhere('pd.is315 = :fIs315', { fIs315: f.is315 });
+      if (f?.driverIds.length) {
+        // Cualquiera de los choferes de la salida (puede tener varios).
+        qb.andWhere(
+          'EXISTS (SELECT 1 FROM package_dispatch_drivers fpdd WHERE fpdd.dispatchId = pd.id AND fpdd.driverId IN (:...fDrivers))',
+          { fDrivers: f.driverIds },
+        );
+      }
+      return qb;
+    };
+    const applyAll = <T extends import('typeorm').SelectQueryBuilder<PackageDispatch>>(qb: T): T =>
+      applyTableFilters(applyFilters(qb));
+
+    const total = await applyAll(
       this.packageDispatchRepository.createQueryBuilder('pd').leftJoin('pd.subsidiary', 'subsidiary'),
     ).getCount();
 
-    const { entities, raw } = await applyFilters(
+    // Opciones de los filtros de TODA la semana (+ búsqueda), sin los filtros de la tabla.
+    const facetBase = () =>
+      applyFilters(this.packageDispatchRepository.createQueryBuilder('pd').leftJoin('pd.subsidiary', 'subsidiary'));
+    const driverRows: { id: string; name: string }[] = await facetBase()
+      .innerJoin('package_dispatch_drivers', 'xpdd', 'xpdd.dispatchId = pd.id')
+      .innerJoin('driver', 'xdriver', 'xdriver.id = xpdd.driverId')
+      .select('xdriver.id', 'id')
+      .addSelect('xdriver.name', 'name')
+      .groupBy('xdriver.id')
+      .addGroupBy('xdriver.name')
+      .orderBy('xdriver.name', 'ASC')
+      .getRawMany();
+    const dayRows: { day: string | Date }[] = await facetBase()
+      .select(ROUTE_DAY_SQL, 'day')
+      .groupBy('day')
+      .orderBy('day', 'DESC')
+      .getRawMany();
+    const facets = {
+      drivers: driverRows.filter((d) => d.id && d.name),
+      days: dayRows
+        .map((r) => (r.day instanceof Date ? r.day.toISOString().slice(0, 10) : String(r.day).slice(0, 10)))
+        .filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)),
+    };
+
+    const { entities, raw } = await applyAll(
       this.packageDispatchRepository
         .createQueryBuilder('pd')
         .leftJoin('pd.subsidiary', 'subsidiary')
-        .leftJoin('pd.routes', 'routes')
+        // SIN join a pd.routes: una salida con varias rutas daba una fila por ruta y el LIMIT
+        // cortaba antes de agrupar (Cabo: 31 salidas → solo 25 en la página). Las rutas se
+        // piden aparte en el detalle.
         .leftJoin('pd.vehicle', 'vehicle')
         .leftJoin('pd.shipments', 'shipments')
         .leftJoin('pd.chargeShipments', 'chargeShipments'),
@@ -644,7 +691,6 @@ export class PackageDispatchService {
         'pd.emailLastError',
         'subsidiary.id',
         'subsidiary.name',
-        'routes.id',
         'vehicle.id',
       ])
       .addSelect(subQuery => {
@@ -659,7 +705,6 @@ export class PackageDispatchService {
       .addSelect('COUNT(DISTINCT chargeShipments.id)', 'chargeShipmentsCount')
       .groupBy('pd.id')
       .addGroupBy('subsidiary.id')
-      .addGroupBy('routes.id')
       .addGroupBy('vehicle.id')
       .orderBy(ROUTE_DAY_SQL, 'DESC')
       .addOrderBy('pd.createdAt', 'DESC')
@@ -681,7 +726,7 @@ export class PackageDispatchService {
       };
     });
 
-    return { data, total, page, limit, totalPages: Math.max(1, Math.ceil(total / limit)) };
+    return { data, total, page, limit, totalPages: Math.max(1, Math.ceil(total / limit)), facets };
   }
 
   /** Para monitoreo */

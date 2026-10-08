@@ -1,4 +1,5 @@
 import { Controller, Get, Post, Body, Patch, Param, Delete, UseInterceptors, UploadedFile, BadRequestException, UploadedFiles, Req, Query } from '@nestjs/common';
+import { parseDispatchListFilters } from './dispatch-list-filters.util';
 import { PackageDispatchService } from './package-dispatch.service';
 import { CreatePackageDispatchDto } from './dto/create-package-dispatch.dto';
 import { UpdatePackageDispatchDto } from './dto/update-package-dispatch.dto';
@@ -46,8 +47,16 @@ export class PackageDispatchController {
     @Query('from') from?: string,
     @Query('to') to?: string,
     @Query('search') search?: string,
+    // Filtros de la tabla (del lado del servidor porque la tabla pagina aquí): lista "a,b".
+    @Query('status') status?: string | string[],
+    @Query('driverId') driverId?: string | string[],
+    @Query('day') day?: string | string[],
+    @Query('is315') is315?: string | string[],
   ) {
-    return this.packageDispatchService.findAllBySubsidiary(subsidiaryId, { page, limit, from, to, search });
+    return this.packageDispatchService.findAllBySubsidiary(subsidiaryId, {
+      page, limit, from, to, search,
+      filters: parseDispatchListFilters({ status, driverId, day, is315 }),
+    });
   }
 
   @Get('routes-report/:subsidiaryId')
