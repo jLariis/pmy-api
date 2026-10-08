@@ -1,4 +1,5 @@
-import { InventoriesService } from './inventories.service';
+import { Between } from 'typeorm';
+import { InventoriesService, MISSING_SCAN_REPORT_WINDOW } from './inventories.service';
 
 /**
  * Reporte "Sin código 44 por sucursal/zona" (bug: no salía para ninguna sucursal porque estaba
@@ -73,10 +74,14 @@ describe('InventoriesService.getMissingScanReportMulti', () => {
     expect(byTn.B.category).toBe('nunca');
   });
 
-  it('lista TODOS los activos sin filtrar por fecha (paquete viejo sí aparece)', async () => {
-    const svc = svcWith([SUB44], [mkShip({ subId: 's44', trackingNumber: 'OLD', exceptionCode: null, createdAt: new Date('2026-02-01T00:00:00Z') })]);
-    const { details } = await svc.getMissingScanReportMulti(['s44']);
-    expect(details).toHaveLength(1);
-    expect(details[0].trackingNumber).toBe('OLD');
+  it('candado temporal: consulta SOLO FedEx dados de alta en octubre 2026 (paquetes y cargas)', async () => {
+    const svc = svcWith([SUB44], []);
+    const { period } = await svc.getMissingScanReportMulti(['s44']);
+    for (const repo of [svc.shipmentRepository, svc.chargeShipmentRepository]) {
+      const { where } = repo.find.mock.calls[0][0];
+      expect(where.shipmentType).toBe('fedex');
+      expect(where.createdAt).toEqual(Between(MISSING_SCAN_REPORT_WINDOW.from, MISSING_SCAN_REPORT_WINDOW.to));
+    }
+    expect(period).toEqual({ from: '2026-10-01T07:00:00.000Z', to: '2026-11-01T06:59:59.999Z' });
   });
 });

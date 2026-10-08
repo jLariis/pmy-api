@@ -14,9 +14,19 @@ import * as ExcelJS from 'exceljs';
 import { fromZonedTime } from 'date-fns-tz';
 import { differenceInCalendarDays } from 'date-fns';
 import { LD_QUALIFYING_SQL_IN } from 'src/common/ld-codes';
+import { ShipmentType } from 'src/common/enums/shipment-type.enum';
 import { TemplateService } from 'src/documents/template.service';
 import { buildInventoryData, InventoryInput } from 'src/documents/data/inventory.mapper';
 import { buildInventoryNo67Data } from 'src/documents/data/inventory-no67.mapper';
+
+/**
+ * Candado temporal del reporte "Sin código 44 por sucursal/zona": solo paquetes dados de alta en
+ * octubre 2026 (día local de Hermosillo, UTC-7). `to` es el último milisegundo del mes.
+ */
+export const MISSING_SCAN_REPORT_WINDOW = {
+  from: fromZonedTime('2026-10-01T00:00:00', 'America/Hermosillo'),
+  to: new Date(fromZonedTime('2026-11-01T00:00:00', 'America/Hermosillo').getTime() - 1),
+};
 
 export interface ShipmentWithout67 {
   trackingNumber: string;
@@ -1114,11 +1124,17 @@ export class InventoriesService {
    * las sucursales — las que realmente monitorean 44 (Hermosillo / Ruta Extendida) casi no crean
    * inventarios, así que nunca había uno en rango. Ahora se listan los activos directamente y sin
    * filtro de fecha: un paquete activo viejo sin su escaneo es justo el más importante de mostrar.
+   *
+   * POR AHORA (pedido de operación, 2026-10-07): el reporte se acota a paquetes dados de alta en
+   * OCTUBRE 2026 (hora local Hermosillo) sin importar lo que mande el front, y SOLO FedEx
+   * (el código 44/67 es de FedEx; DHL no aplica). Para quitar el candado, borrar
+   * `MISSING_SCAN_REPORT_WINDOW` y su uso en el `where`.
    */
   async getMissingScanReportMulti(subsidiaryIds: string[]) {
     const emptySummary = { paquetes: 0, conCodigoHoy: 0, sinCodigo: 0, nunca: 0 };
+    const period = { from: MISSING_SCAN_REPORT_WINDOW.from.toISOString(), to: MISSING_SCAN_REPORT_WINDOW.to.toISOString() };
     const ids = [...new Set((subsidiaryIds || []).filter(Boolean))];
-    if (ids.length === 0) return { summary: emptySummary, details: [] };
+    if (ids.length === 0) return { summary: emptySummary, details: [], period };
 
     const subs = await this.subsidiaryRepository.find({
       where: { id: In(ids) },
@@ -1128,15 +1144,15 @@ export class InventoriesService {
     for (const s of subs) scanBySub.set(s.id, { name: s.name, scanCode: s.monitorFedexCode44 === true ? '44' : '67' });
 
     const targetStatuses = [ShipmentStatusType.PENDIENTE, ShipmentStatusType.EN_BODEGA];
+    const where = {
+      subsidiary: { id: In(ids) },
+      status: In(targetStatuses),
+      shipmentType: ShipmentType.FEDEX,
+      createdAt: Between(MISSING_SCAN_REPORT_WINDOW.from, MISSING_SCAN_REPORT_WINDOW.to),
+    };
     const [shipments, chargeShipments] = await Promise.all([
-      this.shipmentRepository.find({
-        where: { subsidiary: { id: In(ids) }, status: In(targetStatuses) },
-        relations: ['statusHistory', 'subsidiary'],
-      }),
-      this.chargeShipmentRepository.find({
-        where: { subsidiary: { id: In(ids) }, status: In(targetStatuses) },
-        relations: ['statusHistory', 'subsidiary'],
-      }),
+      this.shipmentRepository.find({ where, relations: ['statusHistory', 'subsidiary'] }),
+      this.chargeShipmentRepository.find({ where, relations: ['statusHistory', 'subsidiary'] }),
     ]);
 
     const tagged = [
@@ -1221,6 +1237,7 @@ export class InventoriesService {
         nunca,
       },
       details,
+      period,
     };
   }
 
