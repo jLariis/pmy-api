@@ -94,12 +94,15 @@ export class LifecycleService {
 
   /** Recorrido por id de inbox_consolidation. */
   async forConsolidations(list: InboxConsolidation[]): Promise<Map<string, Lifecycle>> {
-    const masters = [...new Set(list.filter((c) => c.kind !== 'f2').map((c) => c.consNumber))];
-    const f2s = [...new Set(list.filter((c) => c.kind === 'f2').map((c) => c.consNumber))];
+    // Si se subió con otro número (uploadedAs), las guías se buscan con ese.
+    const num = (c: InboxConsolidation) => (c.uploadedAs || c.consNumber).trim();
+    const isF2 = (c: InboxConsolidation) => (c.uploadedAsKind ?? (c.kind === 'f2' ? 'f2' : 'master')) === 'f2';
+    const masters = [...new Set(list.filter((c) => !isF2(c)).map(num))];
+    const f2s = [...new Set(list.filter(isF2).map(num))];
     const [m, f] = await Promise.all([this.aggregate('master', masters), this.aggregate('f2', f2s)]);
     const out = new Map<string, Lifecycle>();
     for (const c of list) {
-      const a = (c.kind === 'f2' ? f : m).get(c.consNumber) ?? empty();
+      const a = (isF2(c) ? f : m).get(num(c)) ?? empty();
       const p = (done: number, first: Date | null, last: Date | null): StepProgress => ({ done, total: a.total, first, last });
       out.set(c.id, {
         receivedAt: c.receivedAt,

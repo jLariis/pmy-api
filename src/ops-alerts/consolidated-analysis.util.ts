@@ -28,6 +28,7 @@ export type FindingCode =
   | 'desembarque_incompleto'
   | 'sin_ruta'
   | 'ruta_sin_cierre'
+  | 'tipo_equivocado'
   | 'sin_pendientes';
 
 export interface Finding {
@@ -98,6 +99,11 @@ export function analyzeConsolidated(input: AnalysisInput): Finding[] {
   return out;
 }
 
+/** ¿Se subió con otro tipo del anunciado? (F2 que quedó como paquete o master que quedó como carga). */
+export function isWrongType(c: { kind: string; uploadedAsKind?: string | null }): boolean {
+  return !!c.uploadedAsKind && c.uploadedAsKind !== (c.kind === 'f2' ? 'f2' : 'master');
+}
+
 export interface NoticeMessageInput {
   subsidiaryName: string;
   consNumber: string;
@@ -108,6 +114,8 @@ export interface NoticeMessageInput {
   note: string | null;
   senderName: string | null;
   withSamples: boolean;
+  /** Reemplaza la línea de guías (p. ej. cuando se subió con otro tipo). */
+  progressText?: string | null;
 }
 
 /** Siempre hora de Hermosillo: "07 de Octubre a las 12:39 p.m.". */
@@ -120,7 +128,7 @@ export function buildNoticeMessage(i: NoticeMessageInput): string {
   const lines = [
     `📣 *Aviso · ${i.subsidiaryName}*`,
     `${i.kindLabel} ${i.consNumber} · llegó el ${fmt(i.receivedAt)}`,
-    p.total ? `Guías: ${p.total} · desembarque ${p.unloaded} · en ruta ${p.routed} · con cierre ${p.closed}` : 'Guías: no se ha subido',
+    i.progressText ?? (p.total ? `Guías: ${p.total} · desembarque ${p.unloaded} · en ruta ${p.routed} · con cierre ${p.closed}` : 'Guías: no se ha subido'),
     '',
     ...i.findings.map((f) => {
       const ex = i.withSamples && f.samples.length ? `\n   ${f.samples.join(', ')}${f.count > f.samples.length ? ', …' : ''}` : '';

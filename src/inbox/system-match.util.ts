@@ -76,3 +76,26 @@ export function coverageOf(units: { total: number; found: number; complete: bool
   if (real.some((u) => u.found > 0)) return 'parcial';
   return 'ninguno';
 }
+
+const family = (kind: string) => (kind === 'f2' ? 'f2' : kind === 'master' || kind === 'aereo' ? 'master' : 'otro');
+
+/**
+ * Las guías de un archivo del correo se encontraron subidas con OTRO número (p. ej. la F2 sin
+ * número que se subió con el número del master). ¿A qué consolidado ANUNCIADO en el correo le
+ * corresponden? Así se marca ese mismo "Subido como …" en vez de crear otro consolidado con las
+ * mismas guías. Solo si es inequívoco: el número del propio archivo, o el único pendiente de ese tipo.
+ */
+export function announcedTargetFor(
+  announced: { consNumber: string; kind: string; linkStatus: string }[],
+  found: { consNumber: string; kind: 'f2' | 'master' | 'aereo' },
+  unitConsNumber: string | null,
+): string | null {
+  const pending = announced.filter(
+    (a) => a.linkStatus === 'pendiente' && family(a.kind) === family(found.kind) && a.consNumber.trim() !== found.consNumber.trim(),
+  );
+  if (unitConsNumber) {
+    const own = pending.find((a) => a.consNumber.trim() === unitConsNumber.trim());
+    if (own) return own.consNumber;
+  }
+  return pending.length === 1 ? pending[0].consNumber : null;
+}

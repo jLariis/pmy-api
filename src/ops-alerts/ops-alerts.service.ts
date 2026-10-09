@@ -6,7 +6,7 @@ import { InboxConsolidation } from '../entities/inbox-consolidation.entity';
 import { WhatsappGatewayService } from '../whatsapp-gateway/whatsapp-gateway.service';
 import { LifecycleService } from './lifecycle.service';
 import { AlertBlock, buildAlertDigest, buildAlertMessage, pickUsualUploaders } from './alert-digest.util';
-import { analyzeConsolidated } from './consolidated-analysis.util';
+import { analyzeConsolidated, isWrongType } from './consolidated-analysis.util';
 import { devWhatsappRedirect } from './send-log.service';
 import { SendLogService } from './send-log.service';
 import { DEFAULT_UPLOAD_GROUPS } from '../inbox/upload-message.util';
@@ -166,14 +166,18 @@ export class OpsAlertsService {
 
   private async recentConsolidations(s: OpsSettings, now: Date, extraWhere: Record<string, unknown> = {}) {
     const since = new Date(now.getTime() - s.lookbackDays * 86_400_000);
-    return this.consRepo.find({
+    const rows = await this.consRepo.find({
       where: { receivedAt: MoreThanOrEqual(since), linkStatus: Not('no_aplica'), subsidiaryId: Not(IsNull()), kind: In(['master', 'aereo', 'f2']), ...extraWhere },
       order: { receivedAt: 'DESC' },
     });
+    // Subidos con el tipo equivocado: sus guías se siguen dentro del consolidado donde quedaron.
+    return rows.filter((c) => !isWrongType(c));
   }
 
   /** Recorrido + pasos + alertas de una lista de consolidados (para pantallas). */
-  async tracking(list: InboxConsolidation[]) {
+  async tracking(all: InboxConsolidation[]) {
+    // Subidos con el tipo equivocado no van aparte: sus guías se siguen en el consolidado donde quedaron.
+    const list = all.filter((c) => !isWrongType(c));
     const s = await this.getSettings();
     const cfg = await this.cfgMap();
     const lc = await this.lifecycle.forConsolidations(list);
@@ -186,6 +190,8 @@ export class OpsAlertsService {
         inboxConsolidationId: c.id,
         inboxMessageId: c.inboxMessageId,
         consNumber: c.consNumber,
+        /** Se subió con otro número (p. ej. la F2 con el número del master). */
+        uploadedAs: c.uploadedAs ?? null,
         kind: c.kind,
         subsidiaryId: c.subsidiaryId,
         announcedCount: c.announcedCount,
@@ -331,7 +337,7 @@ export class OpsAlertsService {
     now: Date,
   ): Promise<AlertBlock> {
     const sub: any[] = await this.ds.query('SELECT name FROM subsidiary WHERE id = ?', [subsidiaryId]);
-    const guides = cons ? await this.lifecycle.guideFacts(cons.kind === 'f2' ? 'f2' : 'master', cons.consNumber) : [];
+    const guides = cons ? await this.lifecycle.guideFacts((cons.uploadedAsKind ?? (cons.kind === 'f2' ? 'f2' : 'master')) as 'f2' | 'master', cons.uploadedAs || cons.consNumber) : [];
     const findings = cons ? analyzeConsolidated({ receivedAt: cons.receivedAt, announcedCount: cons.announcedCount, guides, now }) : [];
     return {
       level,
@@ -339,7 +345,7 @@ export class OpsAlertsService {
       subsidiaryName: sub[0]?.name ?? 'Sucursal',
       step: STEP_LABEL[st.step as OpsStep] ?? String(st.step),
       stepCode: String(st.step),
-      consNumber: cons?.consNumber ?? null,
+      consNumber: cons ? (cons.uploadedAs ? `${cons.consNumber} (subido como ${cons.uploadedAsKind && cons.uploadedAsKind !== (cons.kind === 'f2' ? 'f2' : 'master') ? 'paquete en ' : ''}${cons.uploadedAs})` : cons.consNumber) : null,
       kindLabel: cons ? KIND_LABEL[cons.kind] ?? cons.kind : null,
       receivedAt: cons?.receivedAt ?? null,
       minutesLate: Math.max(1, Math.round((now.getTime() - st.dueAt.getTime()) / 60_000)),

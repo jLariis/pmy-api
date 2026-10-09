@@ -1,4 +1,4 @@
-import { summarizeMatch, SystemHit } from './system-match.util';
+import { summarizeMatch, SystemHit, announcedTargetFor } from './system-match.util';
 
 const hit = (tracking: string, consNumber: string, subsidiaryId: string, at: string, type: 'paquete' | 'carga' = 'paquete'): SystemHit => ({
   tracking,
@@ -37,5 +37,27 @@ describe('system-match.util', () => {
 
   it('sin guías encontradas', () => {
     expect(summarizeMatch(['1', '2'], [])).toMatchObject({ total: 2, found: 0, complete: false, groups: [] });
+  });
+});
+
+describe('announcedTargetFor', () => {
+  const cabo = [
+    { consNumber: '305822351624', kind: 'master', linkStatus: 'subido' },
+    { consNumber: '305822039794', kind: 'f2', linkStatus: 'pendiente' },
+  ];
+  it('F2 sin número subida con el número del master → la F2 que anunció el correo', () => {
+    expect(announcedTargetFor(cabo, { consNumber: '305822351624', kind: 'f2' }, null)).toBe('305822039794');
+  });
+  it('mismo número o tipo distinto → nada que cambiar', () => {
+    expect(announcedTargetFor(cabo, { consNumber: '305822039794', kind: 'f2' }, null)).toBeNull();
+    expect(announcedTargetFor(cabo, { consNumber: '999', kind: 'master' }, null)).toBeNull();
+  });
+  it('dos F2 pendientes: solo si el archivo trae su número; si no, no se adivina', () => {
+    const two = [...cabo, { consNumber: '305822000001', kind: 'f2', linkStatus: 'pendiente' }];
+    expect(announcedTargetFor(two, { consNumber: '305822351624', kind: 'f2' }, '305822000001')).toBe('305822000001');
+    expect(announcedTargetFor(two, { consNumber: '305822351624', kind: 'f2' }, null)).toBeNull();
+  });
+  it('aéreo y master cuentan como el mismo tipo', () => {
+    expect(announcedTargetFor([{ consNumber: 'A1', kind: 'aereo', linkStatus: 'pendiente' }], { consNumber: 'B2', kind: 'master' }, null)).toBe('A1');
   });
 });

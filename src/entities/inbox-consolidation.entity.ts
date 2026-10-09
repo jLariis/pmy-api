@@ -53,6 +53,14 @@ export class InboxConsolidation {
   @Column({ type: 'varchar', length: 12, default: 'pendiente' })
   linkStatus: InboxLinkStatus;
 
+  /** Se subió con OTRO número (p. ej. F2 sin número subida con el del master): número real en el sistema. */
+  @Column({ type: 'varchar', length: 40, nullable: true })
+  uploadedAs: string | null;
+
+  /** Con qué tipo quedó en el sistema ('master' paquete / 'f2' carga). Distinto al anunciado = tipo equivocado. */
+  @Column({ type: 'varchar', length: 10, nullable: true })
+  uploadedAsKind: 'master' | 'f2' | null;
+
   @CreateDateColumn()
   createdAt: Date;
 

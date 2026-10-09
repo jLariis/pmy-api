@@ -194,7 +194,7 @@ export class InboxPasteService {
         announcedCount: c.announcedCount,
         // COD y HV del texto viajan dentro del master cuando el libro trae su hoja.
         insideSheet: (c.kind === 'cod' && sheetRoles.has('cod')) || (c.kind === 'high_value' && sheetRoles.has('hv')) ? (c.kind === 'cod' ? 'COD' : 'HV') : null,
-        uploaded: c.linkStatus === 'subido' && c.uploadedAt ? { at: c.uploadedAt, byName: nameOf(c.uploadedById), minutes: c.uploadMinutes } : null,
+        uploaded: c.linkStatus === 'subido' && c.uploadedAt ? { at: c.uploadedAt, byName: nameOf(c.uploadedById), minutes: c.uploadMinutes, as: c.uploadedAs ?? null, asKind: c.uploadedAsKind ?? null } : null,
       }));
     const orphanCobros = unmatchedCobros({ cobros: cons.flatMap((c) => c.cobros ?? []), extraPaymentsRaw: extraPayments, attachments: planAtts });
     return { ready, reason, batches: views, announcedOnly, unmatchedCobros: orphanCobros };

@@ -58,3 +58,14 @@ describe('buildNoticeMessage', () => {
     expect(text.endsWith('— Javier Laris')).toBe(true);
   });
 });
+
+describe('isWrongType', () => {
+  it('F2 que quedó como paquete o master que quedó como carga', () => {
+    const { isWrongType } = require('./consolidated-analysis.util');
+    expect(isWrongType({ kind: 'f2', uploadedAsKind: 'master' })).toBe(true);
+    expect(isWrongType({ kind: 'master', uploadedAsKind: 'f2' })).toBe(true);
+    expect(isWrongType({ kind: 'aereo', uploadedAsKind: 'master' })).toBe(false);
+    expect(isWrongType({ kind: 'f2', uploadedAsKind: 'f2' })).toBe(false);
+    expect(isWrongType({ kind: 'f2', uploadedAsKind: null })).toBe(false);
+  });
+});

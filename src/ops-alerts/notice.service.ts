@@ -6,7 +6,7 @@ import { OpsAlertSubsidiary } from '../entities/ops-alert.entity';
 import { LifecycleService } from './lifecycle.service';
 import { OpsAlertsService } from './ops-alerts.service';
 import { SendLogService, SendResult } from './send-log.service';
-import { analyzeConsolidated, buildNoticeMessage, FindingCode } from './consolidated-analysis.util';
+import { analyzeConsolidated, buildNoticeMessage, Finding, FindingCode, isWrongType } from './consolidated-analysis.util';
 
 const KIND_LABEL: Record<string, string> = { master: 'Master', f2: 'F2 (carga)', aereo: 'Aéreo', high_value: 'Alto valor', cod: 'COD', dhl: 'DHL' };
 
@@ -42,15 +42,28 @@ export class NoticeService {
 
   async analyze(id: string, scope: string[] | null) {
     const c = await this.load(id, scope);
-    const guides = await this.lifecycle.guideFacts(c.kind === 'f2' ? 'f2' : 'master', c.consNumber);
-    const findings = analyzeConsolidated({ receivedAt: c.receivedAt, announcedCount: c.announcedCount, guides, now: new Date() });
+    // Subida con el tipo equivocado: sus guías están dentro de OTRO consolidado (se siguen ahí); el
+    // único punto es el tipo. Si no, el análisis normal guía por guía.
+    const wrong = isWrongType(c);
+    const guides = wrong ? [] : await this.lifecycle.guideFacts((c.uploadedAsKind ?? (c.kind === 'f2' ? 'f2' : 'master')) as 'f2' | 'master', c.uploadedAs || c.consNumber);
+    const findings: Finding[] = wrong
+      ? [{
+          code: 'tipo_equivocado',
+          severity: 'alta',
+          text: c.kind === 'f2'
+            ? `Las guías de esta F2 se subieron como paquete en el master ${c.uploadedAs}. Hay que pasarlas a carga (Consolidados → Cambiar tipo).`
+            : `Este master se subió como carga en ${c.uploadedAs}. Hay que cambiarlo a paquete (Consolidados → Cambiar tipo).`,
+          count: c.announcedCount ?? 0,
+          samples: [],
+        }]
+      : analyzeConsolidated({ receivedAt: c.receivedAt, announcedCount: c.announcedCount, guides, now: new Date() });
     const [sub]: any[] = c.subsidiaryId ? await this.ds.query('SELECT name FROM subsidiary WHERE id = ?', [c.subsidiaryId]) : [];
     const cfg = c.subsidiaryId ? await this.subRepo.findOne({ where: { subsidiaryId: c.subsidiaryId } }) : null;
     const managers = cfg?.managerUserIds?.length ? await this.userNames(cfg.managerUserIds) : [];
     const subsidiaryUsers = c.subsidiaryId ? (await this.alerts.subsidiaryUsers(c.subsidiaryId)).length : 0;
     return {
       consolidation: {
-        id: c.id, consNumber: c.consNumber, kind: c.kind, kindLabel: KIND_LABEL[c.kind] ?? c.kind, receivedAt: c.receivedAt,
+        id: c.id, consNumber: c.consNumber, uploadedAs: c.uploadedAs, uploadedAsKind: c.uploadedAsKind, kind: c.kind, kindLabel: KIND_LABEL[c.kind] ?? c.kind, receivedAt: c.receivedAt,
         subsidiaryId: c.subsidiaryId, subsidiaryName: sub?.name ?? null, inboxMessageId: c.inboxMessageId,
       },
       progress: {
@@ -81,6 +94,9 @@ export class NoticeService {
     const text = buildNoticeMessage({
       subsidiaryName, consNumber: c.consNumber, kindLabel: c.kindLabel, receivedAt: c.receivedAt, progress: a.progress,
       findings: chosen, note: body.note ?? null, senderName: user.name, withSamples: body.withSamples !== false,
+      progressText: a.consolidation.uploadedAs && chosen.some((f) => f.code === 'tipo_equivocado')
+        ? `Guías: ${c.kind === 'f2' ? 'subidas como paquete' : 'subidas como carga'} en ${a.consolidation.uploadedAs}`
+        : null,
     });
     const title = `📣 Aviso · ${subsidiaryName} · ${c.kindLabel} ${c.consNumber}`;
     const plain = text.replace(/\*/g, '');
