@@ -5,7 +5,7 @@ import { RequirePermission } from 'src/auth/decorators/require-permission.decora
 import { LEGACY_ROLE_MAP } from 'src/auth/rbac/permission-catalog';
 import { OpsAlertsService } from './ops-alerts.service';
 import { NoticeRequest, NoticeService } from './notice.service';
-import { SendLogService } from './send-log.service';
+import { devWhatsappRedirect, SendLogService } from './send-log.service';
 import { OpsAlertSettings, OpsAlertSubsidiary } from '../entities/ops-alert.entity';
 
 /**
@@ -81,8 +81,17 @@ export class OpsAlertsController {
   }
 
   @Get('settings')
-  settings() {
-    return this.service.getSettings();
+  async settings() {
+    // devTestNumber: solo en desarrollo (los WhatsApp van a ese número y se puede probar).
+    return { ...(await this.service.getSettings()), devTestNumber: devWhatsappRedirect(process.env) };
+  }
+
+  @Post('test-digest')
+  @RequirePermission('correo.configurar')
+  @ApiOperation({ summary: 'Solo desarrollo: manda ahora el mensaje de grupos con todo lo vencido (al número de prueba)' })
+  testDigest(@Req() req: any) {
+    const u = this.user(req);
+    return this.service.testDigest({ id: u.userId, name: u.name });
   }
 
   @RequirePermission('correo.configurar')

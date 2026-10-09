@@ -5,7 +5,9 @@ import { OpsAlert, OpsAlertSettings, OpsAlertSubsidiary } from '../entities/ops-
 import { InboxConsolidation } from '../entities/inbox-consolidation.entity';
 import { WhatsappGatewayService } from '../whatsapp-gateway/whatsapp-gateway.service';
 import { LifecycleService } from './lifecycle.service';
-import { buildAlertDigest, DigestLine } from './alert-digest.util';
+import { AlertBlock, buildAlertDigest, buildAlertMessage, pickUsualUploaders } from './alert-digest.util';
+import { analyzeConsolidated } from './consolidated-analysis.util';
+import { devWhatsappRedirect } from './send-log.service';
 import { SendLogService } from './send-log.service';
 import { DEFAULT_UPLOAD_GROUPS } from '../inbox/upload-message.util';
 import { hermosilloDateTimeText } from '../common/hermosillo-text.util';
@@ -34,9 +36,7 @@ export interface EvaluateReport {
   resolved: number;
 }
 
-/** Siempre hora de Hermosillo: "07 de Octubre a las 12:39 p.m.". */
-const fmt = (d: Date) => hermosilloDateTimeText(d);
-const late = (min: number) => (min < 60 ? `${min} min` : `${Math.floor(min / 60)} h ${min % 60} min`);
+const KIND_LABEL: Record<string, string> = { master: 'Master', f2: 'F2 (carga)', aereo: 'Aéreo', high_value: 'Alto valor', cod: 'COD', dhl: 'DHL' };
 
 /**
  * Alertas operativas: revisa el recorrido de los consolidados que llegaron por correo
@@ -47,7 +47,9 @@ export class OpsAlertsService {
   private readonly logger = new Logger(OpsAlertsService.name);
   private running = false;
   /** Alertas nuevas o que subieron de nivel en la revisión en curso (para el mensaje a grupos). */
-  private digest: DigestLine[] = [];
+  private digest: AlertBlock[] = [];
+  /** Quién sube normalmente, por sucursal (se calcula una vez por revisión). */
+  private uploaderCache = new Map<string, string[]>();
 
   constructor(
     @InjectRepository(OpsAlertSettings) private readonly settingsRepo: Repository<OpsAlertSettings>,
@@ -212,6 +214,7 @@ export class OpsAlertsService {
     if (!s.enabled && !force) return { ...report, skipped: 'Las alertas están apagadas' };
     this.running = true;
     this.digest = [];
+    this.uploaderCache.clear();
     try {
       const active = inActiveHours(now, s);
       const cfg = await this.cfgMap();
@@ -221,7 +224,7 @@ export class OpsAlertsService {
         const steps = computeSteps(lc.get(c.id) as Lifecycle, s, this.stepsOf(cfg.get(c.subsidiaryId as string)));
         for (const st of steps) {
           report.checked++;
-          await this.apply(st, { refKey: c.id, subsidiaryId: c.subsidiaryId as string, inboxConsolidationId: c.id, consNumber: c.consNumber, cons: c }, s, now, active, cfg, report);
+          await this.apply(st, { refKey: c.id, subsidiaryId: c.subsidiaryId as string, inboxConsolidationId: c.id, consNumber: c.consNumber, cons: c, lifecycle: lc.get(c.id) ?? null }, s, now, active, cfg, report);
         }
       }
       await this.evaluateInventory(s, now, active, cfg, list, report);
@@ -242,15 +245,11 @@ export class OpsAlertsService {
     const subs = new Set<string>([...list.map((c) => c.subsidiaryId as string), ...cfg.keys()]);
     for (const subsidiaryId of subs) {
       if (!this.stepsOf(cfg.get(subsidiaryId)).inventory) continue;
-      const done: any[] = await this.ds.query(
-        `SELECT MIN(createdAt) AS at FROM inventory WHERE subsidiaryId = ? AND inventoryDate >= ? AND inventoryDate < ?`,
-        [subsidiaryId, atLocalTime(day, '00:00'), atLocalTime(day, '23:59')],
-      );
-      const doneAt = done[0]?.at ? new Date(done[0].at) : null;
+      const doneAt = await this.inventoryDoneAt(subsidiaryId, day);
       report.checked++;
       await this.apply(
         { step: 'inventory' as never, dueAt, done: !!doneAt, doneAt, pct: doneAt ? 100 : 0 },
-        { refKey: `${subsidiaryId}:${day}`, subsidiaryId, inboxConsolidationId: null, consNumber: null, cons: null },
+        { refKey: `${subsidiaryId}:${day}`, subsidiaryId, inboxConsolidationId: null, consNumber: null, cons: null, lifecycle: null },
         s,
         now,
         active,
@@ -260,9 +259,17 @@ export class OpsAlertsService {
     }
   }
 
+  private async inventoryDoneAt(subsidiaryId: string, day: string): Promise<Date | null> {
+    const done: any[] = await this.ds.query(
+      `SELECT MIN(createdAt) AS at FROM inventory WHERE subsidiaryId = ? AND inventoryDate >= ? AND inventoryDate < ?`,
+      [subsidiaryId, atLocalTime(day, '00:00'), atLocalTime(day, '23:59')],
+    );
+    return done[0]?.at ? new Date(done[0].at) : null;
+  }
+
   private async apply(
     st: StepStatus | { step: OpsStep; dueAt: Date; done: boolean; doneAt: Date | null; pct: number },
-    ref: { refKey: string; subsidiaryId: string; inboxConsolidationId: string | null; consNumber: string | null; cons: InboxConsolidation | null },
+    ref: { refKey: string; subsidiaryId: string; inboxConsolidationId: string | null; consNumber: string | null; cons: InboxConsolidation | null; lifecycle: Lifecycle | null },
     s: OpsSettings,
     now: Date,
     active: boolean,
@@ -295,7 +302,7 @@ export class OpsAlertsService {
     const beforeActivation = !!enabledAt && st.dueAt.getTime() < new Date(enabledAt).getTime();
     if (beforeActivation) alert.level = Math.max(alert.level, level);
     if (active && !beforeActivation && level > alert.level) {
-      await this.notify(level, alert, st, ref.cons, now, cfg.get(ref.subsidiaryId));
+      await this.notify(level, alert, st, ref.cons, ref.lifecycle, now, cfg.get(ref.subsidiaryId));
       alert.level = level;
       alert.notifiedAt = now;
       report.notified++;
@@ -314,44 +321,88 @@ export class OpsAlertsService {
     return rows.map((r) => r.id);
   }
 
-  private async notify(level: number, alert: OpsAlert, st: { step: OpsStep | string; dueAt: Date; pct: number }, cons: InboxConsolidation | null, now: Date, cfg?: OpsAlertSubsidiary) {
-    const sub: any[] = await this.ds.query('SELECT name FROM subsidiary WHERE id = ?', [alert.subsidiaryId]);
-    const subName = sub[0]?.name ?? 'Sucursal';
-    const step = STEP_LABEL[st.step as OpsStep];
-    const minutesLate = Math.max(1, Math.round((now.getTime() - st.dueAt.getTime()) / 60_000));
-    const title = `${level >= 3 ? '🚨' : '⏰'} ${step} pendiente · ${subName}`;
-    const what = cons
-      ? `Consolidado ${cons.consNumber}${cons.announcedCount ? ` (${cons.announcedCount} guías)` : ''}, llegó el ${fmt(cons.receivedAt)}.`
-      : `Hoy no se ha registrado inventario.`;
-    const body = `${what} Vencía el ${fmt(st.dueAt)}${st.pct > 0 && st.pct < 100 ? `; va al ${st.pct}%` : ''}. Lleva ${late(minutesLate)} de atraso.`;
-    const base = {
+  /** Bloque de una alerta (mismo estilo que "Mandar aviso"): avance, paso vencido y hallazgos del análisis. */
+  private async buildBlock(
+    level: number,
+    subsidiaryId: string,
+    st: { step: OpsStep | string; dueAt: Date; pct: number },
+    cons: InboxConsolidation | null,
+    lifecycle: Lifecycle | null,
+    now: Date,
+  ): Promise<AlertBlock> {
+    const sub: any[] = await this.ds.query('SELECT name FROM subsidiary WHERE id = ?', [subsidiaryId]);
+    const guides = cons ? await this.lifecycle.guideFacts(cons.kind === 'f2' ? 'f2' : 'master', cons.consNumber) : [];
+    const findings = cons ? analyzeConsolidated({ receivedAt: cons.receivedAt, announcedCount: cons.announcedCount, guides, now }) : [];
+    return {
+      level,
+      subsidiaryId,
+      subsidiaryName: sub[0]?.name ?? 'Sucursal',
+      step: STEP_LABEL[st.step as OpsStep] ?? String(st.step),
+      stepCode: String(st.step),
+      consNumber: cons?.consNumber ?? null,
+      kindLabel: cons ? KIND_LABEL[cons.kind] ?? cons.kind : null,
+      receivedAt: cons?.receivedAt ?? null,
+      minutesLate: Math.max(1, Math.round((now.getTime() - st.dueAt.getTime()) / 60_000)),
+      pct: st.pct,
+      progress: cons
+        ? {
+            total: guides.length || (lifecycle?.unloading.total ?? 0),
+            unloaded: guides.filter((g) => g.unloaded).length,
+            routed: guides.filter((g) => g.routed).length,
+            closed: guides.filter((g) => g.closed).length,
+          }
+        : null,
+      findings,
+    };
+  }
+
+  /** Las 1–2 personas que más suben consolidados/cargas en la sucursal (últimos 30 días), con nombre y apellido. */
+  async usualUploaders(subsidiaryId: string): Promise<string[]> {
+    const hit = this.uploaderCache.get(subsidiaryId);
+    if (hit) return hit;
+    const since = new Date(Date.now() - 30 * 86_400_000);
+    const rows: any[] = await this.ds.query(
+      `SELECT TRIM(CONCAT(COALESCE(u.name, ''), ' ', COALESCE(u.lastName, ''))) AS name, COUNT(*) AS n
+         FROM (SELECT createdById AS uid FROM consolidated WHERE subsidiaryId = ? AND active = 1 AND createdAt >= ?
+               UNION ALL
+               SELECT createdById FROM charge WHERE subsidiaryId = ? AND createdAt >= ?) x
+         JOIN \`user\` u ON u.id = x.uid
+        GROUP BY u.id, u.name, u.lastName`,
+      [subsidiaryId, since, subsidiaryId, since],
+    );
+    const names = pickUsualUploaders(rows.map((r) => ({ name: r.name, n: Number(r.n) })));
+    this.uploaderCache.set(subsidiaryId, names);
+    return names;
+  }
+
+  private async notify(
+    level: number,
+    alert: OpsAlert,
+    st: { step: OpsStep | string; dueAt: Date; pct: number },
+    cons: InboxConsolidation | null,
+    lifecycle: Lifecycle | null,
+    now: Date,
+    cfg?: OpsAlertSubsidiary,
+  ) {
+    const block = await this.buildBlock(level, alert.subsidiaryId, st, cons, lifecycle, now);
+    const uploaders = await this.usualUploaders(alert.subsidiaryId);
+    const title = `${level >= 3 ? '🚨' : '⏰'} ${block.step} pendiente · ${block.subsidiaryName}`;
+    const text = buildAlertMessage(block, uploaders);
+    const event = {
       type: 'operacion.alertas',
       title,
-      body,
+      body: text.replace(/\*/g, ''),
       severity: (level >= 2 ? 'error' : 'warning') as 'error' | 'warning',
-      category: 'operacion' as const,
-      link: '/correos/bandeja',
+      link: '/correos/seguimiento',
       entityId: alert.inboxConsolidationId ?? undefined,
-      subsidiaryId: alert.subsidiaryId,
-      excludeActor: false,
     };
 
     // Grupos generales: se juntan y se manda UN mensaje al final de la revisión.
     const settings = await this.getSettings();
-    if (level >= (settings.alertGroupsLevel ?? 1)) {
-      this.digest.push({
-        level,
-        subsidiaryName: subName,
-        step,
-        consNumber: cons?.consNumber ?? null,
-        minutesLate,
-        pct: st.pct,
-      });
-    }
+    if (level >= (settings.alertGroupsLevel ?? 1)) this.digest.push(block);
 
     // Cada envío queda en el historial de Correos (origen: alerta, lo manda el sistema).
     const ctx = { origin: 'alerta' as const, sentById: null, sentByName: null, subsidiaryId: alert.subsidiaryId, consNumber: cons?.consNumber ?? null, inboxMessageId: cons?.inboxMessageId ?? null };
-    const event = { type: base.type, title, body, severity: base.severity, link: base.link, entityId: base.entityId };
 
     // Nivel 1 en adelante: usuarios de la sucursal (campana).
     const users = await this.subsidiaryUsers(alert.subsidiaryId);
@@ -365,7 +416,6 @@ export class OpsAlertsService {
     if (level >= 3) {
       const supers: any[] = await this.ds.query("SELECT id FROM `user` WHERE active = 1 AND LOWER(role) IN ('superadmin', 'superamin')");
       if (supers.length) await this.sendLog.notifyUsers(supers.map((u) => u.id), event, ctx, false);
-      const text = `${title}\n${body}`;
       for (const n of cfg?.whatsappNumbers ?? []) await this.sendLog.whatsappTo({ id: n, name: n }, text, ctx, title);
       for (const g of cfg?.whatsappGroups ?? []) await this.sendLog.whatsappTo(g, text, ctx, title);
     }
@@ -384,16 +434,51 @@ export class OpsAlertsService {
     return groups;
   }
 
-  private async sendDigest(now: Date) {
+  private async sendDigest(now: Date, blocks: AlertBlock[] = this.digest, opts: { test?: boolean; sentBy?: { id: string | null; name: string | null } } = {}) {
     const groups = await this.generalGroups();
     if (!groups.length) {
       this.logger.warn('[ops-alerts] alertas a grupos: no hay grupos de WhatsApp elegidos ni encontrados por nombre');
-      return;
+      return { sent: 0, groups: 0 };
     }
-    const text = buildAlertDigest(this.digest, now);
-    const subs = [...new Set(this.digest.map((d) => d.subsidiaryName))];
-    const ctx = { origin: 'alerta' as const, sentById: null, sentByName: null, subsidiaryId: null, consNumber: null };
-    for (const g of groups) await this.sendLog.whatsappTo(g, text, ctx, `Alertas operativas (${this.digest.length}) · ${subs.join(', ')}`.slice(0, 255));
+    const uploaders = new Map<string, string[]>();
+    for (const id of new Set(blocks.map((b) => b.subsidiaryId))) uploaders.set(id, await this.usualUploaders(id));
+    const text = buildAlertDigest(blocks, uploaders, now, { test: opts.test });
+    const subs = [...new Set(blocks.map((d) => d.subsidiaryName))];
+    const ctx = { origin: 'alerta' as const, sentById: opts.sentBy?.id ?? null, sentByName: opts.sentBy?.name ?? null, subsidiaryId: null, consNumber: null };
+    const title = `${opts.test ? 'Prueba de alertas' : 'Alertas operativas'} (${blocks.length}) · ${subs.join(', ')}`.slice(0, 255);
+    for (const g of groups) await this.sendLog.whatsappTo(g, text, ctx, title);
+    return { sent: blocks.length, groups: groups.length, text };
+  }
+
+  /**
+   * Prueba (SOLO en desarrollo): arma el mensaje de grupos con TODO lo vencido en este momento
+   * (aunque ya se haya avisado o venga de antes de encender) y lo manda; en desarrollo llega al
+   * número de prueba. No toca el registro de alertas.
+   */
+  async testDigest(user: { id: string | null; name: string | null }, now = new Date()) {
+    if (!devWhatsappRedirect(process.env)) throw new BadRequestException('La prueba de alertas solo se puede usar en desarrollo');
+    const s = await this.getSettings();
+    this.uploaderCache.clear();
+    const cfg = await this.cfgMap();
+    const list = await this.recentConsolidations(s, now);
+    const lc = await this.lifecycle.forConsolidations(list);
+    const blocks: AlertBlock[] = [];
+    for (const c of list) {
+      for (const st of computeSteps(lc.get(c.id) as Lifecycle, s, this.stepsOf(cfg.get(c.subsidiaryId as string)))) {
+        if (st.done) continue;
+        const level = alertLevel(st.dueAt, now, s);
+        if (level > 0) blocks.push(await this.buildBlock(level, c.subsidiaryId as string, st, c, lc.get(c.id) ?? null, now));
+      }
+    }
+    const day = localDay(now);
+    const dueAt = atLocalTime(day, s.inventoryTime);
+    for (const subsidiaryId of new Set<string>([...list.map((c) => c.subsidiaryId as string), ...cfg.keys()])) {
+      if (!this.stepsOf(cfg.get(subsidiaryId)).inventory || (await this.inventoryDoneAt(subsidiaryId, day))) continue;
+      const level = alertLevel(dueAt, now, s);
+      if (level > 0) blocks.push(await this.buildBlock(level, subsidiaryId, { step: 'inventory', dueAt, pct: 0 }, null, null, now));
+    }
+    if (!blocks.length) return { sent: 0, groups: 0, text: null, message: 'No hay nada vencido en este momento' };
+    return this.sendDigest(now, blocks, { test: true, sentBy: user });
   }
 
   /** Alertas abiertas (para pantallas), limitadas a las sucursales visibles. */
