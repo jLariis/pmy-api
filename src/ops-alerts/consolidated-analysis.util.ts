@@ -1,3 +1,4 @@
+import { hermosilloDateTimeText } from '../common/hermosillo-text.util';
 /**
  * Análisis de un consolidado que llegó por correo, guía por guía: qué falta o está fuera de orden
  * (no subido, rutas sin desembarque, entregadas sin pasar por nosotros…). Lo usa "Mandar aviso":
@@ -43,7 +44,12 @@ const FINAL = new Set([...DELIVERED, 'devuelto_a_fedex', 'retorno_abandono_fedex
 const MAX_SAMPLES = 10;
 
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
-const ago = (min: number) => (min < 60 ? `${min} min` : min < 1440 ? `${Math.floor(min / 60)} h` : `${Math.floor(min / 1440)} día(s)`);
+const ago = (min: number) => {
+  if (min < 60) return `${min} min`;
+  if (min < 1440) return `${Math.floor(min / 60)} h`;
+  const d = Math.floor(min / 1440);
+  return `${d} ${d === 1 ? 'día' : 'días'}`;
+};
 
 export function analyzeConsolidated(input: AnalysisInput): Finding[] {
   const g = input.guides;
@@ -104,7 +110,8 @@ export interface NoticeMessageInput {
   withSamples: boolean;
 }
 
-const fmt = (d: Date) => d.toLocaleString('es-MX', { timeZone: 'America/Hermosillo', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+/** Siempre hora de Hermosillo: "07 de Octubre a las 12:39 p.m.". */
+const fmt = (d: Date) => hermosilloDateTimeText(d);
 const ICON: Record<Finding['severity'], string> = { alta: '🔴', media: '🟠', info: '🟢' };
 
 /** Texto del aviso (WhatsApp / campana / correo). */
@@ -112,7 +119,7 @@ export function buildNoticeMessage(i: NoticeMessageInput): string {
   const p = i.progress;
   const lines = [
     `📣 *Aviso · ${i.subsidiaryName}*`,
-    `${i.kindLabel} ${i.consNumber} · llegó ${fmt(i.receivedAt)}`,
+    `${i.kindLabel} ${i.consNumber} · llegó el ${fmt(i.receivedAt)}`,
     p.total ? `Guías: ${p.total} · desembarque ${p.unloaded} · en ruta ${p.routed} · con cierre ${p.closed}` : 'Guías: no se ha subido',
     '',
     ...i.findings.map((f) => {

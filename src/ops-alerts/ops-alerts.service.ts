@@ -8,6 +8,7 @@ import { LifecycleService } from './lifecycle.service';
 import { buildAlertDigest, DigestLine } from './alert-digest.util';
 import { SendLogService } from './send-log.service';
 import { DEFAULT_UPLOAD_GROUPS } from '../inbox/upload-message.util';
+import { hermosilloDateTimeText } from '../common/hermosillo-text.util';
 import {
   alertLevel,
   atLocalTime,
@@ -33,7 +34,8 @@ export interface EvaluateReport {
   resolved: number;
 }
 
-const fmt = (d: Date) => d.toLocaleString('es-MX', { timeZone: 'America/Hermosillo', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+/** Siempre hora de Hermosillo: "07 de Octubre a las 12:39 p.m.". */
+const fmt = (d: Date) => hermosilloDateTimeText(d);
 const late = (min: number) => (min < 60 ? `${min} min` : `${Math.floor(min / 60)} h ${min % 60} min`);
 
 /**
@@ -321,7 +323,7 @@ export class OpsAlertsService {
     const what = cons
       ? `Consolidado ${cons.consNumber}${cons.announcedCount ? ` (${cons.announcedCount} guías)` : ''}, llegó el ${fmt(cons.receivedAt)}.`
       : `Hoy no se ha registrado inventario.`;
-    const body = `${what} Vencía ${fmt(st.dueAt)}${st.pct > 0 && st.pct < 100 ? `; va al ${st.pct}%` : ''}. Lleva ${late(minutesLate)} de atraso.`;
+    const body = `${what} Vencía el ${fmt(st.dueAt)}${st.pct > 0 && st.pct < 100 ? `; va al ${st.pct}%` : ''}. Lleva ${late(minutesLate)} de atraso.`;
     const base = {
       type: 'operacion.alertas',
       title,

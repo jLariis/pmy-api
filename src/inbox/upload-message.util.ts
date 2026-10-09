@@ -1,3 +1,4 @@
+import { hermosilloDateTimeText } from '../common/hermosillo-text.util';
 /**
  * Texto de WhatsApp que avisa a los grupos de monitoreo cuando alguien sube guías
  * desde la Bandeja de correos. Función pura (se prueba sin WhatsApp).
@@ -30,7 +31,8 @@ export interface UploadMessageInput {
 }
 
 const KIND: Record<UploadMessageInput['kind'], string> = { master: 'Carga master', aereo: 'Salida aérea', f2: 'F2 / carga' };
-const fmt = (d: Date) => d.toLocaleString('es-MX', { timeZone: 'America/Hermosillo', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+/** Siempre hora de Hermosillo: "07 de Octubre a las 12:39 p.m.". */
+const fmt = (d: Date) => hermosilloDateTimeText(d);
 const ddmmyyyy = (iso: string) => {
   const [y, m, d] = iso.split('-');
   return `${d}/${m}/${y}`;
@@ -64,7 +66,7 @@ export function buildUploadMessage(i: UploadMessageInput): string {
   }
   lines.push(extra.join('   '));
 
-  lines.push(`📧 Correo "${i.email.subject}" de ${i.email.from} · llegó ${fmt(i.email.receivedAt)} · subido a los ${human(minutes(i.email.receivedAt, i.uploadedAt))}`);
+  lines.push(`📧 Correo "${i.email.subject}" de ${i.email.from} · llegó el ${fmt(i.email.receivedAt)} · subido a los ${human(minutes(i.email.receivedAt, i.uploadedAt))}`);
   return lines.join('\n');
 }
 

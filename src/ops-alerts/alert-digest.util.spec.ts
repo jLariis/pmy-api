@@ -12,7 +12,7 @@ describe('buildAlertDigest', () => {
       ],
       now,
     );
-    expect(text.split('\n')[0]).toBe('🚨 *Alertas operativas* · 07:15 p.m.');
+    expect(text.split('\n')[0]).toBe('🚨 *Alertas operativas* · 7:15 p.m.');
     expect(text).toContain('3 pendientes nuevos o con más atraso:');
     expect(text.indexOf('*Cabo San Lucas*')).toBeLessThan(text.indexOf('*La Paz*'));
     expect(text).toContain('🚨 Desembarque · 305822252547 — 1 h 15 min de atraso (va al 40%)');

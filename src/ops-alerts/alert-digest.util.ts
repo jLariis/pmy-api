@@ -3,6 +3,7 @@
  * las alertas que se abrieron o subieron de nivel, agrupadas por sucursal. Así los grupos no se
  * llenan de un mensaje por consolidado.
  */
+import { hermosilloTimeText } from '../common/hermosillo-text.util';
 
 export interface DigestLine {
   level: number; // 1 vencido · 2 +30 min · 3 +60 min
@@ -18,7 +19,7 @@ const ICON: Record<number, string> = { 1: '⏰', 2: '⚠️', 3: '🚨' };
 export const lateText = (min: number) => (min < 60 ? `${min} min` : `${Math.floor(min / 60)} h${min % 60 ? ` ${min % 60} min` : ''}`);
 
 export function buildAlertDigest(lines: DigestLine[], now: Date): string {
-  const hour = now.toLocaleTimeString('es-MX', { timeZone: 'America/Hermosillo', hour: '2-digit', minute: '2-digit' });
+  const hour = hermosilloTimeText(now);
   const worst = Math.max(...lines.map((l) => l.level));
   const bySub = new Map<string, DigestLine[]>();
   for (const l of lines) bySub.set(l.subsidiaryName, [...(bySub.get(l.subsidiaryName) ?? []), l]);

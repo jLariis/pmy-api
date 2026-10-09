@@ -51,7 +51,7 @@ describe('buildNoticeMessage', () => {
       note: 'Revisen hoy, por favor', senderName: 'Javier Laris', withSamples: true,
     });
     expect(text).toContain('📣 *Aviso · Cabo San Lucas*');
-    expect(text).toContain('Master 305822252547 · llegó');
+    expect(text).toContain('Master 305822252547 · llegó el 08 de Octubre a las 10:00 a.m.');
     expect(text).toContain('Guías: 2 · desembarque 0 · en ruta 2 · con cierre 0');
     expect(text).toContain('🔴 2 guías salieron a ruta sin desembarque.\n   A, B');
     expect(text).toContain('📝 Revisen hoy, por favor');
