@@ -31,6 +31,13 @@ export class ManualCountDto {
   @IsString({ each: true, message: 'Cada guía de DEX08 debe ser texto.' })
   dex08: string[];
 
+  /** Recolecciones contadas a mano (opcional: vacío = no se revisan). */
+  @IsOptional()
+  @IsArray({ message: 'La lista de recolecciones no es válida.' })
+  @ArrayMaxSize(MAX_PER_LIST, { message: `Máximo ${MAX_PER_LIST} guías en recolecciones.` })
+  @IsString({ each: true, message: 'Cada guía de recolección debe ser texto.' })
+  recolecciones?: string[];
+
   /** 'day' (default) revisa un día; 'week' revisa lunes–domingo de la semana de la fecha. */
   @IsOptional()
   @IsIn(['day', 'week'], { message: 'La revisión debe ser por día o por semana.' })

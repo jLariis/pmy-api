@@ -10,8 +10,12 @@ import { diagnoseGuide, summarize } from '../logic/manual-count-diagnose.util';
 import { pickShipmentRowForDay } from '../logic/manual-count-facts.util';
 import { buildManualCountPrompt } from '../logic/manual-count-prompt.util';
 import { assignWeekMarks, weekDaysOf } from '../logic/manual-count-week.util';
+import { collectionDayOf, diagnoseCollection, pickedUpDayOf, summarizeCollections } from '../logic/manual-count-collection.util';
 import {
   Cause,
+  CollectionFacts,
+  CollectionReport,
+  CollectionRow,
   DayOutcome,
   DiagnosisRow,
   GuideFacts,
@@ -125,10 +129,80 @@ export class ManualCountService {
     }
     rows.sort((a, b) => a.day!.localeCompare(b.day!) || a.trackingNumber.localeCompare(b.trackingNumber));
 
+    // Recolecciones: solo si el usuario pegó alguna.
+    const recs = clean(lists.recolecciones ?? []);
+    const collections = recs.length ? await this.diagnoseCollections(subsidiaryId, days, recs, expectedCost) : undefined;
+
     return {
       subsidiaryId, subsidiaryName, day: days[0], scope, from: days[0], to: days[days.length - 1],
-      fedexFailures, totals: summarize(rows), rows,
+      fedexFailures, totals: summarize(rows), rows, ...(collections ? { collections } : {}),
     };
+  }
+
+  /**
+   * Recolecciones contadas vs sistema: las contadas + las registradas en la sucursal esos
+   * días (las que no se contaron salen como diferencia). Read-only.
+   */
+  private async diagnoseCollections(subsidiaryId: string, days: string[], counted: string[], expectedCost: number): Promise<CollectionReport> {
+    const { start } = this.dayWindow(days[0]);
+    const { end } = this.dayWindow(days[days.length - 1]);
+    const countedSet = new Set(counted);
+
+    const sysRows = await this.dataSource.query(
+      `SELECT DISTINCT trackingNumber AS tn FROM collection WHERE subsidiaryId = ? AND createdAt >= ? AND createdAt < ?`,
+      [subsidiaryId, start, end],
+    );
+    const tns = [...new Set([...counted, ...sysRows.map((r: any) => String(r.tn)).filter(Boolean)])];
+    const ph = inList(tns.length);
+
+    const [regRows, incRows, closureRows] = await Promise.all([
+      this.dataSource.query(`SELECT trackingNumber AS tn, subsidiaryId, createdAt FROM collection WHERE trackingNumber IN (${ph})`, tns),
+      this.dataSource.query(
+        `SELECT id, trackingNumber AS tn, date, cost, active, sourceType FROM income WHERE sourceType = 'collection' AND trackingNumber IN (${ph})`,
+        tns,
+      ),
+      // Cierres de rutas 31.5 de la sucursal cerca de esos días (sus recolecciones no se cobran).
+      this.dataSource.query(
+        `SELECT rc.collections FROM route_closure rc JOIN package_dispatch pd ON pd.id = rc.package_dispatch_id
+          WHERE pd.subsidiaryId = ? AND pd.is315 = 1 AND rc.createdAt >= ? AND rc.createdAt < ?`,
+        [subsidiaryId, new Date(start.getTime() - 7 * 86400000), new Date(end.getTime() + 7 * 86400000)],
+      ),
+    ]);
+    const in315 = new Set<string>();
+    for (const r of closureRows) {
+      const list = typeof r.collections === 'string' ? safeJson(r.collections) : r.collections;
+      for (const tn of Array.isArray(list) ? list : []) in315.add(String(tn));
+    }
+
+    await this.ensureFedex(tns);
+    const facts = new Map<string, CollectionFacts>();
+    for (const tn of tns) {
+      const c = this.cached(tn);
+      facts.set(tn, {
+        trackingNumber: tn,
+        registrations: [],
+        is315: in315.has(tn),
+        incomes: [],
+        fedex: c ? { ok: c.ok, pickedUpDay: c.ok ? pickedUpDayOf(selectLatestGeneration(c.results), toHermosilloDateString) : null } : { ok: false, pickedUpDay: null },
+      });
+    }
+    for (const r of regRows) facts.get(String(r.tn))?.registrations.push({ subsidiaryId: r.subsidiaryId ?? null, day: toHermosilloDateString(new Date(r.createdAt)) });
+    for (const r of incRows) {
+      facts.get(String(r.tn))?.incomes.push({
+        id: String(r.id),
+        day: effectiveLocalDay({ sourceType: r.sourceType, date: new Date(r.date) }),
+        cost: Number(r.cost ?? 0),
+        active: Number(r.active) === 1,
+      });
+    }
+
+    const rows: CollectionRow[] = tns.map((tn) => {
+      const f = facts.get(tn)!;
+      const day = days.length === 1 ? days[0] : collectionDayOf(f, subsidiaryId, days);
+      return diagnoseCollection(countedSet.has(tn), f, { day, subsidiaryId, expectedCost });
+    });
+    rows.sort((a, b) => a.day.localeCompare(b.day) || a.trackingNumber.localeCompare(b.trackingNumber));
+    return { totals: summarizeCollections(rows), rows };
   }
 
   async prompt(subsidiaryId: string, day: string, lists: ManualLists, causes: Cause[] | undefined, scope: ManualCountScope = 'day'): Promise<{ prompt: string }> {
@@ -358,6 +432,10 @@ export class ManualCountService {
       this.logger.warn(`[ManualCount] FedEx falló para un bloque de ${tns.length}: ${e?.message}`);
     }
   }
+}
+
+function safeJson(s: string): unknown {
+  try { return JSON.parse(s); } catch { return null; }
 }
 
 /** 'YYYY-MM-DD' de una columna DATE / día-solo (sin corrimiento de zona). */
