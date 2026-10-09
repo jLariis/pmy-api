@@ -14,6 +14,22 @@ export interface SendContext {
   inboxMessageId?: string | null;
 }
 
+/** Entornos de desarrollo (mismo criterio que el correo: en dev todo va a sistemas). */
+const DEV_ENVS = ['dev', 'develop', 'development', 'local'];
+/** Número de prueba con lada de México; se cambia con WHATSAPP_TEST_NUMBER. */
+const DEFAULT_TEST_NUMBER = '526444230374';
+
+/**
+ * En desarrollo los WhatsApp NO salen a grupos ni números reales: van al número de prueba con un
+ * encabezado que dice a quién iban. Producción (o NODE_ENV vacío / desconocido) manda normal.
+ */
+export function devWhatsappRedirect(env: Record<string, string | undefined>): string | null {
+  const nodeEnv = String(env.NODE_ENV ?? '').trim().toLowerCase();
+  if (!DEV_ENVS.includes(nodeEnv)) return null;
+  const n = String(env.WHATSAPP_TEST_NUMBER ?? '').replace(/\D/g, '');
+  return n.length >= 10 ? n : DEFAULT_TEST_NUMBER;
+}
+
 export interface SendResult {
   channel: SendChannel;
   recipientName: string | null;
@@ -45,19 +61,23 @@ export class SendLogService {
     }
   }
 
-  /** WhatsApp a un grupo (`@g.us`) o número; registra si salió o el error. */
+  /** WhatsApp a un grupo (`@g.us`) o número; registra si salió o el error. En desarrollo va al número de prueba. */
   async whatsappTo(to: { id: string; name?: string | null }, text: string, ctx: SendContext, title: string | null = null): Promise<SendResult> {
     let status: SendResult['status'] = 'enviado';
     let error: string | null = null;
+    const testNumber = devWhatsappRedirect(process.env);
+    const target = testNumber ?? to.id;
+    const outText = testNumber ? `🧪 *PRUEBA (desarrollo)* · iba para: ${to.name ?? to.id}\n\n${text}` : text;
+    const shownName = testNumber ? `${to.name ?? to.id} → prueba ${testNumber}` : to.name ?? to.id;
     try {
-      await this.whatsapp.sendText(to.id, text);
+      await this.whatsapp.sendText(target, outText);
     } catch (e: any) {
       status = 'fallido';
       error = String(e?.message ?? e).slice(0, 500);
       this.logger.warn(`[correos] WhatsApp a ${to.name ?? to.id}: ${error}`);
     }
-    await this.save([{ ...this.base(ctx), channel: 'whatsapp', recipientType: to.id.endsWith('@g.us') ? 'grupo' : 'numero', recipientId: to.id, recipientName: to.name ?? to.id, title, body: text, status, error }]);
-    return { channel: 'whatsapp', recipientName: to.name ?? to.id, status, error };
+    await this.save([{ ...this.base(ctx), channel: 'whatsapp', recipientType: to.id.endsWith('@g.us') ? 'grupo' : 'numero', recipientId: to.id, recipientName: shownName, title, body: outText, status, error }]);
+    return { channel: 'whatsapp', recipientName: shownName, status, error };
   }
 
   /** Campana (y correo si `email`) a usuarios; una fila por usuario y canal. */
