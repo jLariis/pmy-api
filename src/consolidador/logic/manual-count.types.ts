@@ -136,10 +136,67 @@ export interface ManualCountReport {
   fedexFailures: number;
   totals: ManualCountTotals;
   rows: DiagnosisRow[];
+  /** Solo si el usuario pegó recolecciones. */
+  collections?: CollectionReport;
 }
 
 export interface ManualLists {
   pod: string[];
   dex07: string[];
   dex08: string[];
+  /** Recolecciones contadas a mano (opcional: si viene vacío no se revisan). */
+  recolecciones?: string[];
+}
+
+// ───────────────────────── Recolecciones ─────────────────────────
+
+export type CollectionCause =
+  | 'REC_NO_EXISTE'
+  | 'REC_OTRA_SUCURSAL'
+  | 'REC_OTRO_DIA'
+  | 'REC_FALTA_CONTEO'
+  | 'REC_SIN_COBRO'
+  | 'REC_DUPLICADO'
+  | 'REC_MONTO'
+  | 'REC_COBRO_OTRO_DIA'
+  | 'REC_COBRO_315'
+  | 'REC_REGLA_315';
+
+/** Hechos de una guía recolectada (sistema + FedEx), ya juntados por el servicio. */
+export interface CollectionFacts {
+  trackingNumber: string;
+  /** Registros como recolección (cualquier sucursal), con su día local Hermosillo. */
+  registrations: { subsidiaryId: string | null; day: string }[];
+  /** Vino en el cierre de una ruta 31.5 (no se cobra). */
+  is315: boolean;
+  /** Cobros de recolección de la guía (activos e inactivos). */
+  incomes: { id: string; day: string; cost: number; active: boolean }[];
+  /** FedEx en vivo: día en que la marcó "Picked up" (null si no aparece); ok=false si no respondió. */
+  fedex: { ok: boolean; pickedUpDay: string | null } | null;
+}
+
+export interface CollectionRow {
+  trackingNumber: string;
+  day: string;
+  counted: boolean;
+  /** "Registrada el 08/10" / "No registrada" / "Registrada en otra sucursal". */
+  systemLabel: string;
+  /** "Recolectada el 08/10" / "Sin recolección en FedEx" / "FedEx no respondió". */
+  fedexLabel: string;
+  /** Cobros activos (monto) o "Sin cobro". */
+  chargedLabel: string;
+  /** FedEx la marcó "Picked up" ese mismo día. */
+  pickedUpThatDay: boolean;
+  /** Cobros de recolección activos. */
+  chargedCount: number;
+  verdict: Verdict;
+  cause: CollectionCause | null;
+  explanation: string;
+  chain: ChainStep[];
+  incomeIds: string[];
+}
+
+export interface CollectionReport {
+  totals: { manual: number; fedex: number; charged: number; byVerdict: Record<Verdict, number> };
+  rows: CollectionRow[];
 }
