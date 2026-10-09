@@ -21,7 +21,11 @@ export class OpsAlertSettings {
   @Column({ type: 'datetime', nullable: true }) enabledAt: Date | null;
   /** WhatsApp a grupos cuando alguien sube guías desde la bandeja de correos. */
   @Column({ type: 'boolean', default: true }) uploadNotifyEnabled: boolean;
+  /** Grupos GENERALES de WhatsApp (aviso de subida y alertas). Vacío = "PMY (Monitoreo)" y "Sistemas PMY" por nombre. */
   @Column({ type: 'json', nullable: true }) uploadNotifyGroups: { id: string; name: string }[] | null;
+  /** Alertas a los grupos generales: un mensaje agrupado por revisión, desde este nivel (1 vencido · 2 · 3). */
+  @Column({ type: 'boolean', default: true }) alertGroupsEnabled: boolean;
+  @Column({ type: 'int', default: 1 }) alertGroupsLevel: number;
   @Column({ type: 'varchar', length: 36, nullable: true }) updatedById: string | null;
   @UpdateDateColumn() updatedAt: Date;
 }

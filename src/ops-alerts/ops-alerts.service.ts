@@ -6,6 +6,8 @@ import { InboxConsolidation } from '../entities/inbox-consolidation.entity';
 import { NotificationsService } from '../notifications/notifications.service';
 import { WhatsappGatewayService } from '../whatsapp-gateway/whatsapp-gateway.service';
 import { LifecycleService } from './lifecycle.service';
+import { buildAlertDigest, DigestLine } from './alert-digest.util';
+import { DEFAULT_UPLOAD_GROUPS } from '../inbox/upload-message.util';
 import {
   alertLevel,
   atLocalTime,
@@ -42,6 +44,8 @@ const late = (min: number) => (min < 60 ? `${min} min` : `${Math.floor(min / 60)
 export class OpsAlertsService {
   private readonly logger = new Logger(OpsAlertsService.name);
   private running = false;
+  /** Alertas nuevas o que subieron de nivel en la revisión en curso (para el mensaje a grupos). */
+  private digest: DigestLine[] = [];
 
   constructor(
     @InjectRepository(OpsAlertSettings) private readonly settingsRepo: Repository<OpsAlertSettings>,
@@ -82,6 +86,12 @@ export class OpsAlertsService {
     if (patch.uploadNotifyEnabled !== undefined) s.uploadNotifyEnabled = !!patch.uploadNotifyEnabled;
     if (patch.uploadNotifyGroups !== undefined) {
       s.uploadNotifyGroups = (patch.uploadNotifyGroups ?? []).filter((g) => g?.id?.endsWith('@g.us')).map((g) => ({ id: g.id, name: String(g.name ?? '') }));
+    }
+    if (patch.alertGroupsEnabled !== undefined) s.alertGroupsEnabled = !!patch.alertGroupsEnabled;
+    if (patch.alertGroupsLevel !== undefined) {
+      const n = Number(patch.alertGroupsLevel);
+      if (![1, 2, 3].includes(n)) throw new BadRequestException('Elige desde qué aviso se manda a los grupos');
+      s.alertGroupsLevel = n;
     }
     if (patch.enabled !== undefined) {
       if (!!patch.enabled && !s.enabled) s.enabledAt = new Date();
@@ -199,6 +209,7 @@ export class OpsAlertsService {
     const s = await this.getSettings();
     if (!s.enabled && !force) return { ...report, skipped: 'Las alertas están apagadas' };
     this.running = true;
+    this.digest = [];
     try {
       const active = inActiveHours(now, s);
       const cfg = await this.cfgMap();
@@ -212,6 +223,7 @@ export class OpsAlertsService {
         }
       }
       await this.evaluateInventory(s, now, active, cfg, list, report);
+      if (this.digest.length && s.alertGroupsEnabled) await this.sendDigest(now);
     } finally {
       this.running = false;
     }
@@ -322,6 +334,19 @@ export class OpsAlertsService {
       excludeActor: false,
     };
 
+    // Grupos generales: se juntan y se manda UN mensaje al final de la revisión.
+    const settings = await this.getSettings();
+    if (level >= (settings.alertGroupsLevel ?? 1)) {
+      this.digest.push({
+        level,
+        subsidiaryName: subName,
+        step,
+        consNumber: cons?.consNumber ?? null,
+        minutesLate,
+        pct: st.pct,
+      });
+    }
+
     // Nivel 1 en adelante: usuarios de la sucursal (campana).
     const users = await this.subsidiaryUsers(alert.subsidiaryId);
     if (users.length) await this.notifications.emit({ ...base, audience: { userIds: users }, channels: ['bell'] });
@@ -340,6 +365,35 @@ export class OpsAlertsService {
         } catch (e: any) {
           this.logger.warn(`[ops-alerts] WhatsApp a ${to}: ${e?.message ?? e}`);
         }
+      }
+    }
+  }
+
+  /** Grupos generales de WhatsApp: los elegidos en Configuración o, si no hay, los conocidos por nombre. */
+  async generalGroups(): Promise<{ id: string; name: string }[]> {
+    const s = await this.getSettings();
+    const groups = [...(s.uploadNotifyGroups ?? [])];
+    if (!groups.length) {
+      for (const name of DEFAULT_UPLOAD_GROUPS) {
+        const id = await this.whatsapp.findGroupJid(name).catch(() => null);
+        if (id && !groups.some((g) => g.id === id)) groups.push({ id, name });
+      }
+    }
+    return groups;
+  }
+
+  private async sendDigest(now: Date) {
+    const groups = await this.generalGroups();
+    if (!groups.length) {
+      this.logger.warn('[ops-alerts] alertas a grupos: no hay grupos de WhatsApp elegidos ni encontrados por nombre');
+      return;
+    }
+    const text = buildAlertDigest(this.digest, now);
+    for (const g of groups) {
+      try {
+        await this.whatsapp.sendText(g.id, text);
+      } catch (e: any) {
+        this.logger.warn(`[ops-alerts] alertas al grupo "${g.name}": ${e?.message ?? e}`);
       }
     }
   }
