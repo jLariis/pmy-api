@@ -86,3 +86,17 @@ export function resolveCode44ScanTime(latestStatusDetail: any, scanEvents: any[]
   const times = localFacilityScanTimes(latestStatusDetail, scanEvents);
   return times.length ? Math.max(...times) : null;
 }
+
+/**
+ * Timestamps (ms) de TODO escaneo local de FedEx que da visibilidad: el 44 (en estación, ver
+ * `localFacilityScanTimes`) y el 67 (tercero en camino, `scanEvent.exceptionCode='67'`). Son dos
+ * fases del mismo paquete y una sucursal puede recibir ambas (satélites de Obregón): el día cuenta
+ * si FedEx dio cualquiera de los dos, sin importar cuál tenga configurado la sucursal.
+ */
+export function localScanCodeTimes(latestStatusDetail: any, scanEvents: any[]): number[] {
+  const t67 = (scanEvents || [])
+    .filter((e) => String(e?.exceptionCode ?? '').trim() === '67' && e?.date)
+    .map((e) => new Date(e.date).getTime())
+    .filter((t) => !isNaN(t));
+  return [...new Set([...localFacilityScanTimes(latestStatusDetail, scanEvents), ...t67])];
+}

@@ -7,16 +7,23 @@ import { IncomeStatus } from 'src/common/enums/income-status.enum';
 
 describe('Code44Rule', () => {
   const rule = new Code44Rule();
-  it('emite efecto code44 si la sucursal monitorea 44 y hay code44At', () => {
+  it('emite efecto code44 cuando FedEx trae code44At', () => {
     const ctx = makeCtx({ current: ShipmentStatusType.PENDIENTE, proposed: ShipmentStatusType.PENDIENTE, subsidiary: { monitorFedexCode44: true } });
     ctx.normalized.header.code44At = new Date('2026-08-20T10:00:00Z');
     rule.apply(ctx);
     expect(ctx.deferredEffects).toHaveLength(1);
     expect(ctx.deferredEffects[0].type).toBe('code44');
   });
-  it('no emite si la sucursal no monitorea 44', () => {
+  // Caso 2026-10-09: Huatabampo/Villa Juárez/Navojoa/Pueblo Yaqui están configuradas en 67 pero
+  // FedEx les reporta el 44; se perdía. El 44 es un hecho de FedEx: se guarda sin importar la config.
+  it('emite aunque la sucursal esté configurada en 67', () => {
     const ctx = makeCtx({ current: ShipmentStatusType.PENDIENTE, proposed: ShipmentStatusType.PENDIENTE, subsidiary: { monitorFedexCode44: false } });
     ctx.normalized.header.code44At = new Date();
+    rule.apply(ctx);
+    expect(ctx.deferredEffects).toHaveLength(1);
+  });
+  it('no emite si FedEx no trae el 44', () => {
+    const ctx = makeCtx({ current: ShipmentStatusType.PENDIENTE, proposed: ShipmentStatusType.PENDIENTE, subsidiary: { monitorFedexCode44: true } });
     rule.apply(ctx);
     expect(ctx.deferredEffects).toHaveLength(0);
   });

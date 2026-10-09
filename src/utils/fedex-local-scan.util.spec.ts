@@ -1,4 +1,4 @@
-import { resolveCode44ScanTime, localFacilityScanTimes, is44LocalScan } from './fedex-local-scan.util';
+import { resolveCode44ScanTime, localScanCodeTimes, localFacilityScanTimes, is44LocalScan } from './fedex-local-scan.util';
 
 /**
  * Código 44 = el paquete está en la ESTACIÓN LOCAL de FedEx, de nuestro lado. FedEx lo
@@ -62,5 +62,23 @@ describe('resolveCode44ScanTime', () => {
 
   it('sin el código 44: null (aunque haya escaneo local)', () => {
     expect(resolveCode44ScanTime({ ancillaryDetails: [{ reason: '07' }] }, [localScan('2026-08-25T17:40:00-07:00')])).toBeNull();
+  });
+});
+
+describe('localScanCodeTimes', () => {
+  const localScan = (date: string) => ({ date, eventType: 'AR', eventDescription: 'At local FedEx facility', exceptionCode: '' });
+  const vendor67 = (date: string) => ({ date, eventType: 'IT', eventDescription: 'On the way', exceptionCode: '67' });
+
+  // Caso real 519750418785 (Huatabampo, configurada en 67): 67 el 01-oct y luego 44 diario.
+  it('junta los días del 67 y los del 44', () => {
+    const events = [localScan('2026-10-08T21:36:00-07:00'), vendor67('2026-10-01T09:26:00-07:00')];
+    expect(localScanCodeTimes({ ancillaryDetails: [{ reason: '44' }] }, events).sort()).toEqual(
+      [new Date('2026-10-01T09:26:00-07:00').getTime(), new Date('2026-10-08T21:36:00-07:00').getTime()].sort(),
+    );
+  });
+
+  it('sin reason 44 solo cuenta el 67 (el escaneo local solo no basta)', () => {
+    const events = [localScan('2026-10-08T21:36:00-07:00'), vendor67('2026-10-01T09:26:00-07:00')];
+    expect(localScanCodeTimes({ ancillaryDetails: [{ reason: '67' }] }, events)).toEqual([new Date('2026-10-01T09:26:00-07:00').getTime()]);
   });
 });
