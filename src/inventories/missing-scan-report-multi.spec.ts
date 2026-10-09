@@ -58,6 +58,7 @@ describe('InventoriesService.getMissingScanReportMulti', () => {
     expect(details[0].category).toBe('nunca');
     expect(summary.paquetes).toBe(1);
     expect(summary.nunca).toBe(1);
+    expect(summary.sinCodigo).toBe(0); // los "nunca" no se cuentan dos veces
   });
 
   it('multi-sucursal: cada fila trae su código; sin escaneo usa el configurado', async () => {
@@ -91,18 +92,31 @@ describe('InventoriesService.getMissingScanReportMulti', () => {
     expect(details[0].scanCode).toBe('67');
   });
 
-  it('"hoy" es el día de Hermosillo: escaneo de anoche 21:36 (04:36Z de hoy) es AYER', async () => {
-    jest.useFakeTimers().setSystemTime(new Date('2026-10-09T16:00:00Z')); // 09:00 Hermosillo
-    try {
-      const ship = mkShip({ subId: 's44', trackingNumber: 'A' });
-      ship.statusHistory = [{ exceptionCode: '44', timestamp: new Date('2026-10-09T04:36:00Z') }];
-      const svc = svcWith([SUB44], [ship]);
-      const { details } = await svc.getMissingScanReportMulti(['s44']);
-      expect(details[0].daysSinceLastCode).toBe(1);
-      expect(details[0].category).toBe('sinCodigo');
-    } finally {
-      jest.useRealTimers();
-    }
+  // FedEx escanea de noche (~21:30–23:00 Hermosillo). "Días sin código" = días COMPLETOS que
+  // faltó el escaneo (en hora de Hermosillo); el de hoy todavía no puede existir en la mañana.
+  const at = (now: string, scan: string) => {
+    jest.useFakeTimers().setSystemTime(new Date(now));
+    const ship = mkShip({ subId: 's44', trackingNumber: 'A' });
+    ship.statusHistory = [{ exceptionCode: '44', timestamp: new Date(scan) }];
+    return svcWith([SUB44], [ship]).getMissingScanReportMulti(['s44']);
+  };
+  afterEach(() => jest.useRealTimers());
+
+  it('escaneada anoche (08-oct 21:36) y hoy 09-oct en la mañana → al día (0)', async () => {
+    const { details } = await at('2026-10-09T16:00:00Z', '2026-10-09T04:36:00Z');
+    expect(details[0].daysSinceLastCode).toBe(0);
+    expect(details[0].category).toBe('hoy');
+  });
+
+  it('último escaneo antenoche (07-oct) → 1 día sin código (le faltó el 08-oct)', async () => {
+    const { details } = await at('2026-10-09T16:00:00Z', '2026-10-08T04:58:00Z');
+    expect(details[0].daysSinceLastCode).toBe(1);
+    expect(details[0].category).toBe('sinCodigo');
+  });
+
+  it('escaneada hoy en la noche → al día (0)', async () => {
+    const { details } = await at('2026-10-10T05:30:00Z', '2026-10-10T04:36:00Z');
+    expect(details[0].daysSinceLastCode).toBe(0);
   });
 
   it('candado temporal: consulta SOLO FedEx dados de alta en octubre 2026 (paquetes y cargas)', async () => {

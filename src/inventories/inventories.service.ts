@@ -1205,13 +1205,14 @@ export class InventoriesService {
       }
     }
 
-    // Días calendario en hora de Hermosillo (UTC-7 fijo): el escaneo de las 21:36 de anoche es
-    // 04:36Z de hoy; contado en UTC salía como "hoy" y el de verdad de hoy no existía aún.
+    // "Días sin código" = días COMPLETOS sin escaneo, en hora de Hermosillo (UTC-7 fijo). FedEx
+    // escanea de noche (~21:30–23:00), así que en la mañana el último posible es el de anoche:
+    // escaneada anoche → 0 (al día); antenoche → 1 (le faltó ayer). Hoy en la noche también es 0.
     const herDayMs = (d: Date) => Date.parse(new Date(d.getTime() - 7 * 3600 * 1000).toISOString().slice(0, 10));
     const today = herDayMs(new Date());
     const details = Array.from(byGuide.values()).map(({ rep, isCharge, maxCode, lastCode, codes, historyCount, minCreatedAt, subsidiaryId, scanCode: configuredCode }) => {
       const scanCode = (lastCode as '44' | '67' | null) ?? configuredCode;
-      const daysSinceLastCode = maxCode ? Math.round((today - herDayMs(maxCode)) / 86400000) : null;
+      const daysSinceLastCode = maxCode ? Math.max(0, Math.round((today - herDayMs(maxCode)) / 86400000) - 1) : null;
       const category = maxCode == null ? 'nunca' : daysSinceLastCode === 0 ? 'hoy' : 'sinCodigo';
       const sub = subsidiaryId ? scanBySub.get(subsidiaryId) : undefined;
       return {
@@ -1248,7 +1249,7 @@ export class InventoriesService {
       summary: {
         paquetes: details.length,
         conCodigoHoy,
-        sinCodigo: details.length - conCodigoHoy,
+        sinCodigo: details.length - conCodigoHoy - nunca, // excluye "nunca": las tres suman `paquetes`
         nunca,
       },
       details,
