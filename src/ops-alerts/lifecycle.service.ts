@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { DataSource } from 'typeorm';
 import { InboxConsolidation } from '../entities/inbox-consolidation.entity';
 import { Lifecycle, StepProgress } from './ops-alerts.util';
+import { GuideFact } from './consolidated-analysis.util';
 
 type Agg = { total: number; unloaded: number; unFirst: Date | null; unLast: Date | null; dispatched: number; dFirst: Date | null; dLast: Date | null; closed: number; cFirst: Date | null; cLast: Date | null };
 
@@ -60,6 +61,35 @@ export class LifecycleService {
       out.set(String(r.cons).trim(), a);
     }
     return out;
+  }
+
+  /** Cada guía activa del consolidado: estatus, desembarque, ruta y cierre (para "Mandar aviso"). */
+  async guideFacts(kind: 'master' | 'f2', consNumber: string): Promise<GuideFact[]> {
+    const f2 = kind === 'f2';
+    const head = f2 ? 'charge h' : 'consolidated h';
+    const guides = f2 ? 'charge_shipment g ON g.chargeId = h.id' : 'shipment g ON g.consolidatedId = h.id';
+    const col = f2 ? 'chargeShipmentId' : 'shipmentId';
+    const rows: any[] = await this.ds.query(
+      `SELECT DISTINCT g.id, TRIM(g.trackingNumber) AS tn, g.status, g.unloadingId,
+              EXISTS (SELECT 1 FROM package_dispatch_history ph WHERE ph.${col} = g.id) AS routed,
+              EXISTS (SELECT 1 FROM package_dispatch_history ph JOIN route_closure rc ON rc.package_dispatch_id = ph.dispatchId WHERE ph.${col} = g.id) AS closed
+       FROM ${head} JOIN ${guides}
+       WHERE TRIM(h.consNumber) = ? AND h.active = 1 AND g.active = 1`,
+      [consNumber.trim()],
+    );
+    const byTn = new Map<string, GuideFact>();
+    for (const r of rows) {
+      const prev = byTn.get(r.tn);
+      const fact: GuideFact = {
+        trackingNumber: r.tn,
+        status: r.status ?? null,
+        unloaded: !!r.unloadingId || !!prev?.unloaded,
+        routed: Number(r.routed) === 1 || !!prev?.routed,
+        closed: Number(r.closed) === 1 || !!prev?.closed,
+      };
+      byTn.set(r.tn, fact);
+    }
+    return [...byTn.values()];
   }
 
   /** Recorrido por id de inbox_consolidation. */

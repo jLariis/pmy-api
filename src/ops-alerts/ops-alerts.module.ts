@@ -8,6 +8,9 @@ import { WhatsappGatewayModule } from '../whatsapp-gateway/whatsapp-gateway.modu
 import { LifecycleService } from './lifecycle.service';
 import { OpsAlertsService } from './ops-alerts.service';
 import { OpsAlertsController } from './ops-alerts.controller';
+import { SendLogService } from './send-log.service';
+import { NoticeService } from './notice.service';
+import { CorreoSendLog } from '../entities/correo-send-log.entity';
 
 /** Revisor de alertas operativas cada 5 minutos (respeta el interruptor y el horario activo). */
 @Injectable()
@@ -26,9 +29,9 @@ export class OpsAlertsCron {
 }
 
 @Module({
-  imports: [TypeOrmModule.forFeature([OpsAlert, OpsAlertSettings, OpsAlertSubsidiary, InboxConsolidation]), NotificationsModule, WhatsappGatewayModule],
+  imports: [TypeOrmModule.forFeature([OpsAlert, OpsAlertSettings, OpsAlertSubsidiary, InboxConsolidation, CorreoSendLog]), NotificationsModule, WhatsappGatewayModule],
   controllers: [OpsAlertsController],
-  providers: [LifecycleService, OpsAlertsService, OpsAlertsCron],
-  exports: [OpsAlertsService, LifecycleService],
+  providers: [LifecycleService, OpsAlertsService, OpsAlertsCron, SendLogService, NoticeService],
+  exports: [OpsAlertsService, LifecycleService, SendLogService],
 })
 export class OpsAlertsModule {}

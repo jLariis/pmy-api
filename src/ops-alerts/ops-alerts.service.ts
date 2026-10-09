@@ -3,10 +3,10 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, In, IsNull, MoreThanOrEqual, Not, Repository } from 'typeorm';
 import { OpsAlert, OpsAlertSettings, OpsAlertSubsidiary } from '../entities/ops-alert.entity';
 import { InboxConsolidation } from '../entities/inbox-consolidation.entity';
-import { NotificationsService } from '../notifications/notifications.service';
 import { WhatsappGatewayService } from '../whatsapp-gateway/whatsapp-gateway.service';
 import { LifecycleService } from './lifecycle.service';
 import { buildAlertDigest, DigestLine } from './alert-digest.util';
+import { SendLogService } from './send-log.service';
 import { DEFAULT_UPLOAD_GROUPS } from '../inbox/upload-message.util';
 import {
   alertLevel,
@@ -53,9 +53,9 @@ export class OpsAlertsService {
     @InjectRepository(OpsAlert) private readonly alertRepo: Repository<OpsAlert>,
     @InjectRepository(InboxConsolidation) private readonly consRepo: Repository<InboxConsolidation>,
     private readonly lifecycle: LifecycleService,
-    private readonly notifications: NotificationsService,
     private readonly whatsapp: WhatsappGatewayService,
     private readonly ds: DataSource,
+    private readonly sendLog: SendLogService,
   ) {}
 
   // ------------------------------------------------------------------ configuración
@@ -303,7 +303,7 @@ export class OpsAlertsService {
 
   // ------------------------------------------------------------------ avisos
 
-  private async subsidiaryUsers(subsidiaryId: string): Promise<string[]> {
+  async subsidiaryUsers(subsidiaryId: string): Promise<string[]> {
     const rows: any[] = await this.ds.query(
       `SELECT DISTINCT u.id FROM \`user\` u LEFT JOIN user_subsidiary us ON us.userId = u.id
        WHERE u.active = 1 AND (u.subsidiaryId = ? OR us.subsidiaryId = ?)`,
@@ -347,25 +347,25 @@ export class OpsAlertsService {
       });
     }
 
+    // Cada envío queda en el historial de Correos (origen: alerta, lo manda el sistema).
+    const ctx = { origin: 'alerta' as const, sentById: null, sentByName: null, subsidiaryId: alert.subsidiaryId, consNumber: cons?.consNumber ?? null, inboxMessageId: cons?.inboxMessageId ?? null };
+    const event = { type: base.type, title, body, severity: base.severity, link: base.link, entityId: base.entityId };
+
     // Nivel 1 en adelante: usuarios de la sucursal (campana).
     const users = await this.subsidiaryUsers(alert.subsidiaryId);
-    if (users.length) await this.notifications.emit({ ...base, audience: { userIds: users }, channels: ['bell'] });
+    if (users.length) await this.sendLog.notifyUsers(users, event, ctx, false);
 
     // Nivel 2: encargados (campana + correo).
     const managers = cfg?.managerUserIds ?? [];
-    if (level >= 2 && managers.length) await this.notifications.emit({ ...base, audience: { userIds: managers }, channels: ['bell', 'email'] });
+    if (level >= 2 && managers.length) await this.sendLog.notifyUsers(managers, event, ctx, true);
 
     // Nivel 3: supervisión (campana) + WhatsApp a números y grupos de la sucursal.
     if (level >= 3) {
-      await this.notifications.emit({ ...base, audience: { role: 'superadmin' }, channels: ['bell'] });
+      const supers: any[] = await this.ds.query("SELECT id FROM `user` WHERE active = 1 AND LOWER(role) IN ('superadmin', 'superamin')");
+      if (supers.length) await this.sendLog.notifyUsers(supers.map((u) => u.id), event, ctx, false);
       const text = `${title}\n${body}`;
-      for (const to of [...(cfg?.whatsappNumbers ?? []), ...(cfg?.whatsappGroups ?? []).map((g) => g.id)]) {
-        try {
-          await this.whatsapp.sendText(to, text);
-        } catch (e: any) {
-          this.logger.warn(`[ops-alerts] WhatsApp a ${to}: ${e?.message ?? e}`);
-        }
-      }
+      for (const n of cfg?.whatsappNumbers ?? []) await this.sendLog.whatsappTo({ id: n, name: n }, text, ctx, title);
+      for (const g of cfg?.whatsappGroups ?? []) await this.sendLog.whatsappTo(g, text, ctx, title);
     }
   }
 
@@ -389,13 +389,9 @@ export class OpsAlertsService {
       return;
     }
     const text = buildAlertDigest(this.digest, now);
-    for (const g of groups) {
-      try {
-        await this.whatsapp.sendText(g.id, text);
-      } catch (e: any) {
-        this.logger.warn(`[ops-alerts] alertas al grupo "${g.name}": ${e?.message ?? e}`);
-      }
-    }
+    const subs = [...new Set(this.digest.map((d) => d.subsidiaryName))];
+    const ctx = { origin: 'alerta' as const, sentById: null, sentByName: null, subsidiaryId: null, consNumber: null };
+    for (const g of groups) await this.sendLog.whatsappTo(g, text, ctx, `Alertas operativas (${this.digest.length}) · ${subs.join(', ')}`.slice(0, 255));
   }
 
   /** Alertas abiertas (para pantallas), limitadas a las sucursales visibles. */

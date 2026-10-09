@@ -19,6 +19,7 @@ import { InboxCrons } from './inbox.crons';
 import { InboxPasteService } from './inbox-paste.service';
 import { SystemMatchService } from './system-match.service';
 import { WhatsappGatewayModule } from '../whatsapp-gateway/whatsapp-gateway.module';
+import { OpsAlertsModule } from '../ops-alerts/ops-alerts.module';
 
 /** Bandeja de correos FedEx: lectura IMAP, detección de sucursal y recibido vs subido. */
 @Module({
@@ -33,6 +34,7 @@ import { WhatsappGatewayModule } from '../whatsapp-gateway/whatsapp-gateway.modu
       SubsidiaryZipCoverage,
     ]),
     WhatsappGatewayModule,
+    OpsAlertsModule,
   ],
   controllers: [InboxController],
   providers: [

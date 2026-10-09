@@ -4,6 +4,8 @@ import { PermissionsGuard } from 'src/auth/guards/permissions.guard';
 import { RequirePermission } from 'src/auth/decorators/require-permission.decorator';
 import { LEGACY_ROLE_MAP } from 'src/auth/rbac/permission-catalog';
 import { OpsAlertsService } from './ops-alerts.service';
+import { NoticeRequest, NoticeService } from './notice.service';
+import { SendLogService } from './send-log.service';
 import { OpsAlertSettings, OpsAlertSubsidiary } from '../entities/ops-alert.entity';
 
 /**
@@ -16,13 +18,46 @@ import { OpsAlertSettings, OpsAlertSubsidiary } from '../entities/ops-alert.enti
 @UseGuards(PermissionsGuard)
 @RequirePermission('correo.bandeja')
 export class OpsAlertsController {
-  constructor(private readonly service: OpsAlertsService) {}
+  constructor(
+    private readonly service: OpsAlertsService,
+    private readonly notice: NoticeService,
+    private readonly sendLog: SendLogService,
+  ) {}
+
+  private user(req: any) {
+    return { userId: req?.user?.userId ?? null, name: req?.user?.name ?? null };
+  }
 
   private isSuper(req: any) {
     return LEGACY_ROLE_MAP[String(req?.user?.role ?? '').toLowerCase()] === 'superadmin';
   }
   private scope(req: any): string[] | null {
     return this.isSuper(req) ? null : ((req?.user?.subsidiaryIds as string[] | undefined) ?? []);
+  }
+
+  @Get('notice/:id')
+  @RequirePermission('correo.avisar')
+  @ApiOperation({ summary: 'Análisis del consolidado para "Mandar aviso": hallazgos y a quién se puede mandar' })
+  noticeAnalysis(@Param('id') id: string, @Req() req: any) {
+    return this.notice.analyze(id, this.scope(req));
+  }
+
+  @Post('notice/:id/preview')
+  @RequirePermission('correo.avisar')
+  noticePreview(@Param('id') id: string, @Body() body: NoticeRequest, @Req() req: any) {
+    return this.notice.send(id, body, this.user(req), this.scope(req), true);
+  }
+
+  @Post('notice/:id/send')
+  @RequirePermission('correo.avisar')
+  noticeSend(@Param('id') id: string, @Body() body: NoticeRequest, @Req() req: any) {
+    return this.notice.send(id, body, this.user(req), this.scope(req), false);
+  }
+
+  @Get('send-log')
+  @ApiOperation({ summary: 'Historial de avisos del menú Correos (WhatsApp, campana y correo)' })
+  sendLogList(@Query() q: { from?: string; to?: string; subsidiaryId?: string; channel?: string; origin?: string; q?: string; page?: string; pageSize?: string }, @Req() req: any) {
+    return this.sendLog.list({ ...q, page: Number(q.page) || 1, pageSize: Number(q.pageSize) || 50 }, this.scope(req));
   }
 
   @Get('tracking')

@@ -15,6 +15,7 @@ import { MatchGroup } from './system-match.util';
 import { buildConsNumber, detectRoutePattern, routeOf, RoutePattern } from './route-cons.util';
 import { ConsolidationKind } from './inbox.types';
 import { familyKey } from '../approvals/consolidated-family.loader';
+import { SendLogService } from '../ops-alerts/send-log.service';
 
 const TSV_KINDS = ['master', 'master_aereo', 'f2', 'high_value'];
 
@@ -82,6 +83,7 @@ export class InboxPasteService {
     @InjectRepository(InboxConsolidation) private readonly consRepo: Repository<InboxConsolidation>,
     private readonly ds: DataSource,
     private readonly whatsapp: WhatsappGatewayService,
+    private readonly sendLog: SendLogService,
   ) {}
 
   private readonly logger = new Logger(InboxPasteService.name);
@@ -402,13 +404,10 @@ export class InboxPasteService {
       email: { subject: msg.subject, from: msg.fromName || msg.fromAddress, receivedAt: msg.receivedAt },
       uploadedAt: now,
     });
-    for (const g of groups) {
-      try {
-        await this.whatsapp.sendText(g.id, text);
-      } catch (e: any) {
-        this.logger.warn(`[inbox] aviso de subida a "${g.name}": ${e?.message ?? e}`);
-      }
-    }
+    const userName = user ? [user.name, user.lastName].filter(Boolean).join(' ') || user.email : null;
+    const ctx = { origin: 'subida' as const, sentById: userId, sentByName: userName, subsidiaryId: msg.subsidiaryId, consNumber, inboxMessageId: msg.id };
+    const title = `Subida desde la bandeja · ${att.filename}`.slice(0, 255);
+    for (const g of groups) await this.sendLog.whatsappTo(g, text, ctx, title);
   }
 }
 
