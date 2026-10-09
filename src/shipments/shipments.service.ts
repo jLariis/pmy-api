@@ -16,7 +16,7 @@ import { combineDhlWorkbook, combinedToDhlShipmentDto, isThreeSheetDhlWorkbook }
 import { scanEventsFilter } from 'src/utils/scan-events-filter';
 import { ParsedShipmentDto } from './dto/parsed-shipment.dto';
 import { mapFedexStatusToLocalStatus } from 'src/utils/fedex.utils';
-import { resolveCode44ScanTime, localFacilityScanTimes } from 'src/utils/fedex-local-scan.util';
+import { resolveCode44ScanTime, localFacilityScanTimes, localScanCodeTimes } from 'src/utils/fedex-local-scan.util';
 import { resolveDhlNativeStatus } from 'src/utils/dhl.utils';
 import { toHermosilloDateString } from 'src/common/utils';
 import type { DhlNativeResult } from './dhl.service';
@@ -7993,8 +7993,10 @@ export class ShipmentsService {
         const top = results[0];
         const events: any[] = top?.scanEvents || [];
 
+        // Cuenta el 67 Y el 44 (dos fases del escaneo local; ver localScanCodeTimes). Antes solo
+        // el 67: una sucursal configurada en 67 a la que FedEx le reporta el 44 salía "sin código".
         const days67 = new Set<string>(
-          events.filter((e) => e.exceptionCode === '67' && e.date).map((e) => herDay(e.date)),
+          localScanCodeTimes(top?.latestStatusDetail, events).map((t) => herDay(t)),
         );
         const dl = events.find((e) => e.eventType === 'DL' && e.date);
         const delivered = !!dl;
@@ -8132,8 +8134,10 @@ export class ShipmentsService {
         // FedEx NO manda el 44 en scanEvents; lo reporta en latestStatusDetail.ancillaryDetails.reason='44'.
         // Contamos como "día con 44" cada escaneo local ("At local FedEx facility") cuando FedEx trae la
         // reason 44 vigente (misma regla que la persistencia — ver fedex-local-scan.util).
+        // También cuenta el 67 (tercero en camino): la guía pasa del 44 al 67 según la fase y
+        // cualquiera de los dos es escaneo local de FedEx (ver localScanCodeTimes).
         const days44 = new Set<string>(
-          localFacilityScanTimes(top?.latestStatusDetail, events).map((t) => herDay(t)),
+          localScanCodeTimes(top?.latestStatusDetail, events).map((t) => herDay(t)),
         );
         const dl = events.find((e) => e.eventType === 'DL' && e.date);
         const delivered = !!dl;
@@ -8885,8 +8889,9 @@ export class ShipmentsService {
                 // welcome/inventarios/monitoreo lo lean como código de primera clase (igual que
                 // el 67). Solo UPDATE idempotente: no creamos filas (respeta el candado de
                 // pre-registro y no inventa historial). Sirve de auto-backfill en cada re-sync.
-                // Acotado a sucursales que monitorean el 44 (mismo criterio que los readers).
-                const code44Time = sub?.monitorFedexCode44 ? resolveCode44ScanTime(lsdHeader, scanEvents) : null;
+                // En TODAS las sucursales: es un hecho de FedEx, no depende de la config (las
+                // satélite de Obregón están en 67 y FedEx les reporta el 44 — caso 2026-10-09).
+                const code44Time = resolveCode44ScanTime(lsdHeader, scanEvents);
                 if (code44Time !== null) {
                     // El 44 = paquete en la estación local (de nuestro lado): la fila de historial
                     // del escaneo local pasa a EN_BODEGA (no PENDIENTE). Solo esa fila; NO toca el
@@ -9360,9 +9365,8 @@ export class ShipmentsService {
                 // FedEx manda el 44 en latestStatusDetail.ancillaryDetails[].reason='44', no en
                 // scanEvents. Marcamos exceptionCode='44' en el escaneo local más reciente ya
                 // persistido, para que las cargas F2 también cuenten su 44. Solo UPDATE idempotente.
-                // Acotado a sucursales que monitorean el 44 (mismo criterio que los readers).
-                const code44TimeCharge = mainCharge.subsidiary?.monitorFedexCode44
-                  ? resolveCode44ScanTime(lsdHeader, scanEvents) : null;
+                // En TODAS las sucursales (hecho de FedEx, no depende de la config).
+                const code44TimeCharge = resolveCode44ScanTime(lsdHeader, scanEvents);
                 if (code44TimeCharge !== null) {
                     // Fila del escaneo local del 44 → EN_BODEGA (solo esa fila; no toca el estatus vivo).
                     for (const charge of chargeList) {

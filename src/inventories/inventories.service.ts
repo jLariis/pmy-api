@@ -1161,8 +1161,13 @@ export class InventoriesService {
     ];
 
     const maxDate = (a: Date | null, b: Date | null) => (!a ? b : !b ? a : a > b ? a : b);
+    // El código lo dice FedEx, no la configuración: las sucursales satélite de Obregón están
+    // configuradas en 67 pero FedEx les reporta el 44 (en estación) y el 67 (tercero en camino)
+    // según la fase. Cualquiera de los dos es escaneo local de FedEx → cuenta como "con código".
+    // `scanCode` = el último que FedEx reportó; si nunca hubo, el configurado de la sucursal.
+    const LOCAL_SCAN_CODES = new Set(['44', '67']);
     type Agg = {
-      rep: any; isCharge: boolean; maxCode: Date | null; codes: Set<string>;
+      rep: any; isCharge: boolean; maxCode: Date | null; lastCode: string | null; codes: Set<string>;
       historyCount: number; minCreatedAt: Date; subsidiaryId?: string; scanCode: '67' | '44';
     };
     const byGuide = new Map<string, Agg>();
@@ -1173,21 +1178,26 @@ export class InventoriesService {
 
       const history = s.statusHistory || [];
       let maxCode: Date | null = null;
+      let lastCode: string | null = null;
       const codes = new Set<string>();
       for (const h of history) {
         if (h.exceptionCode) codes.add(h.exceptionCode);
         const t = h.timestamp ? new Date(h.timestamp) : null;
-        if (t && h.exceptionCode === scanCode) maxCode = maxDate(maxCode, t);
+        if (t && LOCAL_SCAN_CODES.has(h.exceptionCode) && (!maxCode || t > maxCode)) {
+          maxCode = t;
+          lastCode = h.exceptionCode;
+        }
       }
 
       const createdAt = new Date(s.createdAt);
       const existing = byGuide.get(s.trackingNumber);
       if (!existing) {
-        byGuide.set(s.trackingNumber, { rep: s, isCharge, maxCode, codes, historyCount: history.length, minCreatedAt: createdAt, subsidiaryId: subId, scanCode });
+        byGuide.set(s.trackingNumber, { rep: s, isCharge, maxCode, lastCode, codes, historyCount: history.length, minCreatedAt: createdAt, subsidiaryId: subId, scanCode });
       } else {
         const repNewer = createdAt > new Date(existing.rep.createdAt);
         existing.rep = repNewer ? s : existing.rep;
         existing.isCharge = existing.isCharge || isCharge;
+        if (maxCode && (!existing.maxCode || maxCode > existing.maxCode)) existing.lastCode = lastCode;
         existing.maxCode = maxDate(existing.maxCode, maxCode);
         existing.historyCount += history.length;
         if (createdAt < existing.minCreatedAt) existing.minCreatedAt = createdAt;
@@ -1195,9 +1205,13 @@ export class InventoriesService {
       }
     }
 
-    const now = new Date();
-    const details = Array.from(byGuide.values()).map(({ rep, isCharge, maxCode, codes, historyCount, minCreatedAt, subsidiaryId, scanCode }) => {
-      const daysSinceLastCode = maxCode ? differenceInCalendarDays(now, maxCode) : null;
+    // Días calendario en hora de Hermosillo (UTC-7 fijo): el escaneo de las 21:36 de anoche es
+    // 04:36Z de hoy; contado en UTC salía como "hoy" y el de verdad de hoy no existía aún.
+    const herDayMs = (d: Date) => Date.parse(new Date(d.getTime() - 7 * 3600 * 1000).toISOString().slice(0, 10));
+    const today = herDayMs(new Date());
+    const details = Array.from(byGuide.values()).map(({ rep, isCharge, maxCode, lastCode, codes, historyCount, minCreatedAt, subsidiaryId, scanCode: configuredCode }) => {
+      const scanCode = (lastCode as '44' | '67' | null) ?? configuredCode;
+      const daysSinceLastCode = maxCode ? Math.round((today - herDayMs(maxCode)) / 86400000) : null;
       const category = maxCode == null ? 'nunca' : daysSinceLastCode === 0 ? 'hoy' : 'sinCodigo';
       const sub = subsidiaryId ? scanBySub.get(subsidiaryId) : undefined;
       return {
@@ -1213,7 +1227,8 @@ export class InventoriesService {
         isCharge,
         subsidiaryId,
         subsidiaryName: sub?.name ?? rep.subsidiary?.name,
-        scanCode, // '67' | '44' — el código que monitorea la sucursal de esta guía
+        scanCode, // '67' | '44' — último código que reportó FedEx (o el configurado si nunca hubo)
+        configuredCode,
         createdAt: minCreatedAt.toISOString(),
         lastCodeDate: maxCode ? maxCode.toISOString() : null,
         daysSinceLastCode,

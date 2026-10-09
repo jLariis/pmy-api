@@ -60,18 +60,49 @@ describe('InventoriesService.getMissingScanReportMulti', () => {
     expect(summary.nunca).toBe(1);
   });
 
-  it('multi-sucursal: cada fila usa el código de SU sucursal', async () => {
+  it('multi-sucursal: cada fila trae su código; sin escaneo usa el configurado', async () => {
     const svc = svcWith(
       [SUB44, SUB67],
       [
-        mkShip({ subId: 's44', trackingNumber: 'A', exceptionCode: '44' }), // hoy (44)
-        mkShip({ subId: 's67', trackingNumber: 'B', exceptionCode: '44' }), // nunca (67-branch, 44 no cuenta)
+        mkShip({ subId: 's44', trackingNumber: 'A', exceptionCode: null }),
+        mkShip({ subId: 's67', trackingNumber: 'B', exceptionCode: null }),
       ],
     );
     const { details } = await svc.getMissingScanReportMulti(['s44', 's67']);
     const byTn = Object.fromEntries(details.map((d: any) => [d.trackingNumber, d]));
-    expect(byTn.A.category).toBe('hoy');
-    expect(byTn.B.category).toBe('nunca');
+    expect(byTn.A.scanCode).toBe('44');
+    expect(byTn.B.scanCode).toBe('67');
+  });
+
+  // Caso real 2026-10-09 (519750418785 Huatabampo / 383851714183 Villa Juárez): sucursales
+  // configuradas en 67 cuyo FedEx (estación Obregón) reporta el 44 todos los días. El reporte
+  // decía "sin código" aunque FedEx sí lo escaneó. El código lo dice FedEx, no la configuración.
+  it('sucursal configurada en 67 pero FedEx reporta 44 → cuenta como con código (44)', async () => {
+    const svc = svcWith([SUB67], [mkShip({ subId: 's67', trackingNumber: 'B', exceptionCode: '44' })]);
+    const { details } = await svc.getMissingScanReportMulti(['s67']);
+    expect(details[0].category).toBe('hoy');
+    expect(details[0].scanCode).toBe('44');
+  });
+
+  it('sucursal de 44 que ya pasó a fase 67 (tercero en camino) → cuenta como con código (67)', async () => {
+    const svc = svcWith([SUB44], [mkShip({ subId: 's44', trackingNumber: 'A', exceptionCode: '67' })]);
+    const { details } = await svc.getMissingScanReportMulti(['s44']);
+    expect(details[0].category).toBe('hoy');
+    expect(details[0].scanCode).toBe('67');
+  });
+
+  it('"hoy" es el día de Hermosillo: escaneo de anoche 21:36 (04:36Z de hoy) es AYER', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-10-09T16:00:00Z')); // 09:00 Hermosillo
+    try {
+      const ship = mkShip({ subId: 's44', trackingNumber: 'A' });
+      ship.statusHistory = [{ exceptionCode: '44', timestamp: new Date('2026-10-09T04:36:00Z') }];
+      const svc = svcWith([SUB44], [ship]);
+      const { details } = await svc.getMissingScanReportMulti(['s44']);
+      expect(details[0].daysSinceLastCode).toBe(1);
+      expect(details[0].category).toBe('sinCodigo');
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('candado temporal: consulta SOLO FedEx dados de alta en octubre 2026 (paquetes y cargas)', async () => {
