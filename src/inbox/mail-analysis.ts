@@ -38,7 +38,11 @@ export interface AnalyzedMail {
   subject: string;
   date: Date | null;
   textTop: string;
+  /** Cuerpo completo en texto plano (con historial), tal cual. */
+  textBody: string;
   hadHistory: boolean;
+  /** Remitentes originales si es un reenvío (líneas De:/From: del historial). */
+  forwardedFrom: string[];
   htmlSafe: string | null;
   attachments: AnalyzedAttachment[];
   consolidations: MailConsolidation[];
@@ -58,6 +62,55 @@ export function isAllowedSender(address: string, domains: string[]): boolean {
     const dom = x.toLowerCase().trim();
     return !!dom && (d === dom || d.endsWith(`.${dom}`));
   });
+}
+
+/** Paquetería de un correo de la bandeja. */
+export type InboxCarrier = 'fedex' | 'dhl';
+
+/** Paquetería según el dominio del remitente; null = no es de ninguna (se ignora). */
+export function carrierOfSender(address: string, domains: { fedex: string[]; dhl: string[] }): InboxCarrier | null {
+  if (isAllowedSender(address ?? '', domains.dhl)) return 'dhl';
+  if (isAllowedSender(address ?? '', domains.fedex)) return 'fedex';
+  return null;
+}
+
+/**
+ * Remitentes ORIGINALES de un reenvío: correos en las líneas "De:" / "From:" del historial
+ * citado (no Para/CC). Acepta HTML escapado (&lt;correo&gt;). En orden y sin repetir.
+ */
+export function quotedSenders(text: string): string[] {
+  const out: string[] = [];
+  const re = /^\s*(?:De|From)\s*:[^\n]*?([\w.+-]+@[\w-]+(?:\.[\w-]+)+)/gim;
+  for (const m of String(text ?? '').replace(/&lt;/g, '<').replace(/&gt;/g, '>').matchAll(re)) {
+    const addr = m[1].toLowerCase();
+    if (!out.includes(addr)) out.push(addr);
+  }
+  return out;
+}
+
+/**
+ * Paquetería con la que entra un correo:
+ *  - el remitente directo manda (FedEx o DHL por dominio);
+ *  - si no es de ninguna y `acceptForwardedDhl`, un REENVÍO cuyo original viene de un dominio
+ *    DHL entra como DHL (hoy DHL manda sus archivos a hotmail y de ahí se reenvían a sistemas@).
+ *    Es temporal: con INBOX_DHL_FORWARDED=false solo entra el dominio DHL directo.
+ *  - null = se ignora.
+ */
+export function decideCarrier(
+  mail: { fromAddress: string; forwardedFrom: string[] },
+  domains: { fedex: string[]; dhl: string[] },
+  acceptForwardedDhl: boolean,
+): InboxCarrier | null {
+  const direct = carrierOfSender(mail.fromAddress, domains);
+  if (direct) return direct;
+  if (acceptForwardedDhl && mail.forwardedFrom.some((a) => isAllowedSender(a, domains.dhl))) return 'dhl';
+  return null;
+}
+
+/** Dominios por paquetería desde la configuración (INBOX_ALLOWED_DOMAINS = FedEx, INBOX_DHL_DOMAINS = DHL). */
+export function inboxDomains(get: (k: string) => string | undefined): { fedex: string[]; dhl: string[] } {
+  const list = (v: string | undefined, def: string) => (v || def).split(',').map((d) => d.trim()).filter(Boolean);
+  return { fedex: list(get('INBOX_ALLOWED_DOMAINS'), 'fedex.com'), dhl: list(get('INBOX_DHL_DOMAINS'), 'dhl.com') };
 }
 
 export function sanitizeMailHtml(html: string): string {
@@ -124,7 +177,10 @@ export async function analyzeMail(source: Buffer, fallbackDate: Date | null = nu
     subject: p.subject ?? '',
     date: p.date ?? fallbackDate,
     textTop: top,
+    textBody: text,
     hadHistory,
+    // Del texto plano; si el correo solo trae HTML, cada etiqueta cuenta como salto de línea.
+    forwardedFrom: quotedSenders(text || html.replace(/<[^>]+>/g, '\n')),
     htmlSafe: html ? sanitizeMailHtml(html) : null,
     attachments,
     consolidations: mergeConsolidations(extractConsolidations(top), attachments),

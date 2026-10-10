@@ -60,11 +60,39 @@ describe('InboxIngestService.ingestRaw', () => {
     await fs.rm(join(process.cwd(), STORAGE), { recursive: true, force: true });
   });
 
-  it('correo que no viene de FedEx queda ignorado, sin cuerpo guardado', async () => {
+  it('correo que no viene de FedEx ni de DHL queda ignorado, sin cuerpo guardado', async () => {
     const r = await svc.ingestRaw({ uid: 1, uidValidity: '7', source: mail('pmyapp@paqueteriaymensajeriadelyaqui.com', 'a@x'), internalDate: null }, 'INBOX');
     expect(r).toBe('ignored');
-    expect(msgs.rows[0]).toMatchObject({ status: 'ignorado', ignoreReason: 'No viene de FedEx' });
+    expect(msgs.rows[0]).toMatchObject({ status: 'ignorado', ignoreReason: 'No viene de FedEx ni de DHL' });
     expect((msgs.rows[0] as any).textTop).toBeUndefined();
+  });
+
+  it('correo de DHL (dominio dhl.com) ya no se ignora: entra a la bandeja', async () => {
+    const r = await svc.ingestRaw({ uid: 9, uidValidity: '7', source: mail('ops@dhl.com', 'c@dhl.com'), internalDate: null }, 'INBOX');
+    expect(r).toBe('saved');
+    expect((msgs.rows[0] as any).status).not.toBe('ignorado');
+  });
+
+  it('reenvío desde hotmail de un correo de DHL entra como DHL (y se puede reconsiderar si estaba ignorado)', async () => {
+    const fwd = (id: string) => Buffer.from([
+      'From: PMY <paqueteriaymensajeriadelyaqui@hotmail.com>',
+      'To: sistemas@paqueteriaymensajeriadelyaqui.com',
+      'Subject: RV: FD VICAM',
+      `Message-ID: <${id}>`,
+      'Date: Thu, 28 May 2026 10:00:00 -0700',
+      'Content-Type: text/plain; charset=utf-8',
+      '',
+      '________________________________',
+      'De: ELMA LILIA VAZQUEZ ZAMARRON (DHL MX) <elma.vazquez@dhl.com>',
+      'Enviado: martes, 26 de mayo de 2026 16:19',
+      'Asunto: FD VICAM',
+    ].join('\r\n'));
+    // Antes del cambio quedó ignorado por remitente:
+    msgs.rows.push({ id: 'old', mailbox: 'INBOX', uidValidity: '7', uid: 30, status: 'ignorado', ignoreReason: 'No viene de FedEx' } as any);
+    expect(await svc.ingestRaw({ uid: 30, uidValidity: '7', source: fwd('f1@x'), internalDate: null }, 'INBOX')).toBe('duplicates');
+    expect(await svc.ingestRaw({ uid: 30, uidValidity: '7', source: fwd('f1@x'), internalDate: null }, 'INBOX', true)).toBe('saved');
+    expect(msgs.rows[0]).toMatchObject({ id: 'old', carrier: 'dhl', ignoreReason: null });
+    expect((msgs.rows[0] as any).status).not.toBe('ignorado');
   });
 
   it('correo FedEx: se detecta, se registra el consolidado y no se duplica al releer', async () => {

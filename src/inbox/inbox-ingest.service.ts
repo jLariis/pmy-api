@@ -11,7 +11,7 @@ import { InboxConsolidation } from '../entities/inbox-consolidation.entity';
 import { InboxSyncState } from '../entities/inbox-sync-state.entity';
 import { ImapReaderService, RawMail } from './imap-reader.service';
 import { KnowledgeService } from './knowledge.service';
-import { analyzeMail, isAllowedSender, MailConsolidation, mergeConsolidations } from './mail-analysis';
+import { analyzeMail, decideCarrier, inboxDomains, MailConsolidation, mergeConsolidations } from './mail-analysis';
 import { detect } from './detector';
 import { extractCobros, extractConsolidations } from './extract.util';
 import { attachmentConsNumber, classifyByName, finalizeKinds, isSpreadsheet } from './attachment-classify.util';
@@ -49,8 +49,17 @@ export class InboxIngestService {
     @InjectRepository(InboxSyncState) private readonly stateRepo: Repository<InboxSyncState>,
   ) {}
 
-  private allowedDomains(): string[] {
-    return (this.config.get<string>('INBOX_ALLOWED_DOMAINS') || 'fedex.com').split(',').map((d) => d.trim()).filter(Boolean);
+  /** Dominios FedEx (INBOX_ALLOWED_DOMAINS) y DHL (INBOX_DHL_DOMAINS) que sí entran a la bandeja. */
+  private domains() {
+    return inboxDomains((k) => this.config.get<string>(k));
+  }
+
+  /**
+   * TEMPORAL: ¿aceptar reenvíos cuyo original viene de DHL? (hoy DHL manda a hotmail y de ahí
+   * se reenvía). Prendido por defecto; INBOX_DHL_FORWARDED=false → solo dominio DHL directo.
+   */
+  private acceptForwardedDhl(): boolean {
+    return String(this.config.get<string>('INBOX_DHL_FORWARDED') ?? 'true').toLowerCase() !== 'false';
   }
 
   private storageBase(): string {
@@ -119,6 +128,29 @@ export class InboxIngestService {
     return report;
   }
 
+  /**
+   * Recupera los reenvíos de DHL que entraron antes de aceptar DHL (quedaron "ignorados" y sin
+   * cuerpo): busca en el servidor los correos que mencionan dhl.com y los vuelve a evaluar.
+   * Solo toca los ignorados por remitente; los que siguen sin ser FedEx/DHL quedan igual.
+   */
+  async rescanForwardedDhl(): Promise<{ found: number; saved: number; stillIgnored: number; skipped: number; errors: number }> {
+    const mailbox = this.imap.mailbox();
+    const tally = { found: 0, saved: 0, stillIgnored: 0, skipped: 0, errors: 0 };
+    const uids = await this.imap.searchUids(mailbox, { body: 'dhl.com' });
+    tally.found = uids.length;
+    for (let i = 0; i < uids.length; i += 20) {
+      const mails = await this.imap.fetchUids(mailbox, uids.slice(i, i + 20));
+      for (const m of mails) {
+        const r = await this.ingestRaw(m, mailbox, true);
+        if (r === 'saved') tally.saved++;
+        else if (r === 'ignored') tally.stillIgnored++;
+        else if (r === 'errors') tally.errors++;
+        else tally.skipped++;
+      }
+    }
+    return tally;
+  }
+
   /** Reintenta correos que fallaron (máx. 3 intentos). */
   private async retryErrors(mailbox: string, uidValidity: string): Promise<void> {
     const failed = await this.msgRepo.find({ where: { mailbox, uidValidity, status: 'error' }, take: 20 });
@@ -128,9 +160,18 @@ export class InboxIngestService {
     for (const m of mails) await this.ingestRaw(m, mailbox);
   }
 
-  async ingestRaw(raw: RawMail, mailbox: string): Promise<'saved' | 'ignored' | 'duplicates' | 'errors'> {
+  /**
+   * @param reconsiderIgnored volver a evaluar un correo que quedó ignorado por remitente (p. ej. al
+   *   empezar a aceptar DHL). Si ahora sí entra se guarda completo; si no, queda igual.
+   */
+  async ingestRaw(raw: RawMail, mailbox: string, reconsiderIgnored = false): Promise<'saved' | 'ignored' | 'duplicates' | 'errors'> {
     const prevError = await this.msgRepo.findOne({ where: { mailbox, uidValidity: raw.uidValidity, uid: raw.uid } });
-    if (prevError && prevError.status !== 'error') return 'duplicates';
+    const retryIgnored =
+      reconsiderIgnored &&
+      ((prevError?.status === 'ignorado' && /^No viene de FedEx/.test(prevError.ignoreReason ?? '')) ||
+        // DHL guardado antes de que existiera textBody: se vuelve a leer para tener el texto a pegar.
+        (prevError?.carrier === 'dhl' && !prevError.textBody && prevError.status !== 'confirmado'));
+    if (prevError && prevError.status !== 'error' && !retryIgnored) return 'duplicates';
     try {
       const a = await analyzeMail(raw.source, raw.internalDate);
       const dup = await this.msgRepo.findOne({ where: { messageId: a.messageId } });
@@ -148,14 +189,19 @@ export class InboxIngestService {
         errorMessage: null,
       });
 
-      if (!isAllowedSender(a.fromAddress, this.allowedDomains())) {
+      const carrier = decideCarrier(a, this.domains(), this.acceptForwardedDhl());
+      if (!carrier) {
+        if (retryIgnored) return 'ignored'; // sigue sin entrar: no se toca
         msg.status = 'ignorado';
-        msg.ignoreReason = 'No viene de FedEx';
+        msg.ignoreReason = 'No viene de FedEx ni de DHL';
         await this.msgRepo.save(msg);
         return 'ignored';
       }
+      msg.carrier = carrier;
+      msg.ignoreReason = null;
 
       msg.textTop = a.textTop;
+      msg.textBody = a.textBody || null;
       msg.htmlSafe = a.htmlSafe;
       msg.hasQuotedHistory = a.hadHistory;
       msg.status = 'nuevo';

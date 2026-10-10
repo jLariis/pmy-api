@@ -65,6 +65,18 @@ export class ImapReaderService {
   }
 
   /** Trae correos específicos por UID (para reintentos). */
+  /** UIDs que cumplen una búsqueda del servidor IMAP (solo lectura), p. ej. { body: 'dhl.com' }. */
+  async searchUids(mailbox: string, query: Record<string, unknown>): Promise<number[]> {
+    const c = this.client();
+    await c.connect();
+    try {
+      await c.mailboxOpen(mailbox, { readOnly: true });
+      return (((await c.search(query as any, { uid: true })) || []) as number[]).sort((a, b) => a - b);
+    } finally {
+      await c.logout().catch((e) => this.logger.warn(`logout IMAP: ${e?.message ?? e}`));
+    }
+  }
+
   async fetchUids(mailbox: string, uids: number[]): Promise<RawMail[]> {
     if (!uids.length) return [];
     const c = this.client();
