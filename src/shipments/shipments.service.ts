@@ -17,6 +17,7 @@ import { scanEventsFilter } from 'src/utils/scan-events-filter';
 import { ParsedShipmentDto } from './dto/parsed-shipment.dto';
 import { mapFedexStatusToLocalStatus } from 'src/utils/fedex.utils';
 import { resolveCode44ScanTime, localFacilityScanTimes, localScanCodeTimes } from 'src/utils/fedex-local-scan.util';
+import { configuredScanCode, daysWithoutLocalScan, hermosilloCalendarDays, lastLocalScanOf, latestLocalScan, LocalScan, localScanCategory, localScanLabel, LOCAL_SCAN_CODES_SQL } from 'src/utils/local-scan-visibility.util';
 import { resolveDhlNativeStatus } from 'src/utils/dhl.utils';
 import { toHermosilloDateString } from 'src/common/utils';
 import type { DhlNativeResult } from './dhl.service';
@@ -5258,8 +5259,8 @@ export class ShipmentsService {
     }
 
     /**
-     * Reporte "Recibidas de FedEx (con 67)": guías cuyo evento 67 (llegada a
-     * estación FedEx) cayó en el rango dado. Equivale al correo de FedEx (puedes
+     * Reporte "Recibidas de FedEx (con 67)": guías cuyo escaneo local (44 o 67, el que
+     * haya dado FedEx) cayó en el rango dado. Equivale al correo de FedEx (puedes
      * ordenar/filtrar por "días desde el 67" para ver el bucket atorado).
      * Deduplica por trackingNumber (copia más reciente para los datos de display),
      * pero detecta el 67 en CUALQUIER copia (toma la fecha 67 más reciente en rango).
@@ -5267,7 +5268,7 @@ export class ShipmentsService {
     async getReceivedWith67BySubsidiary(subsidiaryId: string, start?: string, end?: string) {
       const s = start ? new Date(start) : new Date(Date.now() - 10 * 24 * 60 * 60 * 1000);
       const e = end ? new Date(end) : new Date();
-      const now = Date.now();
+      const now = new Date();
 
       /**
        * 2 pasos (acotado, rápido con los índices idx_ss_excode_ts + idx_shipment_trackingNumber):
@@ -5277,10 +5278,13 @@ export class ShipmentsService {
       const run = async (table: 'shipment' | 'charge_shipment', fk: 'shipmentId' | 'chargeShipmentId') => {
         // Arranca desde shipment_status para aprovechar idx_ss_excode_ts (exceptionCode, timestamp).
         const agg: any[] = await this.shipmentRepository.query(
-          `SELECT t2.trackingNumber AS tn, MAX(ss.timestamp) AS fecha67
+          // 44 o 67: el escaneo local lo dice FedEx (satélites de Obregón: config 67, FedEx manda 44).
+          `SELECT t2.trackingNumber AS tn, MAX(ss.timestamp) AS fecha67,
+                  SUBSTRING_INDEX(MAX(CONCAT(ss.timestamp, '|', ss.exceptionCode)), '|', -1) AS code
            FROM shipment_status ss
            JOIN \`${table}\` t2 ON t2.id = ss.\`${fk}\`
-           WHERE ss.exceptionCode = '67' AND ss.timestamp BETWEEN ? AND ? AND t2.subsidiaryId = ?
+           WHERE ss.exceptionCode IN ${LOCAL_SCAN_CODES_SQL} AND ss.timestamp BETWEEN ? AND ? AND t2.subsidiaryId = ?
+             AND t2.shipmentType = 'fedex' -- solo FedEx: DHL nunca se mezcla
            GROUP BY t2.trackingNumber`,
           [s, e, subsidiaryId],
         );
@@ -5299,9 +5303,10 @@ export class ShipmentsService {
         const dispMap = new Map(disp.map((d) => [d.tn, d]));
         return agg.map((a) => {
           const d = dispMap.get(a.tn) || {};
-          const dias = a.fecha67 ? Math.floor((now - new Date(a.fecha67).getTime()) / 86400000) : null;
+          // Días de calendario en hora Hermosillo (antes: horas/24 en UTC).
+          const dias = a.fecha67 ? hermosilloCalendarDays(new Date(a.fecha67), now) : null;
           return {
-            trackingNumber: a.tn, fecha67: a.fecha67, diasDesde67: dias,
+            trackingNumber: a.tn, fecha67: a.fecha67, diasDesde67: dias, scanCode: a.code,
             status: d.status, recipientName: d.recipientName, recipientAddress: d.recipientAddress,
             recipientCity: d.recipientCity, recipientZip: d.recipientZip,
           };
@@ -5365,8 +5370,9 @@ export class ShipmentsService {
       const ws = wb.addWorksheet('Recibidas con 67');
       ws.columns = [
         { header: 'Guía', key: 'trackingNumber', width: 22 },
-        { header: 'Fecha 67', key: 'fecha67', width: 20 },
-        { header: 'Días desde 67', key: 'diasDesde67', width: 14 },
+        { header: 'Código', key: 'scanCode', width: 8 },
+        { header: 'Fecha del escaneo', key: 'fecha67', width: 20 },
+        { header: 'Días desde el escaneo', key: 'diasDesde67', width: 14 },
         { header: 'Estatus', key: 'status', width: 22 },
         { header: 'Destinatario', key: 'recipientName', width: 26 },
         { header: 'Dirección', key: 'recipientAddress', width: 34 },
@@ -5391,10 +5397,11 @@ export class ShipmentsService {
      * Reporte de VISIBILIDAD 67 (regla FedEx: cada paquete debe tener ≥1 código 67
      * por día, desde que se recibe hasta que se entrega). Lista los paquetes ACTIVOS
      * (pendiente / en bodega) y calcula, por GUÍA (agregando todas sus copias), la
-     * fecha del último 67 y los DÍAS SIN 67. Categoriza:
-     *   - 'hoy'   → ya tiene un 67 hoy (días = 0). OK.
-     *   - 'sin67' → tiene 67 pero no de hoy (días ≥ 1). Perdió visibilidad.
-     *   - 'nunca' → jamás registró un 67.
+     * fecha del último escaneo local (44 o 67, el que haya dado FedEx) y los DÍAS SIN
+     * CÓDIGO (completos, hora Hermosillo). Categoriza:
+     *   - 'hoy'   → al día (escaneada anoche u hoy; días = 0). OK.
+     *   - 'sin67' → tuvo código pero le faltan días (≥ 1). Perdió visibilidad.
+     *   - 'nunca' → jamás registró 44 ni 67.
      * `thresholdDays` (default 1) marca a partir de cuántos días sin 67 se considera
      * "crítico" para el conteo del resumen. Devuelve TODOS los activos (la tabla
      * filtra/ordena por categoría o días desde 67).
@@ -5402,20 +5409,21 @@ export class ShipmentsService {
     async validateCode67BySubsidiary(subsidiaryId: string, thresholdDays = 1) {
       const targetStatuses = [ShipmentStatusType.PENDIENTE, ShipmentStatusType.EN_BODEGA];
 
-      // Cada sucursal monitorea el escaneo local con el código 67 por default, o el 44 (llegada a
-      // estación) si así está configurada (`monitorFedexCode44`) — mismo criterio que
-      // MonitoringService.getMonitorConfig / getFedex44Visibility. Sin esto, las guías de una
-      // sucursal de código 44 escaneadas HOY con 44 caían en categoría 'nunca' (SUP-0005).
+      // El código lo dice FedEx, no la configuración (mismo motor que el reporte "Sin código 44"):
+      // el 44 (en estación) y el 67 (tercero en camino) son dos fases del escaneo local y una
+      // sucursal puede recibir ambos (satélites de Obregón: config 67, FedEx manda 44). Cualquiera
+      // cuenta. La config (`monitorFedexCode44`) solo etiqueta a las que nunca tuvieron código.
       const subsidiary = await this.subsidiaryRepository.findOneBy({ id: subsidiaryId });
-      const scanCode: '67' | '44' = subsidiary?.monitorFedexCode44 === true ? '44' : '67';
+      const configuredCode = configuredScanCode(subsidiary);
 
       const [shipments, chargeShipments] = await Promise.all([
+        // Solo FedEx: el 44/67 es de FedEx; DHL nunca se mezcla en estos reportes.
         this.shipmentRepository.find({
-          where: { subsidiary: { id: subsidiaryId }, status: In(targetStatuses) },
+          where: { subsidiary: { id: subsidiaryId }, status: In(targetStatuses), shipmentType: ShipmentType.FEDEX },
           relations: ['statusHistory'],
         }),
         this.chargeShipmentRepository.find({
-          where: { subsidiary: { id: subsidiaryId }, status: In(targetStatuses) },
+          where: { subsidiary: { id: subsidiaryId }, status: In(targetStatuses), shipmentType: ShipmentType.FEDEX },
           relations: ['statusHistory'],
         }),
       ]);
@@ -5425,16 +5433,16 @@ export class ShipmentsService {
         ...chargeShipments.map((s) => ({ s, isCharge: true })),
       ];
 
-      // Agregamos por GUÍA: una guía puede tener varias copias; el 67 puede estar en
-      // cualquiera. Tomamos el 67 MÁS RECIENTE entre todas las copias y la copia más
+      // Agregamos por GUÍA: una guía puede tener varias copias; el código puede estar en
+      // cualquiera. Tomamos el escaneo local MÁS RECIENTE entre todas las copias y la copia más
       // nueva (createdAt) como representante para estatus/destinatario.
-      const byGuide = new Map<string, { rep: any; isCharge: boolean; max67: Date | null; codes: Set<string>; firstStatus: Date | null; lastStatus: Date | null; historyCount: number; minCreatedAt: Date }>();
+      const byGuide = new Map<string, { rep: any; isCharge: boolean; last: LocalScan | null; codes: Set<string>; firstStatus: Date | null; lastStatus: Date | null; historyCount: number; minCreatedAt: Date }>();
 
       const maxDate = (a: Date | null, b: Date | null) => (!a ? b : !b ? a : a > b ? a : b);
 
       for (const { s, isCharge } of tagged) {
         const history = s.statusHistory || [];
-        let max67: Date | null = null;
+        const last = lastLocalScanOf(history);
         let firstStatus: Date | null = null;
         let lastStatus: Date | null = null;
         const codes = new Set<string>();
@@ -5444,19 +5452,18 @@ export class ShipmentsService {
           if (t) {
             firstStatus = !firstStatus || t < firstStatus ? t : firstStatus;
             lastStatus = !lastStatus || t > lastStatus ? t : lastStatus;
-            if (h.exceptionCode === scanCode) max67 = maxDate(max67, t);
           }
         }
 
         const createdAt = new Date(s.createdAt);
         const existing = byGuide.get(s.trackingNumber);
         if (!existing) {
-          byGuide.set(s.trackingNumber, { rep: s, isCharge, max67, codes, firstStatus, lastStatus, historyCount: history.length, minCreatedAt: createdAt });
+          byGuide.set(s.trackingNumber, { rep: s, isCharge, last, codes, firstStatus, lastStatus, historyCount: history.length, minCreatedAt: createdAt });
         } else {
           const repNewer = createdAt > new Date(existing.rep.createdAt);
           existing.rep = repNewer ? s : existing.rep;
           existing.isCharge = existing.isCharge || isCharge;
-          existing.max67 = maxDate(existing.max67, max67);
+          existing.last = latestLocalScan(existing.last, last);
           existing.firstStatus = existing.firstStatus && firstStatus ? (firstStatus < existing.firstStatus ? firstStatus : existing.firstStatus) : (existing.firstStatus || firstStatus);
           existing.lastStatus = maxDate(existing.lastStatus, lastStatus);
           existing.historyCount += history.length;
@@ -5465,10 +5472,14 @@ export class ShipmentsService {
         }
       }
 
+      // Días sin código = días COMPLETOS sin escaneo en hora Hermosillo (FedEx escanea de noche:
+      // escaneada anoche = al día). 'hoy' = al día, 'sin67' = le faltan días, 'nunca' = jamás.
       const now = new Date();
-      const details = Array.from(byGuide.values()).map(({ rep, isCharge, max67, codes, firstStatus, lastStatus, historyCount, minCreatedAt }) => {
-        const daysSinceLast67 = max67 ? differenceInCalendarDays(now, max67) : null;
-        const category = max67 == null ? 'nunca' : daysSinceLast67 === 0 ? 'hoy' : 'sin67';
+      const details = Array.from(byGuide.values()).map(({ rep, isCharge, last, codes, firstStatus, lastStatus, historyCount, minCreatedAt }) => {
+        const daysSinceLast67 = daysWithoutLocalScan(last?.at ?? null, now);
+        const cat = localScanCategory(daysSinceLast67);
+        const category = cat === 'sinCodigo' ? 'sin67' : cat;
+        const scanCode = last?.code ?? configuredCode;
         return {
           trackingNumber: rep.trackingNumber,
           status: rep.status,
@@ -5480,8 +5491,10 @@ export class ShipmentsService {
           shipmentType: rep.shipmentType,
           fedexUniqueId: rep.fedexUniqueId,
           isCharge,
+          scanCode, // '44' | '67' — último código que reportó FedEx (o el configurado si nunca hubo)
+          configuredCode,
           createdAt: minCreatedAt.toISOString(), // alta en el sistema (copia más antigua)
-          last67Date: max67 ? max67.toISOString() : null,
+          last67Date: last ? last.at.toISOString() : null, // último escaneo local (44 o 67)
           daysSinceLast67, // number | null (null = nunca)
           has67Today: category === 'hoy',
           category, // 'hoy' | 'sin67' | 'nunca'
@@ -5490,7 +5503,7 @@ export class ShipmentsService {
           exceptionCodes: Array.from(codes),
           firstStatusDate: firstStatus ? firstStatus.toISOString() : null,
           lastStatusDate: lastStatus ? lastStatus.toISOString() : null,
-          comment: category === 'nunca' ? `Nunca registró ${scanCode}` : category === 'sin67' ? `Sin ${scanCode} hace ${daysSinceLast67} día(s)` : `Tiene ${scanCode} hoy`,
+          comment: category === 'nunca' ? `Nunca registró 44 ni 67` : `${localScanLabel(daysSinceLast67)} (último: código ${scanCode})`,
         };
       });
 

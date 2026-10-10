@@ -1,4 +1,6 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { InventoryType } from 'src/common/enums/inventory-type.enum';
+import { buildZipCityMap, resolveZoneCity, ZipCoverageRow } from './zone-city.util';
 import { CreateInventoryDto } from './dto/create-inventory.dto';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Inventory } from 'src/entities/inventory.entity';
@@ -12,21 +14,15 @@ import { MailService } from 'src/mail/mail.service';
 import { ShipmentStatusType } from 'src/common/enums/shipment-status-type.enum';
 import * as ExcelJS from 'exceljs';
 import { fromZonedTime } from 'date-fns-tz';
-import { differenceInCalendarDays } from 'date-fns';
 import { LD_QUALIFYING_SQL_IN } from 'src/common/ld-codes';
-import { ShipmentType } from 'src/common/enums/shipment-type.enum';
 import { TemplateService } from 'src/documents/template.service';
 import { buildInventoryData, InventoryInput } from 'src/documents/data/inventory.mapper';
 import { buildInventoryNo67Data } from 'src/documents/data/inventory-no67.mapper';
+import { buildMissingScanReport, MISSING_SCAN_REPORT_WINDOW, missingScanWhere } from './missing-scan-report';
+import { daysWithoutLocalScan, isLocalScanCode, latestLocalScan, LocalScan, localScanCategory, LOCAL_SCAN_CODES_SQL } from 'src/utils/local-scan-visibility.util';
 
-/**
- * Candado temporal del reporte "Sin código 44 por sucursal/zona": solo paquetes dados de alta en
- * octubre 2026 (día local de Hermosillo, UTC-7). `to` es el último milisegundo del mes.
- */
-export const MISSING_SCAN_REPORT_WINDOW = {
-  from: fromZonedTime('2026-10-01T00:00:00', 'America/Hermosillo'),
-  to: new Date(fromZonedTime('2026-11-01T00:00:00', 'America/Hermosillo').getTime() - 1),
-};
+// Candado temporal del reporte "Sin código 44": vive con su motor (missing-scan-report.ts).
+export { MISSING_SCAN_REPORT_WINDOW };
 
 export interface ShipmentWithout67 {
   trackingNumber: string;
@@ -80,30 +76,40 @@ export class InventoriesService {
 
 
   async create(createInventoryDto: CreateInventoryDto, userId?: string) {
-    const { inventoryDate, shipments, chargeShipments, subsidiary } = createInventoryDto;
-    
-    console.log("🚀 ~ InventoriesService ~ create ~ subsidiary:", subsidiary)
-    
+    const { inventoryDate, shipments = [], chargeShipments = [], subsidiary } = createInventoryDto;
+    // El front mandaba `inventoryType` y aquí se esperaba `type`: todo quedaba "Inicial".
+    const requestedType = createInventoryDto.type ?? createInventoryDto.inventoryType;
+    const type = Object.values(InventoryType).includes(requestedType as InventoryType)
+      ? (requestedType as InventoryType)
+      : InventoryType.INITIAL;
+    const rejectedTrackings = (createInventoryDto.rejectedTrackings ?? [])
+      .filter((r) => r?.trackingNumber)
+      .map((r) => ({
+        trackingNumber: String(r.trackingNumber).trim(),
+        reason: String(r.reason ?? '').slice(0, 300),
+        kind: String(r.kind ?? ''),
+      }));
+
+    if (!subsidiary?.id) throw new BadRequestException('Selecciona una sucursal para guardar el inventario.');
+
     const queryRunner = this.dataSource.createQueryRunner();
     await queryRunner.connect();
     await queryRunner.startTransaction();
 
     try {
       // 1. Cargar las entidades necesarias dentro de la transacción
-      const shipmentsToSave = await queryRunner.manager.findBy(Shipment, {
-        id: In(shipments)
+      const shipmentsToSave = shipments.length
+        ? await queryRunner.manager.findBy(Shipment, { id: In(shipments) })
+        : [];
+      const chargeShipmentsToSave = chargeShipments.length
+        ? await queryRunner.manager.findBy(ChargeShipment, { id: In(chargeShipments) })
+        : [];
+      const subsidiaryObj = await queryRunner.manager.findOneBy(Subsidiary, {
+        id: subsidiary.id
       });
-      const chargeShipmentsToSave = await queryRunner.manager.findBy(ChargeShipment, {
-        id: In(chargeShipments)
-      });
-      const subsidiaryObj = await queryRunner.manager.findOneBy(Subsidiary, { 
-        id: subsidiary.id 
-      });
-      
-      console.log("🚀 ~ InventoriesService ~ create ~ subsidiaryObj:", subsidiaryObj)
 
       if (!subsidiaryObj) {
-        throw new Error(`La sucursal con ID ${subsidiary.id} no existe.`);
+        throw new BadRequestException('La sucursal seleccionada no existe.');
       }
 
       // 2. Crear y Guardar el Inventario
@@ -114,6 +120,8 @@ export class InventoriesService {
         chargeShipments: chargeShipmentsToSave,
         subsidiary: subsidiaryObj,
         createdById: userId ?? null,
+        type,
+        rejectedTrackings: rejectedTrackings.length ? rejectedTrackings : null,
       });
 
       const savedInventory = await queryRunner.manager.save(newInventory);
@@ -462,7 +470,36 @@ export class InventoriesService {
       }
     }
 
+    await this.attachZoneCities(validatedShipments as any[], subsidiaryId);
     return { validatedShipments };
+  }
+
+  /**
+   * Pone `zoneCity` (ciudad para agrupar/ordenar) a cada paquete: memoria de CP por
+   * sucursal (`subsidiary_zip_coverage`) y, si el CP no está, la ciudad de la guía.
+   */
+  async attachZoneCities<T extends { recipientZip?: string | null; recipientCity?: string | null; zoneCity?: string | null }>(
+    packages: T[],
+    subsidiaryId?: string | null,
+  ): Promise<T[]> {
+    const zips = [...new Set(packages.map((p) => (p?.recipientZip ?? '').trim()).filter(Boolean))];
+    let rows: ZipCoverageRow[] = [];
+    if (zips.length) {
+      try {
+        rows = await this.dataSource.query(
+          'SELECT zip, city, subsidiaryId, share, status FROM subsidiary_zip_coverage WHERE zip IN (?)',
+          [zips],
+        );
+      } catch (e) {
+        // Sin memoria de CP no se rompe el inventario: se usa la ciudad de la guía.
+        this.logger.warn(`No se pudo leer la memoria de CP: ${e?.message}`);
+      }
+    }
+    const zipCities = buildZipCityMap(rows, subsidiaryId);
+    for (const p of packages) {
+      if (p && !p.zoneCity) p.zoneCity = resolveZoneCity(p, zipCities);
+    }
+    return packages;
   }
 
   /**
@@ -532,6 +569,7 @@ export class InventoriesService {
         'inventory.inventoryDate',
         'inventory.createdAt',
         'inventory.type',
+        'inventory.rejectedTrackings',
         'subsidiary.id',
         'subsidiary.name',
       ])
@@ -548,7 +586,14 @@ export class InventoriesService {
       const r = raw.find((x) => x.inventory_id === inv.id);
       const sc = Number(r?.shipmentsCount || 0);
       const cc = Number(r?.chargeShipmentsCount || 0);
-      return { ...inv, shipmentsCount: sc, chargeShipmentsCount: cc, totalPackages: sc + cc };
+      const { rejectedTrackings, ...rest } = inv;
+      return {
+        ...rest,
+        shipmentsCount: sc,
+        chargeShipmentsCount: cc,
+        totalPackages: sc + cc,
+        rejectedCount: Array.isArray(rejectedTrackings) ? rejectedTrackings.length : 0,
+      };
     });
 
     return { data, total, page, limit, totalPages: Math.max(1, Math.ceil(total / limit)) };
@@ -558,9 +603,12 @@ export class InventoriesService {
     return await this.inventoryRepository.findOneBy({ id });
   }
 
-  /** Inventario completo (con paquetes) para el detalle / exportación. */
-  async findOneFull(id: string) {
-    return await this.inventoryRepository.findOne({
+  /**
+   * Inventario completo (con paquetes y su ciudad) para el detalle / exportación.
+   * `user` acota por sucursal igual que SubsidiaryScopeGuard (aquí el param es el id del inventario).
+   */
+  async findOneFull(id: string, user?: { role?: string; subsidiaryIds?: string[] }) {
+    const inventory = await this.inventoryRepository.findOne({
       where: { id },
       relations: [
         'subsidiary',
@@ -570,6 +618,20 @@ export class InventoriesService {
         'chargeShipments.payment',
       ],
     });
+    if (!inventory) throw new NotFoundException('No se encontró el inventario.');
+
+    const role = (user?.role || '').toString().toLowerCase();
+    if (user && !['superadmin', 'superamin', 'owner'].includes(role)) {
+      const allowed = user.subsidiaryIds || [];
+      if (!inventory.subsidiary?.id || !allowed.includes(inventory.subsidiary.id)) {
+        throw new ForbiddenException('Solo puedes consultar datos de tus sucursales asignadas.');
+      }
+    }
+
+    const subsidiaryId = inventory.subsidiary?.id;
+    await this.attachZoneCities((inventory.shipments ?? []) as any[], subsidiaryId);
+    await this.attachZoneCities((inventory.chargeShipments ?? []) as any[], subsidiaryId);
+    return inventory;
   }
 
   async getPriorityPackages(inventory: Inventory) {
@@ -967,7 +1029,30 @@ export class InventoriesService {
    * estuvo ese día (tipo/fecha). La confirmación con FedEx la hace el front
    * reutilizando el mismo endpoint de Visibilidad 67 (por número de guía).
    */
-  /** Código de escaneo local que MONITOREA la sucursal: '44' si `monitorFedexCode44`, si no '67'. */
+  /**
+   * Último escaneo local (44 o 67) por paquete: un agregado sobre shipment_status, en bloques.
+   * El código lo dice FedEx — una sucursal configurada en 67 puede recibir 44 (satélites de Obregón).
+   */
+  private async lastLocalScanBy(ids: string[], fkCol: string): Promise<Map<string, LocalScan>> {
+    const m = new Map<string, LocalScan>();
+    const unique = [...new Set(ids)];
+    for (let i = 0; i < unique.length; i += 1000) {
+      const part = unique.slice(i, i + 1000);
+      const ph = part.map(() => '?').join(',');
+      const rows: any[] = await this.dataSource.query(
+        `SELECT ${fkCol} AS id, MAX(timestamp) AS m,
+                SUBSTRING_INDEX(MAX(CONCAT(timestamp, '|', exceptionCode)), '|', -1) AS code
+           FROM shipment_status
+          WHERE ${fkCol} IN (${ph}) AND exceptionCode IN ${LOCAL_SCAN_CODES_SQL}
+          GROUP BY ${fkCol}`,
+        part,
+      );
+      for (const r of rows) if (r.id && r.m) m.set(String(r.id), { at: new Date(r.m), code: String(r.code) === '44' ? '44' : '67' });
+    }
+    return m;
+  }
+
+  /** Código configurado de la sucursal (solo etiqueta): '44' si `monitorFedexCode44`, si no '67'. */
   private async scanCodeForSubsidiary(subsidiaryId: string): Promise<'44' | '67'> {
     const sub = await this.subsidiaryRepository.findOne({ where: { id: subsidiaryId }, select: ['monitorFedexCode44'] });
     return sub?.monitorFedexCode44 === true ? '44' : '67';
@@ -976,8 +1061,9 @@ export class InventoriesService {
   async getInventoryVisibilityReport(subsidiaryId: string, from: Date, to: Date) {
     const start = new Date(from); start.setHours(0, 0, 0, 0);
     const end = new Date(to); end.setHours(23, 59, 59, 999);
-    // Código por sucursal (44/67): el reporte usa el que la sucursal monitorea.
-    const scanCode = await this.scanCodeForSubsidiary(subsidiaryId);
+    // Código configurado (44/67): solo etiqueta los que nunca tuvieron escaneo. El que cuenta es
+    // el que dio FedEx — 44 o 67, cualquiera (ver local-scan-visibility.util).
+    const configuredCode = await this.scanCodeForSubsidiary(subsidiaryId);
 
     // 1) Inventarios del rango (solo metadatos — NO cargamos paquetes ni historial
     //    por relación: eso explotaba la memoria con el join de statusHistory).
@@ -1007,6 +1093,8 @@ export class InventoriesService {
         .where('j.inventoryId IN (:...invIds)', { invIds })
         // Solo los que REALMENTE se quedaron en bodega (estatus actual = en_bodega).
         .andWhere(`LOWER(${alias}.status) = :enBodega`, { enBodega: ShipmentStatusType.EN_BODEGA })
+        // Solo FedEx: el 44/67 es de FedEx; DHL nunca se mezcla en estos reportes.
+        .andWhere(`${alias}.shipmentType = 'fedex'`)
         .select(`${alias}.id`, 'id')
         .addSelect('j.inventoryId', 'inventoryId');
       for (const [col, as] of PKG_COLS) qb.addSelect(`${alias}.${col}`, as);
@@ -1017,22 +1105,9 @@ export class InventoriesService {
       buildPkgQuery(this.chargeShipmentRepository, 'cs', 'inventory_charge_shipments', 'chargeShipmentId'),
     ]);
 
-    // 3) Fecha del último 67 por paquete — UN agregado sobre shipment_status,
+    // 3) Último escaneo local (44 o 67) por paquete — UN agregado sobre shipment_status,
     //    acotado a los ids de este reporte (chunked). Sin hidratar el historial.
-    const chunk = <T,>(arr: T[], n: number) => { const o: T[][] = []; for (let i = 0; i < arr.length; i += n) o.push(arr.slice(i, i + n)); return o; };
-    const max67By = async (ids: string[], fkCol: string): Promise<Map<string, Date>> => {
-      const m = new Map<string, Date>();
-      for (const part of chunk([...new Set(ids)], 1000)) {
-        if (part.length === 0) continue;
-        const ph = part.map(() => '?').join(',');
-        const rows: any[] = await this.dataSource.query(
-          `SELECT ${fkCol} AS id, MAX(timestamp) AS m FROM shipment_status WHERE ${fkCol} IN (${ph}) AND exceptionCode = '${scanCode}' GROUP BY ${fkCol}`,
-          part,
-        );
-        for (const r of rows) if (r.id) m.set(String(r.id), new Date(r.m));
-      }
-      return m;
-    };
+    const max67By = (ids: string[], fkCol: string) => this.lastLocalScanBy(ids, fkCol);
     const [ship67, charge67] = await Promise.all([
       max67By(shipRows.map((r) => r.id), 'shipmentId'),
       max67By(chargeRows.map((r) => r.id), 'chargeShipmentId'),
@@ -1040,11 +1115,10 @@ export class InventoriesService {
 
     // 4) Agregar por guía (dedup): estatus actual = copia más nueva; 67 = máximo
     //    entre copias; inventarios = en cuáles estuvo.
-    const maxDate = (a: Date | null, b: Date | null) => (!a ? b : !b ? a : a > b ? a : b);
-    type Agg = { rep: any; isCharge: boolean; max67: Date | null; minCreatedAt: Date; inventories: { inventoryId: string; type: string; inventoryDate: Date }[] };
+    type Agg = { rep: any; isCharge: boolean; max67: LocalScan | null; minCreatedAt: Date; inventories: { inventoryId: string; type: string; inventoryDate: Date }[] };
     const byGuide = new Map<string, Agg>();
 
-    const ingest = (row: any, isCharge: boolean, max67Map: Map<string, Date>) => {
+    const ingest = (row: any, isCharge: boolean, max67Map: Map<string, LocalScan>) => {
       if (!row?.trackingNumber) return;
       const inv = invMeta.get(row.inventoryId);
       if (!inv) return;
@@ -1057,7 +1131,7 @@ export class InventoriesService {
       } else {
         if (createdAt > new Date(existing.rep.createdAt)) existing.rep = row;
         existing.isCharge = existing.isCharge || isCharge;
-        existing.max67 = maxDate(existing.max67, max67);
+        existing.max67 = latestLocalScan(existing.max67, max67);
         if (createdAt < existing.minCreatedAt) existing.minCreatedAt = createdAt;
         if (!existing.inventories.some((i) => i.inventoryId === row.inventoryId)) existing.inventories.push(invRef);
       }
@@ -1065,10 +1139,12 @@ export class InventoriesService {
     shipRows.forEach((r) => ingest(r, false, ship67));
     chargeRows.forEach((r) => ingest(r, true, charge67));
 
+    // Días sin código = días COMPLETOS sin escaneo en hora Hermosillo (escaneada anoche = al día).
     const now = new Date();
     const details = Array.from(byGuide.values()).map(({ rep, isCharge, max67, minCreatedAt, inventories }) => {
-      const daysSinceLast67 = max67 ? differenceInCalendarDays(now, max67) : null;
-      const category = max67 == null ? 'nunca' : daysSinceLast67 === 0 ? 'hoy' : 'sin67';
+      const daysSinceLast67 = daysWithoutLocalScan(max67?.at ?? null, now);
+      const cat = localScanCategory(daysSinceLast67);
+      const category = cat === 'sinCodigo' ? 'sin67' : cat;
       // Orden cronológico de los inventarios en que estuvo (inicial→dex→final).
       const invSorted = [...inventories].sort((a, b) => new Date(a.inventoryDate).getTime() - new Date(b.inventoryDate).getTime());
       return {
@@ -1081,9 +1157,10 @@ export class InventoriesService {
         shipmentType: rep.shipmentType,
         fedexUniqueId: rep.fedexUniqueId,
         isCharge,
-        scanCode, // '44' | '67' — código que monitorea la sucursal del reporte
+        scanCode: max67?.code ?? configuredCode, // último código que dio FedEx (o el configurado si nunca hubo)
+        configuredCode,
         createdAt: minCreatedAt.toISOString(),
-        last67Date: max67 ? max67.toISOString() : null,
+        last67Date: max67 ? max67.at.toISOString() : null,
         daysSinceLast67,
         has67Today: category === 'hoy',
         category,
@@ -1115,10 +1192,8 @@ export class InventoriesService {
    * Reporte "Sin código de escaneo por sucursal/zona" (el front lo llama "Sin código 44"): lista
    * los paquetes ACTIVOS (pendiente/en_bodega) de las sucursales indicadas —una lista, o toda una
    * zona ya resuelta a sucursales por el caller— y, por GUÍA (agregando todas sus copias), calcula
-   * los días desde el último escaneo local del código que MONITOREA CADA sucursal: 44 si
-   * `monitorFedexCode44 = true`, si no 67 (mismo criterio que MonitoringService / getFedex44Visibility).
-   * Espejo de `ShipmentsService.validateCode67BySubsidiary`, pero multi-sucursal y con el código por
-   * sucursal.
+   * los días desde el último escaneo local de FedEx (44 o 67, el que haya dado FedEx; la config de
+   * la sucursal solo etiqueta los que nunca tuvieron). Mismo motor que el welcome dashboard.
    *
    * IMPORTANTE (fix): antes se anclaba a `Inventory` en un rango de fechas y salía VACÍO para todas
    * las sucursales — las que realmente monitorean 44 (Hermosillo / Ruta Extendida) casi no crean
@@ -1127,8 +1202,8 @@ export class InventoriesService {
    *
    * POR AHORA (pedido de operación, 2026-10-07): el reporte se acota a paquetes dados de alta en
    * OCTUBRE 2026 (hora local Hermosillo) sin importar lo que mande el front, y SOLO FedEx
-   * (el código 44/67 es de FedEx; DHL no aplica). Para quitar el candado, borrar
-   * `MISSING_SCAN_REPORT_WINDOW` y su uso en el `where`.
+   * (el código 44/67 es de FedEx; DHL no aplica). Para quitar el candado, quitar
+   * `MISSING_SCAN_REPORT_WINDOW` de `missingScanWhere` (missing-scan-report.ts).
    */
   async getMissingScanReportMulti(subsidiaryIds: string[]) {
     const emptySummary = { paquetes: 0, conCodigoHoy: 0, sinCodigo: 0, nunca: 0 };
@@ -1140,16 +1215,10 @@ export class InventoriesService {
       where: { id: In(ids) },
       select: ['id', 'name', 'monitorFedexCode44'],
     });
-    const scanBySub = new Map<string, { name?: string; scanCode: '67' | '44' }>();
-    for (const s of subs) scanBySub.set(s.id, { name: s.name, scanCode: s.monitorFedexCode44 === true ? '44' : '67' });
 
-    const targetStatuses = [ShipmentStatusType.PENDIENTE, ShipmentStatusType.EN_BODEGA];
-    const where = {
-      subsidiary: { id: In(ids) },
-      status: In(targetStatuses),
-      shipmentType: ShipmentType.FEDEX,
-      createdAt: Between(MISSING_SCAN_REPORT_WINDOW.from, MISSING_SCAN_REPORT_WINDOW.to),
-    };
+    // Motor compartido con el welcome dashboard (ver missing-scan-report.ts): el código lo dice
+    // FedEx (44 o 67, cualquiera cuenta) y los días se cuentan completos en hora Hermosillo.
+    const where = missingScanWhere(ids);
     const [shipments, chargeShipments] = await Promise.all([
       this.shipmentRepository.find({ where, relations: ['statusHistory', 'subsidiary'] }),
       this.chargeShipmentRepository.find({ where, relations: ['statusHistory', 'subsidiary'] }),
@@ -1159,102 +1228,7 @@ export class InventoriesService {
       ...shipments.map((s) => ({ s, isCharge: false })),
       ...chargeShipments.map((s) => ({ s, isCharge: true })),
     ];
-
-    const maxDate = (a: Date | null, b: Date | null) => (!a ? b : !b ? a : a > b ? a : b);
-    // El código lo dice FedEx, no la configuración: las sucursales satélite de Obregón están
-    // configuradas en 67 pero FedEx les reporta el 44 (en estación) y el 67 (tercero en camino)
-    // según la fase. Cualquiera de los dos es escaneo local de FedEx → cuenta como "con código".
-    // `scanCode` = el último que FedEx reportó; si nunca hubo, el configurado de la sucursal.
-    const LOCAL_SCAN_CODES = new Set(['44', '67']);
-    type Agg = {
-      rep: any; isCharge: boolean; maxCode: Date | null; lastCode: string | null; codes: Set<string>;
-      historyCount: number; minCreatedAt: Date; subsidiaryId?: string; scanCode: '67' | '44';
-    };
-    const byGuide = new Map<string, Agg>();
-
-    for (const { s, isCharge } of tagged) {
-      const subId = s.subsidiary?.id;
-      const scanCode: '67' | '44' = (subId && scanBySub.get(subId)?.scanCode) || '67';
-
-      const history = s.statusHistory || [];
-      let maxCode: Date | null = null;
-      let lastCode: string | null = null;
-      const codes = new Set<string>();
-      for (const h of history) {
-        if (h.exceptionCode) codes.add(h.exceptionCode);
-        const t = h.timestamp ? new Date(h.timestamp) : null;
-        if (t && LOCAL_SCAN_CODES.has(h.exceptionCode) && (!maxCode || t > maxCode)) {
-          maxCode = t;
-          lastCode = h.exceptionCode;
-        }
-      }
-
-      const createdAt = new Date(s.createdAt);
-      const existing = byGuide.get(s.trackingNumber);
-      if (!existing) {
-        byGuide.set(s.trackingNumber, { rep: s, isCharge, maxCode, lastCode, codes, historyCount: history.length, minCreatedAt: createdAt, subsidiaryId: subId, scanCode });
-      } else {
-        const repNewer = createdAt > new Date(existing.rep.createdAt);
-        existing.rep = repNewer ? s : existing.rep;
-        existing.isCharge = existing.isCharge || isCharge;
-        if (maxCode && (!existing.maxCode || maxCode > existing.maxCode)) existing.lastCode = lastCode;
-        existing.maxCode = maxDate(existing.maxCode, maxCode);
-        existing.historyCount += history.length;
-        if (createdAt < existing.minCreatedAt) existing.minCreatedAt = createdAt;
-        for (const c of codes) existing.codes.add(c);
-      }
-    }
-
-    // "Días sin código" = días COMPLETOS sin escaneo, en hora de Hermosillo (UTC-7 fijo). FedEx
-    // escanea de noche (~21:30–23:00), así que en la mañana el último posible es el de anoche:
-    // escaneada anoche → 0 (al día); antenoche → 1 (le faltó ayer). Hoy en la noche también es 0.
-    const herDayMs = (d: Date) => Date.parse(new Date(d.getTime() - 7 * 3600 * 1000).toISOString().slice(0, 10));
-    const today = herDayMs(new Date());
-    const details = Array.from(byGuide.values()).map(({ rep, isCharge, maxCode, lastCode, codes, historyCount, minCreatedAt, subsidiaryId, scanCode: configuredCode }) => {
-      const scanCode = (lastCode as '44' | '67' | null) ?? configuredCode;
-      const daysSinceLastCode = maxCode ? Math.max(0, Math.round((today - herDayMs(maxCode)) / 86400000) - 1) : null;
-      const category = maxCode == null ? 'nunca' : daysSinceLastCode === 0 ? 'hoy' : 'sinCodigo';
-      const sub = subsidiaryId ? scanBySub.get(subsidiaryId) : undefined;
-      return {
-        trackingNumber: rep.trackingNumber,
-        status: rep.status,
-        recipientName: rep.recipientName,
-        recipientAddress: rep.recipientAddress,
-        recipientCity: rep.recipientCity,
-        recipientZip: rep.recipientZip,
-        shipmentType: rep.shipmentType,
-        fedexUniqueId: rep.fedexUniqueId,
-        commitDateTime: rep.commitDateTime ?? null,
-        isCharge,
-        subsidiaryId,
-        subsidiaryName: sub?.name ?? rep.subsidiary?.name,
-        scanCode, // '67' | '44' — último código que reportó FedEx (o el configurado si nunca hubo)
-        configuredCode,
-        createdAt: minCreatedAt.toISOString(),
-        lastCodeDate: maxCode ? maxCode.toISOString() : null,
-        daysSinceLastCode,
-        hasCodeToday: category === 'hoy',
-        category, // 'hoy' | 'sinCodigo' | 'nunca'
-        statusHistoryCount: historyCount,
-        exceptionCodes: Array.from(codes),
-      };
-    });
-
-    details.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
-
-    const conCodigoHoy = details.filter((d) => d.category === 'hoy').length;
-    const nunca = details.filter((d) => d.category === 'nunca').length;
-
-    return {
-      summary: {
-        paquetes: details.length,
-        conCodigoHoy,
-        sinCodigo: details.length - conCodigoHoy - nunca, // excluye "nunca": las tres suman `paquetes`
-        nunca,
-      },
-      details,
-      period,
-    };
+    return { ...buildMissingScanReport(tagged, subs), period };
   }
 
   // ============ MÉTODOS HELPER CORREGIDOS ============
@@ -1297,18 +1271,20 @@ export class InventoriesService {
     shipmentsWithout67: ShipmentWithout67[];
     totalShipments: number;
   }> {
-    if (!inventory.shipments || inventory.shipments.length === 0) {
+    // Solo FedEx: el 44/67 es de FedEx; DHL nunca se mezcla en estos reportes.
+    const fedexShipments = (inventory.shipments || []).filter((s) => String(s.shipmentType || '').toLowerCase() === 'fedex');
+    if (fedexShipments.length === 0) {
       return { shipmentsWithout67: [], totalShipments: 0 };
     }
 
     const shipmentsWithout67: ShipmentWithout67[] = [];
-    const totalShipments = inventory.shipments.length;
+    const totalShipments = fedexShipments.length;
 
     // Procesar en batches para mejor rendimiento
     const BATCH_SIZE = 100;
     
     for (let i = 0; i < totalShipments; i += BATCH_SIZE) {
-      const batch = inventory.shipments.slice(i, Math.min(i + BATCH_SIZE, totalShipments));
+      const batch = fedexShipments.slice(i, Math.min(i + BATCH_SIZE, totalShipments));
       
       for (const shipment of batch) {
         try {
@@ -1358,8 +1334,8 @@ export class InventoriesService {
       let maxDate: Date | null = null;
       
       for (const status of statusHistory) {
-        // Verificar el código que monitorea la sucursal (44/67)
-        if (status.exceptionCode === scanCode) {
+        // Escaneo local de FedEx: 44 o 67, cualquiera (el código lo dice FedEx, no la config)
+        if (isLocalScanCode(status.exceptionCode)) {
           hasCode67 = true;
           break; // Salir temprano si ya tiene el código
         }
@@ -1410,7 +1386,7 @@ export class InventoriesService {
       fedexUniqueId: shipment.fedexUniqueId ?? null,
       comment: historyCount === 0
         ? 'Sin historial de estados'
-        : `No tiene exceptionCode ${scanCode}`,
+        : 'Nunca registró 44 ni 67',
     };
   }
 

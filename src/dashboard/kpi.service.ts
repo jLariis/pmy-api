@@ -7,6 +7,10 @@ import { ChargeRule } from 'src/entities/charge-rule.entity';
 import { proratedAmountInRange } from 'src/common/expense-proration.util';
 import { effectiveLocalDaySql, rawUtcBounds } from 'src/common/income-window.util';
 import { ConsolidatedService } from 'src/consolidated/consolidated.service';
+import { buildMissingScanReport, MissingScanDetail, missingScanWhere } from 'src/inventories/missing-scan-report';
+import { localScanLabel } from 'src/utils/local-scan-visibility.util';
+import { DHL_INCIDENT_BY_STATUS } from 'src/utils/dhl.utils';
+import { ShipmentType } from 'src/common/enums/shipment-type.enum';
 import {
   emptyPackageStats,
   SubsidiaryPackageStats,
@@ -147,15 +151,24 @@ export class KpiService {
       commitDateTime: s.commitDateTime ? new Date(s.commitDateTime).toISOString() : null,
     });
 
+    // FedEx y DHL NUNCA se mezclan: cada sección se consulta por paquetería (conteo y lista
+    // propios, hasta LIST_LIMIT por paquetería) y el front las muestra por separado.
+    const CARRIERS = [ShipmentType.FEDEX, ShipmentType.DHL] as const;
+    type CarrierKey = (typeof CARRIERS)[number];
+    /** findAndCount en envíos + cargas de UNA paquetería; devuelve filas (≤ limit) y total. */
+    const byCarrierQuery = async (carrier: CarrierKey, where: any, order: any) => {
+      const w = { ...where, shipmentType: carrier };
+      const [[ships, shipTotal], [charges, chargeTotal]] = await Promise.all([
+        this.shipmentRepository.findAndCount({ where: w, relations: ['subsidiary'], order, take: LIST_LIMIT }),
+        this.chargeShipmentRepository.findAndCount({ where: w, relations: ['subsidiary'], order, take: LIST_LIMIT }),
+      ]);
+      return { rows: [...ships, ...charges].slice(0, LIST_LIMIT) as any[], total: shipTotal + chargeTotal };
+    };
+
     // --- 1. Vencen hoy: commitDateTime dentro de HOY + activos ---
     const expWhere: any = { ...subFilter, status: In(KpiService.WELCOME_ACTIVE_STATUSES), commitDateTime: Between(todayStart, todayEnd) };
-    const [expShipments, expShipTotal] = await this.shipmentRepository.findAndCount({
-      where: expWhere, relations: ['subsidiary'], order: { commitDateTime: 'ASC' }, take: LIST_LIMIT,
-    });
-    const [expCharges, expChargeTotal] = await this.chargeShipmentRepository.findAndCount({
-      where: expWhere, relations: ['subsidiary'], order: { commitDateTime: 'ASC' }, take: LIST_LIMIT,
-    });
-    const expiringPackages = [...expShipments, ...expCharges].slice(0, LIST_LIMIT).map((s: any) => {
+    const [expFedex, expDhl] = await Promise.all(CARRIERS.map((c) => byCarrierQuery(c, expWhere, { commitDateTime: 'ASC' })));
+    const expiringPackages = [...expFedex.rows, ...expDhl.rows].map((s: any) => {
       const expiry = s.commitDateTime ? new Date(s.commitDateTime) : now;
       return {
         id: s.id,
@@ -172,13 +185,8 @@ export class KpiService {
     // --- 2. Pendientes de días anteriores: commit < hoy + activos (últimos 60 días) ---
     const overdueFrom = new Date(todayStart.getTime() - 60 * 24 * 3600 * 1000);
     const penWhere: any = { ...subFilter, status: In(KpiService.WELCOME_ACTIVE_STATUSES), commitDateTime: Between(overdueFrom, new Date(todayStart.getTime() - 1)) };
-    const [penShipments, penShipTotal] = await this.shipmentRepository.findAndCount({
-      where: penWhere, relations: ['subsidiary'], order: { commitDateTime: 'DESC' }, take: LIST_LIMIT,
-    });
-    const [penCharges, penChargeTotal] = await this.chargeShipmentRepository.findAndCount({
-      where: penWhere, relations: ['subsidiary'], order: { commitDateTime: 'DESC' }, take: LIST_LIMIT,
-    });
-    const pendingPackages = [...penShipments, ...penCharges].slice(0, LIST_LIMIT).map((s: any) => ({
+    const [penFedex, penDhl] = await Promise.all(CARRIERS.map((c) => byCarrierQuery(c, penWhere, { commitDateTime: 'DESC' })));
+    const pendingPackages = [...penFedex.rows, ...penDhl.rows].map((s: any) => ({
       id: s.id,
       trackingNumber: s.trackingNumber,
       recipientName: s.recipientName || '—',
@@ -188,44 +196,103 @@ export class KpiService {
       ...contactFields(s),
     }));
 
-    // --- 3. Sin escaneo local: paquetes ACTIVOS cuyo historial NO tiene el código que
-    // MONITOREA SU sucursal — 67 por default, o 44 si `monitorFedexCode44` (mismo criterio que
-    // MonitoringService / getMissingScanReportMulti). Así las sucursales de 44 ven lo del 44 y
-    // las de 67 lo del 67.
-    //
-    // Antes se acotaba a [PENDIENTE, EN_BODEGA], lo que SUBCONTABA: sucursales como
-    // Caborca/Santa Ana/Sonoyta/Puerto Peñasco tienen guías sin escaneo en otros estatus
-    // activos (EN_RUTA, EN_TRANSITO, RECIBIDO_EN_BODEGA, RECOLECCION, DESCONOCIDO) y no
-    // aparecían. Ahora se usa el mismo set activo que las secciones 1 y 2. ---
-    const scanStatuses = KpiService.WELCOME_ACTIVE_STATUSES;
-    const scanCodeOf = (s: any): '67' | '44' => (s.subsidiary?.monitorFedexCode44 === true ? '44' : '67');
-    const [sScan, cScan] = await Promise.all([
-      this.shipmentRepository.find({ where: { ...subFilter, status: In(scanStatuses) }, relations: ['statusHistory', 'subsidiary'], take: 500 }),
-      this.chargeShipmentRepository.find({ where: { ...subFilter, status: In(scanStatuses) }, relations: ['statusHistory', 'subsidiary'], take: 500 }),
-    ]);
-    const withoutScan = [...sScan, ...cScan].filter((s: any) => {
-      const code = scanCodeOf(s);
-      return !(s.statusHistory || []).some((h: any) => h.exceptionCode === code);
+    // --- 2.b DHL: incidencias con SUS códigos (NH/BA/RD/CM). DHL no tiene escaneo local 44/67;
+    // lo que hay que atender son los intentos fallidos. Alta en los últimos 60 días. ---
+    const dhlIncidentWhere: any = {
+      ...subFilter,
+      status: In(Object.keys(DHL_INCIDENT_BY_STATUS)),
+      createdAt: Between(overdueFrom, todayEnd),
+    };
+    const dhlInc = await byCarrierQuery(ShipmentType.DHL, dhlIncidentWhere, { createdAt: 'DESC' });
+    // Conteo por código: agregado aparte (la lista va acotada, el conteo no).
+    const incidentCountRows: { status: string; n: string }[] = (
+      await Promise.all([this.shipmentRepository, this.chargeShipmentRepository].map((repo: Repository<any>) => {
+        const qb = repo.createQueryBuilder('p')
+          .select('p.status', 'status').addSelect('COUNT(*)', 'n')
+          .where('p.shipmentType = :dhl', { dhl: ShipmentType.DHL })
+          .andWhere('p.status IN (:...st)', { st: Object.keys(DHL_INCIDENT_BY_STATUS) })
+          .andWhere('p.createdAt BETWEEN :from AND :to', { from: overdueFrom, to: todayEnd })
+          .groupBy('p.status');
+        if (ids.length) qb.andWhere('p.subsidiaryId IN (:...ids)', { ids });
+        return qb.getRawMany();
+      }))
+    ).flat();
+    const dhlIncidentsByCode: Record<string, { label: string; count: number }> = {};
+    for (const { status, n } of incidentCountRows) {
+      const inc = DHL_INCIDENT_BY_STATUS[status];
+      if (!inc) continue;
+      dhlIncidentsByCode[inc.code] = { label: inc.label, count: (dhlIncidentsByCode[inc.code]?.count ?? 0) + Number(n) };
+    }
+    const dhlIncidentPackages = dhlInc.rows.map((s: any) => {
+      const inc = DHL_INCIDENT_BY_STATUS[String(s.status)];
+      return {
+        id: s.id,
+        trackingNumber: s.trackingNumber,
+        recipientName: s.recipientName || '—',
+        subsidiaryName: s.subsidiary?.name || '—',
+        dhlCode: inc?.code ?? '',
+        incident: inc ? `${inc.code} · ${inc.label}` : KpiService.STATUS_LABELS[String(s.status)] || String(s.status),
+        status: KpiService.STATUS_LABELS[String(s.status)] || String(s.status),
+        createdAt: new Date(s.createdAt).toISOString(),
+        ...contactFields(s),
+      };
     });
-    const withoutDEXPackages = withoutScan.slice(0, LIST_LIMIT).map((s: any) => ({
-      id: s.id,
-      trackingNumber: s.trackingNumber,
-      recipientName: s.recipientName || '—',
-      subsidiaryName: s.subsidiary?.name || '—',
-      missingDocument: `Código ${scanCodeOf(s)}`,
-      status: KpiService.STATUS_LABELS[String(s.status)] || String(s.status),
-      ...contactFields(s),
+
+    // --- 3. Sin escaneo local: MISMO motor que el reporte "Sin código 44 por sucursal/zona"
+    // (missing-scan-report.ts) para que el welcome y el reporte empaten guía por guía: mismos
+    // estatus (pendiente/en bodega), solo FedEx, misma ventana, deduplicado por guía y sin tope.
+    // El código lo dice FedEx (44 o 67, cualquiera cuenta) y "sin escaneo" = NO está al día:
+    // nunca escaneada o con días completos sin escaneo (hora Hermosillo). ---
+    const scanSubs = await this.subsidiaryRepository.find({
+      where: ids.length ? { id: In(ids) } : {},
+      select: ['id', 'name', 'monitorFedexCode44'],
+    });
+    const scanSubIds = scanSubs.map((s) => s.id);
+    let withoutScan: MissingScanDetail[] = [];
+    if (scanSubIds.length) {
+      const scanWhere = missingScanWhere(scanSubIds);
+      const [sScan, cScan] = await Promise.all([
+        this.shipmentRepository.find({ where: scanWhere, relations: ['statusHistory', 'subsidiary'] }),
+        this.chargeShipmentRepository.find({ where: scanWhere, relations: ['statusHistory', 'subsidiary'] }),
+      ]);
+      const { details } = buildMissingScanReport(
+        [...sScan.map((s) => ({ s, isCharge: false })), ...cScan.map((s) => ({ s, isCharge: true }))],
+        scanSubs,
+        now,
+      );
+      // Lo más grave primero: nunca escaneadas, luego más días sin escaneo.
+      const severity = (d: MissingScanDetail) => (d.daysSinceLastCode == null ? Number.MAX_SAFE_INTEGER : d.daysSinceLastCode);
+      withoutScan = details.filter((d) => d.category !== 'hoy').sort((a, b) => severity(b) - severity(a));
+    }
+    const withoutDEXPackages = withoutScan.slice(0, LIST_LIMIT).map((d) => ({
+      id: d.id,
+      trackingNumber: d.trackingNumber,
+      recipientName: d.recipientName || '—',
+      subsidiaryName: d.subsidiaryName || '—',
+      missingDocument: `Código ${d.scanCode} · ${localScanLabel(d.daysSinceLastCode)}`,
+      scanCode: d.scanCode,
+      daysSinceLastCode: d.daysSinceLastCode,
+      lastCodeDate: d.lastCodeDate,
+      status: KpiService.STATUS_LABELS[String(d.status)] || String(d.status),
+      ...contactFields(d),
     }));
 
+    const dhlIncidents = Object.values(dhlIncidentsByCode).reduce((a, b) => a + b.count, 0);
     return {
+      // Totales (compatibilidad). El front muestra SIEMPRE por paquetería (`byCarrier`).
       stats: {
-        pendingYesterday: penShipTotal + penChargeTotal,
+        pendingYesterday: penFedex.total + penDhl.total,
         withoutDEX: withoutScan.length,
-        expiringToday: expShipTotal + expChargeTotal,
+        expiringToday: expFedex.total + expDhl.total,
+      },
+      byCarrier: {
+        fedex: { expiringToday: expFedex.total, pendingYesterday: penFedex.total, withoutScan: withoutScan.length },
+        dhl: { expiringToday: expDhl.total, pendingYesterday: penDhl.total, incidents: dhlIncidents, incidentsByCode: dhlIncidentsByCode },
       },
       pendingPackages,
       withoutDEXPackages,
       expiringPackages,
+      dhlIncidentPackages,
     };
   }
 

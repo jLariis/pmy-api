@@ -18,13 +18,17 @@ export class InventoriesController {
 
   @Post()
   create(@Body() createInventoryDto: CreateInventoryDto, @Req() req: any) {
-    console.log("🚀 ~ InventoriesController ~ create ~ createInventoryDto:", createInventoryDto)
+    const role = (req.user?.role || '').toString().toLowerCase();
+    const subsidiaryId = createInventoryDto?.subsidiary?.id;
+    if (subsidiaryId && !GLOBAL_ROLES.includes(role) && !(req.user?.subsidiaryIds || []).includes(subsidiaryId)) {
+      throw new ForbiddenException('Solo puedes guardar inventarios de tus sucursales asignadas.');
+    }
     return this.inventoriesService.create(createInventoryDto, req.user?.userId);
   }
 
   @Get('detail/:id')
-  findOneFull(@Param('id') id: string) {
-    return this.inventoriesService.findOneFull(id);
+  findOneFull(@Param('id') id: string, @Req() req: any) {
+    return this.inventoriesService.findOneFull(id, req.user);
   }
 
   /** Reporte "Inventarios" (estilo Visibilidad 67) por sucursal y rango (default: ayer). */
@@ -82,6 +86,7 @@ export class InventoriesController {
   }
 
   @Get(':subsidiaryId')
+  @UseGuards(SubsidiaryScopeGuard) // No-elevados solo ven inventarios de sus sucursales.
   findAll(
     @Param('subsidiaryId') subsidiaryId: string,
     @Query('page') page?: string,

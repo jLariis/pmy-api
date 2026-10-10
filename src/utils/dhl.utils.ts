@@ -137,3 +137,16 @@ export function classifyDhlException(
   return null;
 }
 
+
+/**
+ * Incidencias DHL vistas desde el estatus interno → su código DHL (NH/BA/RD/CM) y etiqueta llana.
+ * Inverso de `mapDhlCodeToInternal` para los desenlaces NO terminales, más `no_entregado` (fallo
+ * genérico de DHL sin código fino). DHL NO tiene escaneo local 44/67: estas son sus "alertas".
+ */
+export const DHL_INCIDENT_BY_STATUS: Record<string, { code: string; label: string }> = {
+  [ShipmentStatusType.CLIENTE_NO_DISPONIBLE]: { code: DhlStatusType.NH, label: 'Cliente no disponible' },
+  [ShipmentStatusType.DIRECCION_INCORRECTA]: { code: DhlStatusType.BA, label: 'Dirección incorrecta' },
+  [ShipmentStatusType.RECHAZADO]: { code: DhlStatusType.RD, label: 'Rechazado' },
+  [ShipmentStatusType.CAMBIO_DOMICILIO]: { code: DhlStatusType.CM, label: 'Cambio de domicilio' },
+  [ShipmentStatusType.NO_ENTREGADO]: { code: 'SC', label: 'No entregado (sin código)' },
+};
