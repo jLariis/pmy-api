@@ -8,6 +8,11 @@ import { InboxConsolidation } from '../entities/inbox-consolidation.entity';
 import { InboxIngestService } from './inbox-ingest.service';
 import { ImapReaderService } from './imap-reader.service';
 import { RouteDay, routeOf, summarizeRoutes } from './route-cons.util';
+import { InboxCarrier, inboxDomains } from './mail-analysis';
+import { promises as fs } from 'fs';
+import { join } from 'path';
+import { isSpreadsheet } from './attachment-classify.util';
+import { dhlDueDatesFromWorkbook, dhlPasteText } from './dhl-paste.util';
 
 /** Hermosillo no tiene horario de verano: UTC−7 fijo. */
 const TZ_OFFSET_MS = 7 * 3_600_000;
@@ -20,6 +25,8 @@ export interface ListFilters {
   from?: string;
   to?: string;
   q?: string;
+  /** Paquetería: 'fedex' (por defecto) o 'dhl', según el dominio del remitente. */
+  carrier?: InboxCarrier;
   page?: number;
   pageSize?: number;
 }
@@ -36,7 +43,9 @@ const HAS_GUIDES = `EXISTS (SELECT 1 FROM inbox_attachment ua WHERE ua.inboxMess
 const ALL_UPLOADED = `(EXISTS (SELECT 1 FROM inbox_consolidation uc WHERE uc.inboxMessageId = m.id)
   AND NOT EXISTS (SELECT 1 FROM inbox_consolidation uc WHERE uc.inboxMessageId = m.id AND uc.linkStatus = 'pendiente'))`;
 const READY = "m.status IN ('detectado','confirmado')";
-const UPLOADED = `(m.uploadCoverage = 'completo' OR ${ALL_UPLOADED})`;
+// COALESCE: uploadCoverage vacío (aún no se revisa contra el sistema) = NO subido. Sin él la
+// comparación da NULL, NOT(NULL) también, y el correo no salía en ninguna vista salvo "Todos".
+const UPLOADED = `(COALESCE(m.uploadCoverage, '') = 'completo' OR ${ALL_UPLOADED})`;
 
 const VIEW_WHERE: Record<InboxViewKey, string> = {
   // Lo que ya está en el sistema (por guías o por número) es "Subido" aunque nadie haya confirmado la sucursal.
@@ -91,12 +100,14 @@ export class InboxQueryService {
   async list(f: ListFilters, scope: Scope) {
     const page = Math.max(1, Number(f.page) || 1);
     const pageSize = Math.min(200, Math.max(10, Number(f.pageSize) || 50));
-    const base = () => {
+    const carrier: InboxCarrier = f.carrier === 'dhl' ? 'dhl' : 'fedex';
+    const base = (forCarrier: InboxCarrier = carrier, withDates = true) => {
       const qb = this.msgRepo.createQueryBuilder('m');
+      qb.andWhere('m.carrier = :carrier', { carrier: forCarrier });
       if (scope !== null) qb.andWhere(scope.length ? 'm.subsidiaryId IN (:...scope)' : '1 = 0', { scope });
       if (f.subsidiaryId) qb.andWhere('m.subsidiaryId = :sid', { sid: f.subsidiaryId });
-      if (f.from) qb.andWhere('m.receivedAt >= :from', { from: dayStartUtc(f.from) });
-      if (f.to) qb.andWhere('m.receivedAt < :to', { to: new Date(dayStartUtc(f.to).getTime() + 86_400_000) });
+      if (withDates && f.from) qb.andWhere('m.receivedAt >= :from', { from: dayStartUtc(f.from) });
+      if (withDates && f.to) qb.andWhere('m.receivedAt < :to', { to: new Date(dayStartUtc(f.to).getTime() + 86_400_000) });
       if (f.q?.trim()) {
         const q = `%${f.q.trim()}%`;
         qb.andWhere(
@@ -114,15 +125,29 @@ export class InboxQueryService {
 
     const counts = {} as Record<InboxViewKey, number>;
     await Promise.all(VIEW_KEYS.map(async (v) => (counts[v] = await base().andWhere(VIEW_WHERE[v]).getCount())));
+    // Pendientes por paquetería (falta confirmar + listos) para las pestañas FedEx / DHL.
+    const pendingWhere = `(${VIEW_WHERE.falta_confirmar}) OR (${VIEW_WHERE.listos})`;
+    const carrierCounts = {} as Record<InboxCarrier, number>;
+    await Promise.all((['fedex', 'dhl'] as InboxCarrier[]).map(async (c) => (carrierCounts[c] = await base(c).andWhere(`(${pendingWhere})`).getCount())));
 
     const qb = base();
     const view: InboxViewKey = VIEW_KEYS.includes(f.status as InboxViewKey) ? (f.status as InboxViewKey) : 'falta_confirmar';
     qb.andWhere(VIEW_WHERE[view]);
-    qb.select(['m.id', 'm.receivedAt', 'm.fromAddress', 'm.fromName', 'm.subject', 'm.status', 'm.subsidiaryId', 'm.ignoreReason', 'm.errorMessage', 'm.uploadCoverage'])
+    qb.select(['m.id', 'm.carrier', 'm.receivedAt', 'm.fromAddress', 'm.fromName', 'm.subject', 'm.status', 'm.subsidiaryId', 'm.ignoreReason', 'm.errorMessage', 'm.uploadCoverage'])
       .orderBy('m.receivedAt', 'DESC')
       .skip((page - 1) * pageSize)
       .take(pageSize);
     const [rows, total] = await qb.getManyAndCount();
+
+    // Correos de esta vista que quedan FUERA de las fechas elegidas (p. ej. DHL viejos): para el
+    // aviso "Hay N correos fuera de estas fechas · Ver todos" (lleva al más antiguo).
+    let outsideDates: { count: number; oldestDay: string } | null = null;
+    if (f.from || f.to) {
+      const all = base(carrier, false).andWhere(VIEW_WHERE[view]);
+      const agg = await all.select('COUNT(*)', 'n').addSelect('MIN(m.receivedAt)', 'oldest').getRawOne<{ n: string; oldest: Date | null }>();
+      const count = Number(agg?.n ?? 0) - Number(counts[view] ?? 0);
+      if (count > 0 && agg?.oldest) outsideDates = { count, oldestDay: localDay(new Date(agg.oldest)) };
+    }
     const ids = rows.map((r) => r.id);
     const [atts, cons, dets, subs] = await Promise.all([
       ids.length ? this.attRepo.find({ where: { inboxMessageId: In(ids) }, select: ['id', 'inboxMessageId', 'filename', 'kind'] }) : [],
@@ -145,6 +170,7 @@ export class InboxQueryService {
         : 'listo';
       return {
         uploadState,
+        carrier: m.carrier,
         id: m.id,
         receivedAt: m.receivedAt,
         fromAddress: m.fromAddress,
@@ -161,7 +187,7 @@ export class InboxQueryService {
         cobrosCount: mc.reduce((s, c) => s + (c.cobros?.length ?? 0), 0),
       };
     });
-    return { items, total, page, pageSize, counts };
+    return { items, total, page, pageSize, counts, carrier, carrierCounts, outsideDates };
   }
 
   async detail(id: string, scope: Scope) {
@@ -175,9 +201,11 @@ export class InboxQueryService {
     const d = dets[0] ?? null;
     const subIds = [m.subsidiaryId, d?.subsidiaryId ?? null, d?.runnerUp?.subsidiaryId ?? null, ...(d?.signals ?? []).map((s) => s.subsidiaryId)];
     const [subs, users] = await Promise.all([this.subsidiaryNames(subIds), this.userNames([m.confirmedById, ...cons.map((c) => c.uploadedById)])]);
+    const { textBody, ...msgFields } = m;
     return {
+      dhl: m.carrier === 'dhl' ? await this.dhlImport(textBody, atts) : null,
       message: {
-        ...m,
+        ...msgFields,
         subsidiaryName: m.subsidiaryId ? subs.get(m.subsidiaryId) ?? null : null,
         confirmedByName: m.confirmedById ? users.get(m.confirmedById) ?? null : null,
       },
@@ -191,6 +219,25 @@ export class InboxQueryService {
       },
       consolidations: cons.map((c) => ({ ...c, uploadedByName: c.uploadedById ? users.get(c.uploadedById) ?? null : null })),
     };
+  }
+
+  /**
+   * Lo que necesita "Importar DHL" desde la Bandeja: el cuerpo a pegar (bloques "AWB :") y los
+   * vencimientos del Excel DHL de 3 hojas (por guía y por JD). La hoja simple no trae vencimiento.
+   */
+  private async dhlImport(textBody: string | null, atts: InboxAttachment[]) {
+    const dueDates: Record<string, string> = {};
+    let excelAttachmentId: string | null = null; // el Excel DHL de 3 hojas (se abre directo si el cuerpo no trae guías)
+    for (const a of atts.filter((x) => isSpreadsheet(x.filename))) {
+      try {
+        const found = dhlDueDatesFromWorkbook(await fs.readFile(join(process.cwd(), a.storagePath)));
+        if (Object.keys(found).length && !excelAttachmentId) excelAttachmentId = a.id;
+        Object.assign(dueDates, found);
+      } catch {
+        /* archivo no disponible en disco: sin vencimientos de ese adjunto */
+      }
+    }
+    return { pasteText: dhlPasteText(textBody), dueDates, excelAttachmentId };
   }
 
   async board(f: { from?: string; to?: string; subsidiaryId?: string }, scope: Scope) {
@@ -305,6 +352,7 @@ export class InboxQueryService {
       lastError: s.lastError,
       lastUid: s.lastUid,
       allowedDomains: (process.env.INBOX_ALLOWED_DOMAINS || 'fedex.com').split(',').map((d) => d.trim()),
+      dhlDomains: inboxDomains((k) => process.env[k]).dhl,
       today,
     };
   }

@@ -45,6 +45,10 @@ export class InboxMessage {
   @Column({ type: 'mediumtext', nullable: true })
   textTop: string | null;
 
+  /** Cuerpo completo en texto plano (con historial). En DHL es lo que se pega en "Importar DHL". */
+  @Column({ type: 'mediumtext', nullable: true })
+  textBody: string | null;
+
   /** HTML completo ya sanitizado para mostrar. */
   @Column({ type: 'mediumtext', nullable: true })
   htmlSafe: string | null;
@@ -79,6 +83,11 @@ export class InboxMessage {
   @Index('IDX_inbox_message_coverage')
   @Column({ type: 'varchar', length: 10, nullable: true })
   uploadCoverage: 'ninguno' | 'parcial' | 'completo' | null;
+
+  /** Paquetería: por dominio del remitente o, si es reenvío, del remitente original (ver decideCarrier). */
+  @Index('IDX_inbox_message_carrier')
+  @Column({ type: 'varchar', length: 10, default: 'fedex' })
+  carrier: 'fedex' | 'dhl';
 
   @Column({ type: 'datetime', nullable: true })
   matchedAt: Date | null;

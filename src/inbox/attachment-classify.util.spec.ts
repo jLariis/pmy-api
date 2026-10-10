@@ -1,5 +1,7 @@
 import * as XLSX from 'xlsx';
-import { classifyByName, finalizeKinds, summarizeWorkbook } from './attachment-classify.util';
+import { readFileSync } from 'fs';
+import { join } from 'path';
+import { classifyByName, finalizeKinds, previewWorkbook, summarizeWorkbook, workbookSheets, workbookToTsv } from './attachment-classify.util';
 import { AEREO, CABO, CABORCA, SUR } from './__fixtures__/emails';
 
 function book(rows: unknown[][]): Buffer {
@@ -55,5 +57,29 @@ describe('attachment-classify.util', () => {
   it('archivo dañado → parseError en llano', () => {
     const s = summarizeWorkbook(Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x00, 0x01]));
     expect(s.rowCount).toBe(0);
+  });
+});
+
+// Archivo guardado con Excel real: guías/teléfonos de 12 dígitos que Excel MUESTRA como
+// 3.83961E+11 (formato General), fecha de Excel y hora con formato hh:mm:ss.
+describe('adjuntos con guías de 12 dígitos (Excel las muestra como 3.83961E+11)', () => {
+  const buf = readFileSync(join(__dirname, '__fixtures__', 'fedex-sci.xlsx'));
+
+  it('workbookToTsv trae las guías y teléfonos completos', () => {
+    const tsv = workbookToTsv(buf)!;
+    expect(tsv).toContain('383961234567\tJUAN');
+    expect(tsv).toContain('383975000123\tANA');
+    expect(tsv).toContain('526421234567');
+    expect(tsv).not.toMatch(/E\+11/);
+  });
+
+  it('fecha y hora de Excel salen como AAAA-MM-DD y HH:MM:SS', () => {
+    const tsv = workbookToTsv(buf)!;
+    expect(tsv.split('\n')[1].split('\t').slice(3, 5)).toEqual(['2026-10-07', '21:00:00']);
+  });
+
+  it('workbookSheets (cruce con el sistema) y la vista previa también', () => {
+    expect(workbookSheets(buf)[0].tsv).toContain('383961234567');
+    expect(previewWorkbook(buf)[0].rows[1][0]).toBe('383961234567');
   });
 });

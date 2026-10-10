@@ -15,6 +15,45 @@ export const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 export const MAX_ROWS = 20_000;
 const SPREADSHEET_EXT = /\.(xlsx|xlsm|xls|ods|csv)$/i;
 
+const pad2 = (n: number) => String(n).padStart(2, '0');
+
+/**
+ * Texto de una celda SIN perder dígitos. Con formato "General", Excel (y `sheet_to_json`
+ * con raw:false) muestra todo número de más de 11 dígitos en notación científica: las
+ * guías FedEx (12) salían como 3.83961E+11 y ya no se podían subir ni cruzar con el
+ * sistema. Aquí se toma el VALOR para enteros; fechas/horas de Excel → AAAA-MM-DD / HH:MM:SS.
+ * Espejo de app-pmy lib/excel-to-rows.ts (mantener en sync). Requiere leer con cellNF:true.
+ */
+function cellText(cell: XLSX.CellObject | undefined): string {
+  if (!cell || cell.v === undefined || cell.v === null) return '';
+  if (cell.t === 'n' && typeof cell.v === 'number') {
+    const v = cell.v;
+    if (cell.z && XLSX.SSF.is_date(String(cell.z))) {
+      const d = XLSX.SSF.parse_date_code(v);
+      const time = `${pad2(d.H)}:${pad2(d.M)}:${pad2(Math.round(d.S))}`;
+      if (v < 1) return time;
+      const date = `${d.y}-${pad2(d.m)}-${pad2(d.d)}`;
+      return v % 1 ? `${date} ${time}` : date;
+    }
+    if (Number.isInteger(v)) return Number.isSafeInteger(v) ? String(v) : BigInt(v).toString();
+    return String(v);
+  }
+  return String(cell.w ?? cell.v);
+}
+
+/** Renglones de la hoja como texto (sin renglones vacíos), con cada celda por `cellText`. */
+function sheetTextRows(ws: XLSX.WorkSheet | undefined): string[][] {
+  if (!ws || !ws['!ref']) return [];
+  const range = XLSX.utils.decode_range(ws['!ref']);
+  const rows: string[][] = [];
+  for (let r = range.s.r; r <= range.e.r; r++) {
+    const row: string[] = [];
+    for (let c = range.s.c; c <= range.e.c; c++) row.push(cellText(ws[XLSX.utils.encode_cell({ r, c })]));
+    if (row.some((c) => c.trim() !== '')) rows.push(row);
+  }
+  return rows;
+}
+
 export function isSpreadsheet(filename: string): boolean {
   return SPREADSHEET_EXT.test(filename ?? '');
 }
@@ -116,7 +155,7 @@ export interface SheetTsv {
 export function workbookSheets(buf: Buffer): SheetTsv[] {
   let wb: XLSX.WorkBook;
   try {
-    wb = XLSX.read(buf, { type: 'buffer', cellFormula: false, cellHTML: false, cellDates: false, sheetRows: MAX_ROWS + 20 });
+    wb = XLSX.read(buf, { type: 'buffer', cellFormula: false, cellHTML: false, cellDates: false, cellNF: true, sheetRows: MAX_ROWS + 20 });
   } catch {
     return [];
   }
@@ -127,9 +166,7 @@ export function workbookSheets(buf: Buffer): SheetTsv[] {
   };
   const out: SheetTsv[] = [];
   for (const name of wb.SheetNames) {
-    const rows = (XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, defval: '', blankrows: false, raw: false }) as unknown[][]).map((r) =>
-      r.map((c) => String(c ?? '').replace(/[\t\r\n]+/g, ' ').trim()),
-    );
+    const rows = sheetTextRows(wb.Sheets[name]).map((r) => r.map((c) => c.replace(/[\t\r\n]+/g, ' ').trim()));
     const headerIdx = rows.slice(0, 15).findIndex((r) => r.some((c) => headerAliases[headerKey(c)] === 'trackingNumber'));
     if (headerIdx < 0) continue;
     const data = rows.length - headerIdx - 1;
@@ -146,15 +183,13 @@ export function workbookSheets(buf: Buffer): SheetTsv[] {
 export function workbookToTsv(buf: Buffer): string | null {
   let wb: XLSX.WorkBook;
   try {
-    wb = XLSX.read(buf, { type: 'buffer', cellFormula: false, cellHTML: false, cellDates: false, sheetRows: MAX_ROWS + 20 });
+    wb = XLSX.read(buf, { type: 'buffer', cellFormula: false, cellHTML: false, cellDates: false, cellNF: true, sheetRows: MAX_ROWS + 20 });
   } catch {
     return null;
   }
   let best: { rows: string[][]; score: number } | null = null;
   for (const name of wb.SheetNames) {
-    const rows = (XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, defval: '', blankrows: false, raw: false }) as unknown[][]).map((r) =>
-      r.map((c) => String(c ?? '').replace(/[\t\r\n]+/g, ' ').trim()),
-    );
+    const rows = sheetTextRows(wb.Sheets[name]).map((r) => r.map((c) => c.replace(/[\t\r\n]+/g, ' ').trim()));
     const headerIdx = rows.slice(0, 15).findIndex((r) => r.some((c) => headerAliases[headerKey(c)] === 'trackingNumber'));
     if (headerIdx < 0) continue;
     const score = rows.length - headerIdx - 1;
@@ -211,7 +246,7 @@ export interface SheetPreview {
 export function previewWorkbook(buf: Buffer, maxRows = 500, maxCols = 40): SheetPreview[] {
   let wb: XLSX.WorkBook;
   try {
-    wb = XLSX.read(buf, { type: 'buffer', cellFormula: false, cellHTML: false, sheetRows: maxRows + 1 });
+    wb = XLSX.read(buf, { type: 'buffer', cellFormula: false, cellHTML: false, cellNF: true, sheetRows: maxRows + 1 });
   } catch {
     return [];
   }
@@ -223,9 +258,7 @@ export function previewWorkbook(buf: Buffer, maxRows = 500, maxCols = 40): Sheet
     full = null;
   }
   return wb.SheetNames.map((name) => {
-    const rows = (XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, defval: '', blankrows: false, raw: false }) as unknown[][]).map((r) =>
-      r.slice(0, maxCols).map((c) => String(c ?? '').trim()),
-    );
+    const rows = sheetTextRows(wb.Sheets[name]).map((r) => r.slice(0, maxCols).map((c) => c.trim()));
     const ref = full?.Sheets[name]?.['!ref'];
     const totalRows = ref ? XLSX.utils.decode_range(ref).e.r + 1 : rows.length;
     return { name: name.trim(), rows: rows.slice(0, maxRows), totalRows, truncated: totalRows > maxRows };

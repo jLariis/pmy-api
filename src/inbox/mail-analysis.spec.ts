@@ -1,4 +1,4 @@
-import { analyzeMail, isAllowedSender, mergeConsolidations, sanitizeMailHtml } from './mail-analysis';
+import { analyzeMail, carrierOfSender, decideCarrier, isAllowedSender, mergeConsolidations, quotedSenders, sanitizeMailHtml } from './mail-analysis';
 import { CABO, CABORCA } from './__fixtures__/emails';
 
 function rfc822(e: { subject: string; from: string; cc: string[]; body: string; attachments: string[] }): Buffer {
@@ -37,6 +37,40 @@ describe('mail-analysis', () => {
     expect(isAllowedSender('sa_hmoa-noga@corp.ds.fedex.com', ['fedex.com'])).toBe(true);
     expect(isAllowedSender('alguien@notfedex.com', ['fedex.com'])).toBe(false);
     expect(isAllowedSender('pmyapp@paqueteriaymensajeriadelyaqui.com', ['fedex.com'])).toBe(false);
+  });
+
+  it('paquetería del correo por dominio del remitente (FedEx / DHL)', () => {
+    const domains = { fedex: ['fedex.com'], dhl: ['dhl.com'] };
+    expect(carrierOfSender('jose.gaxiola@fedex.com', domains)).toBe('fedex');
+    expect(carrierOfSender('sa_hmoa@corp.ds.fedex.com', domains)).toBe('fedex');
+    expect(carrierOfSender('developer-support@dhl.com', domains)).toBe('dhl');
+    expect(carrierOfSender('ops@mx.dhl.com', domains)).toBe('dhl');
+    expect(carrierOfSender('alguien@notdhl.com', domains)).toBeNull();
+    expect(carrierOfSender('pmyapp@paqueteriaymensajeriadelyaqui.com', domains)).toBeNull();
+  });
+
+  it('reenvío: toma el remitente original de las líneas De:/From: del historial', () => {
+    const text = [
+      'Buenas tardes',
+      '________________________________',
+      'De: ELMA LILIA VAZQUEZ ZAMARRON (DHL MX) <elma.vazquez@dhl.com>',
+      'Enviado: martes, 26 de mayo de 2026 16:19',
+      'Para: paqueteriaymensajeriadelyaqui@hotmail.com',
+      'From: Otro <ops@fedex.com>',
+    ].join('\n');
+    expect(quotedSenders(text)).toEqual(['elma.vazquez@dhl.com', 'ops@fedex.com']);
+    expect(quotedSenders('Para: x@dhl.com\nCC: y@dhl.com')).toEqual([]); // solo De:/From:, no Para/CC
+    expect(quotedSenders('De: ELMA &lt;elma.vazquez@dhl.com&gt;')).toEqual(['elma.vazquez@dhl.com']); // HTML escapado
+  });
+
+  it('paquetería del correo: remitente directo o reenvío de DHL (solo si está permitido)', () => {
+    const domains = { fedex: ['fedex.com'], dhl: ['dhl.com'] };
+    const fwd = { fromAddress: 'paqueteriaymensajeriadelyaqui@hotmail.com', forwardedFrom: ['elma.vazquez@dhl.com'] };
+    expect(decideCarrier(fwd, domains, true)).toBe('dhl');
+    expect(decideCarrier(fwd, domains, false)).toBeNull(); // apagado: solo dominio DHL
+    expect(decideCarrier({ fromAddress: 'ops@dhl.com', forwardedFrom: [] }, domains, false)).toBe('dhl');
+    expect(decideCarrier({ fromAddress: 'a@fedex.com', forwardedFrom: ['b@dhl.com'] }, domains, true)).toBe('fedex'); // el directo manda
+    expect(decideCarrier({ fromAddress: 'x@hotmail.com', forwardedFrom: ['b@fedex.com'] }, domains, true)).toBeNull(); // reenvío FedEx no cambia nada
   });
 
   it('analiza el correo de Cabo: encabezados, consolidados, cobros y adjuntos', async () => {
