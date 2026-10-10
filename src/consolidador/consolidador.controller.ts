@@ -20,6 +20,8 @@ import { SearchBatchDto } from './dto/search-batch.dto';
 import { DeleteIncomeDto } from './dto/delete-income.dto';
 import { RepairIncomeDto } from './dto/repair-income.dto';
 import { ReassignSubsidiaryDto } from './dto/reassign-subsidiary.dto';
+import { DateRealignApplyDto } from './dto/date-realign.dto';
+import { IncomeDateRealignService } from './income/income-date-realign.service';
 
 @ApiTags('consolidador')
 @ApiBearerAuth()
@@ -34,13 +36,14 @@ export class ConsolidadorController {
     private readonly audit: ConsolidadorAuditService,
     private readonly cobrosAudit: CobrosAuditService,
     private readonly manualCount: ManualCountService,
+    private readonly dateRealign: IncomeDateRealignService,
   ) {}
 
   /** El conteo manual vs sistema es solo para superadmin (expone detalle interno y prompt). */
   private assertSuperadmin(req: any) {
     const role = String(req.user?.role ?? '').toLowerCase();
     if (!ConsolidadorAccessGuard.GLOBAL_ROLES.includes(role)) {
-      throw new ForbiddenException('Solo superadmin puede usar el conteo manual.');
+      throw new ForbiddenException('Solo superadmin puede usar esta herramienta.');
     }
   }
 
@@ -90,6 +93,34 @@ export class ConsolidadorController {
     const from = new Date(`${fromDate}T00:00:00.000`);
     const to = new Date(`${toDate}T23:59:59.999`);
     return this.cobrosAudit.audit(subsidiaryId, from, to);
+  }
+
+  /**
+   * Fechas de ingresos FedEx que quedaron a las 00:00 del día de la ruta (bug del cierre): vista
+   * previa de la semana con la fecha correcta = evento FedEx guardado en shipment_status.
+   */
+  @Get(':subsidiaryId/:fromDate/:toDate/date-realign')
+  dateRealignPreview(
+    @Param('subsidiaryId') subsidiaryId: string,
+    @Param('fromDate') fromDate: string,
+    @Param('toDate') toDate: string,
+    @Req() req: any,
+  ) {
+    this.assertSuperadmin(req);
+    return this.dateRealign.preview(subsidiaryId, fromDate, toDate);
+  }
+
+  /** Aplica la corrección de fechas (recalculada en el servidor) con bitácora. */
+  @Post(':subsidiaryId/:fromDate/:toDate/date-realign')
+  dateRealignApply(
+    @Param('subsidiaryId') subsidiaryId: string,
+    @Param('fromDate') fromDate: string,
+    @Param('toDate') toDate: string,
+    @Body() dto: DateRealignApplyDto,
+    @Req() req: any,
+  ) {
+    this.assertSuperadmin(req);
+    return this.dateRealign.apply(subsidiaryId, fromDate, toDate, dto.incomeIds, dto.reason, req.user?.userId);
   }
 
   /** Historial de cambios de un ingreso (más reciente primero). */

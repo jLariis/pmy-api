@@ -29,6 +29,7 @@ import { ApplyActor } from 'src/tracking-sync/sinks/persistent-sync.sink';
 import { TrackableKind } from 'src/tracking-sync/tracking-sync.types';
 import { ApplyOutcome } from 'src/tracking-sync/compare.types';
 import { reconcileShipmentIncomeAction, ExistingShipmentIncome } from './income-reconcile.util';
+import { selectClosureIncomeEvent } from './closure-income-event.util';
 import { selectLatestGeneration } from 'src/consolidador/logic/fedex-day-outcome.util';
 
 @Injectable()
@@ -159,6 +160,54 @@ export class RouteclosureService {
   }
 
   /**
+   * Regla de sucursal `closureIncomeAtFedexEventTime` (Loreto, 2026-10-10): para cada guía (no
+   * F2) toma del historial (`shipment_status.timestamp`) el evento que cobra su estatus —tal cual
+   * lo registró FedEx— y fija con él `eventAt`/`exceptionCode` del outcome, aunque sea de un día
+   * posterior al de la ruta. No depende de lo que devolvió la consulta a FedEx (una guía ya final
+   * regresa sin evento) y nunca cae al día de la ruta: sin evento en la ventana [día de la ruta,
+   * siguiente salida) la guía no cobra en este cierre.
+   */
+  private async anchorOutcomesToFedexEvent(
+    dispatch: PackageDispatch,
+    outcomes: ApplyOutcome[],
+    routeDay: string | null,
+  ): Promise<ApplyOutcome[]> {
+    const windowCtx = await loadRouteWindowContext(this.dataSource, dispatch.id);
+    const chargeable = new Set<string>([ShipmentStatusType.ENTREGADO, ...RouteclosureService.CHARGEABLE_NON_DELIVERY]);
+    const result: ApplyOutcome[] = [];
+    for (const o of outcomes) {
+      if (o.kind === 'charge') continue;
+      if (!o.toStatus || !chargeable.has(o.toStatus)) {
+        result.push(o);
+        continue;
+      }
+      const history = await this.dataSource.getRepository(ShipmentStatus).find({
+        select: { status: true, timestamp: true, exceptionCode: true, notes: true },
+        where: { shipment: { id: o.shipmentId } },
+      });
+      const event = selectClosureIncomeEvent({
+        history,
+        status: o.toStatus,
+        exceptionCode: o.exceptionCode ?? null,
+        routeDay,
+        windowEnd: windowCtx.nextDispatchAt.get(routeWindowKey('shipment', o.shipmentId)) ?? null,
+      });
+      if (!event) {
+        this.logger.log(
+          `⏭️ [RouteClosure] ${o.trackingNumber}: sin evento "${o.toStatus}" en el historial dentro de la ventana de la ruta (${routeDay}); no cobra en este cierre.`,
+        );
+        continue;
+      }
+      result.push({
+        ...o,
+        eventAt: event.occurredAt.toISOString(),
+        exceptionCode: event.exceptionCode ?? o.exceptionCode ?? null,
+      });
+    }
+    return result;
+  }
+
+  /**
    * Reconcilia los INGRESOS de la ruta tras persistir estatus. Solo shipments (los charge/F2 no
    * cobran); `is315` no toca nada. Backfill de faltantes + precedencia ENTREGADO>DEX del mismo
    * día (actualiza la fila DEX en su lugar). Idempotente. Nunca lanza por guía.
@@ -182,23 +231,27 @@ export class RouteclosureService {
     const routeDay = routeDayOf(dispatch.routeDate ?? dispatch.createdAt ?? null);
     const untilNextDispatch = !!dispatch.subsidiary?.closureUntilNextDispatch;
     const windowCtx = untilNextDispatch ? await loadRouteWindowContext(this.dataSource, dispatch.id) : null;
-    const shipmentOutcomes = outcomes.filter((o) => {
-      if (o.kind === 'charge') return false;
-      if (!o.eventAt || !routeDay) return true;
-      const eventAt = new Date(o.eventAt);
-      const eventDay = toHermosilloDateString(eventAt);
-      let inWindow = eventDay === routeDay;
-      if (windowCtx) {
-        const end = windowCtx.nextDispatchAt.get(routeWindowKey('shipment', o.shipmentId));
-        inWindow = eventDay >= routeDay && (!end || eventAt < end);
-      }
-      if (!inWindow) {
-        this.logger.log(
-          `⏭️ [RouteClosure] ${o.trackingNumber}: evento FedEx ${o.eventAt} fuera de ${windowCtx ? 'la ventana' : 'el día'} de la ruta (${routeDay}); no cobra en este cierre.`,
-        );
-      }
-      return inWindow;
-    });
+    // Opción de sucursal `closureIncomeAtFedexEventTime` (Loreto): el ingreso se fecha con el
+    // evento guardado en shipment_status, aunque sea de un día posterior al de la ruta.
+    const shipmentOutcomes = dispatch.subsidiary?.closureIncomeAtFedexEventTime
+      ? await this.anchorOutcomesToFedexEvent(dispatch, outcomes, routeDay)
+      : outcomes.filter((o) => {
+        if (o.kind === 'charge') return false;
+        if (!o.eventAt || !routeDay) return true;
+        const eventAt = new Date(o.eventAt);
+        const eventDay = toHermosilloDateString(eventAt);
+        let inWindow = eventDay === routeDay;
+        if (windowCtx) {
+          const end = windowCtx.nextDispatchAt.get(routeWindowKey('shipment', o.shipmentId));
+          inWindow = eventDay >= routeDay && (!end || eventAt < end);
+        }
+        if (!inWindow) {
+          this.logger.log(
+            `⏭️ [RouteClosure] ${o.trackingNumber}: evento FedEx ${o.eventAt} fuera de ${windowCtx ? 'la ventana' : 'el día'} de la ruta (${routeDay}); no cobra en este cierre.`,
+          );
+        }
+        return inWindow;
+      });
     const cost = dispatch.subsidiary?.fedexCostPackage ?? 0;
     const incomeRepo = this.dataSource.getRepository(Income);
     let incomeCreated = 0;

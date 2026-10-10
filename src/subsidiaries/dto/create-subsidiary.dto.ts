@@ -106,6 +106,7 @@ export class CreateSubsidiaryDto {
   @IsBoolean() @IsOptional() allowRouteClosureWithOtherStatus?: boolean;
   @IsBoolean() @IsOptional() closureAcceptsAnyDayDelivery?: boolean;
   @IsBoolean() @IsOptional() closureUntilNextDispatch?: boolean;
+  @IsBoolean() @IsOptional() closureIncomeAtFedexEventTime?: boolean;
 
   // Encargado/Supervisor que autoriza los borrados de esta sucursal (usuario registrado).
   @IsString() @IsOptional() supervisorUserId?: string | null;
