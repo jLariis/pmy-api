@@ -152,3 +152,39 @@ describe('InventoriesService.generateExcelReport (flag + fallback)', () => {
     expect(svc.logger.warn).toHaveBeenCalled();
   });
 });
+
+describe('InventoriesService.create — tipo y guías no incluidas', () => {
+  const makeSvc = () => {
+    const created: any[] = [];
+    const manager = {
+      findBy: jest.fn().mockResolvedValue([]),
+      findOneBy: jest.fn().mockResolvedValue({ id: 'sub-1', name: 'Bodega Obregon' }),
+      create: jest.fn((_e: any, data: any) => { created.push(data); return data; }),
+      save: jest.fn(async (x: any) => ({ id: 'inv-1', ...x })),
+    };
+    const qr = {
+      connect: jest.fn(), startTransaction: jest.fn(), commitTransaction: jest.fn(),
+      rollbackTransaction: jest.fn(), release: jest.fn(), manager,
+    };
+    const svc = Object.create(InventoriesService.prototype) as any;
+    svc.dataSource = { createQueryRunner: () => qr };
+    svc.logger = { log: jest.fn(), error: jest.fn() };
+    return { svc, created };
+  };
+
+  it('guarda el tipo que manda el front como `inventoryType` (antes todo quedaba "initial")', async () => {
+    const { svc, created } = makeSvc();
+    await svc.create({ shipments: [], chargeShipments: [], subsidiary: { id: 'sub-1' }, inventoryType: 'dex' }, 'u1');
+    expect(created[0]).toEqual(expect.objectContaining({ type: 'dex' }));
+  });
+
+  it('guarda las guías no incluidas con su motivo; tipo inválido cae a "initial"', async () => {
+    const { svc, created } = makeSvc();
+    await svc.create({
+      shipments: [], chargeShipments: [], subsidiary: { id: 'sub-1' }, type: 'otro',
+      rejectedTrackings: [{ trackingNumber: ' 123 ', reason: 'No existe', kind: 'no_encontrada' }, { trackingNumber: '' }],
+    });
+    expect(created[0].type).toBe('initial');
+    expect(created[0].rejectedTrackings).toEqual([{ trackingNumber: '123', reason: 'No existe', kind: 'no_encontrada' }]);
+  });
+});

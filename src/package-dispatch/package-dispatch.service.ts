@@ -1,4 +1,5 @@
 import { BadRequestException, forwardRef, Inject, Injectable, Logger, NotFoundException, Optional } from '@nestjs/common';
+import { daysWithoutLocalScan, LOCAL_SCAN_CODES_SQL } from 'src/utils/local-scan-visibility.util';
 import { VehicleKmsService } from 'src/maintenance/vehicle-kms.service';
 import { CreatePackageDispatchDto } from './dto/create-package-dispatch.dto';
 import { UpdatePackageDispatchDto } from './dto/update-package-dispatch.dto';
@@ -6,7 +7,6 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { PackageDispatch } from 'src/entities/package-dispatch.entity';
 import { Between, DataSource, In, Not, Repository } from 'typeorm';
 import { pickScanCandidate } from '../common/scan-candidate.util';
-import { differenceInCalendarDays } from 'date-fns';
 import { LD_QUALIFYING_SQL_IN } from 'src/common/ld-codes';
 import { Shipment, ChargeShipment, Consolidated, ShipmentStatus, Subsidiary } from 'src/entities';
 import { ValidatedPackageDispatchDto } from './dto/validated-package-dispatch.dto';
@@ -2693,7 +2693,8 @@ export class PackageDispatchService {
 
     const chunk = <T,>(arr: T[], n: number) => { const o: T[][] = []; for (let i = 0; i < arr.length; i += n) o.push(arr.slice(i, i + n)); return o; };
 
-    // 3) Agregados de shipment_status: último 67, 67 ayer/hoy, movimiento ayer
+    // 3) Agregados de shipment_status: último escaneo local, escaneo ayer/hoy, movimiento ayer.
+    //    44 o 67: el escaneo local lo dice FedEx (satélites de Obregón: config 67, FedEx manda 44).
     type StatAgg = { last67: Date | null; c67y: number; c67t: number; movedY: number };
     const statsBy = async (ids: string[], fkCol: string): Promise<Map<string, StatAgg>> => {
       const m = new Map<string, StatAgg>();
@@ -2702,9 +2703,9 @@ export class PackageDispatchService {
         const ph = part.map(() => '?').join(',');
         const rows: any[] = await this.dataSource.query(
           `SELECT ${fkCol} AS id,
-                  MAX(CASE WHEN exceptionCode = '67' THEN timestamp END) AS last67,
-                  SUM(exceptionCode = '67' AND timestamp BETWEEN ? AND ?) AS c67y,
-                  SUM(exceptionCode = '67' AND timestamp BETWEEN ? AND ?) AS c67t,
+                  MAX(CASE WHEN exceptionCode IN ${LOCAL_SCAN_CODES_SQL} THEN timestamp END) AS last67,
+                  SUM(exceptionCode IN ${LOCAL_SCAN_CODES_SQL} AND timestamp BETWEEN ? AND ?) AS c67y,
+                  SUM(exceptionCode IN ${LOCAL_SCAN_CODES_SQL} AND timestamp BETWEEN ? AND ?) AS c67t,
                   SUM(timestamp BETWEEN ? AND ?) AS movedY
              FROM shipment_status
             WHERE ${fkCol} IN (${ph})
@@ -2811,7 +2812,8 @@ export class PackageDispatchService {
       const st = stats.get(String(row.id)) ?? { last67: null, c67y: 0, c67t: 0, movedY: 0 };
       const statusLower = String(row.status ?? '').toLowerCase();
       const category = DELIVERED.has(statusLower) ? 'entregado' : DEX.has(statusLower) ? 'dex' : 'no_entregado';
-      const daysSinceLast67 = st.last67 ? differenceInCalendarDays(now.toJSDate(), st.last67) : null;
+      const isFedexRow = String(row.shipmentType ?? '').toLowerCase() === 'fedex';
+      const daysSinceLast67 = daysWithoutLocalScan(st.last67, now.toJSDate()); // días completos, hora Hermosillo
       const disp = dispatchMeta.get(String(row.routeId));
 
       // Regla de LD: paquete que VENCE en el rango del filtro ("del día") y que NO
@@ -2843,10 +2845,11 @@ export class PackageDispatchService {
         dispatchStatus: disp?.status ?? '',
         dispatchDate: disp?.createdAt ? new Date(disp.createdAt).toISOString() : null,
         movedYesterday: st.movedY > 0,
-        has67Yesterday: st.c67y > 0,
-        has67Today: st.c67t > 0,
-        last67Date: st.last67 ? st.last67.toISOString() : null,
-        daysSinceLast67,
+        // El escaneo 44/67 es solo de FedEx; en DHL no aplica (null) y no se mezcla en los conteos.
+        has67Yesterday: isFedexRow ? st.c67y > 0 : null,
+        has67Today: isFedexRow ? st.c67t > 0 : null,
+        last67Date: isFedexRow && st.last67 ? st.last67.toISOString() : null,
+        daysSinceLast67: isFedexRow ? daysSinceLast67 : null,
         inLastInventoryYesterday: invSet.has(String(row.id)),
         // Campos de LD
         dueOnFilterDate,

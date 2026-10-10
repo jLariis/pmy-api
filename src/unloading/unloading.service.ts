@@ -1,4 +1,5 @@
 import { BadRequestException, forwardRef, Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { daysWithoutLocalScan, latestLocalScan, LocalScan, localScanCategory, LOCAL_SCAN_CODES_SQL } from 'src/utils/local-scan-visibility.util';
 import { CreateUnloadingDto } from './dto/create-unloading.dto';
 import { UpdateUnloadingDto } from './dto/update-unloading.dto';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -16,7 +17,6 @@ import { ShipmentStatusType, TERMINAL_SHIPMENT_STATUSES } from 'src/common/enums
 import { UnloadingReportDto } from './dto/unloading-report.dto';
 import { ShipmentsService } from 'src/shipments/shipments.service';
 import { fromZonedTime } from 'date-fns-tz';
-import { differenceInCalendarDays } from 'date-fns';
 import { ValidationPayloadDto } from './dto/validate-payload.dto';
 import { TemplateService } from 'src/documents/template.service';
 import { buildUnloadingData, UnloadingInput, UnloadingPackage } from 'src/documents/data/unloading.mapper';
@@ -84,6 +84,8 @@ export class UnloadingService {
       const qb = repo.createQueryBuilder(alias)
         .leftJoin(`${alias}.unloading`, 'u')
         .where('u.id IN (:...unlIds)', { unlIds })
+        // Solo FedEx: el 44/67 es de FedEx; DHL nunca se mezcla en estos reportes.
+        .andWhere(`${alias}.shipmentType = 'fedex'`)
         .select(`${alias}.id`, 'id')
         .addSelect('u.id', 'unloadingId');
       for (const [col, as] of PKG_COLS) qb.addSelect(`${alias}.${col}`, as);
@@ -96,16 +98,21 @@ export class UnloadingService {
 
     // 3) Último 67 por paquete — agregado sobre shipment_status (chunked).
     const chunk = <T,>(arr: T[], n: number) => { const o: T[][] = []; for (let i = 0; i < arr.length; i += n) o.push(arr.slice(i, i + n)); return o; };
-    const max67By = async (ids: string[], fkCol: string): Promise<Map<string, Date>> => {
-      const m = new Map<string, Date>();
+    const max67By = async (ids: string[], fkCol: string): Promise<Map<string, LocalScan>> => {
+      const m = new Map<string, LocalScan>();
       for (const part of chunk([...new Set(ids)], 1000)) {
         if (part.length === 0) continue;
         const ph = part.map(() => '?').join(',');
         const rows: any[] = await this.dataSource.query(
-          `SELECT ${fkCol} AS id, MAX(timestamp) AS m FROM shipment_status WHERE ${fkCol} IN (${ph}) AND exceptionCode = '67' GROUP BY ${fkCol}`,
+          // 44 o 67: el escaneo local lo dice FedEx (satélites de Obregón: config 67, FedEx manda 44).
+          `SELECT ${fkCol} AS id, MAX(timestamp) AS m,
+                  SUBSTRING_INDEX(MAX(CONCAT(timestamp, '|', exceptionCode)), '|', -1) AS code
+             FROM shipment_status
+            WHERE ${fkCol} IN (${ph}) AND exceptionCode IN ${LOCAL_SCAN_CODES_SQL}
+            GROUP BY ${fkCol}`,
           part,
         );
-        for (const r of rows) if (r.id) m.set(String(r.id), new Date(r.m));
+        for (const r of rows) if (r.id && r.m) m.set(String(r.id), { at: new Date(r.m), code: String(r.code) === '44' ? '44' : '67' });
       }
       return m;
     };
@@ -115,10 +122,9 @@ export class UnloadingService {
     ]);
 
     // 4) Agregar por guía (dedup) — SIN filtro de estatus (todos los estatus).
-    const maxDate = (a: Date | null, b: Date | null) => (!a ? b : !b ? a : a > b ? a : b);
-    type Agg = { rep: any; isCharge: boolean; max67: Date | null; minCreatedAt: Date; unloadings: { unloadingId: string; date: Date }[] };
+    type Agg = { rep: any; isCharge: boolean; max67: LocalScan | null; minCreatedAt: Date; unloadings: { unloadingId: string; date: Date }[] };
     const byGuide = new Map<string, Agg>();
-    const ingest = (row: any, isCharge: boolean, max67Map: Map<string, Date>) => {
+    const ingest = (row: any, isCharge: boolean, max67Map: Map<string, LocalScan>) => {
       if (!row?.trackingNumber) return;
       const meta = unlMeta.get(row.unloadingId);
       if (!meta) return;
@@ -131,7 +137,7 @@ export class UnloadingService {
       } else {
         if (createdAt > new Date(existing.rep.createdAt)) existing.rep = row;
         existing.isCharge = existing.isCharge || isCharge;
-        existing.max67 = maxDate(existing.max67, max67);
+        existing.max67 = latestLocalScan(existing.max67, max67);
         if (createdAt < existing.minCreatedAt) existing.minCreatedAt = createdAt;
         if (!existing.unloadings.some((u) => u.unloadingId === row.unloadingId)) existing.unloadings.push(ref);
       }
@@ -140,9 +146,11 @@ export class UnloadingService {
     chargeRows.forEach((r) => ingest(r, true, charge67));
 
     const now = new Date();
+    // Días sin código = días COMPLETOS sin escaneo en hora Hermosillo (escaneada anoche = al día).
     const details = Array.from(byGuide.values()).map(({ rep, isCharge, max67, minCreatedAt, unloadings }) => {
-      const daysSinceLast67 = max67 ? differenceInCalendarDays(now, max67) : null;
-      const category = max67 == null ? 'nunca' : daysSinceLast67 === 0 ? 'hoy' : 'sin67';
+      const daysSinceLast67 = daysWithoutLocalScan(max67?.at ?? null, now);
+      const cat = localScanCategory(daysSinceLast67);
+      const category = cat === 'sinCodigo' ? 'sin67' : cat;
       const sorted = [...unloadings].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
       return {
         trackingNumber: rep.trackingNumber,
@@ -155,7 +163,8 @@ export class UnloadingService {
         fedexUniqueId: rep.fedexUniqueId,
         isCharge,
         createdAt: minCreatedAt.toISOString(),
-        last67Date: max67 ? max67.toISOString() : null,
+        scanCode: max67?.code ?? null, // último código que dio FedEx (44 o 67); null = nunca
+        last67Date: max67 ? max67.at.toISOString() : null, // último escaneo local (44 o 67)
         daysSinceLast67,
         has67Today: category === 'hoy',
         category,
