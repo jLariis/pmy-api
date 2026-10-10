@@ -273,6 +273,16 @@ export class Subsidiary {
   closureUntilNextDispatch: boolean;
 
   /**
+   * Cierre de ruta, INGRESOS: si está activo, el cierre cobra cada guía con la fecha y hora exacta
+   * del evento FedEx guardado en `shipment_status.timestamp` (entrega o DEX), aunque sea de un día
+   * posterior al de la ruta; nunca fecha con el día de la ruta. Solo afecta el cobro, no la
+   * clasificación del cierre. Default false = regla actual. Se siembra en true solo para Loreto
+   * (no Bodega Loreto) en la migración 1786000000105.
+   */
+  @Column({ default: false })
+  closureIncomeAtFedexEventTime: boolean;
+
+  /**
    * Encargado/Supervisor que autoriza los borrados (consolidado / salida a ruta)
    * de esta sucursal. Es un usuario registrado, configurable en Configuración.
    * Si es null, el aprobador cae al primer superadmin activo (Admin Principal).

@@ -397,3 +397,81 @@ describe('PackageDispatchService.create — (4) persiste is315 y routeDate', () 
     expect(getCreatedDispatch().is315).toBe(false);
   });
 });
+
+// ===========================================================================
+// Regla de sucursal `closureIncomeAtFedexEventTime` (Loreto, 2026-10-10): el ingreso del cierre
+// se fecha con shipment_status.timestamp, aunque la entrega sea del día siguiente a la ruta.
+// Caso real: ruta 152171165233 (06-oct), guía 383934388357 entregada 07-oct 17:40Z.
+// ===========================================================================
+describe('RouteclosureService.reconcileRouteWithFedex — ingreso a la hora del evento FedEx (Loreto)', () => {
+  const history = [
+    { status: 'en_ruta', timestamp: new Date('2026-10-06T19:33:37Z'), exceptionCode: '', notes: 'Salida a ruta (Folio Despacho: PD-L)' },
+    { status: 'entregado', timestamp: new Date('2026-10-07T17:40:00Z'), exceptionCode: '', notes: 'Delivered' },
+  ];
+  // Segunda apertura del cierre: la guía ya es final → el sink regresa SIN eventAt.
+  const finalOutcome = {
+    shipmentId: 's1', trackingNumber: '383934388357', applied: false, fromStatus: ShipmentStatusType.ENTREGADO,
+    toStatus: ShipmentStatusType.ENTREGADO, insertedEvents: 0, kind: 'shipment', skippedReason: 'Estatus final',
+  };
+
+  function makeService(flag: boolean, outcomes: any[] = [finalOutcome], hist: any[] = history) {
+    const savedIncomes: any[] = [];
+    const incomeRepo = {
+      find: jest.fn(async () => []),
+      create: jest.fn((data: any) => data),
+      save: jest.fn(async (data: any) => { savedIncomes.push(data); return data; }),
+      update: jest.fn(),
+    };
+    const statusRepo = { find: jest.fn(async () => hist) };
+    const svc = Object.create(RouteclosureService.prototype) as any;
+    svc.logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
+    svc.trackingCompare = {
+      applyByRoute: jest.fn().mockResolvedValue(outcomes),
+      resolveStuckEnRutaForClosure: jest.fn().mockResolvedValue([]),
+    };
+    svc.packageDispatchRepository = {
+      findOne: jest.fn().mockResolvedValue({
+        id: 'PD-L', is315: false, routeDate: '2026-10-06', createdAt: new Date('2026-10-06T19:33:37Z'),
+        subsidiary: { id: 'LOR', name: 'Loreto', fedexCostPackage: 225, closureIncomeAtFedexEventTime: flag },
+      }),
+    };
+    svc.dataSource = {
+      getRepository: (entity: any) => (entity?.name === 'ShipmentStatus' ? statusRepo : incomeRepo),
+      query: jest.fn(async () => []),
+    };
+    return { svc, savedIncomes };
+  }
+
+  it('con la regla: cobra con la hora EXACTA de la entrega (07-oct 17:40Z), no con el día de la ruta', async () => {
+    const { svc, savedIncomes } = makeService(true);
+    await svc.reconcileRouteWithFedex('PD-L', { userId: 'U1' });
+
+    expect(savedIncomes).toHaveLength(1);
+    expect(savedIncomes[0].incomeType).toBe(IncomeStatus.ENTREGADO);
+    expect(new Date(savedIncomes[0].date).toISOString()).toBe('2026-10-07T17:40:00.000Z');
+  });
+
+  it('con la regla: primera apertura con evento de otro día también cobra en su fecha real', async () => {
+    const first = { ...finalOutcome, applied: true, fromStatus: ShipmentStatusType.EN_RUTA, eventAt: '2026-10-07T17:40:00Z' };
+    const { svc, savedIncomes } = makeService(true, [first]);
+    await svc.reconcileRouteWithFedex('PD-L', { userId: 'U1' });
+
+    expect(savedIncomes).toHaveLength(1);
+    expect(new Date(savedIncomes[0].date).toISOString()).toBe('2026-10-07T17:40:00.000Z');
+  });
+
+  it('con la regla: sin evento de entrega en el historial NO cobra (no inventa fecha)', async () => {
+    const { svc, savedIncomes } = makeService(true, [finalOutcome], history.slice(0, 1));
+    await svc.reconcileRouteWithFedex('PD-L', { userId: 'U1' });
+
+    expect(savedIncomes).toHaveLength(0);
+  });
+
+  it('sin la regla (resto de sucursales): el comportamiento queda igual que hoy', async () => {
+    const { svc, savedIncomes } = makeService(false);
+    await svc.reconcileRouteWithFedex('PD-L', { userId: 'U1' });
+
+    expect(savedIncomes).toHaveLength(1);
+    expect(new Date(savedIncomes[0].date).toISOString()).toBe('2026-10-06T07:00:00.000Z');
+  });
+});

@@ -11,7 +11,8 @@ export type AuditAction =
   | 'delete'
   | 'income_repair'
   | 'reassign'
-  | 'date_edit';
+  | 'date_edit'
+  | 'date_fix';
 
 export interface AuditEntry {
   incomeId?: string | null;
