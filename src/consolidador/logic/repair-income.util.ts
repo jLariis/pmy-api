@@ -40,6 +40,10 @@ export interface RepairIncomeInput {
   existingActive: { id: string; incomeType: IncomeStatus | string }[];
   shipmentType: ShipmentType | string | null | undefined;
   subsidiary: { fedexCostPackage?: number | null; dhlCostPackage?: number | null } | null | undefined;
+  /** Hora del evento (historial) del estatus que cobra: entrega o DEX. */
+  statusEventAt?: Date | null;
+  /** Día de la ruta del paquete (package_dispatch.routeDate), respaldo si no hay evento. */
+  routeDate?: Date | null;
 }
 
 export interface RepairIncomePlan {
@@ -79,5 +83,11 @@ export function planRepairIncome(input: RepairIncomeInput): RepairIncomePlan {
   if (!create || !incomeType) {
     return { action: 'none', incomeType: null, date: null, cost, reason: 'El estatus del paquete no genera ingreso (no es cobrable/terminal)' };
   }
-  return { action: 'create', incomeType, date: null, cost: Number(input.subsidiary?.fedexCostPackage ?? 0) };
+  // Fecha = cuándo pasó (evento FedEx), igual que el cierre de ruta; si no, el día de su ruta.
+  // Antes era "ahora": la reparación del lunes de una entrega del sábado sumaba al lunes y
+  // descuadraba las rutas locales de ese día (878249671370, HMO 12-oct-2026).
+  const date = input.statusEventAt
+    ? new Date(input.statusEventAt)
+    : input.routeDate ? hermosilloDayStartFromInstant(new Date(input.routeDate)) : null;
+  return { action: 'create', incomeType, date, cost: Number(input.subsidiary?.fedexCostPackage ?? 0) };
 }

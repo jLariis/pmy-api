@@ -1,6 +1,7 @@
 import { ConsolidadorIncomeService } from './consolidador-income.service';
 
 const auditStub: any = { record: async () => undefined };
+const noShipmentRepo: any = { findOne: async () => null };
 
 function makeService(income: any, subsidiary: any = { id: 'sub', secondAbordAmount: 594, chargeSecondAbord: true }) {
   const incomeRepo: any = {
@@ -8,11 +9,11 @@ function makeService(income: any, subsidiary: any = { id: 'sub', secondAbordAmou
     save: async (x: any) => x,
   };
   const subsidiaryRepo: any = { findOne: async () => subsidiary };
-  return new ConsolidadorIncomeService(incomeRepo, subsidiaryRepo, auditStub);
+  return new ConsolidadorIncomeService(incomeRepo, subsidiaryRepo, auditStub, noShipmentRepo);
 }
 
 /** Service para probar createManual: controla el resultado del findOne de duplicados y captura el create. */
-function makeCreateService(existingDuplicate: any = null) {
+function makeCreateService(existingDuplicate: any = null, shipment: any = null) {
   let created: any = null;
   const incomeRepo: any = {
     findOne: async () => existingDuplicate,
@@ -23,7 +24,8 @@ function makeCreateService(existingDuplicate: any = null) {
     save: async (x: any) => x,
   };
   const subsidiaryRepo: any = { findOne: async () => ({ id: 'sub' }) };
-  const svc = new ConsolidadorIncomeService(incomeRepo, subsidiaryRepo, auditStub);
+  const shipmentRepo: any = { findOne: async () => shipment };
+  const svc = new ConsolidadorIncomeService(incomeRepo, subsidiaryRepo, auditStub, shipmentRepo);
   return { svc, getCreated: () => created };
 }
 
@@ -80,7 +82,7 @@ describe('ConsolidadorIncomeService auditoría', () => {
     const income: any = { id: 'i1', cost: '4594', originalCost: null, date: new Date(), charge: null, shipment: { id: 's1' } };
     const incomeRepo: any = { findOne: async () => income, save: async (x: any) => x };
     const subsidiaryRepo: any = { findOne: async () => ({ id: 'sub' }) };
-    const svc = new ConsolidadorIncomeService(incomeRepo, subsidiaryRepo, audit);
+    const svc = new ConsolidadorIncomeService(incomeRepo, subsidiaryRepo, audit, noShipmentRepo);
     await svc.editCost('i1', 4000, 'ajuste', 'user-1');
     expect(calls).toHaveLength(1);
     expect(calls[0]).toMatchObject({ action: 'cost_edit', field: 'cost', oldValue: 4594, newValue: 4000, userId: 'user-1' });
@@ -94,7 +96,7 @@ describe('ConsolidadorIncomeService.deleteIncome', () => {
     const income: any = { id: 'i1', cost: '100', active: true, date: new Date(), charge: null, shipment: { id: 's1' } };
     const incomeRepo: any = { findOne: async () => income, save: async (x: any) => x };
     const subsidiaryRepo: any = { findOne: async () => ({ id: 'sub' }) };
-    const svc = new ConsolidadorIncomeService(incomeRepo, subsidiaryRepo, audit);
+    const svc = new ConsolidadorIncomeService(incomeRepo, subsidiaryRepo, audit, noShipmentRepo);
     const res = await svc.deleteIncome('i1', 'duplicado', 'user-1');
     expect(income.active).toBe(false);
     expect(income.annulledById).toBe('user-1');
@@ -126,5 +128,30 @@ describe('ConsolidadorIncomeService.createManual', () => {
         'user-1',
       ),
     ).rejects.toThrow('Ya existe');
+  });
+});
+
+describe('ConsolidadorIncomeService.createManual — liga a la guía (caso 878249671370)', () => {
+  it('"Manual (otro)" con guía existente se guarda como ingreso de la guía y queda ligado', async () => {
+    const { svc, getCreated } = makeCreateService(null, { id: 'sh-nuevo', shipmentType: 'fedex' });
+    await svc.createManual(
+      { subsidiaryId: 'hmo', kind: 'manual', trackingNumber: '878249671370', cost: 52, date: '2026-10-10', reason: 'no se generó en el cierre' },
+      'user-1',
+    );
+    const created = getCreated();
+    expect(created.sourceType).toBe('shipment');
+    expect(created.incomeType).toBe('entregado');
+    expect(created.shipmentType).toBe('fedex');
+    expect(created.shipment).toEqual({ id: 'sh-nuevo' });
+  });
+
+  it('"Manual (otro)" sin guía en el sistema se queda como manual', async () => {
+    const { svc, getCreated } = makeCreateService(null, null);
+    await svc.createManual(
+      { subsidiaryId: 'hmo', kind: 'manual', trackingNumber: 'X1', cost: 10, date: '2026-10-10', reason: 'otro' },
+      'user-1',
+    );
+    expect(getCreated().sourceType).toBe('manual');
+    expect(getCreated().shipment).toBeUndefined();
   });
 });

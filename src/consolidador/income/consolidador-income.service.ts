@@ -3,9 +3,10 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Between, Repository } from 'typeorm';
 import { Income } from '../../entities/income.entity';
 import { Subsidiary } from '../../entities/subsidiary.entity';
+import { Shipment } from '../../entities/shipment.entity';
 import { ShipmentType } from '../../common/enums/shipment-type.enum';
 import { computeSecondAbordDelta } from '../logic/second-abord.util';
-import { ManualKind, resolveManualIncomeCost } from '../logic/manual-income.util';
+import { linkManualIncomeToShipment, ManualKind, resolveManualIncomeCost } from '../logic/manual-income.util';
 import { mapIncomeToRow } from '../read/consolidador-row.mapper';
 import { ConsolidadorRow } from '../consolidador.types';
 import { ConsolidadorAuditService } from '../audit/consolidador-audit.service';
@@ -16,6 +17,7 @@ export class ConsolidadorIncomeService {
     @InjectRepository(Income) private readonly incomeRepo: Repository<Income>,
     @InjectRepository(Subsidiary) private readonly subsidiaryRepo: Repository<Subsidiary>,
     private readonly audit: ConsolidadorAuditService,
+    @InjectRepository(Shipment) private readonly shipmentRepo: Repository<Shipment>,
   ) {}
 
   private async load(id: string): Promise<Income> {
@@ -83,7 +85,19 @@ export class ConsolidadorIncomeService {
     dto: { subsidiaryId: string; kind: ManualKind; trackingNumber?: string; cost: number; date: string; reason: string },
     userId: string,
   ): Promise<ConsolidadorRow> {
-    const { cost, sourceType, incomeType } = resolveManualIncomeCost(dto.kind, { cost: dto.cost });
+    // Con guía que existe en el sistema, el ingreso se liga a su registro más reciente: así
+    // cuenta como uno automático (un sourceType=manual no suma en ningún reporte).
+    const shipment = dto.trackingNumber
+      ? await this.shipmentRepo.findOne({
+          where: { trackingNumber: dto.trackingNumber },
+          select: ['id', 'shipmentType'],
+          order: { createdAt: 'DESC' },
+        })
+      : null;
+    const { cost, sourceType, incomeType, shipmentId, shipmentType } = linkManualIncomeToShipment(
+      resolveManualIncomeCost(dto.kind, { cost: dto.cost }),
+      shipment,
+    );
 
     // Día de la operación (mediodía local para caer con holgura dentro del día).
     const day = new Date(`${dto.date}T12:00:00.000`);
@@ -99,6 +113,7 @@ export class ConsolidadorIncomeService {
           trackingNumber: dto.trackingNumber,
           incomeType,
           date: Between(dayStart, dayEnd),
+          active: true,
         },
       });
       if (existing) {
@@ -109,11 +124,12 @@ export class ConsolidadorIncomeService {
     const income = this.incomeRepo.create({
       subsidiary: { id: dto.subsidiaryId } as Subsidiary,
       trackingNumber: dto.trackingNumber,
-      shipmentType: ShipmentType.FEDEX,
+      shipmentType: (shipmentType as ShipmentType) ?? ShipmentType.FEDEX,
       incomeType,
       cost,
       isGrouped: false,
       sourceType,
+      ...(shipmentId ? { shipment: { id: shipmentId } as Shipment } : {}),
       date: day,
       createdById: userId,
       editReason: dto.reason,
@@ -121,6 +137,7 @@ export class ConsolidadorIncomeService {
     await this.incomeRepo.save(income);
     await this.audit.record({
       incomeId: income.id,
+      shipmentId,
       action: 'manual_create',
       field: dto.kind,
       oldValue: null,

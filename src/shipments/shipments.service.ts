@@ -57,6 +57,7 @@ import * as ExcelJS from 'exceljs';
 import { DataSource, QueryRunner } from 'typeorm';
 import pLimit from 'p-limit';
 import { onlyPhantomDeliveries, phantomDeliveryTimes, realDeliveryScan } from 'src/common/phantom-delivery.util';
+import { decideMasterRemoval, MasterRemovalDecision } from './f2-master-removal.util';
 import { needsBackingHistory, selectBackingScan } from 'src/common/backing-scan.util';
 import { PackageDispatch } from 'src/entities/package-dispatch.entity';
 import * as fs from 'node:fs/promises'; // Para el código viejo (await)
@@ -73,6 +74,7 @@ import { TemplateService } from 'src/documents/template.service';
 import { buildShipmentsNo67Data } from 'src/documents/data/shipments-no67.mapper';
 import { buildReceived67Data } from 'src/documents/data/received-67.mapper';
 import { buildPendingShipmentsData } from 'src/documents/data/pending-shipments.mapper';
+import { shipmentIncomeWhere } from 'src/common/shipment-income-where.util';
 
 dayjs.extend(isoWeek);
 
@@ -864,9 +866,11 @@ export class ShipmentsService {
     await queryRunner.connect();
     await queryRunner.startTransaction();
 
-    const migrated: any[] = []; // ya no se migra (siempre registro nuevo); se conserva en el resumen
+    const migrated: any[] = []; // guías que el master de ESTE consolidado traía como paquete
     const createdFromScratch: any[] = [];
     const errors: any[] = [];
+    const notFoundInFedex: string[] = [];
+    const keptInMaster: { tracking: string; reason: string }[] = [];
 
     try {
       // 1. Lectura de Excel
@@ -897,6 +901,11 @@ export class ShipmentsService {
       let duplicatedF2 = 0;
       const seenF2 = new Set<string>(); // duplicados DENTRO del mismo archivo
 
+      // Historial FedEx de cada guía (como el master) y paquetes del master de ESTE consolidado.
+      const toCreate = shipmentsToProcess.map((d: any) => String(d.trackingNumber || '').trim()).filter((t) => t && !dupSet.has(t));
+      const fedexByTracking = await this.fetchChargeFedexHistories(toCreate);
+      const masterPackages = await this.findMasterPackagesForF2(queryRunner.manager, toCreate, consNumber, subsidiaryId);
+
       // Consolidado para las guías NUEVAS (escenario B). Las migradas (escenario A) ya
       // heredan el consolidatedId del shipment original vía `...original`, así que NO se tocan.
       // Se crea LAZY (solo si aparece al menos una guía nueva) para no dejar consolidados
@@ -924,10 +933,9 @@ export class ShipmentsService {
           if (tnF2 && (dupSet.has(tnF2) || seenF2.has(tnF2))) { duplicatedF2++; continue; }
           if (tnF2) seenF2.add(tnF2);
 
-          // SIEMPRE registro nuevo (regla del negocio): la guía de la F2 nace como carga limpia.
-          // Nunca se clona ni se borra un paquete/carga existente: un registro devuelto o
-          // entregado termina su vida en su consolidado (bug 2026-10-07: la migración
-          // paquete→carga clonaba registros devueltos y la salida a ruta los rechazaba).
+          // La carga nace como registro nuevo (nunca se clona). Registros de consolidados
+          // ANTERIORES no se tocan (bug 2026-10-07: la migración clonaba devueltos). Si el master
+          // de ESTE consolidado ya la subió como paquete, ese paquete se elimina abajo.
           // commitDateTime (columna NOT NULL): del Excel o fallback hoy 18:00.
           let csCommitDateTime: Date | undefined;
           if (data.commitDate) {
@@ -970,7 +978,18 @@ export class ShipmentsService {
           });
           await queryRunner.manager.save(initialStatus);
 
-          createdFromScratch.push(savedCS.trackingNumber);
+          const fx = fedexByTracking.get(tnF2);
+          await this.attachChargeFedexHistory(queryRunner.manager, savedCS, fx);
+          if (!fx?.found) notFoundInFedex.push(tnF2);
+
+          const masterPkg = masterPackages.get(tnF2);
+          if (masterPkg?.decision.action === 'remove') {
+            await this.removeMasterPackageForF2(queryRunner.manager, masterPkg, savedCS.id);
+            migrated.push(savedCS.trackingNumber);
+          } else {
+            if (masterPkg?.decision.action === 'keep') keptInMaster.push({ tracking: tnF2, reason: masterPkg.decision.reason });
+            createdFromScratch.push(savedCS.trackingNumber);
+          }
 
         } catch (err) {
           this.logger.error(`❌ Error procesando tracking ${data.trackingNumber}: ${err.message}`);
@@ -1005,8 +1024,8 @@ export class ShipmentsService {
       }
 
       // Suma las cargas realmente agregadas (migradas + nuevas) al conteo de la Charge, y
-      // solo las NUEVAS (escenario B) al consolidado; las migradas ya venían contadas en su
-      // consolidado original.
+      // solo las NUEVAS al consolidado: las que venían como paquete en el master de este
+      // consolidado ya estaban contadas (antes se sumaban doble: Cabo 09/12/13-oct).
       await this.bumpChargeCount(queryRunner.manager, savedCharge, migrated.length + createdFromScratch.length);
       await this.bumpConsolidatedCount(queryRunner.manager, chargeConsolidated, createdFromScratch.length);
 
@@ -1020,9 +1039,11 @@ export class ShipmentsService {
           migrated: migrated.length,
           insertedNew: createdFromScratch.length,
           duplicated: duplicatedF2,
-          failed: errors.length
+          failed: errors.length,
+          notFoundInFedex: notFoundInFedex.length,
+          keptInMaster: keptInMaster.length,
         },
-        details: { errors }
+        details: { errors, notFoundInFedex, keptInMaster }
       };
 
     } catch (error) {
@@ -1132,6 +1153,11 @@ export class ShipmentsService {
 
       console.log("🟢 Step 5: Processing", newGuias.length, "new shipments (", duplicatedCount, "duplicadas omitidas )");
 
+      // Historial FedEx de cada guía (como el master); antes este camino no dejaba NINGÚN
+      // historial (caso 677930734188, La Paz 13-oct-2026).
+      const fedexByTracking = await this.fetchChargeFedexHistories(newGuias.map((g: any) => g.trackingNumber));
+      const notFoundInFedex: string[] = [];
+
       const processPromises = newGuias.map(async (shipment) => {
         try {
           console.log("🔄 Creating charge shipment for:", shipment.trackingNumber);
@@ -1162,7 +1188,18 @@ export class ShipmentsService {
           console.log("💾 Attempting to save...");
           const savedChargeShipment = await this.chargeShipmentRepository.save(chargeShipment);
           console.log("✅ Saved with ID:", savedChargeShipment.id);
-          
+
+          await this.dataSource.manager.save(ShipmentStatus, this.shipmentStatusRepository.create({
+            status: ShipmentStatusType.PENDIENTE,
+            notes: 'Cargado desde archivo F2 (directo)',
+            timestamp: new Date(),
+            chargeShipment: { id: savedChargeShipment.id },
+          }));
+          const tn = String(shipment.trackingNumber || '').trim();
+          const fx = fedexByTracking.get(tn);
+          await this.attachChargeFedexHistory(this.dataSource.manager, savedChargeShipment, fx);
+          if (!fx?.found) notFoundInFedex.push(tn);
+
           return savedChargeShipment;
         } catch (error) {
           console.log("🔴 DETAILED ERROR:", error);
@@ -1253,6 +1290,7 @@ export class ShipmentsService {
         savedChargeShipments: savedChargeShipments,
         savedIncome: savedIncome || null,
         duplicated: duplicatedCount,
+        notFoundInFedex,
         errors: errors.length > 0 ? errors : undefined
       };
 
@@ -1412,6 +1450,127 @@ export class ShipmentsService {
       .andWhere('i.date >= :s AND i.date < :e', { s: dayStart, e: dayEnd })
       .getCount();
     return count > 0;
+  }
+
+  /**
+   * Historial FedEx de una guía F2 al darla de alta (igual que el master): sin esto la carga solo
+   * tenía "en ruta" + el último estatus del cron. Nunca lanza: si FedEx falla o no conoce la guía
+   * regresa `found=false` para avisar en el resumen (caso 677930734188, La Paz 13-oct-2026).
+   */
+  private async fetchChargeFedexHistory(trackingNumber: string): Promise<{
+    found: boolean;
+    histories: ShipmentStatus[];
+    fedexUniqueId: string | null;
+    carrierCode: string | null;
+    delivered: boolean;
+  }> {
+    const empty = { found: false, histories: [], fedexUniqueId: null, carrierCode: null, delivered: false };
+    try {
+      const data = await this.fedexService.trackPackage(trackingNumber);
+      const results = data.output?.completeTrackResults?.[0]?.trackResults || [];
+      results.sort((a, b) => {
+        const seqA = parseInt(a.trackingNumberInfo?.trackingNumberUniqueId?.split('~')[0] || '0');
+        const seqB = parseInt(b.trackingNumberInfo?.trackingNumberUniqueId?.split('~')[0] || '0');
+        return seqB - seqA;
+      });
+      const tr = results[0];
+      const scanEvents = tr?.scanEvents || [];
+      if (!tr || (tr as any).error || scanEvents.length === 0) return empty;
+
+      const histories = await this.processFedexScanEventsToStatusesResp(scanEvents, { trackingNumber } as Shipment);
+      const phantomTimes = phantomDeliveryTimes(scanEvents);
+      for (const h of histories ?? []) {
+        h.shipment = undefined;
+        if (h.status === ShipmentStatusType.ENTREGADO && phantomTimes.has(new Date(h.timestamp).getTime())) {
+          h.status = ShipmentStatusType.EN_TRANSITO;
+          h.notes = `Entrega sin efecto (FedEx siguió moviendo el paquete): ${h.notes ?? ''}`.slice(0, 255);
+        }
+      }
+      const lsd = tr.latestStatusDetail;
+      const delivered = !!realDeliveryScan(scanEvents) ||
+        ((lsd?.code === 'DL' || lsd?.derivedCode === 'DL') && !onlyPhantomDeliveries(scanEvents));
+      return {
+        found: true,
+        histories: histories ?? [],
+        fedexUniqueId: tr.trackingNumberInfo?.trackingNumberUniqueId || null,
+        carrierCode: tr.trackingNumberInfo?.carrierCode || null,
+        delivered,
+      };
+    } catch (err: any) {
+      this.logger.warn(`⚠️ [F2] No se pudo consultar FedEx para ${trackingNumber}: ${err?.message}`);
+      return empty;
+    }
+  }
+
+  /** Consulta FedEx para varias guías F2, de 10 en 10 (no satura la API). */
+  private async fetchChargeFedexHistories(trackings: string[]) {
+    const out = new Map<string, Awaited<ReturnType<ShipmentsService['fetchChargeFedexHistory']>>>();
+    const unique = [...new Set(trackings.map((t) => String(t || '').trim()).filter(Boolean))];
+    for (let i = 0; i < unique.length; i += 10) {
+      const chunk = unique.slice(i, i + 10);
+      const res = await Promise.all(chunk.map((t) => this.fetchChargeFedexHistory(t)));
+      chunk.forEach((t, k) => out.set(t, res[k]));
+    }
+    return out;
+  }
+
+  /** Guarda el historial FedEx en la carga y le pone su id FedEx (y ENTREGADO si ya lo está). */
+  private async attachChargeFedexHistory(
+    manager: EntityManager,
+    cs: ChargeShipment,
+    fx: { found: boolean; histories: ShipmentStatus[]; fedexUniqueId: string | null; carrierCode: string | null; delivered: boolean } | undefined,
+  ): Promise<void> {
+    if (!fx?.found) return;
+    if (fx.histories.length) {
+      await manager.save(ShipmentStatus, fx.histories.map((h) => ({ ...h, id: undefined, shipment: null, chargeShipment: { id: cs.id } })) as any);
+    }
+    const patch: any = { fedexUniqueId: fx.fedexUniqueId, carrierCode: fx.carrierCode };
+    if (fx.delivered) patch.status = ShipmentStatusType.ENTREGADO;
+    await manager.update(ChargeShipment, cs.id, patch);
+  }
+
+  /**
+   * Paquetes que el master de ESTE consolidado (consNumber + sucursal) subió y que la F2 trae
+   * como carga. Solo el mismo consolidado: los de consolidados anteriores nunca se tocan.
+   */
+  private async findMasterPackagesForF2(manager: EntityManager, trackings: string[], consNumber: string, subsidiaryId: string) {
+    const out = new Map<string, { id: string; paymentId: string | null; decision: MasterRemovalDecision }>();
+    const tns = [...new Set(trackings.map((t) => String(t || '').trim()).filter(Boolean))];
+    if (!tns.length) return out;
+    const rows: { id: string; trackingNumber: string; paymentId: string | null; hasDispatch: number; hasIncome: number }[] =
+      await manager.query(
+        `SELECT s.id, s.trackingNumber, s.paymentId,
+                EXISTS(SELECT 1 FROM package_dispatch_history h WHERE h.shipmentId = s.id) AS hasDispatch,
+                EXISTS(SELECT 1 FROM income i WHERE i.shipmentId = s.id AND i.active = 1) AS hasIncome
+           FROM shipment s
+          WHERE s.trackingNumber IN (?) AND s.subsidiaryId = ? AND s.consNumber = ? AND s.active = 1`,
+        [tns, subsidiaryId, consNumber],
+      );
+    for (const r of rows) {
+      out.set(r.trackingNumber, {
+        id: r.id,
+        paymentId: r.paymentId,
+        decision: decideMasterRemoval({ hasDispatch: !!Number(r.hasDispatch), hasActiveIncome: !!Number(r.hasIncome) }),
+      });
+    }
+    return out;
+  }
+
+  /** Elimina del master el paquete que ahora es carga; su cobro (payment) pasa a la carga. */
+  private async removeMasterPackageForF2(
+    manager: EntityManager,
+    pkg: { id: string; paymentId: string | null },
+    chargeShipmentId: string,
+  ): Promise<void> {
+    const pay: { id: string }[] = await manager.query(
+      `SELECT id FROM payment WHERE shipmentId = ? OR id = ? LIMIT 1`,
+      [pkg.id, pkg.paymentId ?? ''],
+    );
+    await manager.query(`UPDATE shipment SET paymentId = NULL WHERE id = ?`, [pkg.id]);
+    if (pay[0]) {
+      await manager.query(`UPDATE payment SET shipmentId = NULL, chargeShipmentId = ? WHERE id = ?`, [chargeShipmentId, pay[0].id]);
+    }
+    await manager.delete(Shipment, pkg.id); // historial en cascada
   }
 
   /**
@@ -3125,12 +3284,13 @@ export class ShipmentsService {
     const startOfWeek = mDate.startOf('week').add(1, 'day').toDate();
     const endOfWeek = mDate.endOf('week').add(1, 'day').endOf('day').toDate();
 
+    // Por SHIPMENT (no por guía) y solo vivos: un registro anterior de la guía, cobrado o
+    // anulado por devolución, no bloquea el de un consolidado nuevo (caso 878249671370).
     const exists = await transactionalEntityManager.getRepository(Income).findOne({
-      where: { 
-        trackingNumber: shipment.trackingNumber, 
+      where: shipmentIncomeWhere(shipment.id, shipment.trackingNumber, {
         incomeType: incomeType,
-        date: Between(startOfWeek, endOfWeek)
-      },
+        date: Between(startOfWeek, endOfWeek),
+      }),
       select: ['id'] // Solo necesitamos saber si existe
     });
 

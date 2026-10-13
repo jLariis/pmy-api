@@ -416,7 +416,7 @@ export class DevolutionsService {
     }
 
     const incomeExists = await this.incomeRepository.exists({
-      where: { trackingNumber },
+      where: { trackingNumber, active: true },
     });
 
     // Ingreso `entregado` VIGENTE (active) de la guía: si existe, al devolverla se anulará, así

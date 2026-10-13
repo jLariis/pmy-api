@@ -1,4 +1,5 @@
 import { AuditAction, AuditModule } from 'src/common/enums/audit.enum';
+import { f2SavedCount, normalizeUploadMethod, uploadMethodLabel } from 'src/import-files/upload-method.util';
 
 /**
  * Catálogo central de auditoría.
@@ -36,6 +37,21 @@ export interface AuditResolved {
 // ----------------------------- helpers -----------------------------
 
 const len = (v: any): number => (Array.isArray(v) ? v.length : 0);
+const isTrue = (v: any): boolean => v === true || v === 'true' || v === '1' || v === 1;
+
+/**
+ * "Subió la carga F2 del consolidado 305823041209 · 9 guías · método: Asistente de subida (paso a paso)".
+ * El método solo se nombra si el front lo mandó (subidas viejas no lo traen).
+ */
+export function uploadMessage(what: string, body: any, count: unknown, unit: string) {
+  const cons = String(body?.consNumber ?? '').trim();
+  const n = Number(count);
+  const method = normalizeUploadMethod(body?.uploadMethod);
+  const parts = [`${what}${cons ? ` del consolidado ${cons}` : ''}`];
+  if (Number.isFinite(n) && count !== null && count !== undefined) parts.push(`${n} ${unit}${n === 1 ? '' : 's'}`);
+  if (method) parts.push(`método: ${uploadMethodLabel(method)}`);
+  return { message: parts.join(' · '), details: { consolidado: cons || undefined, guias: Number.isFinite(n) ? n : undefined, metodo: method ? uploadMethodLabel(method) : undefined } };
+}
 const has = (v: any): boolean => v !== undefined && v !== null && v !== '';
 const clip = (s: string, max = 480): string => (s.length > max ? s.slice(0, max - 1) + '…' : s);
 
@@ -420,33 +436,35 @@ const RULES: Rule[] = [
   },
 
   // ------------------ ENVÍOS ------------------
+  // Subidas de consolidado: qué, de qué consolidado, cuántas guías y DESDE DÓNDE (pantalla).
   {
     test: eq('POST', '/shipments/upload'),
     module: AuditModule.ENVIOS,
     action: AuditAction.IMPORT,
     entityName: 'Envíos',
-    describe: () => ({ message: 'Importó archivo de envíos (Excel)' }),
+    describe: ({ body, response }) =>
+      uploadMessage(`Subió el master${isTrue(body?.isAereo) ? ' aéreo' : ''}`, body, response?.saved, 'guía'),
   },
   {
     test: eq('POST', '/shipments/upload-charge'),
     module: AuditModule.ENVIOS,
     action: AuditAction.IMPORT,
     entityName: 'Envíos',
-    describe: () => ({ message: 'Importó archivo de cargas / F2 (Excel)' }),
+    describe: ({ body, response }) => uploadMessage('Subió la carga F2', body, f2SavedCount(response), 'guía'),
   },
   {
     test: eq('POST', '/shipments/upload-payment'),
     module: AuditModule.ENVIOS,
     action: AuditAction.IMPORT,
     entityName: 'Envíos',
-    describe: () => ({ message: 'Importó archivo de cobros (Excel)' }),
+    describe: ({ body, response }) => uploadMessage('Subió los cobros', body, response?.saved, 'cobro'),
   },
   {
     test: eq('POST', '/shipments/upload-hv'),
     module: AuditModule.ENVIOS,
     action: AuditAction.IMPORT,
     entityName: 'Envíos',
-    describe: () => ({ message: 'Importó archivo de High Values (Excel)' }),
+    describe: ({ body, response }) => uploadMessage('Subió los Alto Valor', body, response?.marked, 'guía'),
   },
   {
     test: (m, p) => m === 'POST' && (p === '/shipments/upload-dhl' || p === '/shipments/process-dhl-txt-file'),

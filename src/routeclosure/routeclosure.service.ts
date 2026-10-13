@@ -30,6 +30,7 @@ import { TrackableKind } from 'src/tracking-sync/tracking-sync.types';
 import { ApplyOutcome } from 'src/tracking-sync/compare.types';
 import { reconcileShipmentIncomeAction, ExistingShipmentIncome } from './income-reconcile.util';
 import { selectClosureIncomeEvent } from './closure-income-event.util';
+import { shipmentIncomeWhere } from 'src/common/shipment-income-where.util';
 import { selectLatestGeneration } from 'src/consolidador/logic/fedex-day-outcome.util';
 
 @Injectable()
@@ -273,9 +274,10 @@ export class RouteclosureService {
         // sin evento se ancla al inicio del día de la ruta (07:00Z = 00:00 Hermosillo).
         const incomeDate = o.eventAt ? instant : hermosilloDayStartFromInstant(instant);
 
-        const existingRows = await incomeRepo.find({
-          where: { trackingNumber: o.trackingNumber, sourceType: IncomeSourceType.SHIPMENT },
-        });
+        // El ingreso le pertenece al SHIPMENT, no a la guía: un consolidado nuevo es un flujo nuevo
+        // y lo que cobró (o anuló) un registro anterior de la misma guía no cuenta aquí (caso
+        // 878249671370, ruta 604005759064). Solo filas VIVAS.
+        const existingRows = await incomeRepo.find({ where: shipmentIncomeWhere(o.shipmentId, o.trackingNumber, { sourceType: IncomeSourceType.SHIPMENT }) });
         const existing: ExistingShipmentIncome = {
           entregado: existingRows.some((r) => r.incomeType === IncomeStatus.ENTREGADO),
           dex: (() => {
@@ -454,6 +456,7 @@ export class RouteclosureService {
               where: {
                 trackingNumber: outcome.trackingNumber,
                 sourceType: IncomeSourceType.SHIPMENT,
+                active: true,
               },
             });
             if (existingIncome) {
@@ -555,6 +558,7 @@ export class RouteclosureService {
               where: {
                 trackingNumber: collection.trackingNumber,
                 sourceType: IncomeSourceType.COLLECTION,
+                active: true,
               },
             });
 
@@ -643,10 +647,7 @@ export class RouteclosureService {
           // su estatus/historial más abajo.
           if (!item.isCharge) {
             const existingIncome = await queryRunner.manager.findOne(Income, {
-              where: {
-                trackingNumber: pPackage.trackingNumber,
-                sourceType: IncomeSourceType.SHIPMENT
-              }
+              where: shipmentIncomeWhere(pPackage.id, pPackage.trackingNumber, { sourceType: IncomeSourceType.SHIPMENT }),
             });
 
             if (existingIncome) {

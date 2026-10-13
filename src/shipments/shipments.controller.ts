@@ -19,6 +19,7 @@ import { BusinessException } from 'src/common/business.exception';
 import { NoAudit } from 'src/audit/audit.decorator';
 import { DhlService } from './dhl.service';
 import { ImportFilesService } from 'src/import-files/import-files.service';
+import { f2ModeDetail, f2SavedCount } from 'src/import-files/upload-method.util';
 
 @ApiTags('shipments')
 @ApiBearerAuth()
@@ -358,7 +359,7 @@ export class ShipmentsController {
       try {
         await this.importFiles.persist(
           { originalname: file.originalname, buffer: file.buffer, mimetype: file.mimetype },
-          { kind: 'master', subsidiaryId: dto.subsidiaryId, consNumber: dto.consNumber || '', rowCount: result?.saved ?? null, uploadedById: req?.user?.userId, uploadedByName: req?.user?.name },
+          { kind: 'master', subsidiaryId: dto.subsidiaryId, consNumber: dto.consNumber || '', rowCount: result?.saved ?? null, uploadedById: req?.user?.userId, uploadedByName: req?.user?.name, uploadMethod: dto.uploadMethod, uploadDetail: isAereoBoolean ? 'Aéreo' : null },
         );
       } catch (e) {
         this.logger.warn(`[upload] no se pudo guardar import_file: ${(e as any)?.message}`);
@@ -442,6 +443,7 @@ export class ShipmentsController {
     @Body('notRemoveCharge') notRemoveCharge: any = false,
     @Body('isHalfTon') isHalfTon: any = false,
     @Body('secondAbord') secondAbord?: any,
+    @Body('uploadMethod') uploadMethod?: string,
     @Req() req?: any,
   ) {
       console.log("🚀 ~ Raw notRemoveCharge:", notRemoveCharge);
@@ -482,7 +484,7 @@ export class ShipmentsController {
     try {
       await this.importFiles.persist(
         { originalname: file.originalname, buffer: file.buffer, mimetype: file.mimetype },
-        { kind: 'f2', subsidiaryId, consNumber, rowCount: (result as any)?.saved ?? null, uploadedById: req?.user?.userId, uploadedByName: req?.user?.name },
+        { kind: 'f2', subsidiaryId, consNumber, rowCount: f2SavedCount(result), uploadedById: req?.user?.userId, uploadedByName: req?.user?.name, uploadMethod, uploadDetail: f2ModeDetail(shouldNotRemove) },
       );
     } catch (e) {
       this.logger.warn(`[upload-charge] no se pudo guardar import_file: ${(e as any)?.message}`);
@@ -513,13 +515,14 @@ export class ShipmentsController {
   async uploadPaymentFile(
     @UploadedFile() file: Express.Multer.File,
     @Body('consNumber') consNumber?: string,
+    @Body('uploadMethod') uploadMethod?: string,
     @Req() req?: any,
   ) {
     const result = await this.shipmentsService.processFileCharges(file, consNumber);
     try {
       await this.importFiles.persist(
         { originalname: file.originalname, buffer: file.buffer, mimetype: file.mimetype },
-        { kind: 'payment', subsidiaryId: null, consNumber: consNumber ?? null, rowCount: (result as any)?.saved ?? null, uploadedById: req?.user?.userId, uploadedByName: req?.user?.name },
+        { kind: 'payment', subsidiaryId: null, consNumber: consNumber ?? null, rowCount: (result as any)?.saved ?? null, uploadedById: req?.user?.userId, uploadedByName: req?.user?.name, uploadMethod },
       );
     } catch (e) {
       this.logger.warn(`[upload-payment] no se pudo guardar import_file: ${(e as any)?.message}`);
@@ -550,13 +553,14 @@ export class ShipmentsController {
     @UploadedFile() file: Express.Multer.File,
     @Body('subsidiaryId') subsidiaryId?: string,
     @Body('consNumber') consNumber?: string,
+    @Body('uploadMethod') uploadMethod?: string,
     @Req() req?: any,
   ) {
     const result = await this.shipmentsService.processHihValueShipments(file, subsidiaryId, consNumber);
     try {
       await this.importFiles.persist(
         { originalname: file.originalname, buffer: file.buffer, mimetype: file.mimetype },
-        { kind: 'high_value', subsidiaryId: subsidiaryId ?? null, consNumber: consNumber ?? null, rowCount: (result as any)?.marked ?? null, uploadedById: req?.user?.userId, uploadedByName: req?.user?.name },
+        { kind: 'high_value', subsidiaryId: subsidiaryId ?? null, consNumber: consNumber ?? null, rowCount: (result as any)?.marked ?? null, uploadedById: req?.user?.userId, uploadedByName: req?.user?.name, uploadMethod },
       );
     } catch (e) {
       this.logger.warn(`[upload-hv] no se pudo guardar import_file: ${(e as any)?.message}`);

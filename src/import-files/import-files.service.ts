@@ -7,6 +7,7 @@ import { randomUUID } from 'crypto';
 import { ImportFile, ImportFileKind } from 'src/entities/import-file.entity';
 import { Consolidated } from 'src/entities/consolidated.entity';
 import { ShipmentType } from 'src/common/enums/shipment-type.enum';
+import { normalizeUploadMethod, uploadMethodLabel } from './upload-method.util';
 
 export interface PersistMeta {
   kind: ImportFileKind;
@@ -15,7 +16,14 @@ export interface PersistMeta {
   rowCount?: number | null;
   uploadedById?: string | null;
   uploadedByName?: string | null;
+  /** Clave de la pantalla que mandó el front (se normaliza; desconocida = null). */
+  uploadMethod?: unknown;
+  uploadDetail?: string | null;
 }
+
+/** Fila para el front: agrega el nombre en llano del método de subida. */
+export type ImportFileView = ImportFile & { uploadMethodLabel: string };
+const toView = (f: ImportFile): ImportFileView => ({ ...f, uploadMethodLabel: uploadMethodLabel(f.uploadMethod, f.uploadDetail) });
 
 /**
  * Persistencia y consulta de los archivos originales de importación FedEx.
@@ -73,6 +81,8 @@ export class ImportFilesService {
       consolidatedId,
       uploadedById: meta.uploadedById ?? null,
       uploadedByName: meta.uploadedByName ?? null,
+      uploadMethod: normalizeUploadMethod(meta.uploadMethod),
+      uploadDetail: meta.uploadDetail ?? null,
     });
     return this.repo.save(row);
   }
@@ -84,7 +94,7 @@ export class ImportFilesService {
    * en SQL antes de comparar el día. Antes `to=hoy` se volvía `hoy 00:00` y dejaba fuera
    * todo lo subido en el día.
    */
-  async list(params: { subsidiaryId?: string; kind?: string; from?: string; to?: string; limit?: number } = {}): Promise<ImportFile[]> {
+  async list(params: { subsidiaryId?: string; kind?: string; from?: string; to?: string; limit?: number } = {}): Promise<ImportFileView[]> {
     const day = /^\d{4}-\d{2}-\d{2}$/;
     const localDay = `DATE(CONVERT_TZ(f.createdAt, @@session.time_zone, '-07:00'))`;
     const qb = this.repo.createQueryBuilder('f');
@@ -92,11 +102,11 @@ export class ImportFilesService {
     if (params.kind) qb.andWhere('f.kind = :kind', { kind: params.kind });
     if (params.from && day.test(params.from)) qb.andWhere(`${localDay} >= :from`, { from: params.from });
     if (params.to && day.test(params.to)) qb.andWhere(`${localDay} <= :to`, { to: params.to });
-    return qb.orderBy('f.createdAt', 'DESC').take(params.limit ?? 200).getMany();
+    return (await qb.orderBy('f.createdAt', 'DESC').take(params.limit ?? 200).getMany()).map(toView);
   }
 
-  async findByConsolidated(consolidatedId: string): Promise<ImportFile[]> {
-    return this.repo.find({ where: { consolidatedId }, order: { createdAt: 'DESC' } });
+  async findByConsolidated(consolidatedId: string): Promise<ImportFileView[]> {
+    return (await this.repo.find({ where: { consolidatedId }, order: { createdAt: 'DESC' } })).map(toView);
   }
 
   async getDownloadable(id: string): Promise<{ buffer: Buffer; originalName: string; mimeType: string }> {

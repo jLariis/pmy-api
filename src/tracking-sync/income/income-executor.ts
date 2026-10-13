@@ -7,6 +7,7 @@ import { ShipmentType } from 'src/common/enums/shipment-type.enum';
 import { IncomeStatus } from 'src/common/enums/income-status.enum';
 import { DeferredEffect } from '../tracking-sync.types';
 import { weekRange } from './week.util';
+import { shipmentIncomeWhere } from '../../common/shipment-income-where.util';
 
 export type IncomeMode = 'report' | 'persist';
 
@@ -53,10 +54,13 @@ export class IncomeExecutor {
       const { start, end } = weekRange(occurredAt);
       const incomingDelivered = p.incomeType === IncomeStatus.ENTREGADO;
 
-      // DEDUP CROSS-SOURCE: un solo ingreso por (guía, semana), sin importar el origen
-      // (motor, cierre de ruta, legacy). ENTREGADO gana (upgrade). Ver spec §3.4.
+      // DEDUP CROSS-SOURCE: un solo ingreso por (shipment, semana), sin importar el origen
+      // (motor, cierre de ruta, legacy). ENTREGADO gana (upgrade). Ver spec §3.4. Por shipment
+      // y solo vivos: otro registro de la guía (consolidado anterior) es otro flujo.
       const existing = await this.dataSource.getRepository(Income).findOne({
-        where: { trackingNumber: p.trackingNumber, date: Between(start, end) } as any,
+        where: (p.shipmentId
+          ? shipmentIncomeWhere(p.shipmentId, p.trackingNumber, { date: Between(start, end) })
+          : { trackingNumber: p.trackingNumber, date: Between(start, end), active: true }) as any,
         order: { date: 'DESC' } as any,
         select: ['id', 'incomeType'] as any,
       });
