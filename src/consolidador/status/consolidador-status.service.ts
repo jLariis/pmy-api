@@ -17,6 +17,7 @@ import { statusOrigin } from '../logic/status-origin.util';
 import { mapIncomeToRow } from '../read/consolidador-row.mapper';
 import { ConsolidadorRow } from '../consolidador.types';
 import { ConsolidadorAuditService } from '../audit/consolidador-audit.service';
+import { shipmentIncomeWhere } from '../../common/shipment-income-where.util';
 
 @Injectable()
 export class ConsolidadorStatusService {
@@ -329,11 +330,22 @@ export class ConsolidadorStatusService {
     const shipment = await this.shipmentRepo.findOne({ where: { id: shipmentId }, relations: ['subsidiary'] });
     if (!shipment) throw new NotFoundException('Shipment no encontrado');
 
-    // Ingresos activos de envío de la guía + entrega en bodega (si la hubo): misma regla que pick-up.
+    // Ingresos activos de ESTE paquete (no de otros registros de la guía) + entrega en bodega
+    // (si la hubo): misma regla que pick-up.
     const existingActive = await this.incomeRepo.find({
-      where: { trackingNumber: shipment.trackingNumber, sourceType: IncomeSourceType.SHIPMENT, active: true },
+      where: shipmentIncomeWhere(shipment.id, shipment.trackingNumber, { sourceType: IncomeSourceType.SHIPMENT }),
       relations: ['shipment', 'charge', 'subsidiary'],
     });
+    // Cuándo pasó: último evento del historial con el estatus actual, y el día de su última ruta.
+    const ev = await this.incomeRepo.manager.query(
+      `SELECT timestamp FROM shipment_status WHERE shipmentId = ? AND status = ? ORDER BY timestamp DESC LIMIT 1`,
+      [shipment.id, shipment.status],
+    );
+    const rt = await this.incomeRepo.manager.query(
+      `SELECT DATE_FORMAT(pd.routeDate, '%Y-%m-%d') AS routeDay FROM package_dispatch_history h JOIN package_dispatch pd ON pd.id = h.dispatchId
+        WHERE h.shipmentId = ? AND pd.routeDate IS NOT NULL ORDER BY pd.routeDate DESC LIMIT 1`,
+      [shipment.id],
+    );
     const wd = await this.incomeRepo.manager.query(
       `SELECT date FROM warehouse_delivery WHERE shipmentId = ? OR trackingNumber = ? ORDER BY date DESC LIMIT 1`,
       [shipment.id, shipment.trackingNumber],
@@ -344,6 +356,8 @@ export class ConsolidadorStatusService {
       existingActive: existingActive.map((i) => ({ id: i.id, incomeType: i.incomeType })),
       shipmentType: shipment.shipmentType,
       subsidiary: shipment.subsidiary as any,
+      statusEventAt: ev?.[0]?.timestamp ? new Date(ev[0].timestamp) : null,
+      routeDate: rt?.[0]?.routeDay ? new Date(`${rt[0].routeDay}T07:00:00Z`) : null,
     });
 
     if (plan.action === 'none') {

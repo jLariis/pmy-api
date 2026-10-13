@@ -1,3 +1,4 @@
+import { shipmentIncomeWhere } from 'src/common/shipment-income-where.util';
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository } from 'typeorm';
@@ -199,7 +200,7 @@ export class ClosureDoctorService {
     const incomes =
       kind === 'shipment'
         ? await this.dataSource.getRepository(Income).find({
-            where: { trackingNumber: entity.trackingNumber, sourceType: IncomeSourceType.SHIPMENT, active: true },
+            where: shipmentIncomeWhere(entity.id, entity.trackingNumber, { sourceType: IncomeSourceType.SHIPMENT }),
             select: ['id', 'incomeType', 'date'],
           })
         : [];

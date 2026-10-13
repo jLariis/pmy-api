@@ -193,7 +193,7 @@ describe('RouteclosureService.create — (1) No VAN → FedEx → ingreso', () =
 describe('RouteclosureService.reconcileRouteWithFedex — (3) revalidación FedEx al abrir', () => {
   const subsidiary = { id: 'S1', name: 'Test', fedexCostPackage: 45 };
 
-  function makeService(packageDispatch: any, opts: { outcomes?: any[]; rescued?: any[]; existingByTracking?: Record<string, any[]> } = {}) {
+  function makeService(packageDispatch: any, opts: { outcomes?: any[]; rescued?: any[]; existingByShipment?: Record<string, any[]> } = {}) {
     const outcomes = opts.outcomes ?? [
       { shipmentId: 's1', trackingNumber: 'TN1', applied: true, fromStatus: 'en_ruta', toStatus: ShipmentStatusType.ENTREGADO, insertedEvents: 1, kind: 'shipment', exceptionCode: null, eventAt: '2026-08-12T20:00:00Z' },
     ];
@@ -204,7 +204,8 @@ describe('RouteclosureService.reconcileRouteWithFedex — (3) revalidación FedE
     const savedIncomes: any[] = [];
     const updatedIncomes: any[] = [];
     const incomeRepo = {
-      find: jest.fn(async ({ where }: any) => opts.existingByTracking?.[where.trackingNumber] ?? []),
+      // Ingresos por SHIPMENT (el cierre busca los del registro, no los de la guía).
+      find: jest.fn(async ({ where }: any) => opts.existingByShipment?.[where[0]?.shipment?.id] ?? []),
       create: jest.fn((data: any) => data),
       save: jest.fn(async (data: any) => { savedIncomes.push(data); return data; }),
       update: jest.fn(async (id: string, patch: any) => { updatedIncomes.push({ id, patch }); }),
@@ -254,7 +255,7 @@ describe('RouteclosureService.reconcileRouteWithFedex — (3) revalidación FedE
   it('supersede: existía DEX del MISMO día y ahora está ENTREGADO → actualiza esa fila a ENTREGADO', async () => {
     const { svc, updatedIncomes, savedIncomes } = makeService(
       { id: 'PD-1', is315: false, subsidiary },
-      { existingByTracking: { TN1: [{ id: 'INC-DEX', incomeType: IncomeStatus.NO_ENTREGADO, date: new Date('2026-08-12T18:00:00Z') }] } },
+      { existingByShipment: { s1: [{ id: 'INC-DEX', incomeType: IncomeStatus.NO_ENTREGADO, date: new Date('2026-08-12T18:00:00Z') }] } },
     );
     const res = await svc.reconcileRouteWithFedex('PD-1', { userId: 'U1' });
 
@@ -272,7 +273,7 @@ describe('RouteclosureService.reconcileRouteWithFedex — (3) revalidación FedE
     ];
     const { svc, savedIncomes, updatedIncomes } = makeService(
       { id: 'PD-1', is315: false, subsidiary },
-      { outcomes, existingByTracking: { TN1: [{ id: 'INC-DEX', incomeType: IncomeStatus.NO_ENTREGADO, date: new Date('2026-08-12T18:00:00Z') }] } },
+      { outcomes, existingByShipment: { s1: [{ id: 'INC-DEX', incomeType: IncomeStatus.NO_ENTREGADO, date: new Date('2026-08-12T18:00:00Z') }] } },
     );
     await svc.reconcileRouteWithFedex('PD-1', { userId: 'U1' });
 

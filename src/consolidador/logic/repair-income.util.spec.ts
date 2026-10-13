@@ -71,3 +71,26 @@ describe('planRepairIncome — resto de estatus (comportamiento de siempre)', ()
     expect(p.reason).toContain('no genera ingreso');
   });
 });
+
+describe('planRepairIncome — fecha del ingreso = día de la operación, no el de la reparación', () => {
+  const sub = { fedexCostPackage: 52 };
+  // Caso 878249671370: entregada el sáb 10-oct 08:52 (ruta 604005759064), reparada el lun 12-oct.
+  it('usa la hora del evento de entrega del historial', () => {
+    const p = planRepairIncome({
+      status: ShipmentStatusType.ENTREGADO, warehouseDeliveredAt: null, existingActive: [], shipmentType: 'fedex', subsidiary: sub,
+      statusEventAt: new Date('2026-10-10T15:52:00Z'), routeDate: new Date('2026-10-10T07:00:00Z'),
+    });
+    expect(p).toMatchObject({ action: 'create', date: new Date('2026-10-10T15:52:00Z') });
+  });
+  it('sin evento en el historial → inicio del día de su ruta', () => {
+    const p = planRepairIncome({
+      status: ShipmentStatusType.ENTREGADO, warehouseDeliveredAt: null, existingActive: [], shipmentType: 'fedex', subsidiary: sub,
+      statusEventAt: null, routeDate: new Date('2026-10-10T07:00:00Z'),
+    });
+    expect(p.date).toEqual(new Date('2026-10-10T07:00:00Z'));
+  });
+  it('sin evento ni ruta → "ahora" (null), como antes', () => {
+    const p = planRepairIncome({ status: ShipmentStatusType.ENTREGADO, warehouseDeliveredAt: null, existingActive: [], shipmentType: 'fedex', subsidiary: sub });
+    expect(p.date).toBeNull();
+  });
+});

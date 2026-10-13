@@ -51,6 +51,14 @@ export class ImportFile {
   @Column({ nullable: true })
   uploadedByName: string | null;
 
+  /** Pantalla desde la que se subió (ver upload-method.util); null = archivos previos (mig 106). */
+  @Column({ type: 'varchar', length: 40, nullable: true })
+  uploadMethod: string | null;
+
+  /** Detalle legible del método (p. ej. el modo de la F2). */
+  @Column({ type: 'varchar', length: 120, nullable: true })
+  uploadDetail: string | null;
+
   @Column({ type: 'datetime', default: () => 'CURRENT_TIMESTAMP' })
   createdAt: Date;
 }

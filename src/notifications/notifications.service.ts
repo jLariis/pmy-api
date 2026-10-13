@@ -9,6 +9,7 @@ import { parseDevice, geoFromIp } from 'src/audit/client-info.util';
 import { NotificationEvent, Audience } from './notification.types';
 import { resolvePresentation, auditToNotificationType } from './notification-catalog';
 import { NotificationDispatchService } from './notification-dispatch.service';
+import { composeFeedMessage } from './feed-message.util';
 
 export interface AuditEmitInput {
   module: string;
@@ -164,6 +165,15 @@ export class NotificationsService {
       order: { createdAt: 'DESC' },
       take: limit,
     });
+    // Nombre de la sucursal para "Maria Manzanilla · Cabo San Lucas — …".
+    const subIds = [...new Set(rows.map((r) => r.subsidiaryId).filter(Boolean))] as string[];
+    const subNames = new Map<string, string>();
+    if (subIds.length) {
+      const subs: { id: string; name: string }[] = await this.notifRepo.manager
+        .query(`SELECT id, name FROM subsidiary WHERE id IN (?)`, [subIds])
+        .catch(() => []);
+      for (const sub of subs) subNames.set(sub.id, sub.name);
+    }
     return rows.map((r) => ({
       id: r.id,
       createdAt: r.createdAt,
@@ -173,7 +183,9 @@ export class NotificationsService {
       module: r.type.startsWith('operacion.') ? r.type.slice('operacion.'.length) : r.category,
       actor: r.actorName ?? 'Sistema',
       actorEmail: undefined,
-      message: r.body ?? r.title,
+      message: r.category === 'sesion'
+        ? (r.body ?? r.title)
+        : composeFeedMessage({ actorName: r.actorName, subsidiaryName: r.subsidiaryId ? subNames.get(r.subsidiaryId) : null, body: r.body, title: r.title }),
       entityId: r.entityId ?? undefined,
       subsidiaryId: r.subsidiaryId ?? undefined,
       read: r.read,

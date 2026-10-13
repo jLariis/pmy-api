@@ -20,4 +20,9 @@ export class UploadShipmentDto {
     return value;
   })
   isAereo?: boolean;
+
+  /** Pantalla desde la que se subió (asistente | pegar_fedex | bandeja_correo | subida_rapida). */
+  @IsOptional()
+  @IsString()
+  uploadMethod?: string;
 }
