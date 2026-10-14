@@ -214,7 +214,7 @@ describe('RouteclosureService.reconcileRouteWithFedex — (3) revalidación FedE
     svc.logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
     svc.trackingCompare = { applyByRoute, resolveStuckEnRutaForClosure };
     svc.packageDispatchRepository = { findOne: jest.fn().mockResolvedValue(packageDispatch) };
-    svc.dataSource = { getRepository: () => incomeRepo };
+    svc.dataSource = { getRepository: () => incomeRepo, manager: { query: jest.fn(async () => []) } };
     return { svc, applyByRoute, resolveStuckEnRutaForClosure, incomeRepo, savedIncomes, updatedIncomes };
   }
 
@@ -334,6 +334,24 @@ describe('RouteclosureService.reconcileRouteWithFedex — (3) revalidación FedE
     const { svc } = makeService(null);
     await expect(svc.reconcileRouteWithFedex('NOPE', {})).rejects.toThrow();
   });
+
+  // Caso Santa Ana 383781147421 / Sonoyta 05-oct: el cierre se abrió (o re-disparó) dos veces y
+  // las dos corridas vieron "sin ingreso" a la vez → dos ingresos idénticos en el mismo segundo.
+  it('dos aperturas simultáneas de la misma ruta: una sola reconciliación y un solo ingreso', async () => {
+    const { svc, applyByRoute, savedIncomes } = makeService({ id: 'PD-1', is315: false, subsidiary });
+    const [a, b] = await Promise.all([
+      svc.reconcileRouteWithFedex('PD-1', { userId: 'U1' }),
+      svc.reconcileRouteWithFedex('PD-1', { userId: 'U1' }),
+    ]);
+
+    expect(applyByRoute).toHaveBeenCalledTimes(1);
+    expect(savedIncomes).toHaveLength(1);
+    expect(b).toBe(a);
+
+    // Terminada la primera, una apertura posterior sí vuelve a reconciliar.
+    await svc.reconcileRouteWithFedex('PD-1', { userId: 'U1' });
+    expect(applyByRoute).toHaveBeenCalledTimes(2);
+  });
 });
 
 // ===========================================================================
@@ -439,6 +457,7 @@ describe('RouteclosureService.reconcileRouteWithFedex — ingreso a la hora del 
     svc.dataSource = {
       getRepository: (entity: any) => (entity?.name === 'ShipmentStatus' ? statusRepo : incomeRepo),
       query: jest.fn(async () => []),
+      manager: { query: jest.fn(async () => []) },
     };
     return { svc, savedIncomes };
   }
