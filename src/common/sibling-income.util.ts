@@ -18,7 +18,7 @@ export interface SiblingIncomeRow {
  *
  * Lo cobrado ANTES de que existiera este registro no cuenta: es de su propio flujo (caso
  * 878249671370: el consolidado nuevo sí cobra aunque el viejo tenga ingreso o anulación previa).
- * DHL: varias piezas comparten guía maestra; se distinguen por dhlUniqueId.
+ * DHL: varias piezas comparten guía maestra; se distinguen por dhlUniqueId (sin pieza no se compara).
  * SQL directo: filtrar `active = 1` a mano.
  */
 export async function siblingIncomesSinceCreated(
@@ -41,6 +41,7 @@ export async function siblingIncomesSinceCreated(
       WHERE o.trackingNumber = ?
         AND o.id <> cur.id
         AND COALESCE(o.dhlUniqueId, '') = COALESCE(cur.dhlUniqueId, '')
+        AND (cur.shipmentType <> 'dhl' OR COALESCE(cur.dhlUniqueId, '') <> '')
         AND i.active = 1
         AND i.sourceType = 'shipment'
         AND i.date >= cur.createdAt${extra}

@@ -32,6 +32,7 @@ import { reconcileShipmentIncomeAction, ExistingShipmentIncome } from './income-
 import { selectClosureIncomeEvent } from './closure-income-event.util';
 import { shipmentIncomeWhere } from 'src/common/shipment-income-where.util';
 import { siblingIncomesSinceCreated } from 'src/common/sibling-income.util';
+import { weekRange } from 'src/tracking-sync/income/week.util';
 import { selectLatestGeneration } from 'src/consolidador/logic/fedex-day-outcome.util';
 
 /** Reconciliaciones de cierre en curso por salida a ruta (ver reconcileRouteWithFedex). */
@@ -301,12 +302,14 @@ export class RouteclosureService {
         // El ingreso le pertenece al SHIPMENT, no a la guía: un consolidado nuevo es un flujo nuevo
         // y lo que cobró (o anuló) un registro anterior de la misma guía no cuenta aquí (caso
         // 878249671370, ruta 604005759064). Solo filas VIVAS.
-        // + lo que OTRO registro de la misma pieza ya cobró después del alta de éste (la guía
-        // volvió a entrar en otro consolidado y el cron le cobró el evento al viejo: caso
-        // 383894126080). Lo cobrado antes del alta no cuenta.
+        // + lo que OTRO registro de la misma pieza ya cobró después del alta de éste en la MISMA
+        // semana del evento (la guía volvió a entrar en otro consolidado y el cron le cobró el
+        // evento al viejo: caso 383894126080). Misma ventana semanal que el cron: un DEX de otra
+        // semana en el otro registro no bloquea un cobro legítimo de esta.
+        const week = weekRange(incomeDate);
         const existingRows = [
           ...(await incomeRepo.find({ where: shipmentIncomeWhere(o.shipmentId, o.trackingNumber, { sourceType: IncomeSourceType.SHIPMENT }) })),
-          ...(await siblingIncomesSinceCreated(this.dataSource.manager, o.shipmentId, o.trackingNumber)),
+          ...(await siblingIncomesSinceCreated(this.dataSource.manager, o.shipmentId, o.trackingNumber, { from: week.start, to: week.end })),
         ];
         const existing: ExistingShipmentIncome = {
           entregado: existingRows.some((r) => r.incomeType === IncomeStatus.ENTREGADO),

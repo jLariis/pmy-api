@@ -111,4 +111,16 @@ describe('RouteclosureService.reconcileRouteIncome — ya cobrada en otro regist
     expect(res.incomeCreated).toBe(0);
     expect(saved).toHaveLength(0);
   });
+
+  // Igual que el cron: solo la semana del evento. Un DEX de otra semana en el otro registro no
+  // debe bloquear un cobro legítimo de ésta.
+  it('busca lo cobrado por el otro registro solo en la semana del evento', async () => {
+    const { svc } = makeService([], []);
+    await svc.reconcileRouteIncome(dispatch, [delivered], 'user-1');
+    const [, params] = svc.dataSource.manager.query.mock.calls[0];
+    const [from, to] = params.slice(2);
+    expect(from.getTime()).toBeLessThanOrEqual(new Date(delivered.eventAt).getTime());
+    expect(to.getTime()).toBeGreaterThanOrEqual(new Date(delivered.eventAt).getTime());
+    expect(to.getTime() - from.getTime()).toBeLessThan(7 * 24 * 3600e3);
+  });
 });
