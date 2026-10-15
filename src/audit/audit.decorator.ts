@@ -15,12 +15,16 @@ export interface AuditMeta {
   /**
    * Override de la descripción legible. Si se omite, el catálogo central
    * (audit-catalog.ts) la deriva a partir de la ruta. Devuelve un texto o
-   * `{ message, details }` para guardar también detalles estructurados.
+   * `{ message, details }` para guardar también detalles estructurados; puede
+   * afinar `action`/`entityName` según la respuesta (p. ej. traspaso vs salida).
    */
   describe?: (ctx: {
     params: any; query: any; body: any; response: any;
     result: 'success' | 'error'; error?: any;
-  }) => string | { message: string; details?: Record<string, any> } | undefined;
+  }) =>
+    | string
+    | { message: string; details?: Record<string, any>; action?: AuditAction; entityName?: string }
+    | undefined;
 }
 
 /**

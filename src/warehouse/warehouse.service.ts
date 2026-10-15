@@ -8,12 +8,14 @@ import {
 import { CreateWarehouseDto } from './dto/create-warehouse.dto';
 import {
   ChargeShipment,
+  Driver,
   PackageDispatch,
   PackageDispatchHistory,
   Shipment,
   ShipmentRemittance,
   ShipmentStatus,
   Subsidiary,
+  Vehicle,
   WarehouseOutbound,
   WarehouseReceiving,
 } from 'src/entities';
@@ -26,6 +28,7 @@ import { ShipmentStatusType } from 'src/common/enums';
 import { PaginatedResult, parsePagination, resolveDateRange } from 'src/common/pagination.util';
 import { CreateOutboundDto } from './dto/create-outbound.dto';
 import { assertOutboundConsistency } from './warehouse.validation';
+import { buildTransferAudit, TransferAudit } from './warehouse-transfer-audit';
 import { blankIfMissing, formatPaymentDisplay, hydratePackageIds, resolvePackagePayment, splitShipmentIds, warehousePackageCode } from './warehouse.helpers';
 import { MailService } from 'src/mail/mail.service';
 import { format, toZonedTime } from 'date-fns-tz';
@@ -697,6 +700,7 @@ export class WarehouseService {
 
     let savedOutboundId: string;
     let dispatchResult: PackageDispatch;
+    let transferAudit: TransferAudit | undefined;
 
     try {
       // 1. Guardar el registro general
@@ -740,6 +744,8 @@ export class WarehouseService {
           { trackingNumber: dispatchResult.trackingNumber },
         );
       } else if (dto.type === 'transfer') {
+        // La bitácora se arma ANTES de mover las guías para guardar su estado previo.
+        transferAudit = await this.collectTransferAudit(dto, queryRunner, savedOutboundId, outboundTracking);
         await this.createTransfer(dto, queryRunner);
       } else {
         throw new BadRequestException(
@@ -786,6 +792,8 @@ export class WarehouseService {
         message: `Salida tipo ${dto.type} procesada exitosamente.`,
         outboundId: savedOutboundId,
         data: dispatchResult,
+        // Lo guarda el interceptor de auditoría (POST /warehouse/outbound).
+        ...(transferAudit ? { audit: transferAudit } : {}),
       };
     } catch (error) {
       await queryRunner.rollbackTransaction();
@@ -1428,6 +1436,66 @@ export class WarehouseService {
       filename: '',
       path: '',
     };
+  }
+
+  /**
+   * Verifica origen/destino contra BD y toma la foto previa de cada guía
+   * (sucursal + estatus) para la bitácora del traspaso.
+   */
+  private async collectTransferAudit(
+    dto: CreateOutboundDto,
+    queryRunner: QueryRunner,
+    outboundId: string,
+    folio: string | null,
+  ): Promise<TransferAudit> {
+    const m = queryRunner.manager;
+    const [origin, destination] = await Promise.all([
+      m.findOne(Subsidiary, { where: { id: dto.warehouse }, select: { id: true, name: true } }),
+      m.findOne(Subsidiary, { where: { id: dto.destinationId }, select: { id: true, name: true, active: true } }),
+    ]);
+    if (!destination) {
+      throw new BadRequestException('La sucursal destino no existe. Selecciona otra sucursal.');
+    }
+    if (destination.active === false) {
+      throw new BadRequestException(`La sucursal destino ${destination.name} está inactiva. Selecciona otra sucursal.`);
+    }
+
+    const normalIds = dto.shipments.filter((p) => !p.isCharge).map((p) => p.id);
+    const chargeIds = dto.shipments.filter((p) => p.isCharge).map((p) => p.id);
+    const select = { id: true, status: true, subsidiary: { id: true, name: true } } as const;
+    const [normals, charges, vehicle, drivers] = await Promise.all([
+      normalIds.length
+        ? m.find(Shipment, { where: { id: In(normalIds) }, relations: ['subsidiary'], select: select as any })
+        : [],
+      chargeIds.length
+        ? m.find(ChargeShipment, { where: { id: In(chargeIds) }, relations: ['subsidiary'], select: select as any })
+        : [],
+      dto.vehicle
+        ? m.findOne(Vehicle, { where: { id: dto.vehicle }, select: { id: true, name: true, plateNumber: true } })
+        : null,
+      dto.drivers?.length
+        ? m.find(Driver, { where: { id: In(dto.drivers) }, select: { id: true, name: true } })
+        : [],
+    ]);
+    const byId = new Map<string, any>([
+      ...normals.map((r) => [`s:${r.id}`, r] as [string, any]),
+      ...charges.map((r) => [`c:${r.id}`, r] as [string, any]),
+    ]);
+
+    return buildTransferAudit({
+      outboundId,
+      folio,
+      origin: { id: dto.warehouse, name: origin?.name },
+      destination: { id: destination.id, name: destination.name },
+      vehicle,
+      drivers,
+      packages: dto.shipments.map((p) => ({
+        id: p.id,
+        trackingNumber: p.trackingNumber,
+        isCharge: !!p.isCharge,
+        before: byId.get(`${p.isCharge ? 'c' : 's'}:${p.id}`) ?? null,
+      })),
+    });
   }
 
   private async createTransfer(dto: any, queryRunner: QueryRunner) {

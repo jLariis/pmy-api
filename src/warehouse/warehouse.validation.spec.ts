@@ -32,4 +32,22 @@ describe('assertOutboundConsistency', () => {
       assertOutboundConsistency({ type: OutboundType.TRANSFER }),
     ).toThrow(BadRequestException);
   });
+
+  it('rechaza transfer con destinationId vacío', () => {
+    expect(() =>
+      assertOutboundConsistency({ type: OutboundType.TRANSFER, warehouse: 'bodega-1', destinationId: '  ' }),
+    ).toThrow('Debe seleccionar la sucursal destino para un traspaso.');
+  });
+
+  it('rechaza transfer hacia la misma bodega de origen', () => {
+    expect(() =>
+      assertOutboundConsistency({ type: OutboundType.TRANSFER, warehouse: 'bodega-1', destinationId: 'bodega-1' }),
+    ).toThrow('La sucursal destino no puede ser la misma bodega de origen.');
+  });
+
+  it('acepta transfer hacia otra sucursal', () => {
+    expect(() =>
+      assertOutboundConsistency({ type: OutboundType.TRANSFER, warehouse: 'bodega-1', destinationId: 'sucursal-2' }),
+    ).not.toThrow();
+  });
 });

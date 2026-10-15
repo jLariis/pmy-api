@@ -5,6 +5,9 @@ import { SuperAdminGuard } from 'src/auth/guards/super-admin.guard';
 import { ScannedShipment } from './dto/scanned-shipment.dto';
 import { CreateWarehouseDto } from './dto/create-warehouse.dto';
 import { CreateOutboundDto } from './dto/create-outbound.dto';
+import { Audit } from 'src/audit/audit.decorator';
+import { AuditModule } from 'src/common/enums/audit.enum';
+import { describeOutboundForAudit } from './warehouse-transfer-audit';
 import { ApiBearerAuth, ApiBody, ApiConsumes, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { FilesInterceptor } from '@nestjs/platform-express';
 
@@ -141,6 +144,11 @@ export class WarehouseController {
   }
 
   @Post('outbound')
+  @Audit({
+    module: AuditModule.BODEGA_SALIDA,
+    resolveEntityId: ({ response }) => response?.outboundId,
+    describe: describeOutboundForAudit,
+  })
   createOutbound(@Body() createOutboundDto: CreateOutboundDto, @Req() req) {
     const userId = req.user?.userId;
 
