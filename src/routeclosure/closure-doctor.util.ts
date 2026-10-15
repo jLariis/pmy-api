@@ -8,7 +8,8 @@ import {
 import { IncomeStatus } from 'src/common/enums/income-status.enum';
 import { toHermosilloDateString } from 'src/common/utils';
 import { noVanIncomeDecision } from './novan-income.util';
-import { reconcileShipmentIncomeAction } from './income-reconcile.util';
+import { reconcileShipmentIncomeAction, mondayOf } from './income-reconcile.util';
+export { mondayOf };
 import { routeDayOf } from 'src/tracking-sync/closure-stuck-resolver.util';
 
 /**
@@ -171,14 +172,6 @@ function fmtDay(day: string): string {
   const mon = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
   const [, m, d] = day.split('-');
   return `${d}-${mon[Number(m) - 1]}`;
-}
-
-/** Lunes (YYYY-MM-DD) de la semana lun–dom de un día YYYY-MM-DD. */
-export function mondayOf(day: string): string {
-  const d = new Date(`${day}T12:00:00.000Z`);
-  const dow = (d.getUTCDay() + 6) % 7; // lunes = 0
-  d.setUTCDate(d.getUTCDate() - dow);
-  return d.toISOString().slice(0, 10);
 }
 
 function daysBetween(a: string, b: string): number {
@@ -359,13 +352,16 @@ export function diagnosePackage(input: DoctorInput): PackageDiagnosis {
     });
     if (decision && eventAt) {
       const deliveryDay = toHermosilloDateString(eventAt);
-      const dexRow = incomes.find((i) => i.incomeType === IncomeStatus.NO_ENTREGADO);
+      const dexRows = incomes
+        .filter((i) => i.incomeType === IncomeStatus.NO_ENTREGADO)
+        .map((i) => ({ id: i.id, day: toHermosilloDateString(i.date) }));
       const action = reconcileShipmentIncomeAction({
         decision,
         deliveryDay,
         existing: {
           entregado: hasEntregadoIncome,
-          dex: dexRow ? { id: dexRow.id, day: toHermosilloDateString(dexRow.date) } : undefined,
+          dex: dexRows.find((d) => d.day === deliveryDay) ?? dexRows[0],
+          dexDays: dexRows.map((d) => d.day),
         },
       });
       if (action.type !== 'none') {

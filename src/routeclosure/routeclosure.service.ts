@@ -31,7 +31,12 @@ import { ApplyOutcome } from 'src/tracking-sync/compare.types';
 import { reconcileShipmentIncomeAction, ExistingShipmentIncome } from './income-reconcile.util';
 import { selectClosureIncomeEvent } from './closure-income-event.util';
 import { shipmentIncomeWhere } from 'src/common/shipment-income-where.util';
+import { siblingIncomesSinceCreated } from 'src/common/sibling-income.util';
+import { weekRange } from 'src/tracking-sync/income/week.util';
 import { selectLatestGeneration } from 'src/consolidador/logic/fedex-day-outcome.util';
+
+/** Reconciliaciones de cierre en curso por salida a ruta (ver reconcileRouteWithFedex). */
+const reconcilesInFlight = new Map<string, Promise<any>>();
 
 @Injectable()
 export class RouteclosureService {
@@ -59,8 +64,28 @@ export class RouteclosureService {
    *
    * Regla 31.5: si la ruta es `is315` (todo F2), NO se revalidan los shipments normales, solo
    * los F2. Nunca lanza por FedEx (cada guía resuelve su outcome), para no romper la apertura.
+   *
+   * Una sola reconciliación por salida a la vez: si llega otra petición de la misma ruta mientras
+   * corre (el cierre se abrió dos veces, o la pantalla re-disparó la carga), espera y recibe el
+   * mismo resultado. Dos corridas paralelas veían "sin ingreso" al mismo tiempo y cada una creaba
+   * el suyo: ingresos duplicados en el mismo segundo (Santa Ana 383781147421, Sonoyta 05-oct).
    */
   async reconcileRouteWithFedex(packageDispatchId: string, actor: ApplyActor) {
+    const running = reconcilesInFlight.get(packageDispatchId);
+    if (running) {
+      this.logger.warn(`⏳ [RouteClosure] Ya hay una reconciliación de la ruta ${packageDispatchId} en curso; se reutiliza su resultado.`);
+      return running;
+    }
+    const job = this.doReconcileRouteWithFedex(packageDispatchId, actor);
+    reconcilesInFlight.set(packageDispatchId, job);
+    try {
+      return await job;
+    } finally {
+      reconcilesInFlight.delete(packageDispatchId);
+    }
+  }
+
+  private async doReconcileRouteWithFedex(packageDispatchId: string, actor: ApplyActor) {
     const dispatch = await this.packageDispatchRepository.findOne({
       where: { id: packageDispatchId },
       relations: ['subsidiary'],
@@ -277,13 +302,25 @@ export class RouteclosureService {
         // El ingreso le pertenece al SHIPMENT, no a la guía: un consolidado nuevo es un flujo nuevo
         // y lo que cobró (o anuló) un registro anterior de la misma guía no cuenta aquí (caso
         // 878249671370, ruta 604005759064). Solo filas VIVAS.
-        const existingRows = await incomeRepo.find({ where: shipmentIncomeWhere(o.shipmentId, o.trackingNumber, { sourceType: IncomeSourceType.SHIPMENT }) });
+        // + lo que OTRO registro de la misma pieza ya cobró después del alta de éste en la MISMA
+        // semana del evento (la guía volvió a entrar en otro consolidado y el cron le cobró el
+        // evento al viejo: caso 383894126080). Misma ventana semanal que el cron: un DEX de otra
+        // semana en el otro registro no bloquea un cobro legítimo de esta.
+        const week = weekRange(incomeDate);
+        const existingRows = [
+          ...(await incomeRepo.find({ where: shipmentIncomeWhere(o.shipmentId, o.trackingNumber, { sourceType: IncomeSourceType.SHIPMENT }) })),
+          ...(await siblingIncomesSinceCreated(this.dataSource.manager, o.shipmentId, o.trackingNumber, { from: week.start, to: week.end })),
+        ];
+        const dexRows = existingRows
+          .filter((r) => r.incomeType === IncomeStatus.NO_ENTREGADO)
+          .map((r) => ({ id: r.id, day: toHermosilloDateString(r.date) }));
         const existing: ExistingShipmentIncome = {
           entregado: existingRows.some((r) => r.incomeType === IncomeStatus.ENTREGADO),
-          dex: (() => {
-            const dexRow = existingRows.find((r) => r.incomeType === IncomeStatus.NO_ENTREGADO);
-            return dexRow ? { id: dexRow.id, day: toHermosilloDateString(dexRow.date) } : undefined;
-          })(),
+          // Para el supersede (ENTREGADO gana) se prefiere el DEX del mismo día del evento.
+          dex: dexRows.find((d) => d.day === deliveryDay) ?? dexRows[0],
+          // Solo con evento FedEx real: sin él el día es el de la ruta y podría caer en otra semana
+          // que el DEX ya cobrado del MISMO evento (doble cobro). Ahí cualquier DEX bloquea, como antes.
+          dexDays: o.eventAt ? dexRows.map((d) => d.day) : undefined,
         };
 
         const action = reconcileShipmentIncomeAction({ decision, deliveryDay, existing });

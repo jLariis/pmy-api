@@ -62,7 +62,9 @@ export class IncomeExecutor {
           ? shipmentIncomeWhere(p.shipmentId, p.trackingNumber, { date: Between(start, end) })
           : { trackingNumber: p.trackingNumber, date: Between(start, end), active: true }) as any,
         order: { date: 'DESC' } as any,
-        select: ['id', 'incomeType'] as any,
+        // `date` debe ir en el select: el filtro por shipment hace JOIN, TypeORM envuelve el
+        // findOne en un DISTINCT y ordena por distinctAlias.Income_date (si no, Unknown column).
+        select: ['id', 'incomeType', 'date'] as any,
       });
 
       out.push({

@@ -75,6 +75,7 @@ import { buildShipmentsNo67Data } from 'src/documents/data/shipments-no67.mapper
 import { buildReceived67Data } from 'src/documents/data/received-67.mapper';
 import { buildPendingShipmentsData } from 'src/documents/data/pending-shipments.mapper';
 import { shipmentIncomeWhere } from 'src/common/shipment-income-where.util';
+import { siblingIncomesSinceCreated } from 'src/common/sibling-income.util';
 
 dayjs.extend(isoWeek);
 
@@ -3295,6 +3296,19 @@ export class ShipmentsService {
     });
 
     if (exists) {
+      return;
+    }
+
+    // Misma pieza en OTRO consolidado: si otro registro ya cobró este evento (fecha posterior al
+    // alta de este registro, misma semana y tipo), es el mismo paquete físico; no se cobra doble
+    // (caso 383894126080, Bodega Hermosillo 13-oct-2026).
+    const sibling = await siblingIncomesSinceCreated(transactionalEntityManager, shipment.id, shipment.trackingNumber, {
+      incomeType,
+      from: startOfWeek,
+      to: endOfWeek,
+    });
+    if (sibling.length) {
+      this.logger.warn(`⏭️ Guía ${shipment.trackingNumber}: ya cobrada en el registro ${sibling[0].shipmentId} (otro consolidado); no se cobra doble.`);
       return;
     }
 

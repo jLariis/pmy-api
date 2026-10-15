@@ -214,7 +214,7 @@ describe('RouteclosureService.reconcileRouteWithFedex — (3) revalidación FedE
     svc.logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
     svc.trackingCompare = { applyByRoute, resolveStuckEnRutaForClosure };
     svc.packageDispatchRepository = { findOne: jest.fn().mockResolvedValue(packageDispatch) };
-    svc.dataSource = { getRepository: () => incomeRepo };
+    svc.dataSource = { getRepository: () => incomeRepo, manager: { query: jest.fn(async () => []) } };
     return { svc, applyByRoute, resolveStuckEnRutaForClosure, incomeRepo, savedIncomes, updatedIncomes };
   }
 
@@ -320,6 +320,27 @@ describe('RouteclosureService.reconcileRouteWithFedex — (3) revalidación FedE
     expect(savedIncomes.map((i) => i.trackingNumber)).toEqual(['TN2']);
   });
 
+  // Igual que el cron: un DEX cobrado en una semana no impide cobrar el DEX de la semana
+  // siguiente. Sin evento FedEx real (día = el de la ruta) se conserva el bloqueo previo.
+  it('DEX con DEX previo de OTRA semana: cobra si hay evento real; sin evento no', async () => {
+    const prevDex = [{ id: 'INC-OLD', incomeType: IncomeStatus.NO_ENTREGADO, date: new Date('2026-10-06T20:00:00Z') }];
+    const dex = { shipmentId: 's1', trackingNumber: 'TN1', applied: true, fromStatus: 'en_ruta', toStatus: ShipmentStatusType.RECHAZADO, insertedEvents: 1, kind: 'shipment', exceptionCode: '07' };
+
+    const conEvento = makeService(
+      { id: 'PD-1', is315: false, subsidiary, routeDate: '2026-10-14' },
+      { outcomes: [{ ...dex, eventAt: '2026-10-14T19:00:00Z' }], existingByShipment: { s1: prevDex } },
+    );
+    await conEvento.svc.reconcileRouteWithFedex('PD-1', { userId: 'U1' });
+    expect(conEvento.savedIncomes.map((i) => i.nonDeliveryStatus)).toEqual(['07']);
+
+    const sinEvento = makeService(
+      { id: 'PD-1', is315: false, subsidiary, routeDate: '2026-10-14' },
+      { outcomes: [{ ...dex, eventAt: null }], existingByShipment: { s1: prevDex } },
+    );
+    await sinEvento.svc.reconcileRouteWithFedex('PD-1', { userId: 'U1' });
+    expect(sinEvento.savedIncomes).toHaveLength(0);
+  });
+
   it('skip charge: un outcome kind=charge NO genera ni toca ingresos', async () => {
     const outcomes = [
       { shipmentId: 'c9', trackingNumber: 'TN9', applied: true, fromStatus: 'en_ruta', toStatus: ShipmentStatusType.ENTREGADO, insertedEvents: 1, kind: 'charge', exceptionCode: null, eventAt: '2026-08-12T20:00:00Z' },
@@ -333,6 +354,24 @@ describe('RouteclosureService.reconcileRouteWithFedex — (3) revalidación FedE
   it('despacho inexistente → BadRequestException', async () => {
     const { svc } = makeService(null);
     await expect(svc.reconcileRouteWithFedex('NOPE', {})).rejects.toThrow();
+  });
+
+  // Caso Santa Ana 383781147421 / Sonoyta 05-oct: el cierre se abrió (o re-disparó) dos veces y
+  // las dos corridas vieron "sin ingreso" a la vez → dos ingresos idénticos en el mismo segundo.
+  it('dos aperturas simultáneas de la misma ruta: una sola reconciliación y un solo ingreso', async () => {
+    const { svc, applyByRoute, savedIncomes } = makeService({ id: 'PD-1', is315: false, subsidiary });
+    const [a, b] = await Promise.all([
+      svc.reconcileRouteWithFedex('PD-1', { userId: 'U1' }),
+      svc.reconcileRouteWithFedex('PD-1', { userId: 'U1' }),
+    ]);
+
+    expect(applyByRoute).toHaveBeenCalledTimes(1);
+    expect(savedIncomes).toHaveLength(1);
+    expect(b).toBe(a);
+
+    // Terminada la primera, una apertura posterior sí vuelve a reconciliar.
+    await svc.reconcileRouteWithFedex('PD-1', { userId: 'U1' });
+    expect(applyByRoute).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -439,6 +478,7 @@ describe('RouteclosureService.reconcileRouteWithFedex — ingreso a la hora del 
     svc.dataSource = {
       getRepository: (entity: any) => (entity?.name === 'ShipmentStatus' ? statusRepo : incomeRepo),
       query: jest.fn(async () => []),
+      manager: { query: jest.fn(async () => []) },
     };
     return { svc, savedIncomes };
   }

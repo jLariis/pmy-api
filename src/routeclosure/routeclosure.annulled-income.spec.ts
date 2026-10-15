@@ -13,7 +13,7 @@ import { ShipmentStatusType } from 'src/common/enums/shipment-status-type.enum';
  * devolución (+52 y su reversa −52, ambas active=0). El cierre de la ruta del 10-oct tomaba esas
  * filas anuladas como "ya cobrado" y no creaba el ingreso del registro nuevo.
  */
-function makeService(rows: any[]) {
+function makeService(rows: any[], siblingRows: any[] = []) {
   const saved: any[] = [];
   // Simula el filtro de la BD: where simple o arreglo (OR); `shipment: { id }` compara contra
   // row.shipmentId y `shipment: IsNull()` exige row.shipmentId == null.
@@ -40,6 +40,8 @@ function makeService(rows: any[]) {
       if (entity === Income) return incomeRepo;
       return { find: jest.fn(async () => []) };
     },
+    // Ingresos de OTRO registro de la misma pieza (siblingIncomesSinceCreated).
+    manager: { query: jest.fn(async () => siblingRows) },
   };
   return { svc, saved, incomeRepo };
 }
@@ -96,5 +98,29 @@ describe('RouteclosureService.reconcileRouteIncome — ingresos anulados', () =>
     const res = await svc.reconcileRouteIncome(dispatch, [delivered], 'user-1');
     expect(res.incomeCreated).toBe(0);
     expect(saved).toHaveLength(0);
+  });
+});
+
+// Caso 383894126080 (Bodega Hermosillo, 13-oct-2026): la guía entró en dos consolidados; el cron
+// le cobró la entrega al registro viejo y el cierre de la ruta del registro nuevo la cobraba otra vez.
+describe('RouteclosureService.reconcileRouteIncome — ya cobrada en otro registro de la guía', () => {
+  it('no crea ingreso si otro registro de la misma pieza ya cobró la entrega después del alta', async () => {
+    const sibling = [{ id: 'x', incomeType: IncomeStatus.ENTREGADO, date: new Date('2026-10-10T20:07:00Z'), shipmentId: 'viejo' }];
+    const { svc, saved } = makeService([], sibling);
+    const res = await svc.reconcileRouteIncome(dispatch, [delivered], 'user-1');
+    expect(res.incomeCreated).toBe(0);
+    expect(saved).toHaveLength(0);
+  });
+
+  // Igual que el cron: solo la semana del evento. Un DEX de otra semana en el otro registro no
+  // debe bloquear un cobro legítimo de ésta.
+  it('busca lo cobrado por el otro registro solo en la semana del evento', async () => {
+    const { svc } = makeService([], []);
+    await svc.reconcileRouteIncome(dispatch, [delivered], 'user-1');
+    const [, params] = svc.dataSource.manager.query.mock.calls[0];
+    const [from, to] = params.slice(2);
+    expect(from.getTime()).toBeLessThanOrEqual(new Date(delivered.eventAt).getTime());
+    expect(to.getTime()).toBeGreaterThanOrEqual(new Date(delivered.eventAt).getTime());
+    expect(to.getTime() - from.getTime()).toBeLessThan(7 * 24 * 3600e3);
   });
 });
