@@ -320,6 +320,27 @@ describe('RouteclosureService.reconcileRouteWithFedex — (3) revalidación FedE
     expect(savedIncomes.map((i) => i.trackingNumber)).toEqual(['TN2']);
   });
 
+  // Igual que el cron: un DEX cobrado en una semana no impide cobrar el DEX de la semana
+  // siguiente. Sin evento FedEx real (día = el de la ruta) se conserva el bloqueo previo.
+  it('DEX con DEX previo de OTRA semana: cobra si hay evento real; sin evento no', async () => {
+    const prevDex = [{ id: 'INC-OLD', incomeType: IncomeStatus.NO_ENTREGADO, date: new Date('2026-10-06T20:00:00Z') }];
+    const dex = { shipmentId: 's1', trackingNumber: 'TN1', applied: true, fromStatus: 'en_ruta', toStatus: ShipmentStatusType.RECHAZADO, insertedEvents: 1, kind: 'shipment', exceptionCode: '07' };
+
+    const conEvento = makeService(
+      { id: 'PD-1', is315: false, subsidiary, routeDate: '2026-10-14' },
+      { outcomes: [{ ...dex, eventAt: '2026-10-14T19:00:00Z' }], existingByShipment: { s1: prevDex } },
+    );
+    await conEvento.svc.reconcileRouteWithFedex('PD-1', { userId: 'U1' });
+    expect(conEvento.savedIncomes.map((i) => i.nonDeliveryStatus)).toEqual(['07']);
+
+    const sinEvento = makeService(
+      { id: 'PD-1', is315: false, subsidiary, routeDate: '2026-10-14' },
+      { outcomes: [{ ...dex, eventAt: null }], existingByShipment: { s1: prevDex } },
+    );
+    await sinEvento.svc.reconcileRouteWithFedex('PD-1', { userId: 'U1' });
+    expect(sinEvento.savedIncomes).toHaveLength(0);
+  });
+
   it('skip charge: un outcome kind=charge NO genera ni toca ingresos', async () => {
     const outcomes = [
       { shipmentId: 'c9', trackingNumber: 'TN9', applied: true, fromStatus: 'en_ruta', toStatus: ShipmentStatusType.ENTREGADO, insertedEvents: 1, kind: 'charge', exceptionCode: null, eventAt: '2026-08-12T20:00:00Z' },

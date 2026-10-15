@@ -311,12 +311,16 @@ export class RouteclosureService {
           ...(await incomeRepo.find({ where: shipmentIncomeWhere(o.shipmentId, o.trackingNumber, { sourceType: IncomeSourceType.SHIPMENT }) })),
           ...(await siblingIncomesSinceCreated(this.dataSource.manager, o.shipmentId, o.trackingNumber, { from: week.start, to: week.end })),
         ];
+        const dexRows = existingRows
+          .filter((r) => r.incomeType === IncomeStatus.NO_ENTREGADO)
+          .map((r) => ({ id: r.id, day: toHermosilloDateString(r.date) }));
         const existing: ExistingShipmentIncome = {
           entregado: existingRows.some((r) => r.incomeType === IncomeStatus.ENTREGADO),
-          dex: (() => {
-            const dexRow = existingRows.find((r) => r.incomeType === IncomeStatus.NO_ENTREGADO);
-            return dexRow ? { id: dexRow.id, day: toHermosilloDateString(dexRow.date) } : undefined;
-          })(),
+          // Para el supersede (ENTREGADO gana) se prefiere el DEX del mismo día del evento.
+          dex: dexRows.find((d) => d.day === deliveryDay) ?? dexRows[0],
+          // Solo con evento FedEx real: sin él el día es el de la ruta y podría caer en otra semana
+          // que el DEX ya cobrado del MISMO evento (doble cobro). Ahí cualquier DEX bloquea, como antes.
+          dexDays: o.eventAt ? dexRows.map((d) => d.day) : undefined,
         };
 
         const action = reconcileShipmentIncomeAction({ decision, deliveryDay, existing });
