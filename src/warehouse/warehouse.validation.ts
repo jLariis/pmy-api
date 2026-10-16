@@ -5,6 +5,7 @@ export function assertOutboundConsistency(dto: {
   type: OutboundType;
   kms?: number;
   routes?: unknown[];
+  warehouse?: string;
   destinationId?: string;
 }): void {
   if (dto.type === OutboundType.DISPATCH) {
@@ -17,8 +18,14 @@ export function assertOutboundConsistency(dto: {
     return;
   }
   if (dto.type === OutboundType.TRANSFER) {
-    if (!dto.destinationId) {
+    const destination = String(dto.destinationId ?? '').trim();
+    if (!destination) {
       throw new BadRequestException('Debe seleccionar la sucursal destino para un traspaso.');
+    }
+    // Un traspaso hacia la misma bodega deja las guías donde están (en_ruta) y la
+    // sucursal real no puede sacarlas a ruta (caso Peñasco 13-oct-2026).
+    if (destination === String(dto.warehouse ?? '').trim()) {
+      throw new BadRequestException('La sucursal destino no puede ser la misma bodega de origen.');
     }
     return;
   }

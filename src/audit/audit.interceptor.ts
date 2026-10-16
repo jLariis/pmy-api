@@ -137,17 +137,24 @@ export class AuditInterceptor implements NestInterceptor {
       const cat = resolveAudit(ctx);
       let description = cat.description;
       let details = cat.details;
+      let dynAction: AuditAction | undefined;
+      let dynEntityName: string | undefined;
       if (meta?.describe) {
         try {
           const d = meta.describe(ctx);
           if (typeof d === 'string') description = d;
-          else if (d) { description = d.message; details = { ...details, ...d.details }; }
+          else if (d) {
+            description = d.message;
+            details = { ...details, ...d.details };
+            dynAction = d.action;
+            dynEntityName = d.entityName;
+          }
         } catch { /* conserva la descripción del catálogo */ }
       }
       return {
         module: meta?.module ?? cat.module ?? AuditModule.OTRO,
-        action: meta?.action ?? cat.action ?? METHOD_ACTION[method] ?? AuditAction.OTHER,
-        entityName: meta?.entityName ?? cat.entityName,
+        action: dynAction ?? meta?.action ?? cat.action ?? METHOD_ACTION[method] ?? AuditAction.OTHER,
+        entityName: dynEntityName ?? meta?.entityName ?? cat.entityName,
         description,
         metadata: details ? { ...base.metadata, details } : base.metadata,
       };
