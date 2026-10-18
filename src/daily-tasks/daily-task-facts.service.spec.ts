@@ -19,7 +19,7 @@ run('DailyTaskFactsService (BD local)', () => {
   let sub: string;
   let user: string;
   const C = randomUUID();
-  const S = [randomUUID(), randomUUID(), randomUUID(), randomUUID(), randomUUID()];
+  const S = [randomUUID(), randomUUID(), randomUUID(), randomUUID(), randomUUID(), randomUUID(), randomUUID(), randomUUID()];
 
   beforeAll(async () => {
     ds = new DataSource({ ...(config().database as any), migrations: [], logging: false });
@@ -36,15 +36,18 @@ run('DailyTaskFactsService (BD local)', () => {
     const U = randomUUID();
     await q("INSERT INTO unloading (id, trackingNumber, missingTrackings, unScannedTrackings, subsidiaryId, createdById, createdAt) VALUES (?, ?, '[]', '[]', ?, ?, ?)", [U, 'U-' + U.slice(0, 8), sub, user, Z('2031-03-03T15:00:00Z')]);
 
-    const ship = (id: string, tn: string, status: string, unloaded: boolean) =>
-      q("INSERT INTO shipment (id, trackingNumber, recipientName, recipientAddress, recipientCity, recipientZip, recipientPhone, commitDateTime, status, consolidatedId, subsidiaryId, unloadingId, active) VALUES (?, ?, 'x', 'x', 'x', '0', '0', ?, ?, ?, ?, ?, 1)", [
-        id, tn, Z('2031-03-03T23:00:00Z'), status, C, sub, unloaded ? U : null,
+    const ship = (id: string, tn: string, status: string, unloaded: boolean, dhlUniqueId: string | null = null) =>
+      q("INSERT INTO shipment (id, trackingNumber, dhlUniqueId, recipientName, recipientAddress, recipientCity, recipientZip, recipientPhone, commitDateTime, status, consolidatedId, subsidiaryId, unloadingId, active) VALUES (?, ?, ?, 'x', 'x', 'x', '0', '0', ?, ?, ?, ?, ?, 1)", [
+        id, tn, dhlUniqueId, Z('2031-03-03T23:00:00Z'), status, C, sub, unloaded ? U : null,
       ]);
     await ship(S[0], 'DT-0001', 'entregado', true);
     await ship(S[1], 'DT-0002', 'cliente_no_disponible', true);
     await ship(S[2], 'DT-0003', 'en_bodega', true);
     await ship(S[3], 'DT-0004', 'pendiente', false);
     await ship(S[4], 'DT-0005', 'en_ruta', false); // salió a ruta sin desembarcarse en el sistema
+    await ship(S[5], 'DT-0006', 'entregado_por_fedex', false); // la entregó FedEx: no bloquea el desembarque
+    await ship(S[6], 'DT-DHL1', 'en_bodega', true, 'JD-PIEZA-1'); // DHL: 2 piezas de la misma guía maestra
+    await ship(S[7], 'DT-DHL1', 'en_bodega', true, 'JD-PIEZA-2');
 
     const D1 = randomUUID();
     const D2 = randomUUID();
@@ -81,10 +84,11 @@ run('DailyTaskFactsService (BD local)', () => {
 
   it('consolidatedFacts: avance por paso del consolidado', async () => {
     const [f] = (await svc.consolidatedFacts(sub, D)).filter((x) => x.refId === C);
-    expect(f).toMatchObject({ refType: 'consolidated', consNumber: 'TEST-DT-1', day: D, guides: 5 });
-    expect(f.unloading).toMatchObject({ done: 3, total: 5 });
+    expect(f).toMatchObject({ refType: 'consolidated', consNumber: 'TEST-DT-1', day: D, guides: 8 });
+    // La entregada por FedEx sin pasar por bodega no cuenta como pendiente de desembarcar.
+    expect(f.unloading).toMatchObject({ done: 5, total: 7 });
     // La que salió sin desembarcar también cuenta en la salida (no queda "3/2").
-    expect(f.dispatch).toMatchObject({ done: 3, total: 4 });
+    expect(f.dispatch).toMatchObject({ done: 3, total: 6 });
     // La guía movida de ruta cuenta una vez y su cierre sale del historial.
     expect(f.closure).toMatchObject({ done: 3, total: 3 });
   });
@@ -103,7 +107,12 @@ run('DailyTaskFactsService (BD local)', () => {
 
   it('packageDetail: resumen y posibles LD del día', async () => {
     const d = await svc.packageDetail('consolidated', C, D);
-    expect(d.summary).toMatchObject({ delivered: 1, inRoute: 1, dex: { '08': 1 }, inWarehouse: 2, possibleLd: 3, missingUnloading: 2 });
-    expect(d.guides.filter((g) => g.ld === 'possible_ld').map((g) => g.trackingNumber).sort()).toEqual(['DT-0003', 'DT-0004', 'DT-0005']);
+    expect(d.summary).toMatchObject({ delivered: 2, inRoute: 1, dex: { '08': 1 }, inWarehouse: 4, possibleLd: 5, missingUnloading: 2 });
+    expect(d.guides.filter((g) => g.ld === 'possible_ld').map((g) => g.trackingNumber).sort()).toEqual(['DT-0003', 'DT-0004', 'DT-0005', 'DT-DHL1', 'DT-DHL1']);
+  });
+
+  it('ldCandidates: cada pieza DHL es su propia llave', async () => {
+    const c = (await svc.ldCandidates(sub, D)).filter((x) => x.trackingNumber === 'DT-DHL1');
+    expect(c.map((x) => x.pieceKey).sort()).toEqual(['JD-PIEZA-1', 'JD-PIEZA-2']);
   });
 });

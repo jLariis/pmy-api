@@ -13,7 +13,8 @@ function statusOf(done: boolean, doneCount: number, dueAt: Date, now: Date, bloc
   return doneCount > 0 ? 'partial' : 'pending';
 }
 
-const isDone = (p: Progress, s: Schedule) => p.total > 0 && Math.floor((p.done / p.total) * 100) >= s.completePct;
+/** Listo al llegar al porcentaje; con total 0 no queda nada que hacer (si el paso anterior ya terminó). */
+const isDone = (p: Progress, s: Schedule, prevDone = true) => (p.total === 0 ? prevDone : Math.floor((p.done / p.total) * 100) >= s.completePct);
 
 /** Pasos de un consolidado (master/F2/aéreo/DHL). Cada paso se ancla a cuando terminó el anterior. */
 export function consolidatedTasks(f: ConsolidatedFacts, s: Schedule, now: Date): TaskRow[] {
@@ -38,18 +39,18 @@ export function consolidatedTasks(f: ConsolidatedFacts, s: Schedule, now: Date):
   let dispatchDue = new Date(unloadEnd.getTime() + s.dispatchAfterUnloadMinutes * MIN);
   const endOfDay = atLocalTime(localDay(unloadEnd), s.activeTo);
   if (dispatchDue.getTime() > endOfDay.getTime()) dispatchDue = atLocalTime(addDays(localDay(unloadEnd), 1), s.dispatchNextDayTime);
-  const dispatched = isDone(f.dispatch, s);
+  const dispatched = isDone(f.dispatch, s, unloaded);
   push('dispatch', f.dispatch, dispatchDue, dispatched, !unloaded);
 
   // Cierre: a la hora configurada del día de la primera salida.
   const closureDue = atLocalTime(localDay(f.dispatch.first ?? dispatchDue), s.closureTime);
-  const closed = isDone(f.closure, s);
+  const closed = isDone(f.closure, s, dispatched);
   push('closure', f.closure, closureDue, closed, !dispatched);
 
   // Devoluciones de sus DEX: listas si no hubo DEX una vez cerradas las rutas.
   const devDue = atLocalTime(localDay(f.closure.last ?? closureDue), s.devolutionsTime);
   const noDex = f.devolutions.total === 0;
-  const devDone = closed && (noDex || isDone(f.devolutions, s));
+  const devDone = closed && isDone(f.devolutions, s);
   push('devolutions', f.devolutions, devDue, devDone, !closed, noDex ? f.closure.last : f.devolutions.last);
 
   return rows;

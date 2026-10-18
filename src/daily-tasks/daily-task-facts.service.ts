@@ -3,6 +3,7 @@ import { DataSource } from 'typeorm';
 import { classifyLd, herDay, LdState } from '../common/ld-rule.util';
 import { addDays, atLocalTime } from '../ops-alerts/ops-alerts.util';
 import { ConsolidatedFacts, Progress, SubsidiaryDayFacts } from './daily-task.types';
+import { pieceKeyOf } from './daily-task-rules.util';
 import { dexCodeOf, isDexStatus, PackageSummary, summarizePackages } from './package-summary.util';
 
 type Queryable = Pick<DataSource, 'query'>;
@@ -17,7 +18,7 @@ const K = {
 const FINAL_WITHOUT_ROUTE = new Set(['entregado', 'entregado_por_fedex', 'entregado_en_bodega', 'devuelto_a_fedex', 'retorno_abandono_fedex', 'es_ocurre']);
 const DELIVERED = new Set(['entregado', 'entregado_por_fedex', 'entregado_en_bodega']);
 
-type Guide = { id: string; headId: string; trackingNumber: string; status: string; unAt: Date | null; unBy: string | null; commitDateTime: Date | null; exceptionCode: string | null; consNumber: string };
+type Guide = { id: string; headId: string; trackingNumber: string; dhlUniqueId: string | null; status: string; unAt: Date | null; unBy: string | null; commitDateTime: Date | null; exceptionCode: string | null; consNumber: string };
 type DispatchAgg = { first: Date; last: Date; lastBy: string | null; n: number; closed: number; closedAt: Date | null; closedBy: string | null };
 type DevAgg = { at: Date; by: string | null };
 
@@ -83,6 +84,8 @@ export class DailyTaskFactsService {
       };
     };
     const unloaded = gs.filter((g) => g.unAt);
+    // Lo que terminó sin pasar por bodega ni por ruta (p. ej. lo entregó FedEx) no queda pendiente de desembarcar.
+    const toUnload = gs.filter((g) => g.unAt || disp.has(g.id) || !FINAL_WITHOUT_ROUTE.has(g.status));
     const dispatched = gs.filter((g) => disp.has(g.id));
     // Por sacar a ruta: lo desembarcado que no terminó sin ruta, más lo que salió aunque no se desembarcara en el sistema.
     const dispatchTotal = gs.filter((g) => disp.has(g.id) || (g.unAt && !FINAL_WITHOUT_ROUTE.has(g.status))).length;
@@ -90,7 +93,7 @@ export class DailyTaskFactsService {
     const withDev = gs.filter((g) => devs.has(g.id));
     const dexPending = gs.filter((g) => !devs.has(g.id) && isDexStatus(g.status));
     return {
-      unloading: prog(unloaded.map((g) => ({ at: g.unAt, by: g.unBy })), gs.length),
+      unloading: prog(unloaded.map((g) => ({ at: g.unAt, by: g.unBy })), toUnload.length),
       dispatch: prog(dispatched.map((g) => ({ at: disp.get(g.id)!.last, by: disp.get(g.id)!.lastBy })), dispatchTotal),
       closure: prog(closed.map((g) => ({ at: disp.get(g.id)!.closedAt, by: disp.get(g.id)!.closedBy })), dispatched.length),
       devolutions: prog(withDev.map((g) => ({ at: devs.get(g.id)!.at, by: devs.get(g.id)!.by })), withDev.length + dexPending.length),
@@ -102,8 +105,9 @@ export class DailyTaskFactsService {
     const out: Guide[] = [];
     for (const part of chunk(headIds)) {
       const exc = kind === 'f2' ? 'g.exceptionCode' : 'NULL';
+      const dhl = kind === 'f2' ? 'NULL' : 'g.dhlUniqueId';
       const rows: any[] = await this.db.query(
-        `SELECT g.id, g.${k.headCol} headId, g.trackingNumber, LOWER(g.status) status, g.commitDateTime, ${exc} exceptionCode, TRIM(h.consNumber) consNumber,
+        `SELECT g.id, g.${k.headCol} headId, g.trackingNumber, ${dhl} dhlUniqueId, LOWER(g.status) status, g.commitDateTime, ${exc} exceptionCode, TRIM(h.consNumber) consNumber,
                 u.createdAt unAt, u.createdById unBy
          FROM ${k.guides} g JOIN ${k.head} h ON h.id = g.${k.headCol} LEFT JOIN unloading u ON u.id = g.unloadingId
          WHERE g.${k.headCol} IN (${ph(part.length)}) AND g.active = 1`,
@@ -300,14 +304,15 @@ export class DailyTaskFactsService {
   }
 
   /** Guías de la sucursal que vencen en `day` y son LD o posible LD (para el día y para la foto de las 20:30). */
-  async ldCandidates(subsidiaryId: string, day: string): Promise<{ trackingNumber: string; consNumber: string; status: string; bucket: string; shipmentId: string | null; chargeShipmentId: string | null }[]> {
+  async ldCandidates(subsidiaryId: string, day: string): Promise<{ trackingNumber: string; pieceKey: string; consNumber: string; status: string; bucket: string; shipmentId: string | null; chargeShipmentId: string | null }[]> {
     const [from, to] = dayRange(day);
-    const out: { trackingNumber: string; consNumber: string; status: string; bucket: string; shipmentId: string | null; chargeShipmentId: string | null }[] = [];
+    const out: { trackingNumber: string; pieceKey: string; consNumber: string; status: string; bucket: string; shipmentId: string | null; chargeShipmentId: string | null }[] = [];
     for (const kind of ['master', 'f2'] as Kind[]) {
       const k = K[kind];
       const exc = kind === 'f2' ? 'g.exceptionCode' : 'NULL';
+      const dhl = kind === 'f2' ? 'NULL' : 'g.dhlUniqueId';
       const rows: any[] = await this.db.query(
-        `SELECT g.id, g.${k.headCol} headId, g.trackingNumber, LOWER(g.status) status, g.commitDateTime, ${exc} exceptionCode, TRIM(IFNULL(g.consNumber, '')) consNumber,
+        `SELECT g.id, g.${k.headCol} headId, g.trackingNumber, ${dhl} dhlUniqueId, LOWER(g.status) status, g.commitDateTime, ${exc} exceptionCode, TRIM(IFNULL(g.consNumber, '')) consNumber,
                 u.createdAt unAt, u.createdById unBy
          FROM ${k.guides} g LEFT JOIN unloading u ON u.id = g.unloadingId
          WHERE g.subsidiaryId = ? AND g.active = 1 AND g.commitDateTime >= ? AND g.commitDateTime < ?`,
@@ -318,7 +323,7 @@ export class DailyTaskFactsService {
       for (const g of guides) {
         const st = ld.get(g.id);
         if (st !== 'possible_ld' && st !== 'ld') continue;
-        out.push({ trackingNumber: g.trackingNumber, consNumber: g.consNumber, status: g.status, bucket: this.bucketOf(g, !!g.unAt), shipmentId: kind === 'master' ? g.id : null, chargeShipmentId: kind === 'f2' ? g.id : null });
+        out.push({ trackingNumber: g.trackingNumber, pieceKey: pieceKeyOf(g), consNumber: g.consNumber, status: g.status, bucket: this.bucketOf(g, !!g.unAt), shipmentId: kind === 'master' ? g.id : null, chargeShipmentId: kind === 'f2' ? g.id : null });
       }
     }
     return out;

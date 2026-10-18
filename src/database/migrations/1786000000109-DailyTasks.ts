@@ -9,6 +9,8 @@ import { RBAC_PERMISSIONS } from '../../auth/rbac/permission-catalog';
  *  - `ops_alert`: `consolidatedId` / `chargeId` y `step` más largo (pasos nuevos).
  *  - `ops_alert_subsidiary`: pasos nuevos y horarios por sucursal, con una fila por sucursal
  *    activa llena con los predefinidos acordados.
+ *  - `daily_task.notifiedStatus` (último estado avisado) y `daily_ld.pieceKey` (pieza DHL).
+ *  - Índices en `devolution(shipmentId)` / `(chargeShipmentId)` (el cron los consulta cada 5 min).
  *  - Permiso `operaciones.tareas`.
  * DEFENSIVA: guards a information_schema; correrla dos veces no falla.
  */
@@ -33,6 +35,11 @@ export class DailyTasks1786000000109 implements MigrationInterface {
     return Number(rows[0].c) > 0;
   }
 
+  private async hasIndex(q: QueryRunner, table: string, index: string): Promise<boolean> {
+    const rows = await q.query('SELECT COUNT(*) c FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND INDEX_NAME = ?', [table, index]);
+    return Number(rows[0].c) > 0;
+  }
+
   public async up(q: QueryRunner): Promise<void> {
     if (!(await this.has(q, 'daily_task'))) {
       await q.query(`CREATE TABLE \`daily_task\` (
@@ -44,6 +51,7 @@ export class DailyTasks1786000000109 implements MigrationInterface {
         \`consNumber\` varchar(40) NULL,
         \`step\` varchar(20) NOT NULL,
         \`status\` varchar(10) NOT NULL,
+        \`notifiedStatus\` varchar(10) NULL,
         \`doneCount\` int NOT NULL DEFAULT 0,
         \`totalCount\` int NOT NULL DEFAULT 0,
         \`dueAt\` datetime NOT NULL,
@@ -62,14 +70,26 @@ export class DailyTasks1786000000109 implements MigrationInterface {
         \`subsidiaryId\` varchar(36) NOT NULL,
         \`day\` date NOT NULL,
         \`trackingNumber\` varchar(64) NOT NULL,
+        \`pieceKey\` varchar(64) NOT NULL,
         \`shipmentId\` varchar(36) NULL,
         \`chargeShipmentId\` varchar(36) NULL,
         \`consNumber\` varchar(40) NULL,
         \`status\` varchar(40) NULL,
         \`createdAt\` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
         PRIMARY KEY (\`id\`),
-        UNIQUE KEY \`UQ_daily_ld\` (\`subsidiaryId\`, \`day\`, \`trackingNumber\`)
+        UNIQUE KEY \`UQ_daily_ld\` (\`subsidiaryId\`, \`day\`, \`pieceKey\`)
       ) ENGINE=InnoDB`);
+    }
+
+    // Bases donde ya corrió una versión previa de esta migración (desarrollo).
+    if (!(await this.has(q, 'daily_task', 'notifiedStatus'))) await q.query('ALTER TABLE `daily_task` ADD COLUMN `notifiedStatus` varchar(10) NULL AFTER `status`');
+    if (!(await this.has(q, 'daily_ld', 'pieceKey'))) {
+      await q.query('ALTER TABLE `daily_ld` ADD COLUMN `pieceKey` varchar(64) NULL AFTER `trackingNumber`');
+      await q.query('UPDATE `daily_ld` SET `pieceKey` = `trackingNumber` WHERE `pieceKey` IS NULL');
+      await q.query('ALTER TABLE `daily_ld` MODIFY `pieceKey` varchar(64) NOT NULL, DROP INDEX `UQ_daily_ld`, ADD UNIQUE KEY `UQ_daily_ld` (`subsidiaryId`, `day`, `pieceKey`)');
+    }
+    for (const [name, col] of [['IDX_devolution_shipmentId', 'shipmentId'], ['IDX_devolution_chargeShipmentId', 'chargeShipmentId']]) {
+      if (!(await this.hasIndex(q, 'devolution', name))) await q.query(`CREATE INDEX \`${name}\` ON \`devolution\` (\`${col}\`)`);
     }
 
     for (const col of ['consolidatedId', 'chargeId']) {
@@ -124,6 +144,9 @@ export class DailyTasks1786000000109 implements MigrationInterface {
     }
     for (const col of ['consolidatedId', 'chargeId']) {
       if (await this.has(q, 'ops_alert', col)) await q.query(`ALTER TABLE \`ops_alert\` DROP COLUMN \`${col}\``);
+    }
+    for (const name of ['IDX_devolution_shipmentId', 'IDX_devolution_chargeShipmentId']) {
+      if (await this.hasIndex(q, 'devolution', name)) await q.query(`DROP INDEX \`${name}\` ON \`devolution\``);
     }
     await q.query('DROP TABLE IF EXISTS `daily_ld`');
     await q.query('DROP TABLE IF EXISTS `daily_task`');

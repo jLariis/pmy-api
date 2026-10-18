@@ -10,6 +10,7 @@ import { addDays, alertLevel, inActiveHours, localDay } from '../ops-alerts/ops-
 import { DailyTasksService, DayTransition } from './daily-tasks.service';
 import { alertRefKey, dayDigest, tasksLink, transitionMessage } from './daily-task-notify.util';
 import { escalationActions } from './daily-task-escalation.util';
+import { doneToNotify, liveDays, shouldAlertNew, stepAlertsEnabled } from './daily-task-rules.util';
 import { TaskRow } from './daily-task.types';
 
 const ZONE = { timeZone: 'America/Hermosillo' };
@@ -24,6 +25,8 @@ const ZONE = { timeZone: 'America/Hermosillo' };
 export class DailyTasksNotifier {
   private readonly logger = new Logger(DailyTasksNotifier.name);
   private running = false;
+  /** Arranque del proceso: lo que ya venía vencido antes no se avisa (sin ráfaga al desplegar). */
+  private bootAt = new Date();
 
   constructor(
     private readonly tasks: DailyTasksService,
@@ -48,20 +51,32 @@ export class DailyTasksNotifier {
     if (this.running) return;
     this.running = true;
     try {
-      const transitions = await this.tasks.refreshOpenDays(now);
+      await this.tasks.refreshOpenDays(now);
       const s = await this.opsAlerts.getSettings();
-      if (!s.enabled || !inActiveHours(now, s)) return;
+      if (s.enabled && !inActiveHours(now, s)) return; // fuera de horario: se avisa al volver
       const names = await this.names();
-      for (const t of transitions.filter((x) => x.to === 'done')) {
-        await this.resolveAlert(t, now);
-        const m = transitionMessage(t, names.get(t.subsidiaryId) ?? '');
-        if (!m) continue;
-        const users = await this.opsAlerts.subsidiaryUsers(t.subsidiaryId);
-        await this.sendLog.notifyUsers(users, { ...m, severity: 'info' }, this.ctx(t.subsidiaryId, t.row.consNumber));
-      }
-      await this.escalate(now, s, names);
+      await this.notifyDone(now, s.enabled, names);
+      if (s.enabled) await this.escalate(now, s, names);
     } finally {
       this.running = false;
+    }
+  }
+
+  /**
+   * "Listo": filas que terminaron y no se han avisado (`notifiedStatus`), las haya guardado el
+   * cron o la pantalla. Con las alertas apagadas o el paso callado se marcan sin avisar.
+   */
+  private async notifyDone(now: Date, enabled: boolean, names: Map<string, string>) {
+    const rows = doneToNotify(await this.taskRepo.find({ where: { status: 'done', day: In(liveDays(localDay(now))) } }));
+    for (const r of rows) {
+      const day = String(r.day).slice(0, 10);
+      const t: DayTransition = { row: r as unknown as TaskRow, from: r.notifiedStatus, to: 'done', subsidiaryId: r.subsidiaryId, day };
+      await this.resolveAlert(t, now);
+      const cfg = await this.subRepo.findOne({ where: { subsidiaryId: r.subsidiaryId } });
+      const m = enabled && stepAlertsEnabled(cfg, r.step) ? transitionMessage(t, names.get(r.subsidiaryId) ?? '') : null;
+      if (m) await this.sendLog.notifyUsers(await this.opsAlerts.subsidiaryUsers(r.subsidiaryId), { ...m, severity: 'info' }, this.ctx(r.subsidiaryId, r.consNumber));
+      r.notifiedStatus = 'done';
+      await this.taskRepo.save(r);
     }
   }
 
@@ -77,20 +92,29 @@ export class DailyTasksNotifier {
   /** Atrasos de hoy y días recientes: sube de nivel una sola vez por nivel (registro en ops_alert). */
   private async escalate(now: Date, s: Awaited<ReturnType<OpsAlertsService['getSettings']>>, names: Map<string, string>) {
     const today = localDay(now);
-    const late = await this.taskRepo.find({ where: { status: 'late', day: In([today, addDays(today, -1), addDays(today, -2)]) } });
+    const late = await this.taskRepo.find({ where: { status: 'late', day: In(liveDays(today)) } });
     for (const r of late) {
       const day = String(r.day).slice(0, 10);
+      const cfg = await this.subRepo.findOne({ where: { subsidiaryId: r.subsidiaryId } });
+      if (!stepAlertsEnabled(cfg, r.step)) continue;
       const t: DayTransition = { row: r as unknown as TaskRow, from: null, to: 'late', subsidiaryId: r.subsidiaryId, day };
       const level = alertLevel(r.dueAt, now, s);
       if (!level) continue;
       const refKey = alertRefKey(t);
+      const existing = await this.alertRepo.findOne({ where: { step: `dt_${r.step}`, refKey } });
       const alert =
-        (await this.alertRepo.findOne({ where: { step: `dt_${r.step}`, refKey } })) ??
+        existing ??
         this.alertRepo.create({
           subsidiaryId: r.subsidiaryId, step: `dt_${r.step}`, refKey, inboxConsolidationId: null, consNumber: r.consNumber,
           consolidatedId: r.refType === 'consolidated' ? r.refId : null, chargeId: r.refType === 'charge' ? r.refId : null, level: 0,
         });
       if (alert.resolvedAt) continue;
+      if (!existing && !shouldAlertNew(day, today, r.dueAt, this.bootAt)) {
+        alert.level = level; // se registra en silencio; solo escala si sube de aquí
+        alert.dueAt = r.dueAt;
+        await this.alertRepo.save(alert);
+        continue;
+      }
       const act = escalationActions(level, alert.level, s.alertGroupsLevel ?? 1);
       alert.dueAt = r.dueAt;
       alert.progressPct = r.totalCount ? Math.floor((r.doneCount / r.totalCount) * 100) : 0;
@@ -100,7 +124,6 @@ export class DailyTasksNotifier {
           const event = { ...m, severity: (level >= 2 ? 'error' : 'warning') as 'error' | 'warning' };
           const ctx = this.ctx(r.subsidiaryId, r.consNumber);
           await this.sendLog.notifyUsers(await this.opsAlerts.subsidiaryUsers(r.subsidiaryId), event, ctx);
-          const cfg = await this.subRepo.findOne({ where: { subsidiaryId: r.subsidiaryId } });
           if (act.managersEmail && cfg?.managerUserIds?.length) await this.sendLog.notifyUsers(cfg.managerUserIds, event, ctx, true);
           if (act.whatsapp) await this.whatsapp(cfg, `*${m.title}*\n${m.body}`, ctx, m.title);
         }
@@ -147,6 +170,7 @@ export class DailyTasksNotifier {
       const inv = await this.taskRepo.findOne({ where: { subsidiaryId, day, refType: 'subsidiary', step: 'inventory_final' } });
       if (!inv || inv.status === 'done') continue;
       const cfg = await this.subRepo.findOne({ where: { subsidiaryId } });
+      if (!stepAlertsEnabled(cfg, 'inventory_final')) continue;
       const left: any[] = await this.ds.query(
         `SELECT COUNT(*) n FROM shipment WHERE subsidiaryId = ? AND active = 1 AND LOWER(status) IN ('en_bodega', 'pendiente')`,
         [subsidiaryId],

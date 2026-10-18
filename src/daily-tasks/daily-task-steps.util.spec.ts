@@ -117,3 +117,22 @@ describe('subsidiaryTasks', () => {
     expect(r.dueAt).toEqual(at(D, '10:00'));
   });
 });
+
+describe('consolidatedTasks con totales en cero', () => {
+  it('si no queda nada por sacar a ruta (todo terminó sin ruta), la salida y lo demás quedan listos', () => {
+    const rows = consolidatedTasks(facts({ unloading: p(5, 5, at(D, '07:00'), at(D, '07:15')), dispatch: p(0, 0), closure: p(0, 0), devolutions: p(0, 0) }), S, at(D, '23:00'));
+    expect(step(rows, 'dispatch').status).toBe('done');
+    expect(step(rows, 'closure').status).toBe('done');
+    expect(step(rows, 'devolutions').status).toBe('done');
+  });
+  it('consolidado sin guías activas: desembarque listo', () => {
+    expect(step(consolidatedTasks(facts({ unloading: p(0, 0) }), S, at(D, '23:00')), 'unloading').status).toBe('done');
+  });
+});
+
+describe('total 0 solo cuenta como listo si el paso anterior terminó', () => {
+  it('consolidado recién subido: salida, cierre y devoluciones NO aparecen listos', () => {
+    const rows = consolidatedTasks(facts({ unloading: p(0, 124) }), S, at(D, '07:00'));
+    expect(['dispatch', 'closure', 'devolutions'].map((s) => step(rows, s).status)).toEqual(['pending', 'pending', 'pending']);
+  });
+});

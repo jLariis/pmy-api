@@ -8,25 +8,12 @@ import { OpsAlertsService } from '../ops-alerts/ops-alerts.service';
 import { addDays, localDay } from '../ops-alerts/ops-alerts.util';
 import { DailyTaskFactsService } from './daily-task-facts.service';
 import { diffTasks, taskKey, Transition } from './daily-task-diff.util';
+import { liveDays, mergeTaskRow, refreshOnView, subsidiaryHasOperation } from './daily-task-rules.util';
 import { resolveSchedule } from './daily-task-schedule.util';
 import { consolidatedTasks, subsidiaryTasks } from './daily-task-steps.util';
 import { Schedule, TaskRefType, TaskRow, TaskStep } from './daily-task.types';
 
 export type DayTransition = Transition & { subsidiaryId: string; day: string };
-
-/** Paso → interruptor por sucursal (`ops_alert_subsidiary`). El inventario final usa el de inventario de siempre. */
-const STEP_FLAG: Record<TaskStep, keyof OpsAlertSubsidiary> = {
-  upload: 'stepUpload',
-  unloading: 'stepUnloading',
-  dispatch: 'stepDispatch',
-  closure: 'stepClosure',
-  devolutions: 'stepDevolutions',
-  inventory_initial: 'stepInventoryInitial',
-  inventory_final: 'stepInventory',
-};
-
-/** Días que el cron recalcula cada 5 min: hoy y los 2 anteriores (los cierres y devoluciones llegan al día siguiente). */
-const LIVE_DAYS = 3;
 
 const dayStr = (d: unknown): string => (d instanceof Date ? d.toISOString().slice(0, 10) : String(d).slice(0, 10));
 
@@ -52,11 +39,12 @@ export class DailyTasksService {
     return { schedule: resolveSchedule(global, cfg as Partial<Schedule> | null), cfg };
   }
 
+  /** Pasos del día. La pantalla los muestra todos; los interruptores por sucursal solo callan avisos. */
   private async compute(subsidiaryId: string, day: string, now: Date): Promise<TaskRow[]> {
-    const { schedule, cfg } = await this.schedule(subsidiaryId);
+    const { schedule } = await this.schedule(subsidiaryId);
     const [sub, cons] = await Promise.all([this.facts.subsidiaryFacts(subsidiaryId, day), this.facts.consolidatedFacts(subsidiaryId, day)]);
-    const rows = [...subsidiaryTasks(subsidiaryId, sub, schedule, now), ...cons.flatMap((f) => consolidatedTasks(f, schedule, now))];
-    return rows.filter((r) => !cfg || cfg[STEP_FLAG[r.step]] !== false);
+    const subRows = subsidiaryHasOperation(sub, cons.length) ? subsidiaryTasks(subsidiaryId, sub, schedule, now) : [];
+    return [...subRows, ...cons.flatMap((f) => consolidatedTasks(f, schedule, now))];
   }
 
   private async saved(subsidiaryId: string, day: string): Promise<DailyTask[]> {
@@ -65,6 +53,16 @@ export class DailyTasksService {
 
   /** Recalcula un día, guarda la foto y devuelve los cambios de estado. Solo lee la operación; no marca nada. */
   async refreshDay(subsidiaryId: string, day: string, now = new Date()): Promise<DayTransition[]> {
+    try {
+      return await this.refreshDayOnce(subsidiaryId, day, now);
+    } catch (e: any) {
+      // El cron y la pantalla pueden guardar la misma fila a la vez: se relee y se reintenta una vez.
+      if (e?.code !== 'ER_DUP_ENTRY') throw e;
+      return this.refreshDayOnce(subsidiaryId, day, now);
+    }
+  }
+
+  private async refreshDayOnce(subsidiaryId: string, day: string, now: Date): Promise<DayTransition[]> {
     const prev = await this.saved(subsidiaryId, day);
     const next = await this.compute(subsidiaryId, day, now);
     const byKey = new Map(prev.map((p) => [taskKey(p), p]));
@@ -75,7 +73,7 @@ export class DailyTasksService {
       keep.add(k);
       const ex = byKey.get(k);
       const changed = !ex || ex.status !== r.status || ex.doneCount !== r.doneCount || ex.totalCount !== r.totalCount || +ex.dueAt !== +r.dueAt || +(ex.doneAt ?? 0) !== +(r.doneAt ?? 0);
-      if (changed) toSave.push(this.repo.create({ ...(ex ?? {}), ...r, subsidiaryId, day }));
+      if (changed) toSave.push(this.repo.create({ ...mergeTaskRow(ex ?? null, r), subsidiaryId, day }));
     }
     if (toSave.length) await this.repo.save(toSave, { chunk: 200 });
     const gone = prev.filter((p) => !keep.has(taskKey(p))).map((p) => p.id);
@@ -89,13 +87,7 @@ export class DailyTasksService {
 
   /** Lo que corre el cron: hoy y los días recientes de la semana en curso, todas las sucursales activas. */
   async refreshOpenDays(now = new Date()): Promise<DayTransition[]> {
-    const today = localDay(now);
-    const monday = weekStartOf(today);
-    const days: string[] = [];
-    for (let i = 0; i < LIVE_DAYS; i++) {
-      const d = addDays(today, -i);
-      if (d >= monday) days.push(d);
-    }
+    const days = liveDays(localDay(now));
     const out: DayTransition[] = [];
     for (const s of await this.activeSubsidiaries()) {
       for (const d of days) out.push(...(await this.refreshDay(s.id, d, now)));
@@ -126,7 +118,7 @@ export class DailyTasksService {
 
   async day(subsidiaryId: string, day: string, now = new Date()) {
     const today = localDay(now);
-    if (day === today) await this.refreshDay(subsidiaryId, day, now);
+    if (refreshOnView(day, today)) await this.refreshDay(subsidiaryId, day, now);
     let rows = await this.saved(subsidiaryId, day);
     if (!rows.length && day < today) {
       await this.refreshDay(subsidiaryId, day, now);
@@ -165,8 +157,8 @@ export class DailyTasksService {
 
     const possibleLd =
       day === today
-        ? (await this.facts.ldCandidates(subsidiaryId, day)).map((c) => ({ trackingNumber: c.trackingNumber, consNumber: c.consNumber, bucket: c.bucket }))
-        : (await this.ldRepo.find({ where: { subsidiaryId, day } })).map((l) => ({ trackingNumber: l.trackingNumber, consNumber: l.consNumber ?? '', bucket: l.status ?? '' }));
+        ? (await this.facts.ldCandidates(subsidiaryId, day)).map((c) => ({ trackingNumber: c.trackingNumber, pieceKey: c.pieceKey, consNumber: c.consNumber, bucket: c.bucket }))
+        : (await this.ldRepo.find({ where: { subsidiaryId, day } })).map((l) => ({ trackingNumber: l.trackingNumber, pieceKey: l.pieceKey ?? l.trackingNumber, consNumber: l.consNumber ?? '', bucket: l.status ?? '' }));
 
     return { day, isToday: day === today, subsidiary, consolidated, carriedOver, possibleLd };
   }
@@ -200,7 +192,7 @@ export class DailyTasksService {
       .createQueryBuilder()
       .insert()
       .into(DailyLd)
-      .values(cands.map((c) => ({ subsidiaryId, day, trackingNumber: c.trackingNumber, shipmentId: c.shipmentId, chargeShipmentId: c.chargeShipmentId, consNumber: c.consNumber, status: c.bucket })))
+      .values(cands.map((c) => ({ subsidiaryId, day, trackingNumber: c.trackingNumber, pieceKey: c.pieceKey, shipmentId: c.shipmentId, chargeShipmentId: c.chargeShipmentId, consNumber: c.consNumber, status: c.bucket })))
       .orIgnore()
       .execute();
     return cands.length;

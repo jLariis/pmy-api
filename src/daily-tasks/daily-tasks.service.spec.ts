@@ -47,3 +47,50 @@ run('DailyTasksService.week (BD local)', () => {
     expect(w.days.find((d) => d.day === '2031-03-04')!.total).toBe(0);
   });
 });
+
+describe('DailyTasksService.refreshDay (sin BD)', () => {
+  const settings = { unloadingTime: '21:00', dispatchTime: '10:00', closureTime: '21:00', uploadMinutes: 30, activeTo: '21:30', completePct: 100 };
+  const subFacts = { day: '2026-10-17', inventoryInitialAt: new Date('2026-10-17T15:00:00Z'), inventoryFinalAt: null, inventoryInitialBy: null, inventoryFinalBy: null, dispatchesTotal: 0, dispatchesClosed: 0, lastClosureAt: null, dexTotal: 0, dexWithDevolution: 0, lastDevolutionAt: null };
+  const make = (over: any = {}) => {
+    const saved: any[] = [];
+    let calls = 0;
+    const repo: any = {
+      find: jest.fn(async () => (calls > 0 ? saved : [])),
+      create: (x: any) => x,
+      save: jest.fn(async (rows: any[]) => {
+        calls++;
+        if (over.dupOnce && calls === 1) throw Object.assign(new Error('Duplicate entry'), { code: 'ER_DUP_ENTRY' });
+        saved.push(...rows);
+        return rows;
+      }),
+      delete: jest.fn(),
+    };
+    const facts: any = { subsidiaryFacts: async () => ({ ...subFacts, ...(over.sub ?? {}) }), consolidatedFacts: async () => [] };
+    const svc = new DailyTasksService(repo, {} as any, { findOne: async () => over.cfg ?? null } as any, facts, { getSettings: async () => settings } as any, {} as any);
+    return { svc, repo, saved };
+  };
+
+  it('si otro proceso guardó la misma fila al mismo tiempo, reintenta en vez de fallar', async () => {
+    const { svc, repo } = make({ dupOnce: true });
+    await expect(svc.refreshDay('s1', '2026-10-17', new Date('2026-10-17T18:00:00Z'))).resolves.toBeDefined();
+    expect(repo.save).toHaveBeenCalledTimes(2);
+  });
+
+  it('el interruptor de la sucursal no esconde el paso en pantalla', async () => {
+    const { svc, saved } = make({ cfg: { stepInventoryInitial: false } });
+    await svc.refreshDay('s1', '2026-10-17', new Date('2026-10-17T18:00:00Z'));
+    expect(saved.map((r) => r.step)).toContain('inventory_initial');
+  });
+
+  it('sucursal sin operación ese día: sin tareas de sucursal', async () => {
+    const { svc, saved } = make({ sub: { inventoryInitialAt: null } });
+    await svc.refreshDay('s1', '2026-10-17', new Date('2026-10-17T18:00:00Z'));
+    expect(saved).toEqual([]);
+  });
+
+  it('las filas nuevas guardan el estado ya avisado', async () => {
+    const { svc, saved } = make();
+    await svc.refreshDay('s1', '2026-10-17', new Date('2026-10-17T18:00:00Z'));
+    expect(saved.find((r) => r.step === 'inventory_initial')).toMatchObject({ status: 'done', notifiedStatus: 'done' });
+  });
+});

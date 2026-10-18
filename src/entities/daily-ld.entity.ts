@@ -2,12 +2,14 @@ import { Column, CreateDateColumn, Entity, Index, PrimaryGeneratedColumn } from 
 
 /** Foto de los LD de un día (guías que vencieron sin entregar, sin DEX válido ni movimiento). */
 @Entity('daily_ld')
-@Index('UQ_daily_ld', ['subsidiaryId', 'day', 'trackingNumber'], { unique: true })
+@Index('UQ_daily_ld', ['subsidiaryId', 'day', 'pieceKey'], { unique: true })
 export class DailyLd {
   @PrimaryGeneratedColumn('uuid') id: string;
   @Column({ type: 'varchar', length: 36 }) subsidiaryId: string;
   @Column({ type: 'date' }) day: string;
   @Column({ type: 'varchar', length: 64 }) trackingNumber: string;
+  /** Pieza: dhlUniqueId en DHL (la guía maestra se comparte), si no la guía. */
+  @Column({ type: 'varchar', length: 64 }) pieceKey: string;
   @Column({ type: 'varchar', length: 36, nullable: true }) shipmentId: string | null;
   @Column({ type: 'varchar', length: 36, nullable: true }) chargeShipmentId: string | null;
   @Column({ type: 'varchar', length: 40, nullable: true }) consNumber: string | null;

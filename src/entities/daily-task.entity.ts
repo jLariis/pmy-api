@@ -14,6 +14,8 @@ export class DailyTask {
   @Column({ type: 'varchar', length: 40, nullable: true }) consNumber: string | null;
   @Column({ type: 'varchar', length: 20 }) step: TaskStep;
   @Column({ type: 'varchar', length: 10 }) status: TaskStatus;
+  /** Último estado del que ya se avisó (solo lo mueve el notificador). */
+  @Column({ type: 'varchar', length: 10, nullable: true }) notifiedStatus: TaskStatus | null;
   @Column({ type: 'int', default: 0 }) doneCount: number;
   @Column({ type: 'int', default: 0 }) totalCount: number;
   @Column({ type: 'datetime' }) dueAt: Date;
