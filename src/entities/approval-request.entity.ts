@@ -5,7 +5,8 @@ export type ApprovalType =
   | 'delete_route_dispatch'
   | 'change_subsidiary_consolidado'
   | 'change_date_consolidado'
-  | 'change_type_consolidado';
+  | 'change_type_consolidado'
+  | 'undo_devolution';
 
 /** Acciones sobre consolidado (aplican a la familia consNumber+sucursal). */
 export const CONSOLIDATED_ACTION_TYPES: ApprovalType[] = [

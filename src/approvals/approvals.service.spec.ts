@@ -43,12 +43,18 @@ function makeSvc(overrides: any = {}) {
   };
   const audit = { log: jest.fn((e: any) => audits.push(e)) };
   const changeLogRepo = { find: async () => [] };
+  const undoImpact = { devolutionId: 'dev-1', trackingNumber: '384096861505', label: 'devolución de la guía 384096861505', subsidiaryId: 's1', targetKey: 'undo_devolution:dev-1', records: [], incomes: [] };
+  const devolutionUndo = {
+    impact: jest.fn(async () => undoImpact),
+    execute: jest.fn(async () => undoImpact),
+  };
   const svc = new ApprovalsService(
     approvalRepo as any, subsidiaryRepo as any, userRepo as any,
     consRepo as any, dispatchRepo as any, shipmentRepo as any, chargeRepo as any,
     impact as any, notifier as any, consolidatedActions as any, audit as any, changeLogRepo as any,
+    devolutionUndo as any,
   );
-  return { svc, updated, saved, audits, consolidatedActions, notifier };
+  return { svc, updated, saved, audits, consolidatedActions, notifier, devolutionUndo };
 }
 
 const consRequest = (over: any = {}) => ({
@@ -138,6 +144,28 @@ describe('ApprovalsService', () => {
       await expect(svc.approve('req-1', { userId: 'sup-dest', role: 'user' })).rejects.toThrow('No se pudo aplicar el cambio: se cayó la BD');
       expect(updated.request).toEqual([{ id: 'req-1', patch: { executionError: 'se cayó la BD' } }]);
       expect(audits[0].result).toBe('error');
+    });
+  });
+
+  describe('deshacer devolución', () => {
+    it('exige motivo y lo pide al supervisor de la sucursal', async () => {
+      const { svc, saved } = makeSvc({ supervisorUserId: 'sup-1' });
+      await expect(
+        svc.createRequest({ type: 'undo_devolution', targetId: 'dev-1', actor: { userId: 'u1' }, justification: 'corto' }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      await svc.createRequest({
+        type: 'undo_devolution', targetId: 'dev-1', actor: { userId: 'u1', name: 'Marisol' },
+        justification: 'Se aplicó al registro del 16 y era del 15',
+      });
+      expect(saved[0]).toMatchObject({ approverId: 'sup-1', targetKey: 'undo_devolution:dev-1', status: 'pendiente' });
+    });
+
+    it('al autorizar deshace la devolución y queda aprobada', async () => {
+      const request = { id: 'req-1', type: 'undo_devolution', targetId: 'dev-1', status: 'pendiente', approverId: 'sup-1', requestedById: 'u1', justification: 'Se aplicó al registro equivocado' };
+      const { svc, updated, devolutionUndo } = makeSvc({ request });
+      await svc.approve('req-1', { userId: 'sup-1', name: 'Sup', role: 'user' });
+      expect(devolutionUndo.execute).toHaveBeenCalledWith('dev-1', expect.objectContaining({ userId: 'sup-1' }), 'Se aplicó al registro equivocado');
+      expect(updated.request.some((u: any) => u.patch.status === 'aprobado')).toBe(true);
     });
   });
 });

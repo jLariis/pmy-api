@@ -45,4 +45,33 @@ export class Devolution {
     /** Usuario que registró la devolución (auditoría). */
     @Column({ type: 'char', length: 36, nullable: true })
     createdById?: string;
+
+    /**
+     * Registro EXACTO de la guía que se devolvió (la persona lo elige cuando hay varios). Null en
+     * devoluciones anteriores a 2026-10-17, que se aplicaban a todos los registros.
+     */
+    @Column({ type: 'varchar', length: 36, nullable: true, default: null })
+    shipmentId?: string | null;
+
+    @Column({ type: 'varchar', length: 36, nullable: true, default: null })
+    chargeShipmentId?: string | null;
+
+    /** Qué cambió al guardar (para poder deshacerlo): registros marcados e ingresos anulados. */
+    @Column({ type: 'json', nullable: true, default: null })
+    appliedChanges?: DevolutionAppliedChanges | null;
+
+    /** Deshecha con autorización: ya no cuenta como devolución. */
+    @Column({ type: 'datetime', nullable: true, default: null })
+    undoneAt?: Date | null;
+
+    @Column({ type: 'char', length: 36, nullable: true, default: null })
+    undoneById?: string | null;
+
+    @Column({ type: 'text', nullable: true, default: null })
+    undoReason?: string | null;
+}
+
+export interface DevolutionAppliedChanges {
+    records: { kind: 'shipment' | 'charge'; id: string; fromStatus: string }[];
+    annulledIncomeIds: string[];
 }

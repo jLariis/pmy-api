@@ -2791,7 +2791,7 @@ export class PackageDispatchService {
       if (part.length === 0) continue;
       const ph = part.map(() => '?').join(',');
       const rows: any[] = await this.dataSource.query(
-        `SELECT DISTINCT trackingNumber AS tn FROM devolution WHERE subsidiaryId = ? AND trackingNumber IN (${ph})`,
+        `SELECT DISTINCT trackingNumber AS tn FROM devolution WHERE subsidiaryId = ? AND undoneAt IS NULL AND trackingNumber IN (${ph})`,
         [subsidiaryId, ...part],
       );
       for (const r of rows) if (r.tn) devSet.add(String(r.tn));

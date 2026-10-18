@@ -13,6 +13,8 @@ import { EmailFile, EmailLogService } from 'src/email-log/email-log.service';
 import { MailService } from 'src/mail/mail.service';
 import { EmailStatus } from 'src/common/enums/email-status.enum';
 import { hermosilloDayStartUtc } from 'src/common/utils';
+import { loadDevolutionRecords } from 'src/devolutions/devolution-records.loader';
+import { DevolutionRecord, isInOpenRoute } from 'src/devolutions/devolution-target.util';
 
 const EMAIL_MODULE = 'returning';
 const EMAIL_TYPE_RETURNING = 'returning';
@@ -84,7 +86,8 @@ export class ReturningService {
       const savedHistory = await manager.save(history);
 
       // 2. Devoluciones (reusa la lógica de consolidados; enlazadas al lote).
-      const devResult = { success: [] as string[], duplicates: [] as string[], notFound: [] as string[] };
+      // inRoute: el registro va en una ruta sin cerrar y no se confirmó; no se guarda.
+      const devResult = { success: [] as string[], duplicates: [] as string[], notFound: [] as string[], inRoute: [] as string[] };
       for (const item of devolutionItems) {
         const outcome = await this.devolutionsService.processOneDevolution(
           manager,
@@ -94,11 +97,15 @@ export class ReturningService {
             status: item.status,
             reason: item.reason,
             annulEntregadoIncome: item.annulEntregadoIncome,
+            shipmentId: item.shipmentId,
+            chargeShipmentId: item.chargeShipmentId,
+            confirmInRoute: item.confirmInRoute,
           },
           { userId, returningHistoryId: savedHistory.id, operationalDate },
         );
         if (outcome === 'success') devResult.success.push(item.trackingNumber);
         else if (outcome === 'duplicate') devResult.duplicates.push(item.trackingNumber);
+        else if (outcome === 'inRoute') devResult.inRoute.push(item.trackingNumber);
         else devResult.notFound.push(item.trackingNumber);
       }
 
@@ -202,7 +209,70 @@ export class ReturningService {
       }),
     ]);
 
-    return { ...history, devolutions, collections };
+    // Deshacer una devolución (con autorización): cuál ya se deshizo y cuál tiene solicitud pendiente.
+    const devIds = devolutions.map((d) => d.id);
+    const pending: { targetId: string }[] = devIds.length
+      ? await this.dataSource.query(
+          `SELECT targetId FROM approval_request WHERE type = 'undo_devolution' AND status = 'pendiente' AND targetId IN (?)`,
+          [devIds],
+        )
+      : [];
+    const pendingIds = new Set(pending.map((p) => p.targetId));
+
+    // Datos del paquete devuelto (destinatario, consolidado, estatus, última ruta) para que quien
+    // deshace reconozca el paquete correcto. Registro: el elegido; en las viejas, el del mismo
+    // consolidado o, si no, el más nuevo.
+    const tns = [...new Set(devolutions.map((d) => d.trackingNumber))];
+    const recordsByTn = new Map<string, DevolutionRecord[]>();
+    for (const tn of tns) recordsByTn.set(tn, await loadDevolutionRecords(this.dataSource.manager, tn));
+    const creatorIds = [...new Set(devolutions.map((d) => d.createdById).filter(Boolean))] as string[];
+    const creators: { id: string; name: string | null; lastName: string | null }[] = creatorIds.length
+      ? await this.dataSource.query(`SELECT id, name, lastName FROM user WHERE id IN (?)`, [creatorIds])
+      : [];
+    const creatorName = new Map(creators.map((u) => [u.id, [u.name, u.lastName].filter(Boolean).join(' ') || null]));
+
+    const pickRecord = (d: Devolution): DevolutionRecord | null => {
+      const recs = recordsByTn.get(d.trackingNumber) ?? [];
+      return (
+        recs.find((r) => (d.shipmentId && r.kind === 'shipment' && r.id === d.shipmentId) ||
+          (d.chargeShipmentId && r.kind === 'charge' && r.id === d.chargeShipmentId)) ??
+        recs.find((r) => !!d.consolidatedId && r.consolidatedId === d.consolidatedId) ??
+        [...recs].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0] ??
+        null
+      );
+    };
+
+    return {
+      ...history,
+      devolutions: devolutions.map((d) => {
+        const rec = pickRecord(d);
+        return {
+          id: d.id,
+          trackingNumber: d.trackingNumber,
+          reason: d.reason,
+          date: d.date,
+          undoneAt: d.undoneAt ?? null,
+          undoPending: pendingIds.has(d.id),
+          createdByName: d.createdById ? creatorName.get(d.createdById) ?? null : null,
+          recordsCount: recordsByTn.get(d.trackingNumber)?.length ?? 0,
+          record: rec
+            ? {
+                kind: rec.kind,
+                status: rec.status,
+                consNumber: rec.consNumber,
+                consDate: rec.consDate,
+                recipientName: rec.recipientName ?? null,
+                recipientAddress: rec.recipientAddress ?? null,
+                recipientCity: rec.recipientCity ?? null,
+                recipientZip: rec.recipientZip ?? null,
+                lastRoute: rec.lastRoute,
+                inOpenRoute: isInOpenRoute(rec),
+              }
+            : null,
+        };
+      }),
+      collections,
+    };
   }
 
   // ============================ CORREO ============================

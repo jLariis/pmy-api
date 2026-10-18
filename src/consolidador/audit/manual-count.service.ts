@@ -386,7 +386,7 @@ export class ManualCountService {
 
     // Devolución (ese día o después), entregado en bodega (ese día), traspaso hacia la sucursal.
     const [devRows, whRows, trRows] = await Promise.all([
-      this.dataSource.query(`SELECT DISTINCT trackingNumber AS tn FROM devolution WHERE trackingNumber IN (${ph}) AND date >= ?`, [...tns, start]),
+      this.dataSource.query(`SELECT DISTINCT trackingNumber AS tn FROM devolution WHERE undoneAt IS NULL AND trackingNumber IN (${ph}) AND date >= ?`, [...tns, start]),
       this.dataSource.query(`SELECT DISTINCT trackingNumber AS tn FROM warehouse_delivery WHERE trackingNumber IN (${ph}) AND date >= ? AND date < ?`, [...tns, start, end]),
       this.dataSource.query(`SELECT DISTINCT trackingNumber AS tn FROM package_transfer WHERE trackingNumber IN (${ph}) AND destinationId = ?`, [...tns, subsidiaryId]),
     ]);

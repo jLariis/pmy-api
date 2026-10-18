@@ -38,4 +38,19 @@ export class CreateDevolutionDto {
     @IsOptional()
     @IsBoolean()
     annulEntregadoIncome?: boolean;
+
+    /** Registro elegido (paquete). Si no viene, el backend usa el sugerido. */
+    @IsOptional()
+    @IsString()
+    shipmentId?: string;
+
+    /** Registro elegido (carga F2). */
+    @IsOptional()
+    @IsString()
+    chargeShipmentId?: string;
+
+    /** La persona confirmó que el registro va en una ruta abierta y aun así se devuelve. */
+    @IsOptional()
+    @IsBoolean()
+    confirmInRoute?: boolean;
 }
