@@ -84,7 +84,8 @@ export class DailyTaskFactsService {
     };
     const unloaded = gs.filter((g) => g.unAt);
     const dispatched = gs.filter((g) => disp.has(g.id));
-    const dispatchTotal = unloaded.filter((g) => disp.has(g.id) || !FINAL_WITHOUT_ROUTE.has(g.status)).length;
+    // Por sacar a ruta: lo desembarcado que no terminó sin ruta, más lo que salió aunque no se desembarcara en el sistema.
+    const dispatchTotal = gs.filter((g) => disp.has(g.id) || (g.unAt && !FINAL_WITHOUT_ROUTE.has(g.status))).length;
     const closed = dispatched.filter((g) => { const d = disp.get(g.id)!; return d.closed >= d.n; });
     const withDev = gs.filter((g) => devs.has(g.id));
     const dexPending = gs.filter((g) => !devs.has(g.id) && isDexStatus(g.status));

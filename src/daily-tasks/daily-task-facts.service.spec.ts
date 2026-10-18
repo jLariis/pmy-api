@@ -19,7 +19,7 @@ run('DailyTaskFactsService (BD local)', () => {
   let sub: string;
   let user: string;
   const C = randomUUID();
-  const S = [randomUUID(), randomUUID(), randomUUID(), randomUUID()];
+  const S = [randomUUID(), randomUUID(), randomUUID(), randomUUID(), randomUUID()];
 
   beforeAll(async () => {
     ds = new DataSource({ ...(config().database as any), migrations: [], logging: false });
@@ -44,6 +44,7 @@ run('DailyTaskFactsService (BD local)', () => {
     await ship(S[1], 'DT-0002', 'cliente_no_disponible', true);
     await ship(S[2], 'DT-0003', 'en_bodega', true);
     await ship(S[3], 'DT-0004', 'pendiente', false);
+    await ship(S[4], 'DT-0005', 'en_ruta', false); // salió a ruta sin desembarcarse en el sistema
 
     const D1 = randomUUID();
     const D2 = randomUUID();
@@ -56,6 +57,7 @@ run('DailyTaskFactsService (BD local)', () => {
     await hist(D1, S[0], '2031-03-03T16:00:00Z');
     await hist(D1, S[1], '2031-03-03T16:00:00Z');
     await hist(D2, S[1], '2031-03-03T18:00:00Z'); // se movió a otra ruta
+    await hist(D1, S[4], '2031-03-03T16:00:00Z');
 
     await q("INSERT INTO shipment_status (id, status, exceptionCode, timestamp, shipmentId) VALUES (?, 'entregado', NULL, ?, ?)", [randomUUID(), Z('2031-03-03T19:00:00Z'), S[0]]);
     await q("INSERT INTO shipment_status (id, status, exceptionCode, timestamp, shipmentId) VALUES (?, 'cliente_no_disponible', '08', ?, ?)", [randomUUID(), Z('2031-03-03T20:00:00Z'), S[1]]);
@@ -79,11 +81,12 @@ run('DailyTaskFactsService (BD local)', () => {
 
   it('consolidatedFacts: avance por paso del consolidado', async () => {
     const [f] = (await svc.consolidatedFacts(sub, D)).filter((x) => x.refId === C);
-    expect(f).toMatchObject({ refType: 'consolidated', consNumber: 'TEST-DT-1', day: D, guides: 4 });
-    expect(f.unloading).toMatchObject({ done: 3, total: 4 });
-    expect(f.dispatch).toMatchObject({ done: 2, total: 3 });
+    expect(f).toMatchObject({ refType: 'consolidated', consNumber: 'TEST-DT-1', day: D, guides: 5 });
+    expect(f.unloading).toMatchObject({ done: 3, total: 5 });
+    // La que salió sin desembarcar también cuenta en la salida (no queda "3/2").
+    expect(f.dispatch).toMatchObject({ done: 3, total: 4 });
     // La guía movida de ruta cuenta una vez y su cierre sale del historial.
-    expect(f.closure).toMatchObject({ done: 2, total: 2 });
+    expect(f.closure).toMatchObject({ done: 3, total: 3 });
   });
 
   it('consolidatedFacts: devolución deshecha no cuenta como registrada', async () => {
@@ -100,7 +103,7 @@ run('DailyTaskFactsService (BD local)', () => {
 
   it('packageDetail: resumen y posibles LD del día', async () => {
     const d = await svc.packageDetail('consolidated', C, D);
-    expect(d.summary).toMatchObject({ delivered: 1, dex: { '08': 1 }, inWarehouse: 2, possibleLd: 2, missingUnloading: 1 });
-    expect(d.guides.filter((g) => g.ld === 'possible_ld').map((g) => g.trackingNumber).sort()).toEqual(['DT-0003', 'DT-0004']);
+    expect(d.summary).toMatchObject({ delivered: 1, inRoute: 1, dex: { '08': 1 }, inWarehouse: 2, possibleLd: 3, missingUnloading: 2 });
+    expect(d.guides.filter((g) => g.ld === 'possible_ld').map((g) => g.trackingNumber).sort()).toEqual(['DT-0003', 'DT-0004', 'DT-0005']);
   });
 });
