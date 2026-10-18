@@ -206,6 +206,13 @@ export class DailyTasksService {
     return cands.length;
   }
 
+  /** Sucursal dueña de un consolidado / carga (para validar acceso al detalle). */
+  async subsidiaryOfRef(refType: 'consolidated' | 'charge', refId: string): Promise<string | null> {
+    const table = refType === 'charge' ? 'charge' : 'consolidated';
+    const rows: any[] = await this.ds.query(`SELECT subsidiaryId FROM ${table} WHERE id = ?`, [refId]);
+    return rows[0]?.subsidiaryId ?? null;
+  }
+
   packageDetail(refType: 'consolidated' | 'charge', refId: string, now = new Date()) {
     return this.facts.packageDetail(refType, refId, localDay(now));
   }
