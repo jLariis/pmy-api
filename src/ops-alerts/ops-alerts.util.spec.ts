@@ -97,3 +97,19 @@ describe('ops-alerts.util', () => {
     expect(inActiveHours(new Date('2026-10-01T12:59:00Z'), S)).toBe(false); // 05:59
   });
 });
+
+describe('inboxAlertSteps', () => {
+  it('la bandeja solo avisa la subida; desembarque, salida, cierre e inventario los avisa Tareas del día', () => {
+    const { inboxAlertSteps } = require('./ops-alerts.util');
+    expect(inboxAlertSteps({ upload: true, unloading: true, dispatch: true, closure: true, inventory: true })).toEqual({ upload: true, unloading: false, dispatch: false, closure: false, inventory: false });
+    expect(inboxAlertSteps({ upload: false, unloading: true, dispatch: true, closure: true, inventory: true }).upload).toBe(false);
+  });
+
+  it('con solo la subida activa, computeSteps no produce desembarque aunque esté atrasado', () => {
+    const { inboxAlertSteps } = require('./ops-alerts.util');
+    const l = { receivedAt: new Date('2026-10-17T13:00:00Z'), uploadedAt: new Date('2026-10-17T13:10:00Z'), unloading: { done: 0, total: 10, first: null, last: null }, dispatch: { done: 0, total: 10, first: null, last: null }, closure: { done: 0, total: 10, first: null, last: null } };
+    const s: OpsSettings = { enabled: true, uploadMinutes: 30, unloadingTime: '21:00', dispatchTime: '10:00', closureTime: '21:00', inventoryTime: '19:00', escalate1Min: 30, escalate2Min: 60, completePct: 100, lookbackDays: 3, activeFrom: '06:00', activeTo: '21:30' };
+    const steps = computeSteps(l, s, inboxAlertSteps({ upload: true, unloading: true, dispatch: true, closure: true, inventory: true }));
+    expect(steps.map((x) => x.step)).toEqual(['upload']);
+  });
+});

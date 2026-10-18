@@ -15,6 +15,7 @@ import {
   alertLevel,
   atLocalTime,
   computeSteps,
+  inboxAlertSteps,
   inActiveHours,
   Lifecycle,
   localDay,
@@ -227,13 +228,12 @@ export class OpsAlertsService {
       const list = await this.recentConsolidations(s, now);
       const lc = await this.lifecycle.forConsolidations(list);
       for (const c of list) {
-        const steps = computeSteps(lc.get(c.id) as Lifecycle, s, this.stepsOf(cfg.get(c.subsidiaryId as string)));
+        const steps = computeSteps(lc.get(c.id) as Lifecycle, s, inboxAlertSteps(this.stepsOf(cfg.get(c.subsidiaryId as string))));
         for (const st of steps) {
           report.checked++;
           await this.apply(st, { refKey: c.id, subsidiaryId: c.subsidiaryId as string, inboxConsolidationId: c.id, consNumber: c.consNumber, cons: c, lifecycle: lc.get(c.id) ?? null }, s, now, active, cfg, report);
         }
       }
-      await this.evaluateInventory(s, now, active, cfg, list, report);
       if (this.digest.length && s.alertGroupsEnabled) await this.sendDigest(now);
     } finally {
       this.running = false;
@@ -242,27 +242,6 @@ export class OpsAlertsService {
       this.logger.log(`⏰ [ops-alerts] revisados=${report.checked} nuevas=${report.opened} avisos=${report.notified} resueltas=${report.resolved}`);
     }
     return report;
-  }
-
-  /** Inventario: una revisión diaria por sucursal (las que trabajan con la bandeja o tienen configuración). */
-  private async evaluateInventory(s: OpsSettings, now: Date, active: boolean, cfg: Map<string, OpsAlertSubsidiary>, list: InboxConsolidation[], report: EvaluateReport) {
-    const day = localDay(now);
-    const dueAt = atLocalTime(day, s.inventoryTime);
-    const subs = new Set<string>([...list.map((c) => c.subsidiaryId as string), ...cfg.keys()]);
-    for (const subsidiaryId of subs) {
-      if (!this.stepsOf(cfg.get(subsidiaryId)).inventory) continue;
-      const doneAt = await this.inventoryDoneAt(subsidiaryId, day);
-      report.checked++;
-      await this.apply(
-        { step: 'inventory' as never, dueAt, done: !!doneAt, doneAt, pct: doneAt ? 100 : 0 },
-        { refKey: `${subsidiaryId}:${day}`, subsidiaryId, inboxConsolidationId: null, consNumber: null, cons: null, lifecycle: null },
-        s,
-        now,
-        active,
-        cfg,
-        report,
-      );
-    }
   }
 
   private async inventoryDoneAt(subsidiaryId: string, day: string): Promise<Date | null> {

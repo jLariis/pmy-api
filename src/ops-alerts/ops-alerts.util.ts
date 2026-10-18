@@ -23,6 +23,9 @@ export interface OpsSettings {
 
 export type StepsEnabled = Record<OpsStep, boolean>;
 
+/** Lo que avisa la bandeja de correos: solo la subida. El resto del recorrido lo avisa Tareas del día (sin duplicar). */
+export const inboxAlertSteps = (e: StepsEnabled): StepsEnabled => ({ upload: e.upload, unloading: false, dispatch: false, closure: false, inventory: false });
+
 export interface StepProgress {
   done: number;
   total: number;
