@@ -8,7 +8,7 @@ import { OpsAlertsService } from '../ops-alerts/ops-alerts.service';
 import { SendLogService } from '../ops-alerts/send-log.service';
 import { addDays, alertLevel, inActiveHours, localDay } from '../ops-alerts/ops-alerts.util';
 import { DailyTasksService, DayTransition } from './daily-tasks.service';
-import { alertRefKey, dayDigest, tasksLink, transitionMessage } from './daily-task-notify.util';
+import { alertRefKey, dayDigest, hora12, tasksLink, transitionMessage } from './daily-task-notify.util';
 import { escalationActions } from './daily-task-escalation.util';
 import { doneToNotify, liveDays, shouldAlertNew, stepAlertsEnabled } from './daily-task-rules.util';
 import { TaskRow } from './daily-task.types';
@@ -155,7 +155,7 @@ export class DailyTasksNotifier {
       await this.sendLog.notifyUsers(managers, { type: 'tareas.resumen_dia', title: dg.subject, body: dg.text, severity: 'info', link }, this.ctx(subsidiaryId), true);
       const inv = d.subsidiary.find((r) => r.step === 'inventory_final');
       if (inv && inv.status !== 'done') {
-        await this.sendLog.notifyUsers(users, { type: 'tareas.inventario_final_pendiente', title: 'Inventario final de día pendiente', body: `${name} · hazlo antes de las ${this.hhmm(inv.dueAt)}; el sistema se suspende 21:30`, severity: 'warning', link }, this.ctx(subsidiaryId));
+        await this.sendLog.notifyUsers(users, { type: 'tareas.inventario_final_pendiente', title: 'Inventario final de día pendiente', body: `${name} · hazlo antes de las ${hora12(inv.dueAt)}; el sistema se suspende a las 9:30 p. m.`, severity: 'warning', link }, this.ctx(subsidiaryId));
       }
     }
   }
@@ -175,7 +175,7 @@ export class DailyTasksNotifier {
         `SELECT COUNT(*) n FROM shipment WHERE subsidiaryId = ? AND active = 1 AND LOWER(status) IN ('en_bodega', 'pendiente')`,
         [subsidiaryId],
       );
-      const text = `*PMY · ${name}*\nEl inventario final de día de hoy vence a las ${this.hhmm(inv.dueAt)} y aún no se ha hecho. Quedan ${Number(left[0]?.n ?? 0)} guías en bodega.`;
+      const text = `*PMY · ${name}*\nEl inventario final de día de hoy vence a las ${hora12(inv.dueAt)} y aún no se ha hecho. Quedan ${Number(left[0]?.n ?? 0)} guías en bodega.`;
       await this.whatsapp(cfg, text, this.ctx(subsidiaryId), 'Inventario final de día pendiente');
     }
   }
@@ -191,9 +191,6 @@ export class DailyTasksNotifier {
     }
   }
 
-  private hhmm(d: Date) {
-    return new Date(new Date(d).getTime() - 7 * 3_600_000).toISOString().slice(11, 16);
-  }
 
   // ------------------------------------------------------------------ crons
 

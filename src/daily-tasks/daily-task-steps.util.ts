@@ -16,7 +16,10 @@ function statusOf(done: boolean, doneCount: number, dueAt: Date, now: Date, bloc
 /** Listo al llegar al porcentaje; con total 0 no queda nada que hacer (si el paso anterior ya terminó). */
 const isDone = (p: Progress, s: Schedule, prevDone = true) => (p.total === 0 ? prevDone : Math.floor((p.done / p.total) * 100) >= s.completePct);
 
-/** Pasos de un consolidado (master/F2/aéreo/DHL). Cada paso se ancla a cuando terminó el anterior. */
+/**
+ * Pasos de un consolidado (master/F2/aéreo/DHL). Cada paso se ancla a cuando terminó el anterior.
+ * Las devoluciones NO son paso: no todos los DEX regresan a FedEx; solo se informan.
+ */
 export function consolidatedTasks(f: ConsolidatedFacts, s: Schedule, now: Date): TaskRow[] {
   const base = { refType: f.refType, refId: f.refId, consNumber: f.consNumber };
   const rows: TaskRow[] = [];
@@ -47,12 +50,6 @@ export function consolidatedTasks(f: ConsolidatedFacts, s: Schedule, now: Date):
   const closed = isDone(f.closure, s, dispatched);
   push('closure', f.closure, closureDue, closed, !dispatched);
 
-  // Devoluciones de sus DEX: listas si no hubo DEX una vez cerradas las rutas.
-  const devDue = atLocalTime(localDay(f.closure.last ?? closureDue), s.devolutionsTime);
-  const noDex = f.devolutions.total === 0;
-  const devDone = closed && isDone(f.devolutions, s);
-  push('devolutions', f.devolutions, devDue, devDone, !closed, noDex ? f.closure.last : f.devolutions.last);
-
   return rows;
 }
 
@@ -67,13 +64,9 @@ export function subsidiaryTasks(subsidiaryId: string, f: SubsidiaryDayFacts, s: 
 
   const closureDue = due(s.closureTime);
   const closureDone = f.dispatchesTotal > 0 ? f.dispatchesClosed >= f.dispatchesTotal : after(closureDue);
-  const devDue = due(s.devolutionsTime);
-  const devDone = f.dexTotal > 0 ? f.dexWithDevolution >= f.dexTotal : after(devDue);
-
   return [
     row('inventory_initial', due(s.inventoryInitialTime), !!f.inventoryInitialAt, f.inventoryInitialAt ? 1 : 0, 1, f.inventoryInitialAt, f.inventoryInitialBy),
     row('closure', closureDue, closureDone, f.dispatchesClosed, f.dispatchesTotal, f.lastClosureAt, null),
-    row('devolutions', devDue, devDone, f.dexWithDevolution, f.dexTotal, f.lastDevolutionAt, null),
     row('inventory_final', due(s.inventoryFinalTime), !!f.inventoryFinalAt, f.inventoryFinalAt ? 1 : 0, 1, f.inventoryFinalAt, f.inventoryFinalBy),
   ];
 }

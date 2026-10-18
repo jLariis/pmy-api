@@ -13,7 +13,7 @@ describe('transitionMessage', () => {
     const m = transitionMessage(t(row(), 'pending'), 'Hermosillo')!;
     expect(m.type).toBe('tareas.paso_atrasado');
     expect(m.title).toBe('F2 4410 0921 sin salida a ruta');
-    expect(m.body).toBe('Hermosillo · venció a las 10:00');
+    expect(m.body).toBe('Hermosillo · venció a las 10:00 a. m.');
     expect(m.link).toBe('/operaciones/tareas-del-dia?sucursal=s1&dia=2026-10-17');
   });
 
@@ -48,7 +48,6 @@ describe('dayDigest', () => {
       subsidiary: [
         row({ refType: 'subsidiary', step: 'inventory_final', status: 'pending' }),
         row({ refType: 'subsidiary', step: 'closure', status: 'partial', doneCount: 4, totalCount: 6 }),
-        row({ refType: 'subsidiary', step: 'devolutions', status: 'late', doneCount: 2, totalCount: 11 }),
       ],
       consolidated: [
         { consNumber: 'A', tasks: [row({ status: 'done' })] },
@@ -56,10 +55,23 @@ describe('dayDigest', () => {
         { consNumber: 'C', tasks: [row({ status: 'done' })] },
       ],
       possibleLd: [{}, {}, {}, {}],
+      devolutions: [{}, {}, {}],
     } as any);
     expect(d.subject).toBe('Hermosillo · cierre del día 17 oct');
     expect(d.text).toContain('Listos: 2 de 3 consolidados');
-    expect(d.text).toContain('Falta: inventario final de día, 2 rutas sin cerrar, 9 DEX sin devolución');
+    expect(d.text).toContain('Falta: inventario final de día, 2 rutas sin cerrar');
+    expect(d.text).not.toContain('DEX');
+    expect(d.text).toContain('3 devoluciones registradas');
     expect(d.text).toContain('4 posibles LD');
+  });
+});
+
+describe('hora12', () => {
+  const { hora12 } = require('./daily-task-notify.util');
+  it('formato de 12 horas en Hermosillo', () => {
+    expect(hora12(at('2026-10-17', '20:00'))).toBe('8:00 p. m.');
+    expect(hora12(at('2026-10-17', '00:05'))).toBe('12:05 a. m.');
+    expect(hora12(at('2026-10-17', '12:30'))).toBe('12:30 p. m.');
+    expect(hora12(at('2026-10-17', '06:01'))).toBe('6:01 a. m.');
   });
 });

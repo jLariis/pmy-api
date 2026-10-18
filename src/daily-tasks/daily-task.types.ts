@@ -41,7 +41,6 @@ export interface ConsolidatedFacts {
   unloading: Progress;
   dispatch: Progress;
   closure: Progress;
-  devolutions: Progress;
 }
 
 export interface SubsidiaryDayFacts {
@@ -53,9 +52,6 @@ export interface SubsidiaryDayFacts {
   dispatchesTotal: number;
   dispatchesClosed: number;
   lastClosureAt: Date | null;
-  dexTotal: number;
-  dexWithDevolution: number;
-  lastDevolutionAt: Date | null;
 }
 
 export interface TaskRow {

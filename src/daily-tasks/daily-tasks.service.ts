@@ -128,7 +128,7 @@ export class DailyTasksService {
       refType: r.refType, refId: r.refId, consNumber: r.consNumber, step: r.step, status: r.status, doneCount: r.doneCount, totalCount: r.totalCount,
       dueAt: r.dueAt, doneAt: r.doneAt, doneById: r.doneById, doneByName: r.doneByName,
     });
-    const STEP_ORDER: TaskStep[] = ['upload', 'unloading', 'dispatch', 'closure', 'devolutions', 'inventory_initial', 'inventory_final'];
+    const STEP_ORDER: TaskStep[] = ['upload', 'unloading', 'dispatch', 'closure', 'inventory_initial', 'inventory_final'];
     const byOrder = (a: TaskRow, b: TaskRow) => STEP_ORDER.indexOf(a.step) - STEP_ORDER.indexOf(b.step);
     const subsidiary = rows.filter((r) => r.refType === 'subsidiary').map(asRow).sort(byOrder);
     const refs = [...new Map(rows.filter((r) => r.refType !== 'subsidiary').map((r) => [`${r.refType}:${r.refId}`, r])).values()];
@@ -160,7 +160,8 @@ export class DailyTasksService {
         ? (await this.facts.ldCandidates(subsidiaryId, day)).map((c) => ({ trackingNumber: c.trackingNumber, pieceKey: c.pieceKey, consNumber: c.consNumber, bucket: c.bucket }))
         : (await this.ldRepo.find({ where: { subsidiaryId, day } })).map((l) => ({ trackingNumber: l.trackingNumber, pieceKey: l.pieceKey ?? l.trackingNumber, consNumber: l.consNumber ?? '', bucket: l.status ?? '' }));
 
-    return { day, isToday: day === today, subsidiary, consolidated, carriedOver, possibleLd };
+    const [routes, devolutions] = await Promise.all([this.facts.routesOfDay(subsidiaryId, day), this.facts.devolutionsOfDay(subsidiaryId, day)]);
+    return { day, isToday: day === today, subsidiary, consolidated, carriedOver, possibleLd, routes, devolutions };
   }
 
   private async consolidatedMeta(refs: { refType: string; refId: string }[]): Promise<Map<string, { carrier: string; type: string; guides: number }>> {

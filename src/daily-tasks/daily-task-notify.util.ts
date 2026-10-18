@@ -4,7 +4,11 @@ import { TaskRow, TaskStep } from './daily-task.types';
 const OFFSET_MS = 7 * 3_600_000;
 const MONTHS = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
 
-const hhmm = (d: Date) => new Date(new Date(d).getTime() - OFFSET_MS).toISOString().slice(11, 16);
+/** Hora de Hermosillo en formato de 12 horas ("8:00 p. m."). */
+export function hora12(d: Date | string): string {
+  const [h, m] = new Date(new Date(d).getTime() - OFFSET_MS).toISOString().slice(11, 16).split(':').map(Number);
+  return `${h % 12 === 0 ? 12 : h % 12}:${String(m).padStart(2, '0')} ${h < 12 ? 'a. m.' : 'p. m.'}`;
+}
 const shortDay = (day: string) => `${Number(day.slice(8, 10))} ${MONTHS[Number(day.slice(5, 7)) - 1]}`;
 
 const STEP_DONE: Record<TaskStep, string> = {
@@ -20,12 +24,10 @@ const CONS_LATE: Partial<Record<TaskStep, string>> = {
   unloading: 'sin desembarcar completo',
   dispatch: 'sin salida a ruta',
   closure: 'con rutas sin cerrar',
-  devolutions: 'con DEX sin devolución',
 };
 const SUB_LATE: Partial<Record<TaskStep, string>> = {
   inventory_initial: 'Inventario inicial pendiente',
   closure: 'Rutas del día sin cerrar',
-  devolutions: 'Devoluciones del día sin registrar',
   inventory_final: 'Inventario final de día pendiente',
 };
 
@@ -47,7 +49,7 @@ export function transitionMessage(t: DayTransition, subsidiaryName: string): { t
   if (t.to === 'late' && t.from !== 'done') {
     const title = r.refType === 'subsidiary' ? SUB_LATE[r.step] : CONS_LATE[r.step] ? `${refLabel(r)} ${CONS_LATE[r.step]}` : null;
     if (!title) return null;
-    return { type: 'tareas.paso_atrasado', title, body: `${subsidiaryName} · venció a las ${hhmm(r.dueAt)}`, link };
+    return { type: 'tareas.paso_atrasado', title, body: `${subsidiaryName} · venció a las ${hora12(r.dueAt)}`, link };
   }
   if (t.to === 'done') {
     const title = r.refType === 'subsidiary' ? `${cap(STEP_DONE[r.step])} listo` : `${refLabel(r)}: ${STEP_DONE[r.step]} listo`;
@@ -56,7 +58,7 @@ export function transitionMessage(t: DayTransition, subsidiaryName: string): { t
   return null;
 }
 
-type DigestInput = { subsidiary: TaskRow[]; consolidated: { consNumber: string; tasks: TaskRow[] }[]; possibleLd: unknown[] };
+type DigestInput = { subsidiary: TaskRow[]; consolidated: { consNumber: string; tasks: TaskRow[] }[]; possibleLd: unknown[]; devolutions?: unknown[] };
 
 /** Resumen de cierre del día (correo de las 19:00). */
 export function dayDigest(subsidiaryName: string, day: string, d: DigestInput): { subject: string; text: string; html: string } {
@@ -67,11 +69,10 @@ export function dayDigest(subsidiaryName: string, day: string, d: DigestInput): 
   if (sub('inventory_final') && sub('inventory_final')!.status !== 'done') falta.push('inventario final de día');
   const cl = sub('closure');
   if (cl && cl.status !== 'done' && cl.totalCount > cl.doneCount) falta.push(`${cl.totalCount - cl.doneCount} rutas sin cerrar`);
-  const dv = sub('devolutions');
-  if (dv && dv.status !== 'done' && dv.totalCount > dv.doneCount) falta.push(`${dv.totalCount - dv.doneCount} DEX sin devolución`);
 
   const lines = [`Listos: ${listos} de ${d.consolidated.length} consolidados`];
   lines.push(falta.length ? `Falta: ${falta.join(', ')}` : 'No falta nada de la sucursal');
+  if (d.devolutions?.length) lines.push(`${d.devolutions.length} devoluciones registradas`);
   if (d.possibleLd.length) lines.push(`${d.possibleLd.length} posibles LD`);
   const subject = `${subsidiaryName} · cierre del día ${shortDay(day)}`;
   const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;');

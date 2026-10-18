@@ -18,7 +18,7 @@ const K = {
 const FINAL_WITHOUT_ROUTE = new Set(['entregado', 'entregado_por_fedex', 'entregado_en_bodega', 'devuelto_a_fedex', 'retorno_abandono_fedex', 'es_ocurre']);
 const DELIVERED = new Set(['entregado', 'entregado_por_fedex', 'entregado_en_bodega']);
 
-type Guide = { id: string; headId: string; trackingNumber: string; dhlUniqueId: string | null; status: string; unAt: Date | null; unBy: string | null; commitDateTime: Date | null; exceptionCode: string | null; consNumber: string };
+type Guide = { id: string; headId: string; subsidiaryId?: string; trackingNumber: string; dhlUniqueId: string | null; status: string; unAt: Date | null; unBy: string | null; commitDateTime: Date | null; exceptionCode: string | null; consNumber: string };
 type DispatchAgg = { first: Date; last: Date; lastBy: string | null; n: number; closed: number; closedAt: Date | null; closedBy: string | null };
 type DevAgg = { at: Date; by: string | null };
 
@@ -59,21 +59,20 @@ export class DailyTaskFactsService {
       if (!heads.length) continue;
       const guides = await this.guidesOf(kind, heads.map((h) => h.id));
       const disp = await this.dispatchAgg(kind, guides.map((g) => g.id));
-      const devs = await this.devolutionAgg(kind, guides, subsidiaryId);
-      const names = await this.userNames([...guides.map((g) => g.unBy), ...[...disp.values()].flatMap((d) => [d.lastBy, d.closedBy]), ...[...devs.values()].map((d) => d.by)]);
+      const names = await this.userNames([...guides.map((g) => g.unBy), ...[...disp.values()].flatMap((d) => [d.lastBy, d.closedBy])]);
       for (const h of heads) {
         const gs = guides.filter((g) => g.headId === h.id);
         out.push({
           refType: K[kind].refType, refId: h.id, consNumber: h.consNumber ?? '', day, carrier: h.carrier ?? 'fedex', type: h.type ?? '', guides: gs.length,
           uploadedAt: new Date(h.createdAt), uploadedById: h.createdById ?? null, uploadedByName: h.byName ?? null,
-          ...this.progressOf(gs, disp, devs, names),
+          ...this.progressOf(gs, disp, names),
         });
       }
     }
     return out;
   }
 
-  private progressOf(gs: Guide[], disp: Map<string, DispatchAgg>, devs: Map<string, DevAgg>, names: Map<string, string>) {
+  private progressOf(gs: Guide[], disp: Map<string, DispatchAgg>, names: Map<string, string>) {
     const prog = (items: { at: Date | null; by: string | null }[], total: number): Progress => {
       const ats = items.filter((i) => i.at) as { at: Date; by: string | null }[];
       const lastItem = ats.reduce<{ at: Date; by: string | null } | null>((a, b) => (!a || b.at > a.at ? b : a), null);
@@ -90,13 +89,10 @@ export class DailyTaskFactsService {
     // Por sacar a ruta: lo desembarcado que no terminó sin ruta, más lo que salió aunque no se desembarcara en el sistema.
     const dispatchTotal = gs.filter((g) => disp.has(g.id) || (g.unAt && !FINAL_WITHOUT_ROUTE.has(g.status))).length;
     const closed = dispatched.filter((g) => { const d = disp.get(g.id)!; return d.closed >= d.n; });
-    const withDev = gs.filter((g) => devs.has(g.id));
-    const dexPending = gs.filter((g) => !devs.has(g.id) && isDexStatus(g.status));
     return {
       unloading: prog(unloaded.map((g) => ({ at: g.unAt, by: g.unBy })), toUnload.length),
       dispatch: prog(dispatched.map((g) => ({ at: disp.get(g.id)!.last, by: disp.get(g.id)!.lastBy })), dispatchTotal),
       closure: prog(closed.map((g) => ({ at: disp.get(g.id)!.closedAt, by: disp.get(g.id)!.closedBy })), dispatched.length),
-      devolutions: prog(withDev.map((g) => ({ at: devs.get(g.id)!.at, by: devs.get(g.id)!.by })), withDev.length + dexPending.length),
     };
   }
 
@@ -107,7 +103,7 @@ export class DailyTaskFactsService {
       const exc = kind === 'f2' ? 'g.exceptionCode' : 'NULL';
       const dhl = kind === 'f2' ? 'NULL' : 'g.dhlUniqueId';
       const rows: any[] = await this.db.query(
-        `SELECT g.id, g.${k.headCol} headId, g.trackingNumber, ${dhl} dhlUniqueId, LOWER(g.status) status, g.commitDateTime, ${exc} exceptionCode, TRIM(h.consNumber) consNumber,
+        `SELECT g.id, g.${k.headCol} headId, g.subsidiaryId, g.trackingNumber, ${dhl} dhlUniqueId, LOWER(g.status) status, g.commitDateTime, ${exc} exceptionCode, TRIM(h.consNumber) consNumber,
                 u.createdAt unAt, u.createdById unBy
          FROM ${k.guides} g JOIN ${k.head} h ON h.id = g.${k.headCol} LEFT JOIN unloading u ON u.id = g.unloadingId
          WHERE g.${k.headCol} IN (${ph(part.length)}) AND g.active = 1`,
@@ -186,35 +182,12 @@ export class DailyTaskFactsService {
     );
     const closedAts = dispatches.map((d) => toDate(d.closedAt)).filter(Boolean) as Date[];
 
-    let dexTotal = 0;
-    let dexWithDevolution = 0;
-    let lastDevolutionAt: Date | null = null;
-    const ids = dispatches.map((d) => d.id);
-    for (const kind of ['master', 'f2'] as Kind[]) {
-      if (!ids.length) break;
-      const k = K[kind];
-      const gs: any[] = await this.db.query(
-        `SELECT DISTINCT g.id, g.trackingNumber, LOWER(g.status) status FROM package_dispatch_history h JOIN ${k.guides} g ON g.id = h.${k.fk}
-         WHERE h.dispatchId IN (${ph(ids.length)}) AND g.active = 1`,
-        ids,
-      );
-      const devs = await this.devolutionAgg(kind, gs, subsidiaryId);
-      for (const g of gs) {
-        const dev = devs.get(g.id);
-        if (dev) {
-          dexTotal++;
-          dexWithDevolution++;
-          if (!lastDevolutionAt || dev.at > lastDevolutionAt) lastDevolutionAt = dev.at;
-        } else if (isDexStatus(g.status)) dexTotal++;
-      }
-    }
     return {
       day,
       inventoryInitialAt: toDate(invOf('initial')?.at), inventoryInitialBy: invOf('initial')?.byName || null,
       inventoryFinalAt: toDate(invOf('final')?.at), inventoryFinalBy: invOf('final')?.byName || null,
       dispatchesTotal: dispatches.length, dispatchesClosed: closedAts.length,
       lastClosureAt: closedAts.length ? new Date(Math.max(...closedAts.map((d) => d.getTime()))) : null,
-      dexTotal, dexWithDevolution, lastDevolutionAt,
     };
   }
 
@@ -259,16 +232,18 @@ export class DailyTaskFactsService {
     return unloaded ? 'En bodega' : 'Sin desembarcar';
   }
 
-  async packageDetail(refType: 'consolidated' | 'charge', refId: string, today: string): Promise<{ summary: PackageSummary; guides: { trackingNumber: string; status: string; bucket: string; ld: LdState }[] }> {
+  async packageDetail(refType: 'consolidated' | 'charge', refId: string, today: string): Promise<{ summary: PackageSummary; guides: { trackingNumber: string; status: string; bucket: string; ld: LdState; unloaded: boolean; dispatched: boolean; returned: boolean }[] }> {
     const kind: Kind = refType === 'charge' ? 'f2' : 'master';
     const guides = await this.guidesOf(kind, [refId]);
     if (kind === 'master') await this.fillExceptionCodes(guides);
     const ld = await this.ldStates(kind, guides, today);
     const inInv = await this.inTodayInventory(kind, guides.map((g) => g.id), today);
+    const disp = await this.dispatchAgg(kind, guides.map((g) => g.id));
+    const devs = await this.devolutionAgg(kind, guides, guides[0]?.subsidiaryId ?? '');
     const rows = guides.map((g) => ({ g, unloaded: !!g.unAt, ld: ld.get(g.id) ?? ('active' as LdState) }));
     return {
       summary: summarizePackages(rows.map((r) => ({ status: r.g.status, exceptionCode: r.g.exceptionCode, unloaded: r.unloaded, inTodayInventory: inInv.has(r.g.id), ld: r.ld }))),
-      guides: rows.map((r) => ({ trackingNumber: r.g.trackingNumber, status: r.g.status, bucket: this.bucketOf(r.g, r.unloaded), ld: r.ld })),
+      guides: rows.map((r) => ({ trackingNumber: r.g.trackingNumber, status: r.g.status, bucket: this.bucketOf(r.g, r.unloaded), ld: r.ld, unloaded: r.unloaded, dispatched: disp.has(r.g.id), returned: devs.has(r.g.id) })),
     };
   }
 
@@ -301,6 +276,36 @@ export class DailyTaskFactsService {
       for (const r of rows) out.add(r.id);
     }
     return out;
+  }
+
+  /** Salidas a ruta del día con chofer(es), cuántas guías llevan y si ya se cerraron. */
+  async routesOfDay(subsidiaryId: string, day: string): Promise<{ id: string; trackingNumber: string; drivers: string; guides: number; closed: boolean; closedAt: Date | null }[]> {
+    const [from, to] = dayRange(day);
+    const rows: any[] = await this.db.query(
+      `SELECT pd.id, pd.trackingNumber, MAX(rc.createdAt) closedAt,
+              (SELECT GROUP_CONCAT(d.name ORDER BY d.name SEPARATOR ', ') FROM package_dispatch_drivers x JOIN driver d ON d.id = x.driverId WHERE x.dispatchId = pd.id) drivers,
+              (SELECT COUNT(*) FROM package_dispatch_history h WHERE h.dispatchId = pd.id) guides
+       FROM package_dispatch pd LEFT JOIN route_closure rc ON rc.package_dispatch_id = pd.id
+       WHERE pd.subsidiaryId = ? AND pd.active = 1 AND (pd.routeDate = ? OR (pd.routeDate IS NULL AND pd.createdAt >= ? AND pd.createdAt < ?))
+       GROUP BY pd.id, pd.trackingNumber ORDER BY pd.createdAt`,
+      [subsidiaryId, day, from, to],
+    );
+    return rows.map((r) => ({ id: r.id, trackingNumber: r.trackingNumber, drivers: r.drivers ?? '', guides: Number(r.guides), closed: !!r.closedAt, closedAt: toDate(r.closedAt) }));
+  }
+
+  /** Devoluciones vigentes (sin deshacer) registradas en el día. Solo informan: no todos los DEX regresan a FedEx. */
+  async devolutionsOfDay(subsidiaryId: string, day: string): Promise<{ trackingNumber: string; consNumber: string; reason: string; at: Date }[]> {
+    const [from, to] = dayRange(day);
+    const rows: any[] = await this.db.query(
+      `SELECT d.trackingNumber, d.reason, d.createdAt, TRIM(COALESCE(c.consNumber, ch.consNumber, s.consNumber, cs.consNumber, '')) consNumber
+       FROM devolution d
+       LEFT JOIN shipment s ON s.id = d.shipmentId LEFT JOIN consolidated c ON c.id = s.consolidatedId
+       LEFT JOIN charge_shipment cs ON cs.id = d.chargeShipmentId LEFT JOIN charge ch ON ch.id = cs.chargeId
+       WHERE d.subsidiaryId = ? AND d.undoneAt IS NULL AND d.createdAt >= ? AND d.createdAt < ?
+       ORDER BY d.createdAt`,
+      [subsidiaryId, from, to],
+    );
+    return rows.map((r) => ({ trackingNumber: r.trackingNumber, consNumber: r.consNumber ?? '', reason: r.reason ?? '', at: new Date(r.createdAt) }));
   }
 
   /** Guías de la sucursal que vencen en `day` y son LD o posible LD (para el día y para la foto de las 20:30). */

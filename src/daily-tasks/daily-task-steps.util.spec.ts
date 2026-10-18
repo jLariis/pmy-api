@@ -11,7 +11,7 @@ const S: Schedule = {
 const p = (done: number, total: number, first: Date | null = null, last: Date | null = null) => ({ done, total, first, last });
 const facts = (o: Partial<ConsolidatedFacts> = {}): ConsolidatedFacts => ({
   refType: 'consolidated', refId: 'c1', consNumber: '7781', day: D, carrier: 'fedex', type: 'ordinaria', guides: 124,
-  uploadedAt: at(D, '06:40'), uploadedById: 'u1', uploadedByName: 'Ana', unloading: p(0, 124), dispatch: p(0, 0), closure: p(0, 0), devolutions: p(0, 0), ...o,
+  uploadedAt: at(D, '06:40'), uploadedById: 'u1', uploadedByName: 'Ana', unloading: p(0, 124), dispatch: p(0, 0), closure: p(0, 0), ...o,
 });
 const step = (rows: TaskRow[], s: string) => rows.find((r) => r.step === s)!;
 
@@ -62,31 +62,15 @@ describe('consolidatedTasks', () => {
     expect(r.dueAt).toEqual(at(D, '21:00'));
   });
 
-  it('devoluciones: 9 DEX sin registrar después de 19:30 → late', () => {
-    const r = step(
-      consolidatedTasks(
-        facts({ unloading: p(124, 124, at(D, '07:00'), at(D, '07:15')), dispatch: p(118, 118, at(D, '08:30'), at(D, '09:00')), closure: p(118, 118, at(D, '18:00'), at(D, '18:30')), devolutions: p(0, 9) }),
-        S,
-        at(D, '19:45'),
-      ),
-      'devolutions',
-    );
-    expect(r).toMatchObject({ status: 'late', doneCount: 0, totalCount: 9 });
-  });
-
-  it('devoluciones sin DEX tras cerrar rutas → done', () => {
-    const r = step(
-      consolidatedTasks(facts({ unloading: p(124, 124, at(D, '07:00'), at(D, '07:15')), dispatch: p(118, 118, at(D, '08:30'), at(D, '09:00')), closure: p(118, 118, at(D, '18:00'), at(D, '18:30')), devolutions: p(0, 0) }), S, at(D, '19:00')),
-      'devolutions',
-    );
-    expect(r.status).toBe('done');
-    expect(r.doneAt).toEqual(at(D, '18:30'));
+  it('las devoluciones no son paso: solo se informan (no todos los DEX regresan a FedEx)', () => {
+    expect(consolidatedTasks(facts(), S, at(D, '23:00')).map((r) => r.step)).toEqual(['upload', 'unloading', 'dispatch', 'closure']);
+    expect(subsidiaryTasks('s1', sub(), S, at(D, '23:00')).map((r) => r.step)).toEqual(['inventory_initial', 'closure', 'inventory_final']);
   });
 });
 
 const sub = (o: Partial<SubsidiaryDayFacts> = {}): SubsidiaryDayFacts => ({
   day: D, inventoryInitialAt: null, inventoryFinalAt: null, inventoryInitialBy: null, inventoryFinalBy: null,
-  dispatchesTotal: 0, dispatchesClosed: 0, lastClosureAt: null, dexTotal: 0, dexWithDevolution: 0, lastDevolutionAt: null, ...o,
+  dispatchesTotal: 0, dispatchesClosed: 0, lastClosureAt: null, ...o,
 });
 
 describe('subsidiaryTasks', () => {
@@ -103,14 +87,6 @@ describe('subsidiaryTasks', () => {
     expect(step(subsidiaryTasks('s1', sub({ dispatchesTotal: 6, dispatchesClosed: 4 }), S, at(D, '17:00')), 'closure')).toMatchObject({ status: 'partial', doneCount: 4, totalCount: 6 });
   });
 
-  it('sin DEX antes de la hora límite queda pending (no se tacha en la mañana)', () => {
-    expect(step(subsidiaryTasks('s1', sub(), S, at(D, '09:00')), 'devolutions').status).toBe('pending');
-  });
-
-  it('sin DEX pasada la hora límite → done', () => {
-    expect(step(subsidiaryTasks('s1', sub(), S, at(D, '19:31')), 'devolutions').status).toBe('done');
-  });
-
   it('inventario inicial vence a las 10:00', () => {
     const r = step(subsidiaryTasks('s1', sub(), S, at(D, '10:01')), 'inventory_initial');
     expect(r.status).toBe('late');
@@ -120,10 +96,9 @@ describe('subsidiaryTasks', () => {
 
 describe('consolidatedTasks con totales en cero', () => {
   it('si no queda nada por sacar a ruta (todo terminó sin ruta), la salida y lo demás quedan listos', () => {
-    const rows = consolidatedTasks(facts({ unloading: p(5, 5, at(D, '07:00'), at(D, '07:15')), dispatch: p(0, 0), closure: p(0, 0), devolutions: p(0, 0) }), S, at(D, '23:00'));
+    const rows = consolidatedTasks(facts({ unloading: p(5, 5, at(D, '07:00'), at(D, '07:15')), dispatch: p(0, 0), closure: p(0, 0) }), S, at(D, '23:00'));
     expect(step(rows, 'dispatch').status).toBe('done');
     expect(step(rows, 'closure').status).toBe('done');
-    expect(step(rows, 'devolutions').status).toBe('done');
   });
   it('consolidado sin guías activas: desembarque listo', () => {
     expect(step(consolidatedTasks(facts({ unloading: p(0, 0) }), S, at(D, '23:00')), 'unloading').status).toBe('done');
@@ -131,8 +106,8 @@ describe('consolidatedTasks con totales en cero', () => {
 });
 
 describe('total 0 solo cuenta como listo si el paso anterior terminó', () => {
-  it('consolidado recién subido: salida, cierre y devoluciones NO aparecen listos', () => {
+  it('consolidado recién subido: salida y cierre NO aparecen listos', () => {
     const rows = consolidatedTasks(facts({ unloading: p(0, 124) }), S, at(D, '07:00'));
-    expect(['dispatch', 'closure', 'devolutions'].map((s) => step(rows, s).status)).toEqual(['pending', 'pending', 'pending']);
+    expect(['dispatch', 'closure'].map((s) => step(rows, s).status)).toEqual(['pending', 'pending']);
   });
 });

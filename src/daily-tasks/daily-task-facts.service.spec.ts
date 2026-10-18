@@ -55,6 +55,11 @@ run('DailyTaskFactsService (BD local)', () => {
       await q("INSERT INTO package_dispatch (id, trackingNumber, status, subsidiaryId, createdById, createdAt, routeDate, active) VALUES (?, ?, 'Completada', ?, ?, ?, ?, 1)", [id, 'PD-' + id.slice(0, 8), sub, user, Z(at), D]);
       await q("INSERT INTO route_closure (id, closeDate, collections, package_dispatch_id, subsidiaryId, createdById, createdAt) VALUES (?, ?, '[]', ?, ?, ?, ?)", [randomUUID(), Z('2031-03-04T01:00:00Z'), id, sub, user, Z('2031-03-04T01:00:00Z')]);
     }
+    const DRV = randomUUID();
+    await q("INSERT INTO driver (id, name, licenseNumber, phoneNumber, subsidiaryId) VALUES (?, 'Juan Pérez', 'L1', '0', ?)", [DRV, sub]);
+    await q('INSERT INTO package_dispatch_drivers (dispatchId, driverId) VALUES (?, ?)', [D1, DRV]);
+    const D3 = randomUUID();
+    await q("INSERT INTO package_dispatch (id, trackingNumber, status, subsidiaryId, createdById, createdAt, routeDate, active) VALUES (?, 'PD-ABIERTA', 'En progreso', ?, ?, ?, ?, 1)", [D3, sub, user, Z('2031-03-03T19:00:00Z'), D]);
     const hist = (dispatchId: string, shipmentId: string, at: string) =>
       q('INSERT INTO package_dispatch_history (id, dispatchId, shipmentId, addedAt) VALUES (?, ?, ?, ?)', [randomUUID(), dispatchId, shipmentId, Z(at)]);
     await hist(D1, S[0], '2031-03-03T16:00:00Z');
@@ -68,6 +73,10 @@ run('DailyTaskFactsService (BD local)', () => {
     // Devolución registrada y luego DESHECHA: no cuenta.
     await q("INSERT INTO devolution (id, trackingNumber, reason, date, subsidiaryId, shipmentId, createdById, undoneAt, createdAt) VALUES (?, 'DT-0002', '08', ?, ?, ?, ?, ?, ?)", [
       randomUUID(), Z('2031-03-04T01:30:00Z'), sub, S[1], user, Z('2031-03-04T01:40:00Z'), Z('2031-03-04T01:30:00Z'),
+    ]);
+    // Devolución vigente registrada ese día para la guía entregada por FedEx (solo para listar).
+    await q("INSERT INTO devolution (id, trackingNumber, reason, date, subsidiaryId, shipmentId, createdById, createdAt) VALUES (?, 'DT-0006', '07', ?, ?, ?, ?, ?)", [
+      randomUUID(), Z('2031-03-04T01:50:00Z'), sub, S[5], user, Z('2031-03-04T01:50:00Z'),
     ]);
     await q("INSERT INTO inventory (id, trackingNumber, inventoryDate, subsidiaryId, type, createdById, createdAt) VALUES (?, ?, ?, ?, 'final', ?, ?)", [
       randomUUID(), 'INV-DT', Z('2031-03-04T02:30:00Z'), sub, user, Z('2031-03-04T02:30:00Z'),
@@ -93,14 +102,9 @@ run('DailyTaskFactsService (BD local)', () => {
     expect(f.closure).toMatchObject({ done: 3, total: 3 });
   });
 
-  it('consolidatedFacts: devolución deshecha no cuenta como registrada', async () => {
-    const [f] = (await svc.consolidatedFacts(sub, D)).filter((x) => x.refId === C);
-    expect(f.devolutions).toMatchObject({ done: 0, total: 1 });
-  });
-
   it('subsidiaryFacts: rutas, DEX e inventario final del día', async () => {
     const f = await svc.subsidiaryFacts(sub, D);
-    expect(f).toMatchObject({ dispatchesTotal: 2, dispatchesClosed: 2, dexTotal: 1, dexWithDevolution: 0 });
+    expect(f).toMatchObject({ dispatchesTotal: 3, dispatchesClosed: 2 });
     expect(f.inventoryFinalAt).not.toBeNull();
     expect(f.inventoryInitialAt).toBeNull();
   });
@@ -114,5 +118,25 @@ run('DailyTaskFactsService (BD local)', () => {
   it('ldCandidates: cada pieza DHL es su propia llave', async () => {
     const c = (await svc.ldCandidates(sub, D)).filter((x) => x.trackingNumber === 'DT-DHL1');
     expect(c.map((x) => x.pieceKey).sort()).toEqual(['JD-PIEZA-1', 'JD-PIEZA-2']);
+  });
+
+  it('routesOfDay: cada salida con su chofer y si ya se cerró', async () => {
+    const r = await svc.routesOfDay(sub, D);
+    expect(r.map((x) => [x.trackingNumber.startsWith('PD-') ? 'PD' : x.trackingNumber, x.closed]).sort()).toEqual([['PD', false], ['PD', true], ['PD', true]]);
+    expect(r.find((x) => x.drivers.includes('Juan Pérez'))).toBeTruthy();
+    expect(r.find((x) => x.trackingNumber === 'PD-ABIERTA')).toMatchObject({ closed: false, guides: 0 });
+  });
+
+  it('devolutionsOfDay: solo las vigentes registradas ese día (la deshecha no cuenta)', async () => {
+    const d = await svc.devolutionsOfDay(sub, D);
+    expect(d.map((x) => x.trackingNumber)).toEqual(['DT-0006']);
+    expect(d[0]).toMatchObject({ consNumber: 'TEST-DT-1' });
+  });
+
+  it('packageDetail: marca qué guías salieron a ruta y cuáles tienen devolución', async () => {
+    const g = (await svc.packageDetail('consolidated', C, D)).guides;
+    expect(g.find((x) => x.trackingNumber === 'DT-0003')).toMatchObject({ dispatched: false, returned: false });
+    expect(g.find((x) => x.trackingNumber === 'DT-0001')).toMatchObject({ dispatched: true });
+    expect(g.find((x) => x.trackingNumber === 'DT-0006')).toMatchObject({ returned: true });
   });
 });
