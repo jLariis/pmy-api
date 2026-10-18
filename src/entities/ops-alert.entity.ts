@@ -39,6 +39,17 @@ export class OpsAlertSubsidiary {
   @Column({ type: 'boolean', default: true }) stepDispatch: boolean;
   @Column({ type: 'boolean', default: true }) stepClosure: boolean;
   @Column({ type: 'boolean', default: true }) stepInventory: boolean;
+  @Column({ type: 'boolean', default: true }) stepDevolutions: boolean;
+  @Column({ type: 'boolean', default: true }) stepInventoryInitial: boolean;
+  /** Horarios de Tareas del día por sucursal (null = usa el general / predefinido). */
+  @Column({ type: 'int', nullable: true }) uploadMinutes: number | null;
+  @Column({ type: 'varchar', length: 5, nullable: true }) unloadingTime: string | null;
+  @Column({ type: 'int', nullable: true }) dispatchAfterUnloadMinutes: number | null;
+  @Column({ type: 'varchar', length: 5, nullable: true }) dispatchNextDayTime: string | null;
+  @Column({ type: 'varchar', length: 5, nullable: true }) closureTime: string | null;
+  @Column({ type: 'varchar', length: 5, nullable: true }) inventoryInitialTime: string | null;
+  @Column({ type: 'varchar', length: 5, nullable: true }) devolutionsTime: string | null;
+  @Column({ type: 'varchar', length: 5, nullable: true }) inventoryFinalTime: string | null;
   @Column({ type: 'json', nullable: true }) managerUserIds: string[] | null;
   @Column({ type: 'json', nullable: true }) whatsappNumbers: string[] | null;
   @Column({ type: 'json', nullable: true }) whatsappGroups: { id: string; name: string }[] | null;
@@ -51,10 +62,12 @@ export class OpsAlertSubsidiary {
 export class OpsAlert {
   @PrimaryGeneratedColumn('uuid') id: string;
   @Column({ type: 'varchar', length: 36 }) subsidiaryId: string;
-  @Column({ type: 'varchar', length: 12 }) step: OpsStep;
+  @Column({ type: 'varchar', length: 20 }) step: OpsStep | string;
   /** inbox_consolidation.id, o `<subsidiaryId>:<día>` para inventario. */
   @Column({ type: 'varchar', length: 80 }) refKey: string;
   @Column({ type: 'varchar', length: 36, nullable: true }) inboxConsolidationId: string | null;
+  @Column({ type: 'varchar', length: 36, nullable: true }) consolidatedId: string | null;
+  @Column({ type: 'varchar', length: 36, nullable: true }) chargeId: string | null;
   @Column({ type: 'varchar', length: 30, nullable: true }) consNumber: string | null;
   @Column({ type: 'datetime' }) dueAt: Date;
   /** Último nivel avisado: 0 ninguno · 1 vencido · 2 encargado · 3 supervisión. */

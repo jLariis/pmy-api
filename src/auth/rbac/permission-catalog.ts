@@ -61,6 +61,7 @@ export const RBAC_PERMISSIONS: RbacPermissionDef[] = [
   { code: 'operaciones.cargas', name: 'Cargas', groupName: 'Operaciones', roles: OPERATIVE },
   { code: 'operaciones.desembarques', name: 'Desembarques', groupName: 'Operaciones', roles: OPERATIVE },
   { code: 'operaciones.devoluciones', name: 'Devoluciones', groupName: 'Operaciones', roles: OPERATIVE },
+  { code: 'operaciones.tareas', name: 'Tareas del día', groupName: 'Operaciones', roles: OPERATIVE },
   { code: 'operaciones.envios', name: 'Envíos', groupName: 'Operaciones', roles: OPERATIVE },
   { code: 'operaciones.monitoreo', name: 'Monitoreo', groupName: 'Operaciones', roles: OPERATIVE },
   { code: 'operaciones.pagosFedex', name: 'Pagos a FedEx', groupName: 'Operaciones', roles: OPERATIVE },
