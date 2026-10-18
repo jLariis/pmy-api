@@ -1,3 +1,4 @@
+import { BadRequestException } from '@nestjs/common';
 import { OpsSettings } from '../ops-alerts/ops-alerts.util';
 import { Schedule } from './daily-task.types';
 
@@ -30,4 +31,28 @@ export function resolveSchedule(global: OpsSettings, sub: Partial<Schedule> | nu
     activeTo: global.activeTo,
     completePct: global.completePct,
   };
+}
+
+const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
+export const SCHEDULE_TIME_FIELDS = ['unloadingTime', 'dispatchNextDayTime', 'closureTime', 'inventoryInitialTime', 'devolutionsTime', 'inventoryFinalTime'] as const;
+export const SCHEDULE_MINUTE_FIELDS = ['uploadMinutes', 'dispatchAfterUnloadMinutes'] as const;
+type ScheduleField = (typeof SCHEDULE_TIME_FIELDS)[number] | (typeof SCHEDULE_MINUTE_FIELDS)[number];
+
+/** Valida los horarios de una sucursal. `null` = usar los valores generales. Solo devuelve campos de horario. */
+export function validateSchedulePatch(patch: Record<string, unknown>): Partial<Record<ScheduleField, string | number | null>> {
+  const out: Partial<Record<ScheduleField, string | number | null>> = {};
+  for (const k of SCHEDULE_TIME_FIELDS) {
+    if (patch[k] === undefined) continue;
+    if (patch[k] === null || patch[k] === '') { out[k] = null; continue; }
+    if (!HHMM.test(String(patch[k]))) throw new BadRequestException('Hora no válida (usa HH:MM)');
+    out[k] = String(patch[k]);
+  }
+  for (const k of SCHEDULE_MINUTE_FIELDS) {
+    if (patch[k] === undefined) continue;
+    if (patch[k] === null || patch[k] === '') { out[k] = null; continue; }
+    const n = Number(patch[k]);
+    if (!Number.isInteger(n) || n < 0 || n > 1440) throw new BadRequestException('Los minutos deben ser un número entero entre 0 y 1440');
+    out[k] = n;
+  }
+  return out;
 }

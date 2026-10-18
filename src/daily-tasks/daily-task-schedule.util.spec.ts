@@ -26,3 +26,16 @@ describe('resolveSchedule', () => {
     expect(resolveSchedule(global, null).inventoryFinalTime).toBe(DEFAULT_SCHEDULE.inventoryFinalTime);
   });
 });
+
+describe('validateSchedulePatch', () => {
+  const { validateSchedulePatch } = require('./daily-task-schedule.util');
+  it('hora inválida → error en llano', () => {
+    expect(() => validateSchedulePatch({ unloadingTime: '25:00' })).toThrow('Hora no válida (usa HH:MM)');
+  });
+  it('minutos fuera de rango → error', () => {
+    expect(() => validateSchedulePatch({ dispatchAfterUnloadMinutes: 2000 })).toThrow('Los minutos deben ser un número entero entre 0 y 1440');
+  });
+  it('null = usar valores generales; solo devuelve campos de horario', () => {
+    expect(validateSchedulePatch({ inventoryFinalTime: null, closureTime: '20:30', dispatchAfterUnloadMinutes: '90', stepUpload: true })).toEqual({ inventoryFinalTime: null, closureTime: '20:30', dispatchAfterUnloadMinutes: 90 });
+  });
+});
