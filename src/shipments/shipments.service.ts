@@ -69,6 +69,7 @@ import { ReturnValidationDto } from './dto/returning-validation.dto';
 import { DhlService } from './dhl.service';
 import { BusinessException } from 'src/common/business.exception';
 import { LD_QUALIFYING_SQL_IN } from 'src/common/ld-codes';
+import { classifyLd } from 'src/common/ld-rule.util';
 import { weeklyDex08ChargeIndexes, isoWeekKey } from 'src/common/dex08-week.util';
 import { TemplateService } from 'src/documents/template.service';
 import { buildShipmentsNo67Data } from 'src/documents/data/shipments-no67.mapper';
@@ -4936,9 +4937,6 @@ export class ShipmentsService {
         aggDays(chargeIds, 'chargeShipmentId'),
       ]);
 
-      const DELIVERED = new Set<string>([ShipmentStatusType.ENTREGADO, ShipmentStatusType.ENTREGADO_POR_FEDEX, ShipmentStatusType.ENTREGADO_EN_BODEGA]);
-      const CLOSED = new Set<string>(TERMINAL_SHIPMENT_STATUSES);
-
       return tns.map((trackingNumber) => {
         const rec = found.get(trackingNumber);
         if (!rec) return { trackingNumber, found: false, ldState: null };
@@ -4946,15 +4944,11 @@ export class ShipmentsService {
         const agg = rec.isCharge ? chargeAgg : shipAgg;
         const statusLower = String(rec.status ?? '').toLowerCase();
         const commitDay = rec.commitDateTime ? herDay(rec.commitDateTime) : null;
-        const isDelivered = DELIVERED.has(statusLower);
-        const isOtherClosed = !isDelivered && CLOSED.has(statusLower as any);
         const pastDue = !!commitDay && commitDay < today;
         const movedOnCommitDay = !!commitDay && !!agg.moved.get(rec.id)?.has(commitDay);
         const dexOnCommitDay = !!commitDay && !!agg.dex.get(rec.id)?.has(commitDay);
-        const isLD = pastDue && !isDelivered && !dexOnCommitDay && !movedOnCommitDay;
-
-        const ldState: 'active' | 'ld' | 'delivered' | 'closed' =
-          isDelivered ? 'delivered' : isOtherClosed ? 'closed' : isLD ? 'ld' : 'active';
+        const ld = classifyLd({ status: statusLower, due: pastDue ? 'past' : null, dexOnCommitDay, movedOnCommitDay, requireNoMovement: true, excludeClosed: true });
+        const ldState = ld as 'active' | 'ld' | 'delivered' | 'closed';
 
         return {
           trackingNumber,

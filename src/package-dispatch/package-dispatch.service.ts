@@ -8,6 +8,7 @@ import { PackageDispatch } from 'src/entities/package-dispatch.entity';
 import { Between, DataSource, In, Not, Repository } from 'typeorm';
 import { pickScanCandidate } from '../common/scan-candidate.util';
 import { LD_QUALIFYING_SQL_IN } from 'src/common/ld-codes';
+import { classifyLd } from 'src/common/ld-rule.util';
 import { Shipment, ChargeShipment, Consolidated, ShipmentStatus, Subsidiary } from 'src/entities';
 import { ValidatedPackageDispatchDto } from './dto/validated-package-dispatch.dto';
 import { ValidateTrackingsDto } from './dto/validate-trackings.dto';
@@ -2823,7 +2824,8 @@ export class PackageDispatchService {
       const dexDays = dexDaysMap.get(String(row.id));
       const dexOnCommitDay = !!(commitDay && dexDays && dexDays.has(commitDay));
       const isDelivered = category === 'entregado';
-      const isLD = dueOnFilterDate && !isDelivered && !dexOnCommitDay;
+      const ld = classifyLd({ status: statusLower, due: dueOnFilterDate ? 'today' : null, dexOnCommitDay, movedOnCommitDay: false, requireNoMovement: false, excludeClosed: false });
+      const isLD = ld === 'possible_ld' || ld === 'ld';
       const isDev = devSet.has(String(row.trackingNumber));
       const cost = costOf(row.shipmentType);
 
