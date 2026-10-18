@@ -99,7 +99,10 @@ export class RouteclosureService {
       `🔄 [RouteClosure] Reconciliando ruta ${packageDispatchId} con FedEx (is315=${!!dispatch.is315}, kinds=${kinds.join(',')})...`,
     );
 
-    const outcomes = await this.trackingCompare.applyByRoute(packageDispatchId, actor, { kinds });
+    // Una sola consulta a FedEx (lotes de 30) para las dos pasadas.
+    const items = await this.trackingCompare.listRouteItems(packageDispatchId, kinds);
+    const prefetched = await this.trackingCompare.prefetchRawSafe(items.map((it) => it.entity));
+    const outcomes = await this.trackingCompare.applyByRoute(packageDispatchId, actor, { kinds, prefetched });
 
     // SEGUNDA PASADA (resolver de cierre, externo a applyByRoute): rescata las guías que el Time
     // Shield dejó pegadas en EN_RUTA aunque FedEx ya reportó el desenlace real del día operativo
@@ -110,7 +113,7 @@ export class RouteclosureService {
       packageDispatchId,
       routeAnchor,
       actor,
-      { kinds },
+      { kinds, prefetched },
     );
 
     // Funde los rescates sobre los outcomes base (por guía+tipo): el estatus forzado manda.

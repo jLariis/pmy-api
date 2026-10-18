@@ -17,7 +17,8 @@ export function shipmentIncomeWhere(
 ): FindOptionsWhere<Income>[] {
   const base = { ...extra, active: true };
   return [
-    { ...base, shipment: { id: shipmentId } },
-    { ...base, trackingNumber, shipment: IsNull() },
+    // Por columna, no por relación: `shipment: { id }` mete un join que vuelve lenta la consulta.
+    { ...base, shipmentId },
+    { ...base, trackingNumber, shipmentId: IsNull() },
   ];
 }

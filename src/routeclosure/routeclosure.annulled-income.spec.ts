@@ -15,12 +15,11 @@ import { ShipmentStatusType } from 'src/common/enums/shipment-status-type.enum';
  */
 function makeService(rows: any[], siblingRows: any[] = []) {
   const saved: any[] = [];
-  // Simula el filtro de la BD: where simple o arreglo (OR); `shipment: { id }` compara contra
-  // row.shipmentId y `shipment: IsNull()` exige row.shipmentId == null.
+  // Simula el filtro de la BD: where simple o arreglo (OR); `shipmentId: IsNull()` exige
+  // row.shipmentId == null (cualquier FindOperator se toma como IS NULL aquí).
   const matchField = (row: any, k: string, v: any) => {
-    if (k !== 'shipment') return row[k] === v;
-    if (v && typeof v === 'object' && 'id' in v) return row.shipmentId === v.id;
-    return row.shipmentId == null;
+    if (v && typeof v === 'object') return row[k] == null;
+    return row[k] === v;
   };
   const matches = (row: any, where: any) =>
     (Array.isArray(where) ? where : [where]).some((w) => Object.entries(w).every(([k, v]) => matchField(row, k, v)));

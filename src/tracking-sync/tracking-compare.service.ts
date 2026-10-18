@@ -81,19 +81,21 @@ export class TrackingCompareService {
   async applyByRoute(
     routeId: string,
     actor: ApplyActor,
-    opts: { kinds?: TrackableKind[] } = {},
+    opts: { kinds?: TrackableKind[]; prefetched?: Map<string, RawTrackingResult> } = {},
   ): Promise<ApplyOutcome[]> {
     let items = await this.gatherRouteItems(routeId);
     if (opts.kinds?.length) {
       const allowed = new Set(opts.kinds);
       items = items.filter((it) => allowed.has(it.kind));
     }
+    // FedEx en lotes de 30 (no una llamada por guía): abrir el cierre de 75 guías tardaba ~100 s.
+    const raw = opts.prefetched ?? (await this.prefetchRawSafe(items.map((it) => it.entity)));
     const limit = createLimit(6);
     return Promise.all(
       items.map((it) =>
         limit(async () => {
           try {
-            const built = await this.buildContext(it.entity, it.kind);
+            const built = await this.buildContext(it.entity, it.kind, raw.get(it.entity.trackingNumber));
             if (!built) {
               return {
                 shipmentId: it.entity.id,
@@ -144,7 +146,7 @@ export class TrackingCompareService {
     routeId: string,
     routeAnchor: Date | null,
     actor: ApplyActor,
-    opts: { kinds?: TrackableKind[] } = {},
+    opts: { kinds?: TrackableKind[]; prefetched?: Map<string, RawTrackingResult> } = {},
   ): Promise<ApplyOutcome[]> {
     let items = await this.gatherRouteItems(routeId);
     if (opts.kinds?.length) {
@@ -159,12 +161,13 @@ export class TrackingCompareService {
     );
     if (!candidates.length) return [];
 
+    const raw = opts.prefetched ?? (await this.prefetchRawSafe(candidates.map((it) => it.entity)));
     const limit = createLimit(6);
     const results = await Promise.all(
       candidates.map((it) =>
         limit(async () => {
           try {
-            const built = await this.buildContext(it.entity, it.kind);
+            const built = await this.buildContext(it.entity, it.kind, raw.get(it.entity.trackingNumber));
             if (!built) return null;
             const { ctx } = built;
             // Estatus del ÚLTIMO evento de FedEx OCURRIDO en el día operativo de la ruta (estricto:
@@ -313,8 +316,9 @@ export class TrackingCompareService {
   private async buildContext(
     entity: Trackable,
     kind: TrackableKind,
+    prefetched?: RawTrackingResult,
   ): Promise<{ ctx: SyncContext; ourLastEventAt: string | null } | null> {
-    const prepared = await this.prepareContext(entity, kind);
+    const prepared = await this.prepareContext(entity, kind, prefetched);
     if (!prepared) return null;
     const ctx = prepared.newContext();
     await this.pipeline.run(ctx);
@@ -338,6 +342,16 @@ export class TrackingCompareService {
     const out = new Map<string, RawTrackingResult>();
     for (const r of await this.source.fetch(refs)) if (r?.trackingNumber) out.set(r.trackingNumber, r);
     return out;
+  }
+
+  /** Como `prefetchRaw`, pero si el lote falla regresa vacío: cada guía se consulta sola. */
+  async prefetchRawSafe(entities: Trackable[]): Promise<Map<string, RawTrackingResult>> {
+    try {
+      return await this.prefetchRaw(entities);
+    } catch (err: any) {
+      this.logger.warn(`Precarga FedEx falló (${err?.message}); se consulta guía por guía.`);
+      return new Map();
+    }
   }
 
   async buildDoctorSnapshot(entity: Trackable, kind: TrackableKind, prefetched?: RawTrackingResult): Promise<{
