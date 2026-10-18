@@ -1,4 +1,5 @@
 import { ShipmentStatusType } from "src/common/enums/shipment-status-type.enum";
+import { DevolutionRecord } from "../devolution-target.util";
 
 export class ValidateShipmentDto {
   id: string;
@@ -29,4 +30,11 @@ export class ValidateShipmentDto {
     exceptionCode: string | null;
     notes: string | null;
   } | null;
+  /**
+   * Todos los registros vivos de la guía (uno por consolidado). Si hay más de uno, la persona
+   * elige cuál se devuelve. `inOpenRoute` = va hoy en una salida sin cerrar.
+   */
+  records?: (DevolutionRecord & { inOpenRoute: boolean })[];
+  /** `kind:id` del registro sugerido (el que trae los datos de arriba). */
+  suggestedRecordKey?: string | null;
 }

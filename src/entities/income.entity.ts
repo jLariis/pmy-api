@@ -51,6 +51,15 @@ export class Income {
   @JoinColumn({ name: 'shipmentId' })
   shipment?: Shipment;
 
+  /**
+   * Misma columna que la relación `shipment`, solo para FILTRAR sin join. Desde que shipment
+   * tiene borrado lógico (inactiveAt), `where: { shipment: { id } }` arma un LEFT JOIN y, junto
+   * con un OR, MySQL recorre toda la tabla income (~2 s por guía; abrir un cierre de 75 guías
+   * tardaba ~100 s). Solo lectura: se escribe a través de `shipment`.
+   */
+  @Column({ type: 'varchar', length: 36, nullable: true, insert: false, update: false })
+  shipmentId?: string | null;
+
   @Index()
   @ManyToOne(() => Collection, { nullable: true, onDelete: 'SET NULL' })
   @JoinColumn({ name: 'collectionId' })

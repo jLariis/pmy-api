@@ -2,7 +2,32 @@
 // de imports de DevolutionsService lo arrastra (vía ShipmentsService). No lo usamos aquí.
 jest.mock('p-limit', () => ({ __esModule: true, default: () => (fn: any) => fn() }));
 
+// Los registros de la guía se leen con SQL directo: en estas pruebas se simulan.
+jest.mock('./devolution-records.loader', () => ({ loadDevolutionRecords: jest.fn().mockResolvedValue([]) }));
+
 import { DevolutionsService } from './devolutions.service';
+import { loadDevolutionRecords } from './devolution-records.loader';
+
+/** Filas de prueba (shipment / charge) → registros como los arma el cargador. */
+function useRecords(shipments: any[], charges: any[] = []) {
+  const toRecord = (kind: 'shipment' | 'charge') => (r: any) => ({
+    kind,
+    id: r.id,
+    createdAt: new Date(r.createdAt),
+    status: r.status,
+    consolidatedId: r.consolidatedId ?? null,
+    consNumber: null,
+    consDate: null,
+    subsidiaryId: null,
+    subsidiaryName: null,
+    lastRoute: r.lastRoute ?? null,
+    entregadoIncome: null,
+  });
+  (loadDevolutionRecords as jest.Mock).mockResolvedValue([
+    ...shipments.map(toRecord('shipment')),
+    ...charges.map(toRecord('charge')),
+  ]);
+}
 import { Shipment, ChargeShipment, Devolution, ShipmentStatus, Income } from 'src/entities';
 import { ShipmentStatusType } from 'src/common/enums/shipment-status-type.enum';
 import { IncomeStatus } from 'src/common/enums/income-status.enum';
@@ -88,6 +113,7 @@ describe('DevolutionsService.create — guías en varios consolidados (Bug #1)',
   }) {
     const updates: Array<{ entity: any; id: string; patch: any }> = [];
     const savedEntities: any[] = [];
+    useRecords(opts.shipments, opts.charges);
 
     const manager = {
       find: jest.fn((entity: any) => {
@@ -125,7 +151,7 @@ describe('DevolutionsService.create — guías en varios consolidados (Bug #1)',
 
   const dto = { trackingNumber: 'T1', subsidiary: { id: 'SUB-1' } } as any;
 
-  it('marca DEVUELTO_A_FEDEX en TODAS las filas (2 shipments de distinto consolidado + 1 charge)', async () => {
+  it('sin elegir: marca el sugerido (más nuevo abierto) y los más viejos abiertos', async () => {
     const { svc, updates, savedEntities } = makeHarness({
       shipments: [
         { id: 's-old', consolidatedId: 'CONS-A', status: 'pendiente', createdAt: '2026-08-01' },
@@ -136,7 +162,7 @@ describe('DevolutionsService.create — guías en varios consolidados (Bug #1)',
 
     const res = await svc.create([dto], 'user-1');
 
-    // Se actualizan las 3 filas a DEVUELTO_A_FEDEX
+    // El sugerido es el más nuevo (s-new); los otros dos son más viejos y abiertos: los 3 se marcan.
     expect(updates).toHaveLength(3);
     const updatedIds = updates.map((u) => u.id).sort();
     expect(updatedIds).toEqual(['c-1', 's-new', 's-old']);
@@ -166,9 +192,56 @@ describe('DevolutionsService.create — guías en varios consolidados (Bug #1)',
     expect(res.success).toEqual([]);
 
     // ...pero el estatus del shipment SÍ pasa a DEVUELTO_A_FEDEX (corrección del bug)
-    expect(updates).toHaveLength(1);
-    expect(updates[0].id).toBe('s-new');
-    expect(updates[0].patch.status).toBe(ShipmentStatusType.DEVUELTO_A_FEDEX);
+    const shipmentUpdates = updates.filter((u) => u.entity === Shipment);
+    expect(shipmentUpdates).toHaveLength(1);
+    expect(shipmentUpdates[0].id).toBe('s-new');
+    expect(shipmentUpdates[0].patch.status).toBe(ShipmentStatusType.DEVUELTO_A_FEDEX);
+    // ...y queda anotado en la devolución existente para poder deshacerlo.
+    const devUpdate = updates.find((u) => u.entity === Devolution);
+    expect(devUpdate?.patch.appliedChanges.records).toEqual([{ kind: 'shipment', id: 's-new', fromStatus: 'no_entregado' }]);
+  });
+
+  it('caso 384096861505: eligiendo el registro del 15 NO toca el del 16 y liga su consolidado', async () => {
+    const { svc, updates, savedEntities } = makeHarness({
+      shipments: [
+        { id: 'del15', consolidatedId: 'CONS-15', status: 'cambio_fecha_solicitado', createdAt: '2026-10-15T19:28:41Z' },
+        { id: 'del16', consolidatedId: 'CONS-16', status: 'en_ruta', createdAt: '2026-10-16T19:52:54Z',
+          lastRoute: { folio: '805022196741', routeDate: '2026-10-16', closed: false } },
+      ],
+      charges: [],
+    });
+
+    const res = await svc.create([{ ...dto, shipmentId: 'del15' }], 'user-1');
+
+    expect(res.success).toEqual(['T1']);
+    expect(updates.filter((u) => u.entity === Shipment).map((u) => u.id)).toEqual(['del15']);
+    const devolution = savedEntities.find((e) => e.__entity === Devolution);
+    expect(devolution).toMatchObject({ consolidatedId: 'CONS-15', shipmentId: 'del15', chargeShipmentId: null });
+    expect(devolution.appliedChanges.records).toEqual([{ kind: 'shipment', id: 'del15', fromStatus: 'cambio_fecha_solicitado' }]);
+  });
+
+  it('registro en una ruta sin cerrar: no se guarda sin confirmación (inRoute); con confirmación sí', async () => {
+    const del16 = { id: 'del16', consolidatedId: 'CONS-16', status: 'en_ruta', createdAt: '2026-10-16T19:52:54Z',
+      lastRoute: { folio: '805022196741', routeDate: '2026-10-16', closed: false } };
+    const first = makeHarness({ shipments: [del16], charges: [] });
+    const res = await first.svc.create([{ ...dto, shipmentId: 'del16' }], 'user-1');
+    expect(res.inRoute).toEqual(['T1']);
+    expect(first.updates).toHaveLength(0);
+
+    const second = makeHarness({ shipments: [del16], charges: [] });
+    const res2 = await second.svc.create([{ ...dto, shipmentId: 'del16', confirmInRoute: true }], 'user-1');
+    expect(res2.success).toEqual(['T1']);
+    expect(second.updates.map((u) => u.id)).toEqual(['del16']);
+  });
+
+  it('registro elegido que no es de la guía: error (no se marca nada)', async () => {
+    const { svc, updates } = makeHarness({
+      shipments: [{ id: 's-1', consolidatedId: 'CONS-A', status: 'pendiente', createdAt: '2026-08-09' }],
+      charges: [],
+    });
+    const res = await svc.create([{ ...dto, shipmentId: 'otro' }], 'user-1');
+    expect(res.errors[0].error).toContain('no pertenece');
+    expect(updates).toHaveLength(0);
   });
 
   it('guía inexistente en ambas tablas -> notFound, sin updates', async () => {
@@ -194,6 +267,7 @@ describe('DevolutionsService.create — guías en varios consolidados (Bug #1)',
 describe('DevolutionsService.processOneDevolution — fecha operativa (no la de captura)', () => {
   function makeManager(shipments: any[], charges: any[]) {
     const saved: any[] = [];
+    useRecords(shipments, charges);
     const manager = {
       find: jest.fn((entity: any) => {
         if (entity === Shipment) return Promise.resolve(shipments);
@@ -256,6 +330,7 @@ describe('DevolutionsService.processOneDevolution — anulación de ingreso entr
   function makeManager(opts: { shipments: any[]; charges: any[]; incomes?: any[] }) {
     const saved: any[] = [];
     const updates: Array<{ entity: any; id: any; patch: any }> = [];
+    useRecords(opts.shipments, opts.charges);
     const manager = {
       find: jest.fn((entity: any) => {
         if (entity === Shipment) return Promise.resolve(opts.shipments);
@@ -342,6 +417,8 @@ describe('DevolutionsService.validateOnShipment — marca wasDispatched (motivo 
       findOne: jest.fn().mockResolvedValue(null),
     };
     svc.packageDispatchHistoryRepository = { exists: jest.fn().mockResolvedValue(opts.dispatchExists) };
+    svc.dataSource = { manager: {} };
+    useRecords([]);
     return svc;
   }
 

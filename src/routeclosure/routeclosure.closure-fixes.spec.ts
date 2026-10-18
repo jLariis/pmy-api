@@ -205,14 +205,16 @@ describe('RouteclosureService.reconcileRouteWithFedex — (3) revalidación FedE
     const updatedIncomes: any[] = [];
     const incomeRepo = {
       // Ingresos por SHIPMENT (el cierre busca los del registro, no los de la guía).
-      find: jest.fn(async ({ where }: any) => opts.existingByShipment?.[where[0]?.shipment?.id] ?? []),
+      find: jest.fn(async ({ where }: any) => opts.existingByShipment?.[where[0]?.shipmentId] ?? []),
       create: jest.fn((data: any) => data),
       save: jest.fn(async (data: any) => { savedIncomes.push(data); return data; }),
       update: jest.fn(async (id: string, patch: any) => { updatedIncomes.push({ id, patch }); }),
     };
     const svc = Object.create(RouteclosureService.prototype) as any;
     svc.logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
-    svc.trackingCompare = { applyByRoute, resolveStuckEnRutaForClosure };
+    const listRouteItems = jest.fn().mockResolvedValue([]);
+    const prefetchRawSafe = jest.fn().mockResolvedValue(new Map());
+    svc.trackingCompare = { applyByRoute, resolveStuckEnRutaForClosure, listRouteItems, prefetchRawSafe };
     svc.packageDispatchRepository = { findOne: jest.fn().mockResolvedValue(packageDispatch) };
     svc.dataSource = { getRepository: () => incomeRepo, manager: { query: jest.fn(async () => []) } };
     return { svc, applyByRoute, resolveStuckEnRutaForClosure, incomeRepo, savedIncomes, updatedIncomes };
@@ -227,6 +229,9 @@ describe('RouteclosureService.reconcileRouteWithFedex — (3) revalidación FedE
     expect(routeId).toBe('PD-1');
     expect(actor).toEqual({ userId: 'U1', role: 'operador' });
     expect(opts.kinds.sort()).toEqual(['charge', 'shipment']);
+    // FedEx se precarga UNA vez (lotes de 30) y se comparte entre las dos pasadas.
+    expect(svc.trackingCompare.prefetchRawSafe).toHaveBeenCalledTimes(1);
+    expect(opts.prefetched).toBe(svc.trackingCompare.resolveStuckEnRutaForClosure.mock.calls[0][3].prefetched);
     expect(res.updated).toBe(1);
   });
 
@@ -468,6 +473,8 @@ describe('RouteclosureService.reconcileRouteWithFedex — ingreso a la hora del 
     svc.trackingCompare = {
       applyByRoute: jest.fn().mockResolvedValue(outcomes),
       resolveStuckEnRutaForClosure: jest.fn().mockResolvedValue([]),
+      listRouteItems: jest.fn().mockResolvedValue([]),
+      prefetchRawSafe: jest.fn().mockResolvedValue(new Map()),
     };
     svc.packageDispatchRepository = {
       findOne: jest.fn().mockResolvedValue({

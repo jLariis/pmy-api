@@ -130,7 +130,7 @@ describe('TrackingCompareService.applyByRoute', () => {
         fromStatus: ctx.shipment.status, toStatus: ctx.proposedStatus, insertedEvents: 0,
       })),
     } as any;
-    return { svc: new TrackingCompareService(shipmentRepo, chargeRepo, statusRepo, historyRepo, source, normalizer, reconciler, pipeline, sink), sink };
+    return { svc: new TrackingCompareService(shipmentRepo, chargeRepo, statusRepo, historyRepo, source, normalizer, reconciler, pipeline, sink), sink, source };
   }
 
   const s1 = { id: 's1', trackingNumber: 'TN1', status: 'en_ruta' };
@@ -146,6 +146,24 @@ describe('TrackingCompareService.applyByRoute', () => {
     expect(sink.applyPlan).toHaveBeenCalledTimes(2);
     expect(out.map((o) => o.shipmentId).sort()).toEqual(['c9', 's1']);
     expect(out.every((o) => o.applied)).toBe(true);
+  });
+
+  it('consulta FedEx en UN lote para toda la ruta (no una llamada por guía)', async () => {
+    const { svc, source } = svcForRoute(historyRows);
+    await svc.applyByRoute('route-1', { role: 'operador' });
+    expect(source.fetch).toHaveBeenCalledTimes(1);
+    expect(source.fetch.mock.calls[0][0].map((r: any) => r.trackingNumber).sort()).toEqual(['TN1', 'TN9']);
+  });
+
+  it('con precarga dada no vuelve a consultar FedEx', async () => {
+    const { svc, source, sink } = svcForRoute(historyRows);
+    const prefetched = new Map([
+      ['TN1', { trackingNumber: 'TN1', trackResults: [{}] }],
+      ['TN9', { trackingNumber: 'TN9', trackResults: [{}] }],
+    ]) as any;
+    await svc.applyByRoute('route-1', { role: 'operador' }, { prefetched });
+    expect(source.fetch).not.toHaveBeenCalled();
+    expect(sink.applyPlan).toHaveBeenCalledTimes(2);
   });
 
   it('kinds=[charge] (ruta 31.5): SOLO persiste los F2, no toca los shipments', async () => {

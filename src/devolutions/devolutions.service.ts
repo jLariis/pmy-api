@@ -1,7 +1,10 @@
 import { BadRequestException, forwardRef, Inject, Injectable, Logger } from '@nestjs/common';
 import { CreateDevolutionDto } from './dto/create-devolution.dto';
 import { Between, DataSource, EntityManager, In, IsNull, Repository } from 'typeorm';
-import { Devolution } from 'src/entities/devolution.entity';
+import { Devolution, DevolutionAppliedChanges } from 'src/entities/devolution.entity';
+import { shipmentIncomeWhere } from 'src/common/shipment-income-where.util';
+import { loadDevolutionRecords } from './devolution-records.loader';
+import { isInOpenRoute, recordKey, recordsToMark, suggestDevolutionRecord } from './devolution-target.util';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ChargeShipment, Collection, Income, Shipment, ShipmentStatus, Subsidiary } from 'src/entities';
 import { PackageDispatchHistory } from 'src/entities/package-dispatch-history.entity';
@@ -52,11 +55,13 @@ export class DevolutionsService {
   success: string[];
   duplicates: string[];
   notFound: string[];
+  inRoute: string[];
   errors: Array<{ trackingNumber: string; error: string }>;
 }> {
   const success: string[] = [];
   const duplicates: string[] = [];
   const notFound: string[] = [];
+  const inRoute: string[] = [];
   const errors: Array<{ trackingNumber: string; error: string }> = [];
 
   for (const dto of devolutions) {
@@ -70,6 +75,7 @@ export class DevolutionsService {
       if (outcome === 'success') success.push(dto.trackingNumber);
       else if (outcome === 'duplicate') duplicates.push(dto.trackingNumber);
       else if (outcome === 'notFound') notFound.push(dto.trackingNumber);
+      else if (outcome === 'inRoute') inRoute.push(dto.trackingNumber);
     } catch (error) {
       await queryRunner.rollbackTransaction();
       this.logger.error(`Error en devolución ${dto.trackingNumber}: ${error.message}`);
@@ -79,23 +85,26 @@ export class DevolutionsService {
     }
   }
 
-  return { success, duplicates, notFound, errors };
+  return { success, duplicates, notFound, inRoute, errors };
 }
 
   /**
    * Procesa UNA devolución sobre el `manager` recibido (sin abrir transacción propia), para poder
    * reusarla tanto en `create()` (una transacción por dto) como en el guardado unificado de una
    * "Salida" (todo en una sola transacción). Devuelve el desenlace sin lanzar por duplicado/no
-   * encontrado; solo lanza ante errores inesperados (para que el caller decida el rollback).
+   * encontrado/en ruta; solo lanza ante errores inesperados (para que el caller decida el rollback).
    *
-   * Regla (Bug #1): una guía reciclada/máster vive en varias filas de distintos consolidados; se
-   * marca DEVUELTO_A_FEDEX en TODAS, y el registro de Devolution es único por (guía + consolidado).
+   * Regla (2026-10-17, caso 384096861505): una guía puede tener varios registros (uno por
+   * consolidado). La devolución es del registro que la persona elige (o el sugerido) y marca
+   * DEVUELTO_A_FEDEX en ése y en los MÁS VIEJOS que sigan abiertos, nunca en uno más nuevo. Si el
+   * registro va en una ruta sin cerrar, solo se guarda con `confirmInRoute`. Se guarda qué cambió
+   * (`appliedChanges`) para poder deshacerlo con autorización.
    */
   async processOneDevolution(
     manager: EntityManager,
     dto: CreateDevolutionDto,
     opts: { userId?: string; returningHistoryId?: string; operationalDate?: Date } = {},
-  ): Promise<'success' | 'duplicate' | 'notFound'> {
+  ): Promise<'success' | 'duplicate' | 'notFound' | 'inRoute'> {
     const { trackingNumber, subsidiary, status } = dto;
     if (!subsidiary) {
       throw new Error('La sucursal es obligatoria para procesar la devolución.');
@@ -103,84 +112,97 @@ export class DevolutionsService {
 
     // Fecha OPERATIVA de la devolución: el día real en que se devolvió (p.ej. sábado), que el
     // caller ancla a la medianoche de Hermosillo (07:00Z) desde el `date` del lote —igual que el
-    // `routeDate` de la salida a ruta—. Si no llega, cae al instante de captura. Antes se usaba
-    // `new Date()` (momento de tecleo) y para el evento un `fromZonedTime(new Date(), TZ)` que
-    // además lo corría +7h: el `devuelto_a_fedex` quedaba fechado el día de captura (o después),
-    // no el día real de la devolución. Espejo del fix de "persistencia de horas" del Caso 1.
+    // `routeDate` de la salida a ruta—. Si no llega, cae al instante de captura.
     const opDate = opts.operationalDate ?? new Date();
 
-    const shipments = await manager.find(Shipment, { where: { trackingNumber } });
-    const charges = await manager.find(ChargeShipment, { where: { trackingNumber } });
-
-    if (shipments.length === 0 && charges.length === 0) {
+    const records = await loadDevolutionRecords(manager, trackingNumber);
+    if (records.length === 0) {
       return 'notFound';
     }
 
-    // Consolidado del match más reciente (puede ser null si el envío no trae consolidado).
-    const consolidatedId =
-      [...shipments, ...charges]
-        .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0]
-        ?.consolidatedId ?? null;
+    const wantedKey = dto.shipmentId
+      ? recordKey({ kind: 'shipment', id: dto.shipmentId })
+      : dto.chargeShipmentId
+        ? recordKey({ kind: 'charge', id: dto.chargeShipmentId })
+        : null;
+    const chosen = wantedKey ? records.find((r) => recordKey(r) === wantedKey) : suggestDevolutionRecord(records);
+    if (!chosen) {
+      throw new Error(`El registro elegido no pertenece a la guía ${trackingNumber}.`);
+    }
+    if (isInOpenRoute(chosen) && !dto.confirmInRoute) {
+      return 'inRoute';
+    }
 
-    // Duplicado por (guía + consolidado): no re-crea el registro, pero SÍ garantiza el estatus.
+    // Duplicado por (guía + consolidado del registro elegido), sin contar las deshechas.
+    const consolidatedId = chosen.consolidatedId ?? null;
     const existingDevolution = await manager.findOne(Devolution, {
       where: {
         trackingNumber,
         consolidatedId: consolidatedId === null ? IsNull() : consolidatedId,
+        undoneAt: IsNull(),
       },
     });
 
-    if (!existingDevolution) {
-      const newDevolution = manager.create(Devolution, {
-        ...dto,
-        consolidatedId,
-        date: opDate,
-        createdById: opts.userId ?? null,
-        returningHistory: opts.returningHistoryId ? ({ id: opts.returningHistoryId } as any) : null,
-      });
-      await manager.save(newDevolution);
-    }
-
-    // Marcar DEVUELTO_A_FEDEX en TODAS las filas de la guía + historial por fila (idempotente).
     // `subsidiary` es objeto (entidad o { id }): interpolarlo directo dejaba "[object Object]".
     const subsidiaryLabel = subsidiary?.name ?? subsidiary?.id ?? 'sin sucursal';
     const note = `Devolución registrada en sucursal: ${subsidiaryLabel}. Motivo: ${status || 'No especificado'}`;
 
-    for (const s of shipments) {
-      if (s.status === ShipmentStatusType.DEVUELTO_A_FEDEX) continue;
-      await manager.update(Shipment, s.id, { status: ShipmentStatusType.DEVUELTO_A_FEDEX });
+    const marked: DevolutionAppliedChanges['records'] = [];
+    for (const r of recordsToMark(records, chosen)) {
+      if (r.kind === 'shipment') {
+        await manager.update(Shipment, r.id, { status: ShipmentStatusType.DEVUELTO_A_FEDEX });
+      } else {
+        await manager.update(ChargeShipment, r.id, { status: ShipmentStatusType.DEVUELTO_A_FEDEX });
+      }
       await manager.save(
         manager.create(ShipmentStatus, {
           status: ShipmentStatusType.DEVUELTO_A_FEDEX,
           exceptionCode: '',
           notes: note,
           timestamp: opDate,
-          shipment: { id: s.id },
+          ...(r.kind === 'shipment' ? { shipment: { id: r.id } } : { chargeShipment: { id: r.id } }),
         }),
       );
+      marked.push({ kind: r.kind, id: r.id, fromStatus: String(r.status) });
     }
 
-    for (const c of charges) {
-      if (c.status === ShipmentStatusType.DEVUELTO_A_FEDEX) continue;
-      await manager.update(ChargeShipment, c.id, { status: ShipmentStatusType.DEVUELTO_A_FEDEX });
+    // Anulación del ingreso `entregado` del registro elegido — SOLO si el usuario lo confirmó en
+    // el front. El paquete se regresa a FedEx: el cliente no lo recibió, ese cobro no procede.
+    const annulledIncomeIds =
+      dto.annulEntregadoIncome && chosen.kind === 'shipment'
+        ? await this.annulEntregadoIncomeFor(manager, trackingNumber, chosen.id, opDate, opts.userId ?? null)
+        : [];
+
+    if (!existingDevolution) {
       await manager.save(
-        manager.create(ShipmentStatus, {
-          status: ShipmentStatusType.DEVUELTO_A_FEDEX,
-          exceptionCode: '',
-          notes: note,
-          timestamp: opDate,
-          chargeShipment: { id: c.id },
+        manager.create(Devolution, {
+          trackingNumber,
+          subsidiary,
+          reason: dto.reason ?? '',
+          consolidatedId,
+          shipmentId: chosen.kind === 'shipment' ? chosen.id : null,
+          chargeShipmentId: chosen.kind === 'charge' ? chosen.id : null,
+          appliedChanges: { records: marked, annulledIncomeIds },
+          date: opDate,
+          createdById: opts.userId ?? null,
+          returningHistory: opts.returningHistoryId ? ({ id: opts.returningHistoryId } as any) : null,
         }),
       );
+      return 'success';
     }
 
-    // Anulación del ingreso `entregado` — SOLO si el usuario lo confirmó en el front. El paquete
-    // se regresa a FedEx: el cliente no lo recibió, así que ese cobro no procede.
-    if (dto.annulEntregadoIncome) {
-      await this.annulEntregadoIncomeFor(manager, trackingNumber, opDate, opts.userId ?? null);
+    // Duplicado: no se crea otro registro, pero lo que se haya marcado ahora queda anotado en la
+    // devolución existente para que "deshacer" también lo regrese.
+    if (marked.length || annulledIncomeIds.length) {
+      const prev = existingDevolution.appliedChanges ?? { records: [], annulledIncomeIds: [] };
+      await manager.update(Devolution, existingDevolution.id, {
+        appliedChanges: {
+          records: [...prev.records, ...marked],
+          annulledIncomeIds: [...prev.annulledIncomeIds, ...annulledIncomeIds],
+        } as any,
+      });
     }
-
-    return existingDevolution ? 'duplicate' : 'success';
+    return 'duplicate';
   }
 
   /**
@@ -193,16 +215,17 @@ export class DevolutionsService {
   private async annulEntregadoIncomeFor(
     manager: EntityManager,
     trackingNumber: string,
+    shipmentId: string,
     opDate: Date,
     userId: string | null,
-  ): Promise<void> {
+  ): Promise<string[]> {
+    // Solo el ingreso del registro elegido (o el de la guía sin registro ligado): el de otro
+    // consolidado es otro flujo y no se toca.
     const originals = await manager.find(Income, {
-      where: {
-        trackingNumber,
+      where: shipmentIncomeWhere(shipmentId, trackingNumber, {
         incomeType: IncomeStatus.ENTREGADO,
         sourceType: IncomeSourceType.SHIPMENT,
-        active: true,
-      },
+      }),
       relations: ['subsidiary', 'shipment'],
     });
 
@@ -247,14 +270,17 @@ export class DevolutionsService {
         metadata: { trackingNumber, cost: Number(original.cost), reason: 'devolucion' },
       });
     }
+    return originals.map((o) => o.id);
   }
 
   async findAll(subsidiaryId: string) {
     return await this.devolutionRepository.find({
+      // Las deshechas (con autorización) ya no cuentan como devolución.
       where: {
         subsidiary: {
           id: subsidiaryId
-        }
+        },
+        undoneAt: IsNull(),
       },
       order: {
         date: 'DESC'
@@ -278,6 +304,15 @@ export class DevolutionsService {
         `Estatus FedEx de ${trackingNumber} con observaciones: ${latest.validation.issues.join('; ')}`,
       );
     }
+
+    // Todos los registros vivos de la guía (uno por consolidado) para que la persona elija cuál
+    // se devuelve; se sugiere el que no va en ruta abierta (caso 384096861505).
+    const records = await loadDevolutionRecords(this.dataSource.manager, trackingNumber);
+    const suggested = suggestDevolutionRecord(records);
+    const recordsInfo = {
+      records: records.map((r) => ({ ...r, inOpenRoute: isInOpenRoute(r) })),
+      suggestedRecordKey: suggested ? recordKey(suggested) : null,
+    };
 
     // ---------------------------------------------------------------
     // 2. Buscar todos los Shipments con el trackingNumber
@@ -371,6 +406,7 @@ export class DevolutionsService {
           exceptionCode: effException || null,
           notes: latest.found ? latest.description : null,
         },
+        ...recordsInfo,
       };
     }
 
@@ -378,10 +414,14 @@ export class DevolutionsService {
     // 4. Tomar el shipment más reciente según createdAt
     // ---------------------------------------------------------------
 
-    const latestShipment = shipments.sort(
+    // El sugerido manda (no el más nuevo, que puede ir en ruta); si el sugerido es una carga, se
+    // muestra el paquete más reciente como antes.
+    const byNewest = shipments.sort(
       (a, b) =>
         new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
-    )[0];
+    );
+    const latestShipment =
+      (suggested?.kind === 'shipment' && byNewest.find((s) => s.id === suggested.id)) || byNewest[0];
 
     // ---------------------------------------------------------------
     // 5. Ordenar su statusHistory por timestamp
@@ -431,7 +471,10 @@ export class DevolutionsService {
       },
       select: ['id', 'cost'],
     });
-    const entregadoIncome = entregadoRow ? { id: entregadoRow.id, cost: Number(entregadoRow.cost) } : null;
+    const entregadoIncome =
+      suggested?.kind === 'shipment'
+        ? suggested.entregadoIncome
+        : entregadoRow ? { id: entregadoRow.id, cost: Number(entregadoRow.cost) } : null;
 
     // ¿La guía perteneció alguna vez a un package_dispatch (salida a ruta)? El ingreso de
     // shipment SOLO nace en el cierre de ruta; una guía devuelta que nunca salió a ruta nunca
@@ -464,6 +507,7 @@ export class DevolutionsService {
         exceptionCode: effException || null,
         notes: effNotes,
       },
+      ...recordsInfo,
     };
   }
 
@@ -556,7 +600,7 @@ export class DevolutionsService {
     const endOfDay = fromZonedTime(new Date(zoned.getFullYear(), zoned.getMonth(), zoned.getDate(), 23, 59, 59, 999), RETURNING_TZ);
 
     const [devolutions, collections] = await Promise.all([
-      this.devolutionRepository.find({ where: { subsidiary: { id: subsidiaryId }, date: Between(startOfDay, endOfDay) } }),
+      this.devolutionRepository.find({ where: { subsidiary: { id: subsidiaryId }, date: Between(startOfDay, endOfDay), undoneAt: IsNull() } }),
       this.collectionRepository.find({ where: { subsidiary: { id: subsidiaryId }, createdAt: Between(startOfDay, endOfDay) } }),
     ]);
 

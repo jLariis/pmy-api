@@ -19,6 +19,7 @@ import { ConsolidatedActionsService } from './consolidated-actions.service';
 import { ApprovalsService } from './approvals.service';
 import { ApprovalImpactService } from './impact.service';
 import { ApprovalsController } from './approvals.controller';
+import { DevolutionUndoService } from 'src/devolutions/devolution-undo.service';
 
 @Module({
   imports: [
@@ -30,7 +31,10 @@ import { ApprovalsController } from './approvals.controller';
     HolidaysModule,
   ],
   controllers: [ApprovalsController],
-  providers: [ApprovalsService, ApprovalImpactService, ConsolidatedFamilyLoader, ConsolidatedActionsExecutor, ConsolidatedActionsService],
+  providers: [
+    ApprovalsService, ApprovalImpactService, ConsolidatedFamilyLoader, ConsolidatedActionsExecutor, ConsolidatedActionsService,
+    DevolutionUndoService,
+  ],
   exports: [ApprovalsService],
 })
 export class ApprovalsModule {}

@@ -22,6 +22,7 @@ import { Shipment } from 'src/entities/shipment.entity';
 import { ChargeShipment } from 'src/entities/charge-shipment.entity';
 import { ApprovalImpactService } from './impact.service';
 import { NotificationsService } from 'src/notifications/notifications.service';
+import { DevolutionUndoService } from 'src/devolutions/devolution-undo.service';
 
 export type ApprovalActor = { userId: string; name?: string; role?: string };
 
@@ -49,6 +50,7 @@ export class ApprovalsService {
     private readonly consolidatedActions: ConsolidatedActionsService,
     private readonly audit: AuditService,
     @InjectRepository(ConsolidatedChangeLog) private readonly changeLogRepo: Repository<ConsolidatedChangeLog>,
+    private readonly devolutionUndo: DevolutionUndoService,
   ) {}
 
   /** Bitácora general (pantalla de Auditoría, módulo Consolidados). Nunca rompe la operación. */
@@ -134,6 +136,7 @@ export class ApprovalsService {
     payload?: ConsolidatedActionPayload;
   }): Promise<ApprovalRequest> {
     if (isConsolidatedAction(input.type)) return this.createConsolidatedRequest(input);
+    if (input.type === 'undo_devolution') return this.createUndoDevolutionRequest(input);
 
     const { type, targetId, actor } = input;
     const target = await this.loadTargetActive(type, targetId);
@@ -234,6 +237,81 @@ export class ApprovalsService {
     return row;
   }
 
+  /** Deshacer una devolución (registro equivocado, paquete que no regresó…). */
+  private async createUndoDevolutionRequest(input: {
+    type: ApprovalType;
+    targetId: string;
+    actor: ApprovalActor;
+    justification?: string;
+  }): Promise<ApprovalRequest> {
+    const { type, targetId, actor } = input;
+    const justification = (input.justification ?? '').trim();
+    if (justification.length < MIN_JUSTIFICATION) {
+      throw new BadRequestException(`Escribe por qué (mínimo ${MIN_JUSTIFICATION} caracteres).`);
+    }
+    const impact = await this.devolutionUndo.impact(targetId);
+    const pending = await this.repo.findOne({ where: { targetKey: impact.targetKey, status: 'pendiente' } });
+    if (pending) throw new BadRequestException('Ya hay una solicitud pendiente para deshacer esta devolución.');
+
+    const supervisor = await this.resolveSupervisor(impact.subsidiaryId);
+    const row = await this.repo.save(this.repo.create({
+      type,
+      targetId,
+      subsidiaryId: impact.subsidiaryId,
+      requestedById: actor.userId,
+      requestedByName: actor.name ?? null,
+      approverId: supervisor?.id ?? null,
+      approverName: supervisor?.name ?? null,
+      status: 'pendiente',
+      impactSnapshot: impact,
+      justification,
+      targetKey: impact.targetKey,
+      targetLabel: impact.label,
+    }));
+
+    await this.notifier.emit({
+      type: 'aprobacion.solicitada',
+      audience: supervisor ? { userId: supervisor.id } : { role: 'superadmin' },
+      title: `Autorización requerida: deshacer ${impact.label}`,
+      body: `${actor.name ?? 'Un usuario'} pide deshacer la ${impact.label}. Motivo: ${justification}`,
+      link: `/?approval=${row.id}`,
+      entityId: row.id,
+      subsidiaryId: impact.subsidiaryId ?? undefined,
+      actor: { id: actor.userId, name: actor.name },
+      data: { impact },
+    });
+    return row;
+  }
+
+  private async approveUndoDevolution(r: ApprovalRequest, actor: ApprovalActor): Promise<void> {
+    let after: Awaited<ReturnType<DevolutionUndoService['execute']>>;
+    try {
+      after = await this.devolutionUndo.execute(r.targetId, actor, r.justification ?? '');
+    } catch (err: any) {
+      const message = err?.response?.message ?? err?.message ?? 'Error desconocido';
+      await this.repo.update(r.id, { executionError: String(message).slice(0, 2000) });
+      if (err instanceof HttpException) throw err;
+      throw new InternalServerErrorException(`No se pudo deshacer la devolución: ${message}`);
+    }
+    await this.repo.update(r.id, {
+      status: 'aprobado',
+      approverId: actor.userId,
+      approverName: actor.name ?? r.approverName,
+      resolvedAt: new Date(),
+      executedAt: new Date(),
+      executionError: null,
+      resultSummary: after as any,
+    });
+    await this.notifier.emit({
+      type: 'aprobacion.aprobada',
+      audience: r.requestedById ? { userId: r.requestedById } : { role: 'superadmin' },
+      title: `Autorizado: deshacer ${r.targetLabel ?? 'la devolución'}`,
+      body: `${actor.name ?? 'El encargado'} autorizó y se deshizo la devolución.`,
+      entityId: r.id,
+      actor: { id: actor.userId, name: actor.name },
+    });
+  }
+
   private async loadForDecision(id: string, actor: ApprovalActor): Promise<ApprovalRequest> {
     const r = await this.repo.findOne({ where: { id } });
     if (!r) throw new NotFoundException('Solicitud no encontrada');
@@ -260,6 +338,7 @@ export class ApprovalsService {
   async approve(id: string, actor: ApprovalActor): Promise<void> {
     const r = await this.loadForDecision(id, actor);
     if (isConsolidatedAction(r.type)) return this.approveConsolidated(r, actor);
+    if (r.type === 'undo_devolution') return this.approveUndoDevolution(r, actor);
 
     await this.executeLogicalDelete(r);
     await this.repo.update(id, {
@@ -343,7 +422,7 @@ export class ApprovalsService {
     await this.notifier.emit({
       type: 'aprobacion.rechazada',
       audience: r.requestedById ? { userId: r.requestedById } : { role: 'superadmin' },
-      title: `Rechazado: eliminar ${label}`,
+      title: r.type === 'undo_devolution' ? `Rechazado: deshacer ${label}` : `Rechazado: eliminar ${label}`,
       body: reason?.trim() || `${actor.name ?? 'El encargado'} rechazó la solicitud.`,
       entityId: r.id,
       actor: { id: actor.userId, name: actor.name },
@@ -376,6 +455,10 @@ export class ApprovalsService {
   }
 
   async getImpact(type: ApprovalType, targetId: string, payload?: ConsolidatedActionPayload) {
+    if (type === 'undo_devolution') {
+      const impact = await this.devolutionUndo.impact(targetId);
+      return { ...impact, approver: await this.resolveSupervisor(impact.subsidiaryId) };
+    }
     if (isConsolidatedAction(type)) {
       const impact = await this.consolidatedActions.impact(type, targetId, payload ?? {});
       const approver = await this.resolveSupervisor(impact.approverSubsidiaryId);
