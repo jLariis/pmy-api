@@ -1,3 +1,5 @@
+import { canonicalFedexExceptionCodeSql } from 'src/common/fedex-exception-code.util';
+import { noRuleFallbackSql } from 'src/common/income-rules.util';
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, Between, In, Brackets } from 'typeorm';
@@ -20,7 +22,7 @@ import {
  * Código de cobro efectivo del ingreso (espejo SQL de `effectiveChargeCode`):
  * 'DELIVERED' si entregado; si no, el código de no-entrega guardado.
  */
-const RULE_CODE_EXPR = `(CASE WHEN income.incomeType = 'entregado' THEN 'DELIVERED' ELSE income.nonDeliveryStatus END)`;
+const RULE_CODE_EXPR = `(CASE WHEN income.incomeType = 'entregado' THEN 'DELIVERED' ELSE ${canonicalFedexExceptionCodeSql('income.nonDeliveryStatus')} END)`;
 
 /** JOINs a charge_rule: `crs` = override de sucursal, `crg` = default global. */
 const CHARGE_RULE_SUB_JOIN = `crs.subsidiaryId = income.subsidiaryId AND crs.carrier = income.shipmentType AND crs.code = ${RULE_CODE_EXPR}`;
@@ -30,14 +32,14 @@ const CHARGE_RULE_GLOBAL_JOIN = `crg.subsidiaryId IS NULL AND crg.carrier = inco
  * Condición "contable" según las reglas de la sucursal (regla ÚNICA, espejo SQL de
  * `isCountableIncome`): traslados solo si countTransfersAsIncome; recolecciones
  * siempre; envíos/cargas según `charge_rule` (override de sucursal → global →
- * fallback 1); manual u otros fuera. Requiere `leftJoin('income.subsidiary','sub')`
+ * noRuleFallbackSql: FedEx sin regla no cobra desde 19-oct-2026); manual u otros fuera. Requiere `leftJoin('income.subsidiary','sub')`
  * + los JOINs `crs`/`crg` a charge_rule (ver CHARGE_RULE_*_JOIN).
  */
 const COUNTABLE_COND = `(
   CASE
     WHEN income.sourceType IN ('tyco','aeropuerto','special_transfer') THEN sub.countTransfersAsIncome
     WHEN income.sourceType = 'collection' THEN 1
-    WHEN income.sourceType IN ('shipment','charge') THEN COALESCE(crs.chargeable, crg.chargeable, 1)
+    WHEN income.sourceType IN ('shipment','charge') THEN COALESCE(crs.chargeable, crg.chargeable, ${noRuleFallbackSql('income')})
     ELSE 0
   END
 ) = 1`;
@@ -74,7 +76,7 @@ const billedCount = (extra?: string) =>
 const BILLED_TOTAL_SQL = billedCount();
 const BILLED_DELIVERED_SQL = billedCount(`income.incomeType = 'entregado'`);
 const BILLED_DEX07_SQL = billedCount(`income.incomeType = 'no_entregado' AND income.nonDeliveryStatus = '07'`);
-const BILLED_DEX08_SQL = billedCount(`income.incomeType = 'no_entregado' AND income.nonDeliveryStatus = '08'`);
+const BILLED_DEX08_SQL = billedCount(`income.incomeType = 'no_entregado' AND income.nonDeliveryStatus IN ('08', '08D')`);
 
 @Injectable()
 export class KpiService {

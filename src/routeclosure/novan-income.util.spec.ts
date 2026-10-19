@@ -69,6 +69,15 @@ describe('noVanIncomeDecision', () => {
       });
     });
 
+    it('08D es el mismo 08: NO cobra con una sola visita (Hermosillo 878634506040, 17-oct)', () => {
+      expect(noVanIncomeDecision(outcome({ dexCode: '08D', dex08Dates: [new Date('2026-10-17T17:13:00Z')] }))).toBeNull();
+    });
+
+    it('08D con 3 días en la semana cobra y se guarda como 08', () => {
+      const dex08Dates = [new Date('2026-10-14T18:00:00Z'), new Date('2026-10-15T18:00:00Z'), new Date('2026-10-17T17:13:00Z')];
+      expect(noVanIncomeDecision(outcome({ dexCode: '08D', dex08Dates }))?.nonDeliveryStatus).toBe('08');
+    });
+
     it('la regla de 3 visitas NO aplica a otros DEX (07 cobra con 1)', () => {
       expect(noVanIncomeDecision(outcome({ dexCode: '07' }))?.nonDeliveryStatus).toBe('07');
     });

@@ -1,3 +1,4 @@
+import { canonicalFedexExceptionCode } from 'src/common/fedex-exception-code.util';
 import { Injectable } from '@nestjs/common';
 import { ShipmentStatusType } from 'src/common/enums/shipment-status-type.enum';
 import { resolveCanonicalStatus } from 'src/fedex-status/fedex-status.mapping';
@@ -73,7 +74,7 @@ export class TrackingNormalizer {
     const derivedCode: string | null = scan.derivedStatusCode ?? null;
     const eventType: string | null = scan.eventType ?? null;
     const statusCode: string | null = scan.derivedStatusCode ?? scan.eventType ?? null;
-    const exceptionCode: string | null = (scan.exceptionCode || '').trim() || null;
+    const exceptionCode: string | null = canonicalFedexExceptionCode((scan.exceptionCode || '').trim()) || null;
     const location: string | null = scan.scanLocation?.city ?? null;
 
     const status =

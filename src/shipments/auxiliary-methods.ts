@@ -1,3 +1,4 @@
+import { canonicalFedexExceptionCode } from 'src/common/fedex-exception-code.util';
 /*     private async fetchShipments(trackingNumbers: string[]): Promise<{
       shipments: Shipment[];
       notFoundTracking: string[];
@@ -45,8 +46,8 @@
       rules: SubsidiaryRules,
       subsidiaryId: string
     ): { isValid: boolean; reason?: string } {
-      const exceptionCode = latestStatus.ancillaryDetails?.[0]?.reason 
-        || scanEvents[0]?.exceptionCode;
+      const exceptionCode = canonicalFedexExceptionCode(latestStatus.ancillaryDetails?.[0]?.reason 
+        || scanEvents[0]?.exceptionCode);
 
       // Validación básica de códigos
       const codeValidation = this.validateExceptionCodes(

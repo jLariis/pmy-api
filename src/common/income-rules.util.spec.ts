@@ -3,6 +3,7 @@ import {
   ChargeableResolver,
   effectiveChargeCode,
   isCountableIncome,
+  noRuleFallbackSql,
 } from './income-rules.util';
 
 /** Resolver de prueba a partir de un mapa `${carrier}|${code}` → boolean. */
@@ -66,8 +67,39 @@ describe('isCountableIncome (envíos FedEx, reglas globales)', () => {
     expect(isCountableIncome({ sourceType: 'shipment', shipmentType: 'fedex', incomeType: 'no_entregado', nonDeliveryStatus: '07' }, opts)).toBe(true);
     expect(isCountableIncome({ sourceType: 'charge', shipmentType: 'fedex', incomeType: 'no_entregado', nonDeliveryStatus: '08' }, opts)).toBe(true);
   });
-  it('código desconocido → fallback cuenta', () => {
+  it('código desconocido SIN fecha → fallback histórico cuenta', () => {
     expect(isCountableIncome({ sourceType: 'shipment', shipmentType: 'fedex', incomeType: 'no_entregado', nonDeliveryStatus: '99' }, opts)).toBe(true);
+  });
+  it('código sin regla: antes del 19-oct-2026 cuenta, desde ese día NO', () => {
+    const dex84 = { sourceType: 'shipment', shipmentType: 'fedex', incomeType: 'no_entregado', nonDeliveryStatus: '84' };
+    // 18-oct 23:59 Hermosillo = 19-oct 06:59Z → todavía histórico.
+    expect(isCountableIncome({ ...dex84, date: new Date('2026-10-19T06:59:00Z') }, opts)).toBe(true);
+    // 19-oct 00:00 Hermosillo = 07:00Z → ya no cobra.
+    expect(isCountableIncome({ ...dex84, date: new Date('2026-10-19T07:00:00Z') }, opts)).toBe(false);
+  });
+  it('desde el corte siguen cobrando entregado, 07 y 08; el 03 sigue sin cobrar', () => {
+    const date = new Date('2026-10-20T18:00:00Z');
+    const base = { sourceType: 'shipment', shipmentType: 'fedex', date };
+    expect(isCountableIncome({ ...base, incomeType: 'entregado' }, opts)).toBe(true);
+    expect(isCountableIncome({ ...base, incomeType: 'no_entregado', nonDeliveryStatus: '07' }, opts)).toBe(true);
+    expect(isCountableIncome({ ...base, incomeType: 'no_entregado', nonDeliveryStatus: '08' }, opts)).toBe(true);
+    expect(isCountableIncome({ ...base, incomeType: 'no_entregado', nonDeliveryStatus: '03' }, opts)).toBe(false);
+    expect(isCountableIncome({ ...base, incomeType: 'no_entregado', nonDeliveryStatus: '' }, opts)).toBe(false);
+  });
+  it('carga del 19-oct (medianoche local 00:00Z) ya cae en el corte', () => {
+    const charge = { sourceType: 'charge', shipmentType: 'fedex', incomeType: 'no_entregado', nonDeliveryStatus: '31' };
+    expect(isCountableIncome({ ...charge, date: new Date('2026-10-18T00:00:00Z') }, opts)).toBe(true);
+    expect(isCountableIncome({ ...charge, date: new Date('2026-10-19T00:00:00Z') }, opts)).toBe(false);
+  });
+  it('el corte es solo de FedEx: DHL sin regla sigue como antes', () => {
+    const dhl = { sourceType: 'shipment', shipmentType: 'dhl', incomeType: 'no_entregado', nonDeliveryStatus: '08', date: new Date('2026-10-20T18:00:00Z') };
+    expect(isCountableIncome(dhl, opts)).toBe(true);
+    expect(isCountableIncome({ ...dhl, nonDeliveryStatus: 'NH' }, opts)).toBe(false); // su regla propia no cambia
+  });
+  it('espejo SQL del respaldo', () => {
+    expect(noRuleFallbackSql('income')).toBe(
+      "(CASE WHEN income.shipmentType <> 'fedex' OR DATE(CASE WHEN income.sourceType = 'charge' THEN income.date ELSE income.date - INTERVAL 7 HOUR END) < '2026-10-19' THEN 1 ELSE 0 END)",
+    );
   });
   it('sin resolver → todo shipment cuenta (fallback histórico)', () => {
     expect(isCountableIncome({ sourceType: 'shipment', shipmentType: 'fedex', incomeType: 'no_entregado', nonDeliveryStatus: '03' })).toBe(true);

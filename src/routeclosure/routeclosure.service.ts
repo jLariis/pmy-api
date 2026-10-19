@@ -1,3 +1,4 @@
+import { canonicalFedexExceptionCode } from 'src/common/fedex-exception-code.util';
 import { Injectable, Logger, BadRequestException, InternalServerErrorException, Optional } from '@nestjs/common';
 import { VehicleKmsService } from 'src/maintenance/vehicle-kms.service';
 import { CreateRouteclosureDto } from './dto/create-routeclosure.dto';
@@ -173,7 +174,7 @@ export class RouteclosureService {
     return {
       trackingNumber: o.trackingNumber,
       delivered,
-      dexCode: isChargeableDex ? (o.exceptionCode || null) : null,
+      dexCode: isChargeableDex ? (canonicalFedexExceptionCode(o.exceptionCode) || null) : null,
       resolved: !!status,
       dex08Dates,
     };
@@ -183,7 +184,7 @@ export class RouteclosureService {
   private async loadDex08Dates(shipmentId: string): Promise<Date[]> {
     const rows = await this.dataSource.getRepository(ShipmentStatus).find({
       select: { timestamp: true },
-      where: { shipment: { id: shipmentId }, exceptionCode: '08' },
+      where: { shipment: { id: shipmentId }, exceptionCode: In(['08', '08D']) },
     });
     return rows.map((r) => new Date(r.timestamp));
   }
@@ -290,7 +291,7 @@ export class RouteclosureService {
       try {
         // DEX08 solo cobra con 3 días distintos con 08 en la misma semana: se leen TODOS los
         // 08 guardados de la guía (ya incluye los que acaba de persistir la reconciliación).
-        const dex08Dates = o.exceptionCode === '08' ? await this.loadDex08Dates(o.shipmentId) : [];
+        const dex08Dates = canonicalFedexExceptionCode(o.exceptionCode) === '08' ? await this.loadDex08Dates(o.shipmentId) : [];
         const decision = noVanIncomeDecision(this.buildOutcomeForIncome(o, dex08Dates));
         if (!decision) continue;
 

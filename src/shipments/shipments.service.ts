@@ -1,3 +1,4 @@
+import { canonicalFedexExceptionCode } from 'src/common/fedex-exception-code.util';
 import { isOurRouteDelivery, routeDaysOf } from 'src/common/our-route-delivery.util';
 import { BadRequestException, forwardRef, HttpStatus, Inject, Injectable, InternalServerErrorException, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -187,10 +188,10 @@ export class ShipmentsService {
       if (
         newShipmentStatus.status === ShipmentStatusType.NO_ENTREGADO &&
         scanEvent.exceptionCode &&
-        targetExceptionCodes.includes(scanEvent.exceptionCode)
+        targetExceptionCodes.includes(canonicalFedexExceptionCode(scanEvent.exceptionCode))
       ) {
         this.logger.warn(`⛔ Se encontro no entregado tracking: ${newShipmentStatus.shipment.trackingNumber} evento: ${JSON.stringify(scanEvent)}`)
-        newShipmentStatus.exceptionCode = scanEvent.exceptionCode;
+        newShipmentStatus.exceptionCode = canonicalFedexExceptionCode(scanEvent.exceptionCode);
         shipmentStatus.push(newShipmentStatus); // ✅ se guarda el evento actual
         break; // ⛔ se detiene aquí, no se guardan más
       }
@@ -1845,7 +1846,7 @@ export class ShipmentsService {
               this.logger.log(`📣 Último estatus de FedEx para ${trackingNumber}: ${latestStatusDetail?.derivedCode} - ${latestStatusDetail?.statusByLocale}`);
 
               const mappedStatus = mapFedexStatusToLocalStatus(latestStatusDetail?.derivedCode, latestStatusDetail?.ancillaryDetails?.[0]?.reason);
-              const exceptionCode = latestStatusDetail?.ancillaryDetails?.[0]?.reason || latestTrackResult.scanEvents[0]?.exceptionCode;
+              const exceptionCode = canonicalFedexExceptionCode(latestStatusDetail?.ancillaryDetails?.[0]?.reason || latestTrackResult.scanEvents[0]?.exceptionCode);
 
               // Validar exceptionCode
               if (exceptionCode && !rules.allowedExceptionCodes.includes(exceptionCode)) {
@@ -2256,7 +2257,7 @@ export class ShipmentsService {
               this.logger.log(`📣 Último estatus de FedEx para ${trackingNumber}: ${latestStatusDetail?.derivedCode} - ${latestStatusDetail?.statusByLocale}`);
 
               const mappedStatus = mapFedexStatusToLocalStatus(latestStatusDetail?.derivedCode, latestStatusDetail?.ancillaryDetails?.[0]?.reason);
-              const exceptionCode = latestStatusDetail?.ancillaryDetails?.[0]?.reason || latestTrackResult.scanEvents[0]?.exceptionCode;
+              const exceptionCode = canonicalFedexExceptionCode(latestStatusDetail?.ancillaryDetails?.[0]?.reason || latestTrackResult.scanEvents[0]?.exceptionCode);
 
               // Registrar códigos inusuales
               const knownExceptionCodes = ['07', '03', '08', '17', '67', '14', '16', 'OD'];
