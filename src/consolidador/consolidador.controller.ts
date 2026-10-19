@@ -237,6 +237,12 @@ export class ConsolidadorController {
     return this.groups.getByConsolidado(subsidiaryId, from, to);
   }
 
+  /** Resumen de la semana de la sucursal: cobrado, falta, de más, dobles, recolecciones, No VAN y último conteo. */
+  @Get(':subsidiaryId/:fromDate/:toDate/summary')
+  summaryWeek(@Param('subsidiaryId') subsidiaryId: string, @Param('fromDate') fromDate: string, @Param('toDate') toDate: string) {
+    return this.views.forSubsidiary('summary', subsidiaryId, fromDate, toDate);
+  }
+
   /** Guías de las cargas de la semana; marca las que también están como paquete (cobradas dos veces). */
   @Get(':subsidiaryId/:fromDate/:toDate/charge-guides')
   chargeGuidesWeek(@Param('subsidiaryId') subsidiaryId: string, @Param('fromDate') fromDate: string, @Param('toDate') toDate: string) {

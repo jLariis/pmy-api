@@ -5,6 +5,7 @@ import { CobrosAuditService } from '../audit/cobros-audit.service';
 import { ChargeGuidesService } from '../audit/charge-guides.service';
 import { CollectionsAuditService } from '../audit/collections-audit.service';
 import { NoVanAuditService } from '../audit/novan-audit.service';
+import { SummaryService } from '../read/summary.service';
 import { ZONE_VIEWS, type ZoneView } from './zone.types';
 
 /**
@@ -20,6 +21,7 @@ export class ConsolidadorViewsService {
     private readonly chargeGuides: ChargeGuidesService,
     private readonly collections: CollectionsAuditService,
     private readonly novan: NoVanAuditService,
+    private readonly summary: SummaryService,
   ) {}
 
   assertView(view: string): ZoneView {
@@ -45,6 +47,8 @@ export class ConsolidadorViewsService {
         return this.collections.report(subsidiaryId, fromDate, toDate);
       case 'novan':
         return this.novan.report(subsidiaryId, fromDate, toDate);
+      case 'summary':
+        return this.summary.forSubsidiary(subsidiaryId, fromDate, toDate);
       default:
         throw new BadRequestException('Vista no válida.');
     }

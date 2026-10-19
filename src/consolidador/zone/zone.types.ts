@@ -130,3 +130,24 @@ export interface NoVanReport {
   /** Costo del paquete FedEx en la sucursal (para "Generar cobro"). */
   expectedCost: number;
 }
+
+// ───────────────────────── Resumen por sucursal ─────────────────────────
+
+export type SummaryLevel = 'bad' | 'warn' | 'ok' | 'none';
+
+export interface SubsidiarySummary {
+  incomeTotal: number;
+  packages: number;
+  charges: number;
+  /** Falta cobrar según la auditoría de reglas. */
+  missing: { count: number; amount: number };
+  /** Cobrado de más: auditoría de reglas + guías como paquete y carga con cobro del paquete. */
+  extra: { count: number; amount: number };
+  /** Guías que están como paquete y como carga. */
+  doubles: number;
+  collections: { registered: number; charged: number; withoutCharge: number };
+  novan: { total: number; charged: number; withoutCharge: number };
+  lastManualCount: { differences: number; createdAt: string; scope: 'day' | 'week' } | null;
+  topIssue: string;
+  level: SummaryLevel;
+}
