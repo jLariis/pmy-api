@@ -28,3 +28,57 @@ export type ZoneView =
   | 'novan';
 
 export const ZONE_VIEWS: ZoneView[] = ['week', 'by-route', 'by-consolidado', 'cobros-audit', 'summary', 'charge-guides', 'collections', 'novan'];
+
+// ───────────────────────── Cargas: guías dobles (paquete + carga) ─────────────────────────
+
+/** Guía dentro de una carga (F2 / 1.5 ton) de la semana. */
+export interface ChargeGuideInput {
+  chargeShipmentId: string;
+  trackingNumber: string;
+  chargeId: string;
+  consNumber: string | null;
+  chargeDay: string; // YYYY-MM-DD
+  uploadedAt: string | null;
+  uploadedBy: string | null;
+}
+
+/** La misma guía registrada como paquete (shipment). */
+export interface ShipmentTwin {
+  shipmentId: string;
+  trackingNumber: string;
+  consNumber: string | null;
+  consDay: string | null; // YYYY-MM-DD del consolidado
+  createdAt: string;
+}
+
+/** Cobro activo del paquete (income sourceType='shipment'). */
+export interface PackageIncome {
+  incomeId: string;
+  trackingNumber: string;
+  shipmentId: string | null;
+  cost: number;
+  day: string;
+}
+
+export interface ChargeGuideRow extends ChargeGuideInput {
+  twin: ShipmentTwin | null;
+  packageIncome: PackageIncome | null;
+  /** También existe como paquete (consolidado de la misma semana o la anterior). */
+  isDouble: boolean;
+  /** Doble y el paquete tiene cobro activo → se cobró de más. */
+  overcharged: boolean;
+}
+
+export interface ChargeGuidesReport {
+  charges: {
+    chargeId: string;
+    consNumber: string | null;
+    chargeDay: string;
+    uploadedAt: string | null;
+    uploadedBy: string | null;
+    guides: number;
+    doubles: number;
+  }[];
+  rows: ChargeGuideRow[];
+  totals: { guides: number; doubles: number; overcharged: number; overchargedAmount: number };
+}

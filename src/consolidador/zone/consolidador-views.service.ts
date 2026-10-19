@@ -2,6 +2,7 @@ import { BadRequestException, Injectable } from '@nestjs/common';
 import { ConsolidadorReadService } from '../read/consolidador-read.service';
 import { ConsolidadorGroupsService } from '../read/consolidador-groups.service';
 import { CobrosAuditService } from '../audit/cobros-audit.service';
+import { ChargeGuidesService } from '../audit/charge-guides.service';
 import { ZONE_VIEWS, type ZoneView } from './zone.types';
 
 /**
@@ -14,6 +15,7 @@ export class ConsolidadorViewsService {
     private readonly read: ConsolidadorReadService,
     private readonly groups: ConsolidadorGroupsService,
     private readonly cobrosAudit: CobrosAuditService,
+    private readonly chargeGuides: ChargeGuidesService,
   ) {}
 
   assertView(view: string): ZoneView {
@@ -33,6 +35,8 @@ export class ConsolidadorViewsService {
         return this.groups.getByConsolidado(subsidiaryId, from, to);
       case 'cobros-audit':
         return this.cobrosAudit.audit(subsidiaryId, from, to);
+      case 'charge-guides':
+        return this.chargeGuides.report(subsidiaryId, fromDate, toDate);
       default:
         throw new BadRequestException('Vista no válida.');
     }

@@ -227,6 +227,12 @@ export class ConsolidadorController {
     return this.groups.getByConsolidado(subsidiaryId, from, to);
   }
 
+  /** Guías de las cargas de la semana; marca las que también están como paquete (cobradas dos veces). */
+  @Get(':subsidiaryId/:fromDate/:toDate/charge-guides')
+  chargeGuidesWeek(@Param('subsidiaryId') subsidiaryId: string, @Param('fromDate') fromDate: string, @Param('toDate') toDate: string) {
+    return this.views.forSubsidiary('charge-guides', subsidiaryId, fromDate, toDate);
+  }
+
   /**
    * Consolidador por ZONA: corre la vista pedida en cada sucursal de la zona (2 a la vez) y
    * devuelve una parte por sucursal `{ subsidiaryId, subsidiaryName, data, error }`.
