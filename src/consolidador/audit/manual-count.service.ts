@@ -140,7 +140,7 @@ export class ManualCountService {
 
     const report: ManualCountReport = {
       subsidiaryId, subsidiaryName, day: days[0], scope, from: days[0], to: days[days.length - 1],
-      fedexFailures, totals: summarize(rows), rows, ...(collections ? { collections } : {}),
+      fedexFailures, expectedCost, totals: summarize(rows), rows, ...(collections ? { collections } : {}),
     };
     await this.saveRun(report, expectedCost, userId ?? null);
     return report;

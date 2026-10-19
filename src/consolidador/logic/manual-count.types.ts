@@ -145,6 +145,8 @@ export interface ManualCountReport {
   from?: string; // por semana: lunes
   to?: string; // por semana: domingo
   fedexFailures: number;
+  /** Costo del paquete FedEx de la sucursal (para generar un cobro desde la pantalla). */
+  expectedCost?: number;
   totals: ManualCountTotals;
   rows: DiagnosisRow[];
   /** Solo si el usuario pegó recolecciones. */
