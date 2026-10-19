@@ -119,7 +119,13 @@ export class DeployService implements OnApplicationBootstrap {
       st = null;
     }
     if (!st) {
-      if (Date.now() - new Date(run.startedAt).getTime() > STALE_MS) {
+      // El script escribe un latido cada 15 s: si la bitácora lleva 30 min sin moverse, se
+      // interrumpió. (La hora del archivo no depende de zonas horarias de la BD.)
+      const lastActivity = await fsp
+        .stat(run.logPath)
+        .then((s) => s.mtimeMs)
+        .catch(() => new Date(run.startedAt).getTime());
+      if (Date.now() - lastActivity > STALE_MS) {
         await this.runs.update(run.id, { status: 'failed', finishedAt: new Date(), error: 'La actualización se interrumpió sin terminar.' });
         return { ...run, status: 'failed', error: 'La actualización se interrumpió sin terminar.' };
       }

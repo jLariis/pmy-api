@@ -78,6 +78,14 @@ run git merge --ff-only origin/main || fail "main no avanza en línea recta desd
 TO_COMMIT=$(git rev-parse HEAD)
 emit_log "$(git rev-list --count "$FROM_COMMIT..$TO_COMMIT") cambios nuevos · ${FROM_COMMIT:0:7} → ${TO_COMMIT:0:7}"
 
+# Sin cambios en el servidor (solo novedades de pantallas): no se compila ni se reinicia.
+if [ "$FROM_COMMIT" = "$TO_COMMIT" ]; then
+  for k in deps migrate build restart verify; do skip "$k" "Sin cambios en el servidor"; done
+  write_status success "Solo se publicaron las novedades; el servidor no cambió."
+  emit "{\"type\":\"done\",\"ok\":true,\"durationMs\":$(elapsed)}"
+  exit 0
+fi
+
 # 2. Dependencias (solo si cambiaron)
 phase 2 deps "Dependencias"
 if git diff --quiet "$FROM_COMMIT" "$TO_COMMIT" -- package.json package-lock.json; then

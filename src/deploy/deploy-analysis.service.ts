@@ -35,6 +35,8 @@ export interface RepoDiff {
   dirty: boolean;
   headCommit: string;
   targetCommit: string | null;
+  /** Commits que main tiene y esta carpeta todavía no (lo que de verdad se desplegaría). */
+  pendingCount: number;
   commits: RepoCommit[];
   warnings: string[];
 }
@@ -48,6 +50,10 @@ export interface DeployPreview {
   migrations: string[];
   suggestedBump: Bump;
   nextVersions: Record<Bump, string>;
+  /** El servidor ya tiene todo lo de main (no hay que compilar ni reiniciar). */
+  serverUpToDate: boolean;
+  /** No hay nada que hacer: servidor al día, sin cambios de pantallas y sin novedades. */
+  upToDate: boolean;
   canRun: boolean;
   cannotRunReason: string | null;
   running: boolean;
@@ -122,8 +128,11 @@ export class DeployAnalysisService {
 
     const currentVersion = latest?.version ?? '2.0.0';
     const running = (await this.runs.count({ where: { status: 'running' } })) > 0;
+    const serverUpToDate = !!api.targetCommit && api.pendingCount === 0;
+    const upToDate = serverUpToDate && (web?.commits.length ?? 0) === 0 && notes.length === 0;
     let cannotRunReason: string | null = null;
-    if (!cfg.enabled) cannotRunReason = 'Las actualizaciones solo se pueden lanzar en el servidor de producción.';
+    if (upToDate && !running) cannotRunReason = 'Todo está al día: no hay cambios nuevos que subir.';
+    else if (!cfg.enabled) cannotRunReason = 'Las actualizaciones solo se pueden lanzar en el servidor de producción.';
     else if (running) cannotRunReason = 'Ya hay una actualización en curso.';
     else if (api.branch !== 'main') cannotRunReason = `El servidor está en la rama "${api.branch}", no en main.`;
     else if (api.dirty) cannotRunReason = 'Hay cambios hechos a mano en el servidor; hay que revisarlos antes.';
@@ -142,6 +151,8 @@ export class DeployAnalysisService {
         minor: bumpVersion(currentVersion, 'minor'),
         major: bumpVersion(currentVersion, 'major'),
       },
+      serverUpToDate,
+      upToDate,
       canRun: !cannotRunReason,
       cannotRunReason,
       running,
@@ -149,7 +160,7 @@ export class DeployAnalysisService {
   }
 
   private async readRepo(source: NoteSource, dir: string, base: string | null): Promise<RepoDiff> {
-    const r: RepoDiff = { source, dir, branch: '', dirty: false, headCommit: '', targetCommit: null, commits: [], warnings: [] };
+    const r: RepoDiff = { source, dir, branch: '', dirty: false, headCommit: '', targetCommit: null, pendingCount: 0, commits: [], warnings: [] };
     try {
       r.branch = (await this.git.git(dir, ['rev-parse', '--abbrev-ref', 'HEAD'])).trim();
       r.headCommit = (await this.git.git(dir, ['rev-parse', 'HEAD'])).trim();
@@ -169,6 +180,11 @@ export class DeployAnalysisService {
     } catch {
       r.warnings.push('No existe origin/main en esta carpeta.');
       return r;
+    }
+    try {
+      r.pendingCount = parseInt((await this.git.git(dir, ['rev-list', '--count', `HEAD..${TARGET}`])).trim(), 10) || 0;
+    } catch {
+      r.pendingCount = 0;
     }
     if (!base) return r; // primera vez: solo notas, no se listan commits viejos
     try {
