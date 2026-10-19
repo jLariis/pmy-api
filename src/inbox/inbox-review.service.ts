@@ -49,6 +49,8 @@ export class InboxReviewService {
         a.kindSource = 'manual';
       }
       await this.attRepo.save(atts);
+      // El buscador vuelve a leer sus guías con el tipo nuevo.
+      await this.ds.query('UPDATE inbox_message SET guidesIndexedAt = NULL WHERE id = ?', [id]);
     }
 
     const previous = msg.status === 'confirmado' ? msg.subsidiaryId : null;
