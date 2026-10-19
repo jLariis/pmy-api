@@ -10,6 +10,7 @@ import { UsersModule } from './users/users.module';
 import { Logger } from 'winston';
 import { ScheduleModule } from '@nestjs/schedule';
 import { ShipmentsModule } from './shipments/shipments.module';
+import { PackageDossierModule } from './package-dossier/package-dossier.module';
 import { SubsidiariesModule } from './subsidiaries/subsidiaries.module';
 import { IncomeModule } from './income/income.module';
 import { CollectionModule } from './collections/collections.module';
@@ -91,6 +92,7 @@ import { OpsAlertsModule } from './ops-alerts/ops-alerts.module';
     }),
     UsersModule,
     ShipmentsModule,
+    PackageDossierModule,
     SubsidiariesModule,
     IncomeModule,
     CollectionModule,
