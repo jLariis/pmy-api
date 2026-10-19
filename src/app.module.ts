@@ -59,6 +59,7 @@ import { ApprovalsModule } from './approvals/approvals.module';
 import { ConsolidadorModule } from './consolidador/consolidador.module';
 import { InboxModule } from './inbox/inbox.module';
 import { OpsAlertsModule } from './ops-alerts/ops-alerts.module';
+import { DailyTasksModule } from './daily-tasks/daily-tasks.module';
 
 @Module({
   imports: [
@@ -139,6 +140,7 @@ import { OpsAlertsModule } from './ops-alerts/ops-alerts.module';
     ConsolidadorModule,
     InboxModule,
     OpsAlertsModule,
+    DailyTasksModule,
   ],
   controllers: [AppController],
   providers: [

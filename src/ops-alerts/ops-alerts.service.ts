@@ -8,6 +8,7 @@ import { LifecycleService } from './lifecycle.service';
 import { AlertBlock, buildAlertDigest, buildAlertMessage, pickUsualUploaders } from './alert-digest.util';
 import { analyzeConsolidated, isWrongType } from './consolidated-analysis.util';
 import { devWhatsappRedirect } from './send-log.service';
+import { validateSchedulePatch } from '../daily-tasks/daily-task-schedule.util';
 import { SendLogService } from './send-log.service';
 import { DEFAULT_UPLOAD_GROUPS } from '../inbox/upload-message.util';
 import { hermosilloDateTimeText } from '../common/hermosillo-text.util';
@@ -15,6 +16,7 @@ import {
   alertLevel,
   atLocalTime,
   computeSteps,
+  inboxAlertSteps,
   inActiveHours,
   Lifecycle,
   localDay,
@@ -119,6 +121,16 @@ export class OpsAlertsService {
         stepDispatch: c?.stepDispatch ?? true,
         stepClosure: c?.stepClosure ?? true,
         stepInventory: c?.stepInventory ?? true,
+        stepDevolutions: c?.stepDevolutions ?? true,
+        stepInventoryInitial: c?.stepInventoryInitial ?? true,
+        uploadMinutes: c?.uploadMinutes ?? null,
+        unloadingTime: c?.unloadingTime ?? null,
+        dispatchAfterUnloadMinutes: c?.dispatchAfterUnloadMinutes ?? null,
+        dispatchNextDayTime: c?.dispatchNextDayTime ?? null,
+        closureTime: c?.closureTime ?? null,
+        inventoryInitialTime: c?.inventoryInitialTime ?? null,
+        devolutionsTime: c?.devolutionsTime ?? null,
+        inventoryFinalTime: c?.inventoryFinalTime ?? null,
         managerUserIds: c?.managerUserIds ?? [],
         whatsappNumbers: c?.whatsappNumbers ?? [],
         whatsappGroups: c?.whatsappGroups ?? [],
@@ -130,9 +142,10 @@ export class OpsAlertsService {
     const exists: any[] = await this.ds.query('SELECT id FROM subsidiary WHERE id = ?', [subsidiaryId]);
     if (!exists.length) throw new BadRequestException('Esa sucursal no existe');
     const c = (await this.subRepo.findOne({ where: { subsidiaryId } })) ?? this.subRepo.create({ subsidiaryId });
-    for (const k of ['stepUpload', 'stepUnloading', 'stepDispatch', 'stepClosure', 'stepInventory'] as const) {
+    for (const k of ['stepUpload', 'stepUnloading', 'stepDispatch', 'stepClosure', 'stepInventory', 'stepDevolutions', 'stepInventoryInitial'] as const) {
       if (patch[k] !== undefined) c[k] = !!patch[k];
     }
+    Object.assign(c, validateSchedulePatch(patch as Record<string, unknown>));
     if (patch.managerUserIds !== undefined) c.managerUserIds = [...new Set((patch.managerUserIds ?? []).map(String))];
     if (patch.whatsappNumbers !== undefined) {
       const nums = (patch.whatsappNumbers ?? []).map((n) => String(n).replace(/\D/g, '')).filter(Boolean);
@@ -227,13 +240,12 @@ export class OpsAlertsService {
       const list = await this.recentConsolidations(s, now);
       const lc = await this.lifecycle.forConsolidations(list);
       for (const c of list) {
-        const steps = computeSteps(lc.get(c.id) as Lifecycle, s, this.stepsOf(cfg.get(c.subsidiaryId as string)));
+        const steps = computeSteps(lc.get(c.id) as Lifecycle, s, inboxAlertSteps(this.stepsOf(cfg.get(c.subsidiaryId as string))));
         for (const st of steps) {
           report.checked++;
           await this.apply(st, { refKey: c.id, subsidiaryId: c.subsidiaryId as string, inboxConsolidationId: c.id, consNumber: c.consNumber, cons: c, lifecycle: lc.get(c.id) ?? null }, s, now, active, cfg, report);
         }
       }
-      await this.evaluateInventory(s, now, active, cfg, list, report);
       if (this.digest.length && s.alertGroupsEnabled) await this.sendDigest(now);
     } finally {
       this.running = false;
@@ -242,27 +254,6 @@ export class OpsAlertsService {
       this.logger.log(`⏰ [ops-alerts] revisados=${report.checked} nuevas=${report.opened} avisos=${report.notified} resueltas=${report.resolved}`);
     }
     return report;
-  }
-
-  /** Inventario: una revisión diaria por sucursal (las que trabajan con la bandeja o tienen configuración). */
-  private async evaluateInventory(s: OpsSettings, now: Date, active: boolean, cfg: Map<string, OpsAlertSubsidiary>, list: InboxConsolidation[], report: EvaluateReport) {
-    const day = localDay(now);
-    const dueAt = atLocalTime(day, s.inventoryTime);
-    const subs = new Set<string>([...list.map((c) => c.subsidiaryId as string), ...cfg.keys()]);
-    for (const subsidiaryId of subs) {
-      if (!this.stepsOf(cfg.get(subsidiaryId)).inventory) continue;
-      const doneAt = await this.inventoryDoneAt(subsidiaryId, day);
-      report.checked++;
-      await this.apply(
-        { step: 'inventory' as never, dueAt, done: !!doneAt, doneAt, pct: doneAt ? 100 : 0 },
-        { refKey: `${subsidiaryId}:${day}`, subsidiaryId, inboxConsolidationId: null, consNumber: null, cons: null, lifecycle: null },
-        s,
-        now,
-        active,
-        cfg,
-        report,
-      );
-    }
   }
 
   private async inventoryDoneAt(subsidiaryId: string, day: string): Promise<Date | null> {

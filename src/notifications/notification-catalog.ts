@@ -47,6 +47,12 @@ const CATALOG: Record<string, Partial<Presentation>> = {
   'operacion.cierre_ruta':  { category: 'operacion', icon: 'flag',       severity: 'info', channels: ['bell'] },
   'operacion.traslados':    { category: 'operacion', icon: 'arrow-left-right', severity: 'info', channels: ['bell'] },
   'operacion.alertas':      { category: 'operacion', icon: 'alarm-clock', severity: 'warning', channels: ['bell'] },
+
+  // ---- Tareas del día ----
+  'tareas.paso_atrasado':  { category: 'operacion', icon: 'alarm-clock',    severity: 'warning', channels: ['bell'] },
+  'tareas.paso_completo':  { category: 'operacion', icon: 'circle-check',   severity: 'info',    channels: ['bell'] },
+  'tareas.resumen_dia':    { category: 'operacion', icon: 'list-checks',    severity: 'info',    channels: ['email'] },
+  'tareas.inventario_final_pendiente': { category: 'operacion', icon: 'clipboard-list', severity: 'warning', channels: ['bell'] },
   'operacion.gastos':       { category: 'operacion', icon: 'receipt',    severity: 'info', channels: ['bell'] },
   // ---- Autorizaciones (borrado con aprobación) ----
   'aprobacion.solicitada': { category: 'operacion', icon: 'gavel',       severity: 'warning', channels: ['bell', 'email'] },

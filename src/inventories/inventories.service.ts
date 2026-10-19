@@ -15,6 +15,7 @@ import { ShipmentStatusType } from 'src/common/enums/shipment-status-type.enum';
 import * as ExcelJS from 'exceljs';
 import { fromZonedTime } from 'date-fns-tz';
 import { LD_QUALIFYING_SQL_IN } from 'src/common/ld-codes';
+import { classifyLd } from 'src/common/ld-rule.util';
 import { TemplateService } from 'src/documents/template.service';
 import { buildInventoryData, InventoryInput } from 'src/documents/data/inventory.mapper';
 import { buildInventoryNo67Data } from 'src/documents/data/inventory-no67.mapper';
@@ -1868,7 +1869,8 @@ export class InventoriesService {
       const movedThatDay = (agg.moved.get(id) || 0) > 0;
       const dexOnCommitDay = !!(commitDay && agg.dexDays.get(id)?.has(commitDay));
       const isDelivered = DELIVERED.has(statusLower);
-      const isLD = dueOnFilterDate && !isDelivered && !dexOnCommitDay && !movedThatDay;
+      const ld = classifyLd({ status: statusLower, due: dueOnFilterDate ? 'today' : null, dexOnCommitDay, movedOnCommitDay: movedThatDay, requireNoMovement: true, excludeClosed: false });
+      const isLD = ld === 'possible_ld' || ld === 'ld';
       return {
         trackingNumber: row.trackingNumber, status: row.status, isCharge,
         consNumber: row.consNumber || '',
