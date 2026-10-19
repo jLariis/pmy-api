@@ -5,6 +5,7 @@ import { InboxIngestService } from './inbox-ingest.service';
 import { InboxLinkService } from './inbox-link.service';
 import { ZipCoverageService } from './zip-coverage.service';
 import { SystemMatchService } from './system-match.service';
+import { GuideIndexService } from './guide-index.service';
 
 /** Crons de la bandeja FedEx (hora de Hermosillo). La lectura respeta el interruptor. */
 @Injectable()
@@ -18,6 +19,7 @@ export class InboxCrons implements OnApplicationBootstrap {
     private readonly link: InboxLinkService,
     private readonly coverage: ZipCoverageService,
     private readonly systemMatch: SystemMatchService,
+    private readonly guideIndex: GuideIndexService,
     private readonly ds: DataSource,
   ) {}
 
@@ -52,6 +54,16 @@ export class InboxCrons implements OnApplicationBootstrap {
       this.logger.error(`🔗 [inbox] ligado: ${e?.message ?? e}`);
     } finally {
       this.linking = false;
+    }
+  }
+
+  /** Buscador: lee las guías de los correos nuevos (y, poco a poco, de los viejos). */
+  @Cron('15 */3 * * * *', { timeZone: 'America/Hermosillo' })
+  async indexGuides(): Promise<void> {
+    try {
+      await this.guideIndex.indexPending();
+    } catch (e: any) {
+      this.logger.error(`🔎 [inbox] índice de guías: ${e?.message ?? e}`);
     }
   }
 
