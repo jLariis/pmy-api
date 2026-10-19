@@ -82,3 +82,27 @@ export interface ChargeGuidesReport {
   rows: ChargeGuideRow[];
   totals: { guides: number; doubles: number; overcharged: number; overchargedAmount: number };
 }
+
+// ───────────────────────── Recolecciones ─────────────────────────
+
+export type CollectionAuditStatus = 'cobrada' | 'sin_cobro' | 'no_cobra_315' | 'duplicada';
+
+export interface CollectionAuditRow {
+  trackingNumber: string;
+  day: string; // día Hermosillo del registro
+  registeredAt: string;
+  routeLabel: string | null; // "Ruta 068422797359 · 14/10" si vino en un cierre
+  is315: boolean;
+  fedexPickedUpDay: string | null; // de la caché FedEx; null si no se ha verificado o no aparece
+  fedexChecked: boolean;
+  status: CollectionAuditStatus;
+  incomeIds: string[];
+  amount: number; // suma de cobros activos
+}
+
+export interface CollectionsAuditReport {
+  rows: CollectionAuditRow[];
+  totals: { registered: number; charged: number; withoutCharge: number };
+  /** Costo de una recolección en la sucursal (para "Generar cobro"). */
+  expectedCost: number;
+}

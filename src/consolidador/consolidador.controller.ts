@@ -233,6 +233,18 @@ export class ConsolidadorController {
     return this.views.forSubsidiary('charge-guides', subsidiaryId, fromDate, toDate);
   }
 
+  /** Recolecciones registradas en la semana: ruta, 31.5, cobro y FedEx "recogido" (si ya se verificó). */
+  @Get(':subsidiaryId/:fromDate/:toDate/collections')
+  collectionsWeek(@Param('subsidiaryId') subsidiaryId: string, @Param('fromDate') fromDate: string, @Param('toDate') toDate: string) {
+    return this.views.forSubsidiary('collections', subsidiaryId, fromDate, toDate);
+  }
+
+  /** "Verificar con FedEx" de las auditorías (recolecciones / No VAN): consulta ≤25 guías y las deja en caché. */
+  @Post('fedex/prefetch')
+  fedexPrefetch(@Body() dto: ManualCountFedexDto) {
+    return this.manualCount.prefetchFedex(dto.trackingNumbers);
+  }
+
   /**
    * Consolidador por ZONA: corre la vista pedida en cada sucursal de la zona (2 a la vez) y
    * devuelve una parte por sucursal `{ subsidiaryId, subsidiaryName, data, error }`.

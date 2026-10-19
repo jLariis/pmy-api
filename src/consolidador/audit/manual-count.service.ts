@@ -399,6 +399,15 @@ export class ManualCountService {
 
   // ───────────────────────── FedEx ─────────────────────────
 
+  /**
+   * Último rastreo de FedEx ya en caché (de este conteo o de "Verificar con FedEx"); null si no
+   * se ha consultado o FedEx no respondió. Lo usan las auditorías de recolecciones y No VAN.
+   */
+  cachedTrack(tn: string): any | null {
+    const c = this.cached(tn);
+    return c?.ok ? selectLatestGeneration(c.results) : null;
+  }
+
   private cached(tn: string): CachedTrack | undefined {
     const c = ManualCountService.cache.get(tn);
     if (!c) return undefined;

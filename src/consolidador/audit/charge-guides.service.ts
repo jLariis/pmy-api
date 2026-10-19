@@ -1,11 +1,11 @@
 import { Injectable } from '@nestjs/common';
 import { DataSource } from 'typeorm';
 import { effectiveLocalDay } from 'src/common/income-window.util';
+import { sqlDay } from '../logic/sql-day.util';
 import { detectChargeDoubles } from '../logic/charge-doubles.util';
 import type { ChargeGuideInput, ChargeGuidesReport, PackageIncome, ShipmentTwin } from '../zone/zone.types';
 
 const inList = (n: number) => Array(n).fill('?').join(',');
-const day = (v: any): string | null => (v ? String(v instanceof Date ? v.toISOString() : v).slice(0, 10) : null);
 const iso = (v: any): string | null => (v ? (v instanceof Date ? v.toISOString() : String(v)) : null);
 
 /**
@@ -31,7 +31,7 @@ export class ChargeGuidesService {
       trackingNumber: String(r.tn),
       chargeId: String(r.chargeId),
       consNumber: r.consNumber ?? null,
-      chargeDay: day(r.chargeDay)!,
+      chargeDay: sqlDay(r.chargeDay)!,
       uploadedAt: iso(r.uploadedAt),
       uploadedBy: r.uploadedBy ?? null,
     }));
@@ -51,7 +51,7 @@ export class ChargeGuidesService {
         shipmentId: String(s.id),
         trackingNumber: String(s.tn),
         consNumber: s.consNumber ?? null,
-        consDay: day(s.consDay),
+        consDay: sqlDay(s.consDay),
         createdAt: iso(s.createdAt)!,
       }));
       const inc: any[] = await this.dataSource.query(
