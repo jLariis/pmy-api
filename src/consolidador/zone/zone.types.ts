@@ -106,3 +106,27 @@ export interface CollectionsAuditReport {
   /** Costo de una recolección en la sucursal (para "Generar cobro"). */
   expectedCost: number;
 }
+
+// ───────────────────────── No VAN ─────────────────────────
+
+export type NoVanStatus = 'cobrada' | 'sin_cobro' | 'no_cobra_315' | 'en_transito' | 'sin_verificar' | 'es_paquete';
+
+export interface NoVanRow {
+  trackingNumber: string;
+  routeDay: string | null;
+  routeFolio: string | null;
+  driver: string | null;
+  closedAt: string | null;
+  is315: boolean;
+  fedexLabel: string | null; // "Entregada", "Rechazada (07)", "En tránsito"… null sin verificar
+  status: NoVanStatus;
+  suggestedKind: 'pod' | 'dex' | null; // para "Generar cobro"
+  incomeIds: string[];
+}
+
+export interface NoVanReport {
+  rows: NoVanRow[];
+  totals: { total: number; charged: number; withoutCharge: number };
+  /** Costo del paquete FedEx en la sucursal (para "Generar cobro"). */
+  expectedCost: number;
+}

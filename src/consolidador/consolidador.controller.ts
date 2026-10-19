@@ -239,6 +239,12 @@ export class ConsolidadorController {
     return this.views.forSubsidiary('collections', subsidiaryId, fromDate, toDate);
   }
 
+  /** No VAN de la semana: ruta, chofer, 31.5, cobro y FedEx (si ya se verificó). */
+  @Get(':subsidiaryId/:fromDate/:toDate/novan')
+  noVanWeek(@Param('subsidiaryId') subsidiaryId: string, @Param('fromDate') fromDate: string, @Param('toDate') toDate: string) {
+    return this.views.forSubsidiary('novan', subsidiaryId, fromDate, toDate);
+  }
+
   /** "Verificar con FedEx" de las auditorías (recolecciones / No VAN): consulta ≤25 guías y las deja en caché. */
   @Post('fedex/prefetch')
   fedexPrefetch(@Body() dto: ManualCountFedexDto) {

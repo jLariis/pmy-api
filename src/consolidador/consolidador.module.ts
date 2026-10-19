@@ -15,12 +15,13 @@ import { ManualCountService } from './audit/manual-count.service';
 import { IncomeDateRealignService } from './income/income-date-realign.service';
 import { ChargeGuidesService } from './audit/charge-guides.service';
 import { CollectionsAuditService } from './audit/collections-audit.service';
+import { NoVanAuditService } from './audit/novan-audit.service';
 import { ZoneService } from './zone/zone.service';
 import { ConsolidadorViewsService } from './zone/consolidador-views.service';
 
 @Module({
   imports: [TypeOrmModule.forFeature([Income, Shipment, Subsidiary, IncomeChangeLog]), FedexStatusModule, ChargeRulesModule],
   controllers: [ConsolidadorController],
-  providers: [ConsolidadorReadService, ConsolidadorGroupsService, ConsolidadorIncomeService, ConsolidadorStatusService, ConsolidadorAuditService, CobrosAuditService, ManualCountService, IncomeDateRealignService, FedexService, ZoneService, ConsolidadorViewsService, ChargeGuidesService, CollectionsAuditService],
+  providers: [ConsolidadorReadService, ConsolidadorGroupsService, ConsolidadorIncomeService, ConsolidadorStatusService, ConsolidadorAuditService, CobrosAuditService, ManualCountService, IncomeDateRealignService, FedexService, ZoneService, ConsolidadorViewsService, ChargeGuidesService, CollectionsAuditService, NoVanAuditService],
 })
 export class ConsolidadorModule {}
