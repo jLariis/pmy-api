@@ -83,7 +83,7 @@ phase 2 deps "Dependencias"
 if git diff --quiet "$FROM_COMMIT" "$TO_COMMIT" -- package.json package-lock.json; then
   skip deps "Sin cambios en dependencias"
 else
-  run npm install --include=dev --no-audit --no-fund || fail "Falló la instalación de dependencias. La versión anterior sigue en línea."
+  run npm install --no-save --include=dev --no-audit --no-fund || fail "Falló la instalación de dependencias. La versión anterior sigue en línea."
 fi
 
 # 3. Migraciones
