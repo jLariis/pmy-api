@@ -24,6 +24,8 @@ import { DateRealignApplyDto } from './dto/date-realign.dto';
 import { IncomeDateRealignService } from './income/income-date-realign.service';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import { RequirePermission } from '../auth/decorators/require-permission.decorator';
+import { ZoneService } from './zone/zone.service';
+import { ConsolidadorViewsService } from './zone/consolidador-views.service';
 
 /** Conteo manual vs sistema: permiso propio (por defecto solo superadmin). */
 const CONTEO_MANUAL = 'finanzas.consolidador.conteoManual';
@@ -42,6 +44,8 @@ export class ConsolidadorController {
     private readonly cobrosAudit: CobrosAuditService,
     private readonly manualCount: ManualCountService,
     private readonly dateRealign: IncomeDateRealignService,
+    private readonly zone: ZoneService,
+    private readonly views: ConsolidadorViewsService,
   ) {}
 
   /** Conteo manual: precalienta FedEx en vivo para un bloque de ≤25 guías (progreso en el front). */
@@ -221,6 +225,23 @@ export class ConsolidadorController {
     const from = new Date(`${fromDate}T00:00:00.000`);
     const to = new Date(`${toDate}T23:59:59.999`);
     return this.groups.getByConsolidado(subsidiaryId, from, to);
+  }
+
+  /**
+   * Consolidador por ZONA: corre la vista pedida en cada sucursal de la zona (2 a la vez) y
+   * devuelve una parte por sucursal `{ subsidiaryId, subsidiaryName, data, error }`.
+   * El acceso por sucursal se valida al resolver la zona (los no globales solo ven las suyas).
+   */
+  @Get('zone/:zoneId/:fromDate/:toDate/:view')
+  zoneView(
+    @Param('zoneId') zoneId: string,
+    @Param('fromDate') fromDate: string,
+    @Param('toDate') toDate: string,
+    @Param('view') view: string,
+    @Req() req: any,
+  ) {
+    const v = this.views.assertView(view);
+    return this.zone.run(zoneId, req.user, (s) => this.views.forSubsidiary(v, s.id, fromDate, toDate));
   }
 
   /**
