@@ -35,6 +35,13 @@ export class DailyTasksController {
     return this.service.week(subsidiaryId, this.day$(weekStart));
   }
 
+  @Get('summary')
+  @ApiOperation({ summary: 'Resumen de hoy para el ícono de la barra superior (atrasados, pendientes, posibles LD)' })
+  async summary(@Req() req: any, @Query('subsidiaryId') subsidiaryId: string) {
+    this.allow(req, subsidiaryId);
+    return this.service.summary(subsidiaryId);
+  }
+
   @Get('day')
   @ApiOperation({ summary: 'Tareas de la sucursal y de cada consolidado en un día' })
   async day(@Req() req: any, @Query('subsidiaryId') subsidiaryId: string, @Query('day') day: string) {

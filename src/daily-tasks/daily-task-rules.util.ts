@@ -46,3 +46,17 @@ export const shouldAlertNew = (day: string, today: string, dueAt: Date, bootAt: 
 
 /** Identidad de pieza: en DHL la guía maestra se comparte; cada pieza es su dhlUniqueId. */
 export const pieceKeyOf = (g: { trackingNumber: string; dhlUniqueId?: string | null }): string => (g.dhlUniqueId || g.trackingNumber).trim();
+
+type SummaryRow = Pick<TaskRow, 'refType' | 'refId' | 'consNumber' | 'step' | 'status' | 'dueAt'>;
+
+/** Resumen del día para el ícono de la barra superior: el numerito son los pasos atrasados. */
+export function summarizeToday(rows: SummaryRow[]) {
+  const late = rows.filter((r) => r.status === 'late').sort((a, b) => new Date(a.dueAt).getTime() - new Date(b.dueAt).getTime());
+  return {
+    late: late.length,
+    pending: rows.filter((r) => r.status === 'pending' || r.status === 'partial').length,
+    done: rows.filter((r) => r.status === 'done').length,
+    total: rows.length,
+    lateItems: late.slice(0, 5).map((r) => ({ refType: r.refType, consNumber: r.consNumber, step: r.step, dueAt: r.dueAt })),
+  };
+}

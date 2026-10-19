@@ -8,7 +8,7 @@ import { OpsAlertsService } from '../ops-alerts/ops-alerts.service';
 import { addDays, localDay } from '../ops-alerts/ops-alerts.util';
 import { DailyTaskFactsService } from './daily-task-facts.service';
 import { diffTasks, taskKey, Transition } from './daily-task-diff.util';
-import { liveDays, mergeTaskRow, refreshOnView, subsidiaryHasOperation } from './daily-task-rules.util';
+import { liveDays, mergeTaskRow, refreshOnView, subsidiaryHasOperation, summarizeToday } from './daily-task-rules.util';
 import { resolveSchedule } from './daily-task-schedule.util';
 import { consolidatedTasks, subsidiaryTasks } from './daily-task-steps.util';
 import { Schedule, TaskRefType, TaskRow, TaskStep } from './daily-task.types';
@@ -197,6 +197,18 @@ export class DailyTasksService {
       .orIgnore()
       .execute();
     return cands.length;
+  }
+
+  /** Resumen de hoy para la barra superior. Lee la foto que mantiene el cron (cada 5 min); si aún no hay, la calcula. */
+  async summary(subsidiaryId: string, now = new Date()) {
+    const day = localDay(now);
+    let rows = await this.saved(subsidiaryId, day);
+    if (!rows.length) {
+      await this.refreshDay(subsidiaryId, day, now);
+      rows = await this.saved(subsidiaryId, day);
+    }
+    const possibleLd = (await this.facts.ldCandidates(subsidiaryId, day)).length;
+    return { day, ...summarizeToday(rows as unknown as TaskRow[]), possibleLd };
   }
 
   /** Sucursal dueña de un consolidado / carga (para validar acceso al detalle). */

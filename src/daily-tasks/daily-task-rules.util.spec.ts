@@ -72,3 +72,22 @@ describe('pieceKeyOf', () => {
     expect(pieceKeyOf({ trackingNumber: '7781', dhlUniqueId: null })).toBe('7781');
   });
 });
+
+describe('summarizeToday', () => {
+  const { summarizeToday } = require('./daily-task-rules.util');
+  const r = (o: any) => ({ refType: 'consolidated', refId: 'c', consNumber: '7781', step: 'dispatch', status: 'pending', dueAt: new Date('2026-10-18T17:00:00Z'), ...o });
+  it('cuenta atrasados, pendientes y listos; lista los atrasados por hora de vencimiento', () => {
+    const s = summarizeToday([
+      r({ status: 'late', step: 'closure', dueAt: new Date('2026-10-18T04:00:00Z') }),
+      r({ status: 'late', step: 'unloading', dueAt: new Date('2026-10-18T03:00:00Z') }),
+      r({ status: 'partial' }),
+      r({ status: 'pending' }),
+      r({ status: 'done' }),
+    ]);
+    expect(s).toMatchObject({ late: 2, pending: 2, done: 1, total: 5 });
+    expect(s.lateItems.map((x: any) => x.step)).toEqual(['unloading', 'closure']);
+  });
+  it('máximo 5 atrasados en la lista', () => {
+    expect(summarizeToday(Array.from({ length: 8 }, () => r({ status: 'late' }))).lateItems).toHaveLength(5);
+  });
+});

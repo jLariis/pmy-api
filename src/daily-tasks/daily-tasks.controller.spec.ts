@@ -7,6 +7,7 @@ const svc: any = {
   packageDetail: jest.fn(async () => ({ ok: 'detail' })),
   refreshDay: jest.fn(async () => []),
   subsidiaryOfRef: jest.fn(async () => 'S1'),
+  summary: jest.fn(async () => ({ ok: 'summary' })),
 };
 const ctrl = new DailyTasksController(svc);
 const user = (o: any) => ({ user: { role: 'user', subsidiaryIds: ['S1'], ...o } });
@@ -35,5 +36,10 @@ describe('DailyTasksController', () => {
   it('el detalle valida la sucursal del consolidado', async () => {
     svc.subsidiaryOfRef.mockResolvedValueOnce('S9');
     await expect(ctrl.detail(user({}), 'consolidated', 'c1')).rejects.toThrow(ForbiddenException);
+  });
+
+  it('resumen de la barra: usa la sucursal pedida si tiene acceso', async () => {
+    await expect(ctrl.summary(user({}), 'S1')).resolves.toEqual({ ok: 'summary' });
+    await expect(ctrl.summary(user({}), 'S2')).rejects.toThrow(ForbiddenException);
   });
 });
