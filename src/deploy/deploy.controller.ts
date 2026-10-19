@@ -32,7 +32,7 @@ export class DeployController {
 
   @Post('run')
   run(@Body() dto: StartDeployDto, @Req() req: any) {
-    return this.deploy.start(dto.bump, dto.notes, req.user?.id ?? null);
+    return this.deploy.start(dto.bump, dto.notes, req.user?.userId ?? req.user?.id ?? null);
   }
 
   @Get('runs')

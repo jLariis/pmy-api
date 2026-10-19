@@ -1,8 +1,15 @@
-import { Controller, Get, Post, Req } from '@nestjs/common';
+import { Controller, Get, Post, Req, UnauthorizedException } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { NoAudit } from '../audit/audit.decorator';
 import { Public } from '../auth/decorators/decorators/public-decorator';
 import { ReleaseService } from './release.service';
+
+/** El JwtStrategy pone `userId` (no `id`) en req.user. */
+export function sessionUserId(req: any): string {
+  const id = req?.user?.userId ?? req?.user?.id;
+  if (!id) throw new UnauthorizedException('Sesión inválida');
+  return String(id);
+}
 
 /** Versión del sistema y aviso de novedades (cualquier usuario autenticado). */
 @ApiTags('system')
@@ -22,12 +29,12 @@ export class ReleaseController {
   @Get('unseen')
   @NoAudit()
   unseen(@Req() req: any) {
-    return this.svc.unseen(req.user?.id, req.user?.role);
+    return this.svc.unseen(sessionUserId(req), req.user?.role);
   }
 
   @Post('seen')
   @NoAudit()
   seen(@Req() req: any) {
-    return this.svc.markSeen(req.user?.id);
+    return this.svc.markSeen(sessionUserId(req));
   }
 }
