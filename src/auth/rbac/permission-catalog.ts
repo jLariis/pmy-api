@@ -77,6 +77,7 @@ export const RBAC_PERMISSIONS: RbacPermissionDef[] = [
   { code: 'finanzas.gastos', name: 'Gastos', groupName: 'Finanzas', roles: ['admin', 'subadmin', 'superadmin', 'auxiliar'] },
   { code: 'finanzas.ingresos', name: 'Ingresos', groupName: 'Finanzas', roles: ['admin', 'subadmin', 'superadmin', 'auxiliar'] },
   { code: 'finanzas.consolidador', name: 'Consolidador', groupName: 'Finanzas', roles: ['admin', 'subadmin', 'superadmin', 'auxiliar'] },
+  { code: 'finanzas.consolidador.conteoManual', name: 'Consolidador · Conteo manual', groupName: 'Finanzas', roles: ['superadmin'] },
   { code: 'finanzas.nominas', name: 'Nómina', groupName: 'Finanzas', roles: ['admin', 'subadmin', 'superadmin'] },
   // Mtto. Vehículos
   { code: 'mttoVehiculos.programacion', name: 'Programación Mtto.', groupName: 'Mtto. Vehículos', roles: ['admin', 'superadmin'] },

@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, ForbiddenException, Get, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { ConsolidadorAccessGuard } from '../auth/guards/consolidador-access.guard';
 import { ConsolidadorReadService } from './read/consolidador-read.service';
@@ -22,6 +22,11 @@ import { RepairIncomeDto } from './dto/repair-income.dto';
 import { ReassignSubsidiaryDto } from './dto/reassign-subsidiary.dto';
 import { DateRealignApplyDto } from './dto/date-realign.dto';
 import { IncomeDateRealignService } from './income/income-date-realign.service';
+import { PermissionsGuard } from '../auth/guards/permissions.guard';
+import { RequirePermission } from '../auth/decorators/require-permission.decorator';
+
+/** Conteo manual vs sistema: permiso propio (por defecto solo superadmin). */
+const CONTEO_MANUAL = 'finanzas.consolidador.conteoManual';
 
 @ApiTags('consolidador')
 @ApiBearerAuth()
@@ -39,32 +44,27 @@ export class ConsolidadorController {
     private readonly dateRealign: IncomeDateRealignService,
   ) {}
 
-  /** El conteo manual vs sistema es solo para superadmin (expone detalle interno y prompt). */
-  private assertSuperadmin(req: any) {
-    const role = String(req.user?.role ?? '').toLowerCase();
-    if (!ConsolidadorAccessGuard.GLOBAL_ROLES.includes(role)) {
-      throw new ForbiddenException('Solo superadmin puede usar esta herramienta.');
-    }
-  }
-
   /** Conteo manual: precalienta FedEx en vivo para un bloque de ≤25 guías (progreso en el front). */
   @Post(':subsidiaryId/manual-count/fedex')
+  @UseGuards(PermissionsGuard)
+  @RequirePermission(CONTEO_MANUAL)
   manualCountFedex(@Body() dto: ManualCountFedexDto, @Req() req: any) {
-    this.assertSuperadmin(req);
     return this.manualCount.prefetchFedex(dto.trackingNumbers);
   }
 
   /** Conteo manual vs sistema: diagnóstico por guía del día (FedEx + rutas + consolidados + ingresos). */
   @Post(':subsidiaryId/:day/manual-count')
+  @UseGuards(PermissionsGuard)
+  @RequirePermission(CONTEO_MANUAL)
   manualCountDiagnose(@Param('subsidiaryId') subsidiaryId: string, @Param('day') day: string, @Body() dto: ManualCountDto, @Req() req: any) {
-    this.assertSuperadmin(req);
     return this.manualCount.diagnose(subsidiaryId, day, dto, dto.scope ?? 'day');
   }
 
   /** Conteo manual: prompt para corregir en Claude Code los errores del sistema encontrados. */
   @Post(':subsidiaryId/:day/manual-count/prompt')
+  @UseGuards(PermissionsGuard)
+  @RequirePermission(CONTEO_MANUAL)
   manualCountPrompt(@Param('subsidiaryId') subsidiaryId: string, @Param('day') day: string, @Body() dto: ManualCountPromptDto, @Req() req: any) {
-    this.assertSuperadmin(req);
     return this.manualCount.prompt(subsidiaryId, day, dto, dto.causes as Cause[] | undefined, dto.scope ?? 'day');
   }
 
@@ -106,7 +106,6 @@ export class ConsolidadorController {
     @Param('toDate') toDate: string,
     @Req() req: any,
   ) {
-    this.assertSuperadmin(req);
     return this.dateRealign.preview(subsidiaryId, fromDate, toDate);
   }
 
@@ -119,7 +118,6 @@ export class ConsolidadorController {
     @Body() dto: DateRealignApplyDto,
     @Req() req: any,
   ) {
-    this.assertSuperadmin(req);
     return this.dateRealign.apply(subsidiaryId, fromDate, toDate, dto.incomeIds, dto.reason, req.user?.userId);
   }
 
