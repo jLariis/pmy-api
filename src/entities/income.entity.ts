@@ -55,9 +55,10 @@ export class Income {
    * Misma columna que la relación `shipment`, solo para FILTRAR sin join. Desde que shipment
    * tiene borrado lógico (inactiveAt), `where: { shipment: { id } }` arma un LEFT JOIN y, junto
    * con un OR, MySQL recorre toda la tabla income (~2 s por guía; abrir un cierre de 75 guías
-   * tardaba ~100 s). Solo lectura: se escribe a través de `shipment`.
+   * tardaba ~100 s). Se escribe a través de `shipment`. NO marcar `insert: false`: TypeORM funde
+   * esta columna con la de la relación y dejaba shipmentId en NULL en TODO ingreso nuevo (19-oct-2026).
    */
-  @Column({ type: 'varchar', length: 36, nullable: true, insert: false, update: false })
+  @Column({ type: 'varchar', length: 36, nullable: true })
   shipmentId?: string | null;
 
   @Index()
