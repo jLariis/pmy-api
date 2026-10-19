@@ -50,6 +50,7 @@ import { WhatsappTemplatesModule } from './whatsapp-templates/whatsapp-templates
 import { CatalogModule } from './catalog/catalog.module';
 import { GeocodeModule } from './geocode/geocode.module';
 import { ServerStatsModule } from './server-stats/server-stats.module';
+import { DeployModule } from './deploy/deploy.module';
 import { MaintenanceModule } from './maintenance/maintenance.module';
 import { SupportModule } from './support/support.module';
 import { DocumentsModule } from './documents/documents.module';
@@ -128,6 +129,7 @@ import { DailyTasksModule } from './daily-tasks/daily-tasks.module';
     CatalogModule,
     GeocodeModule,
     ServerStatsModule,
+    DeployModule,
     MaintenanceModule,
     GuacamoleModule,
     SupportModule,

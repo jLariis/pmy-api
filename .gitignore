@@ -150,3 +150,9 @@ whatsapp-session/
 graphify-out/
 
 uploads/
+
+# Despliegue desde la app (deploy/pmy-deploy.sh)
+/dist-next
+/dist-prev
+/dist-failed
+/.tsconfig.deploy.json
