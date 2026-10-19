@@ -25,6 +25,7 @@ import { IncomeDateRealignService } from './income/income-date-realign.service';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import { RequirePermission } from '../auth/decorators/require-permission.decorator';
 import { ZoneService } from './zone/zone.service';
+import { ZoneManualCountService } from './audit/zone-manual-count.service';
 import { ConsolidadorViewsService } from './zone/consolidador-views.service';
 
 /** Conteo manual vs sistema: permiso propio (por defecto solo superadmin). */
@@ -46,6 +47,7 @@ export class ConsolidadorController {
     private readonly dateRealign: IncomeDateRealignService,
     private readonly zone: ZoneService,
     private readonly views: ConsolidadorViewsService,
+    private readonly zoneManualCount: ZoneManualCountService,
   ) {}
 
   /** Conteo manual: precalienta FedEx en vivo para un bloque de ≤25 guías (progreso en el front). */
@@ -61,7 +63,15 @@ export class ConsolidadorController {
   @UseGuards(PermissionsGuard)
   @RequirePermission(CONTEO_MANUAL)
   manualCountDiagnose(@Param('subsidiaryId') subsidiaryId: string, @Param('day') day: string, @Body() dto: ManualCountDto, @Req() req: any) {
-    return this.manualCount.diagnose(subsidiaryId, day, dto, dto.scope ?? 'day');
+    return this.manualCount.diagnose(subsidiaryId, day, dto, dto.scope ?? 'day', req.user?.userId ?? null);
+  }
+
+  /** Conteo manual de TODA la zona: cada guía pegada se ubica en su sucursal y se revisa ahí. */
+  @Post('zone/:zoneId/:day/manual-count')
+  @UseGuards(PermissionsGuard)
+  @RequirePermission(CONTEO_MANUAL)
+  manualCountZone(@Param('zoneId') zoneId: string, @Param('day') day: string, @Body() dto: ManualCountDto, @Req() req: any) {
+    return this.zoneManualCount.diagnose(zoneId, req.user, day, dto, dto.scope ?? 'day');
   }
 
   /** Conteo manual: prompt para corregir en Claude Code los errores del sistema encontrados. */

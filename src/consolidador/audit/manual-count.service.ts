@@ -10,6 +10,7 @@ import { diagnoseGuide, summarize } from '../logic/manual-count-diagnose.util';
 import { pickShipmentRowForDay } from '../logic/manual-count-facts.util';
 import { buildManualCountPrompt } from '../logic/manual-count-prompt.util';
 import { assignWeekMarks, weekDaysOf } from '../logic/manual-count-week.util';
+import { runTotals } from '../logic/manual-count-run.util';
 import { collectionDayOf, diagnoseCollection, pickedUpDayOf, summarizeCollections } from '../logic/manual-count-collection.util';
 import {
   Cause,
@@ -69,7 +70,7 @@ export class ManualCountService {
     return { done: tns.length, failed };
   }
 
-  async diagnose(subsidiaryId: string, day: string, lists: ManualLists, scope: ManualCountScope = 'day'): Promise<ManualCountReport> {
+  async diagnose(subsidiaryId: string, day: string, lists: ManualLists, scope: ManualCountScope = 'day', userId?: string | null): Promise<ManualCountReport> {
     if (!DAY_RE.test(day)) throw new BadRequestException('La fecha debe tener el formato AAAA-MM-DD.');
     const days = scope === 'week' ? weekDaysOf(day) : [day];
 
@@ -137,10 +138,28 @@ export class ManualCountService {
     const recs = sources.collections ? clean(lists.recolecciones ?? []) : [];
     const collections = recs.length ? await this.diagnoseCollections(subsidiaryId, days, recs, expectedCost) : undefined;
 
-    return {
+    const report: ManualCountReport = {
       subsidiaryId, subsidiaryName, day: days[0], scope, from: days[0], to: days[days.length - 1],
       fedexFailures, totals: summarize(rows), rows, ...(collections ? { collections } : {}),
     };
+    await this.saveRun(report, expectedCost, userId ?? null);
+    return report;
+  }
+
+  /** Guarda los totales del conteo (para el Resumen). Si falla solo se avisa en el log. */
+  private async saveRun(r: ManualCountReport, expectedCost: number, userId: string | null): Promise<void> {
+    try {
+      const t = runTotals(r.rows, expectedCost);
+      // Sin nada contado (p. ej. una sucursal de la zona sin guías pegadas) no hay conteo que guardar.
+      if (!t.counted && !r.collections?.rows.some((c) => c.counted)) return;
+      await this.dataSource.query(
+        `INSERT INTO manual_count_run (id, subsidiaryId, scope, fromDay, toDay, counted, matched, differences, missingAmount, extraAmount, createdById)
+         VALUES (UUID(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [r.subsidiaryId, r.scope ?? 'day', r.from ?? r.day, r.to ?? r.day, t.counted, t.matched, t.differences, t.missingAmount, t.extraAmount, userId],
+      );
+    } catch (e: any) {
+      this.logger.warn(`[ManualCount] No se guardó el resumen del conteo: ${e?.message}`);
+    }
   }
 
   /**
