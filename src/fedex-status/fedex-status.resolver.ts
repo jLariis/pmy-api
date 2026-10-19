@@ -1,3 +1,4 @@
+import { canonicalFedexExceptionCode } from 'src/common/fedex-exception-code.util';
 import { Injectable, Logger } from '@nestjs/common';
 import { FedexService } from 'src/shipments/fedex.service';
 import { LatestScanEvent, LatestStatusResult, StatusValidation } from './fedex-status.types';
@@ -63,8 +64,9 @@ export class FedexStatusResolver {
 
     const derivedCode: string | null = latest?.derivedCode ?? null;
     const statusCode: string | null = latest?.code ?? null;
-    const exceptionCode: string | null =
-      latest?.ancillaryDetails?.[0]?.reason ?? lastScan?.exceptionCode ?? null;
+    const exceptionCode: string | null = canonicalFedexExceptionCode(
+      latest?.ancillaryDetails?.[0]?.reason ?? lastScan?.exceptionCode ?? null,
+    );
 
     const status = resolveCanonicalStatus({ derivedCode, statusCode, exceptionCode });
 
@@ -74,7 +76,7 @@ export class FedexStatusResolver {
           description: lastScan.eventDescription ?? null,
           date: lastScan.date ? new Date(lastScan.date) : null,
           location: lastScan.scanLocation?.city ?? null,
-          exceptionCode: lastScan.exceptionCode ?? null,
+          exceptionCode: canonicalFedexExceptionCode(lastScan.exceptionCode ?? null),
         }
       : null;
 

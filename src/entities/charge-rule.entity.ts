@@ -13,8 +13,8 @@ import { Column, Entity, Index, PrimaryGeneratedColumn, Unique } from 'typeorm';
  *  - `subsidiaryId` = NULL → default GLOBAL (editable en Configuración).
  *                     con valor → override para esa sucursal (gana sobre el global).
  *
- * Resolución (en lectura): override de sucursal → default global → fallback `true`
- * (mismo comportamiento histórico del `ELSE 1` del espejo SQL).
+ * Resolución (en lectura): override de sucursal → default global → sin regla: FedEx NO cobra
+ * desde el 19-oct-2026 (antes, y otras paqueterías, cobra). Ver `noRuleFallback`.
  */
 @Entity('charge_rule')
 @Unique(['carrier', 'code', 'subsidiaryId'])

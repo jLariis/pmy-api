@@ -1,3 +1,4 @@
+import { canonicalFedexExceptionCode } from 'src/common/fedex-exception-code.util';
 import { ShipmentStatusType, TERMINAL_SHIPMENT_STATUSES } from 'src/common/enums/shipment-status-type.enum';
 
 /**
@@ -75,7 +76,7 @@ export interface CanonicalStatusInput {
  */
 export function resolveCanonicalStatus(input: CanonicalStatusInput): ShipmentStatusType | null {
   const derived = (input.derivedCode || input.statusCode || '').toUpperCase();
-  const exception = (input.exceptionCode || '').toUpperCase();
+  const exception = (canonicalFedexExceptionCode(input.exceptionCode) || '').toUpperCase();
 
   // 1. Entregado manda.
   if (derived === 'DL') return ShipmentStatusType.ENTREGADO;

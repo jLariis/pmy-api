@@ -1,3 +1,4 @@
+import { canonicalFedexExceptionCode } from 'src/common/fedex-exception-code.util';
 import { IncomeStatus } from 'src/common/enums/income-status.enum';
 import { hasWeekWithThreeDex08Days } from 'src/common/dex08-week.util';
 
@@ -32,7 +33,9 @@ export interface NoVanIncomeFields {
  *
  * Devuelve `null` cuando NO se debe generar ingreso.
  */
-export function noVanIncomeDecision(outcome: NoVanFedexOutcome): NoVanIncomeFields | null {
+export function noVanIncomeDecision(input: NoVanFedexOutcome): NoVanIncomeFields | null {
+  // '08D' es el mismo DEX08: sin normalizar se saltaba la regla de 3 visitas (Hermosillo 17-oct-2026).
+  const outcome = { ...input, dexCode: canonicalFedexExceptionCode(input.dexCode) };
   if (!outcome.resolved) return null;
   if (!outcome.delivered && !outcome.dexCode) return null;
   if (!outcome.delivered && outcome.dexCode === '08' && !hasWeekWithThreeDex08Days(outcome.dex08Dates ?? [])) {

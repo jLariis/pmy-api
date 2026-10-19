@@ -1,7 +1,8 @@
+import { canonicalFedexExceptionCode } from 'src/common/fedex-exception-code.util';
 import { ShipmentStatusType } from "src/common/enums/shipment-status-type.enum";
 
 export function mapFedexStatusToLocalStatus(derivedStatusCode: string, exceptionCode?: string): ShipmentStatusType {
-  const excCode = exceptionCode?.trim().toUpperCase();
+  const excCode = canonicalFedexExceptionCode(exceptionCode)?.toUpperCase();
   const code = derivedStatusCode?.trim().toUpperCase();
 
   // --- PRIORIDAD: EXCEPTION CODES ---
