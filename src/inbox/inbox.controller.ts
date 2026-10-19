@@ -12,6 +12,7 @@ import { ZipCoverageService } from './zip-coverage.service';
 import { AttachmentKind } from './inbox.types';
 import { InboxPasteService, MarkPastedBody } from './inbox-paste.service';
 import { PasteBatchKind } from './paste-plan.util';
+import { InboxLookupService } from './inbox-lookup.service';
 
 /**
  * Bandeja de correos (sistemas@; FedEx y, más adelante, DHL): lista, detalle, revisión, tablero
@@ -30,6 +31,7 @@ export class InboxController {
     private readonly link: InboxLinkService,
     private readonly coverage: ZipCoverageService,
     private readonly paste: InboxPasteService,
+    private readonly lookup: InboxLookupService,
   ) {}
 
   private isSuper(req: any): boolean {
@@ -50,6 +52,25 @@ export class InboxController {
   @ApiOperation({ summary: 'Correos FedEx con filtros y contadores por vista' })
   list(@Query() q: ListFilters, @Req() req: any) {
     return this.query.list(q, this.scope(req));
+  }
+
+  @Get('search')
+  @ApiOperation({ summary: 'Buscador: consolidado, guía o texto → correos donde aparece' })
+  search(@Query('q') q: string, @Req() req: any) {
+    return this.lookup.search(q, this.scope(req));
+  }
+
+  @Get('lookup/consolidated')
+  @ApiOperation({ summary: 'Historia completa de un consolidado: correo, desembarque, rutas, entregas, DEX, devoluciones' })
+  consolidatedDetail(@Query() q: { id?: string; cons?: string; type?: 'paquete' | 'carga' }, @Req() req: any) {
+    if (!q?.id && !q?.cons) throw new BadRequestException('Indica el consolidado');
+    return this.lookup.consolidatedDetail(q, this.scope(req));
+  }
+
+  @Get('lookup/guide/:tracking')
+  @ApiOperation({ summary: 'Historia completa de una guía: correo, consolidado, movimientos, ruta, ingreso' })
+  guideDetail(@Param('tracking') tracking: string, @Req() req: any) {
+    return this.lookup.guideDetail(tracking, this.scope(req));
   }
 
   @Get('messages/:id')

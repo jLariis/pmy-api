@@ -92,6 +92,10 @@ export class InboxMessage {
   @Column({ type: 'datetime', nullable: true })
   matchedAt: Date | null;
 
+  /** Cuándo se leyeron sus guías para el buscador (inbox_guide); null = pendiente. */
+  @Column({ type: 'datetime', nullable: true })
+  guidesIndexedAt: Date | null;
+
   @CreateDateColumn()
   createdAt: Date;
 

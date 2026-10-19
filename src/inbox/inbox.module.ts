@@ -18,6 +18,8 @@ import { InboxQueryService } from './inbox-query.service';
 import { InboxCrons } from './inbox.crons';
 import { InboxPasteService } from './inbox-paste.service';
 import { SystemMatchService } from './system-match.service';
+import { GuideIndexService } from './guide-index.service';
+import { InboxLookupService } from './inbox-lookup.service';
 import { WhatsappGatewayModule } from '../whatsapp-gateway/whatsapp-gateway.module';
 import { OpsAlertsModule } from '../ops-alerts/ops-alerts.module';
 
@@ -48,6 +50,8 @@ import { OpsAlertsModule } from '../ops-alerts/ops-alerts.module';
     InboxCrons,
     InboxPasteService,
     SystemMatchService,
+    GuideIndexService,
+    InboxLookupService,
   ],
   exports: [InboxIngestService, KnowledgeService, ZipCoverageService],
 })
