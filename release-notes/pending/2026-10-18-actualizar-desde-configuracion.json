@@ -1,0 +1,13 @@
+{
+  "kind": "nuevo",
+  "title": "Actualizar el sistema desde Configuración",
+  "summary": "Ahora puedes actualizar el sistema con un botón, viendo cada paso en vivo, y la versión sube sola.",
+  "where": "Configuración → Servidor → Actualizar",
+  "route": "/configuracion",
+  "steps": [
+    "Entra a Configuración → Servidor y abre la pestaña Actualizar.",
+    "Revisa lo que verán los usuarios y elige el tipo de cambio.",
+    "Pulsa Actualizar y sigue el avance en la consola."
+  ],
+  "audience": "superadmin"
+}
