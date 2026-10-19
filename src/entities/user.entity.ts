@@ -85,6 +85,10 @@ export class User {
   @Column({ type: 'datetime', nullable: true })
   lastLoginAt?: Date;
 
+  /** Última versión del sistema cuyo aviso de novedades ya vio (null = usuario nuevo). */
+  @Column({ type: 'varchar', length: 20, nullable: true })
+  lastSeenReleaseVersion?: string | null;
+
   @Column({ type: 'datetime', default: () => 'CURRENT_TIMESTAMP' })
   createdAt: Date;
 
