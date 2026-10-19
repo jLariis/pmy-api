@@ -1,0 +1,11 @@
+{
+  "kind": "correccion",
+  "title": "Ingresos ligados de nuevo a su paquete",
+  "summary": "Los ingresos creados hoy no se ligaban a su paquete y en el cierre de ruta o el Consolidador se veían como \"sin ingreso\". Ya se guardan bien.",
+  "where": "Cierre de ruta y Consolidador",
+  "steps": [
+    "Los ingresos nuevos ya aparecen en su paquete.",
+    "Los de hoy se religan con una corrección en el servidor."
+  ],
+  "audience": "superadmin"
+}
