@@ -83,14 +83,13 @@ export class DailyTaskFactsService {
       };
     };
     const unloaded = gs.filter((g) => g.unAt);
-    // Lo que terminó sin pasar por bodega ni por ruta (p. ej. lo entregó FedEx) no queda pendiente de desembarcar.
-    const toUnload = gs.filter((g) => g.unAt || disp.has(g.id) || !FINAL_WITHOUT_ROUTE.has(g.status));
     const dispatched = gs.filter((g) => disp.has(g.id));
     // Por sacar a ruta: lo desembarcado que no terminó sin ruta, más lo que salió aunque no se desembarcara en el sistema.
     const dispatchTotal = gs.filter((g) => disp.has(g.id) || (g.unAt && !FINAL_WITHOUT_ROUTE.has(g.status))).length;
     const closed = dispatched.filter((g) => { const d = disp.get(g.id)!; return d.closed >= d.n; });
     return {
-      unloading: prog(unloaded.map((g) => ({ at: g.unAt, by: g.unBy })), toUnload.length),
+      // Contra TODAS las guías del consolidado: se entregaran o no, todas debían desembarcarse.
+      unloading: prog(unloaded.map((g) => ({ at: g.unAt, by: g.unBy })), gs.length),
       dispatch: prog(dispatched.map((g) => ({ at: disp.get(g.id)!.last, by: disp.get(g.id)!.lastBy })), dispatchTotal),
       closure: prog(closed.map((g) => ({ at: disp.get(g.id)!.closedAt, by: disp.get(g.id)!.closedBy })), dispatched.length),
     };

@@ -94,8 +94,8 @@ run('DailyTaskFactsService (BD local)', () => {
   it('consolidatedFacts: avance por paso del consolidado', async () => {
     const [f] = (await svc.consolidatedFacts(sub, D)).filter((x) => x.refId === C);
     expect(f).toMatchObject({ refType: 'consolidated', consNumber: 'TEST-DT-1', day: D, guides: 8 });
-    // La entregada por FedEx sin pasar por bodega no cuenta como pendiente de desembarcar.
-    expect(f.unloading).toMatchObject({ done: 5, total: 7 });
+    // Se cuenta contra TODAS las guías, aunque alguna se haya entregado sin pasar por bodega (decisión del usuario).
+    expect(f.unloading).toMatchObject({ done: 5, total: 8 });
     // La que salió sin desembarcar también cuenta en la salida (no queda "3/2").
     expect(f.dispatch).toMatchObject({ done: 3, total: 6 });
     // La guía movida de ruta cuenta una vez y su cierre sale del historial.
