@@ -37,6 +37,22 @@ export const CAUSE_CODE_MAP: Partial<Record<Cause, CauseCodeInfo>> = {
     ],
     hint: 'Revisa si la ruta se cerró, si el ingreso existió y se anuló (annulledAt), y qué guard lo omitió.',
   },
+  NOVAN_SIN_COBRO: {
+    title: 'No VAN sin cobro (FedEx dice que cobra y el cierre no lo registró)',
+    files: [
+      'src/routeclosure/routeclosure.service.ts (create: ingresos No VAN, resolveNoVanOutcome)',
+      'src/routeclosure/novan-income.util.ts (noVanIncomeDecision, noVanOutcomeFromTrack)',
+    ],
+    hint: 'Revisa si FedEx respondió al cerrar la ruta (resolved=false no cobra) y si un guard de duplicado omitió el ingreso.',
+  },
+  DOBLE_PAQUETE_CARGA: {
+    title: 'Guía como paquete y como carga (cobro doble)',
+    files: [
+      'src/shipments/shipments.service.ts (addConsMasterBySubsidiary, processFileF2, cron de cobros FedEx)',
+      'src/consolidador/logic/charge-doubles.util.ts',
+    ],
+    hint: 'El master pegado trae la hoja F2: la guía entra como paquete y luego como carga; el cron cobra el paquete al ver Delivered aunque nunca salió a ruta.',
+  },
   INGRESO_OTRO_DIA: {
     title: 'Ingreso con fecha de otro día',
     files: [

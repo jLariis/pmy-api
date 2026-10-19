@@ -103,6 +103,11 @@ export function diagnoseGuide(manual: Mark | null, f: GuideFacts, ctx: DiagnoseC
   const truthTxt = fedexOk ? fedexLabel : systemLabel;
   const dayIncomes = f.incomes.filter((i) => i.active && i.day === day);
   const charged = dayIncomes.map((i) => i.mark).filter((m): m is Mark => !!m);
+  const source = f.kind ?? null;
+  const where = whereOf(f);
+
+  // No VAN: no es paquete del sistema; se revisa contra su cierre de ruta.
+  if (f.kind === 'novan') return diagnoseNoVan(manual, f, ctx, { fedexSays, systemSays, fedexLabel, truthTxt, where });
 
   // 1. Existe y es de la sucursal.
   if (!f.kind) {
@@ -113,6 +118,18 @@ export function diagnoseGuide(manual: Mark | null, f: GuideFacts, ctx: DiagnoseC
     breakAt('OTRA_SUCURSAL', 'La guía está registrada en otra sucursal.');
   } else {
     push(1, 'Existe en la sucursal', true, f.transferredIn ? 'Llegó por traspaso.' : 'Registrada en la sucursal.');
+  }
+
+  // Carga que también se subió como paquete y el paquete se cobró: la carga ya incluye la guía.
+  if (f.kind === 'charge' && f.twinPackage && dayIncomes.length) {
+    const cons = f.consolidado?.consNumber ? ` ${f.consolidado.consNumber}` : '';
+    push(7, 'Ingreso registrado', false, `El paquete ${f.twinPackage.consNumber ?? ''} tiene cobro de ${charged.map((m) => MARK_LABEL[m]).join(' + ') || 'paquete'}.`.replace('  ', ' '));
+    return {
+      trackingNumber: f.trackingNumber, manual, fedexSays, systemSays, fedexLabel, systemLabel, charged, expected: null, deliveredDay: f.fedex?.deliveredDay ?? null,
+      verdict: 'ERROR_SISTEMA', cause: 'DOBLE_PAQUETE_CARGA', subCause: 'Está como paquete y como carga',
+      explanation: `Se cobró como paquete ($${Number(dayIncomes[0].cost)}) y además va en la carga${cons}: la carga ya incluye esta guía.`,
+      chain, cost: Number(dayIncomes[0].cost), incomeIds: dayIncomes.map((i) => i.id), shipmentId: f.twinPackage.shipmentId, source, where,
+    };
   }
 
   // Carga F2: se cobra agrupada por carga, no por guía → solo se compara el conteo.
@@ -128,7 +145,7 @@ export function diagnoseGuide(manual: Mark | null, f: GuideFacts, ctx: DiagnoseC
       trackingNumber: f.trackingNumber, manual, fedexSays, systemSays, fedexLabel, systemLabel, charged: [], expected: null, deliveredDay: f.fedex?.deliveredDay ?? null,
       verdict: counted ? 'CUADRA' : 'ERROR_CONTEO', cause: counted ? null : 'F2_INFORMATIVO', subCause: null,
       explanation: counted ? 'Carga F2: el conteo coincide (el cobro es por carga).' : `Carga F2: contó ${manual ? MARK_LABEL[manual] : 'nada'} pero el desenlace es ${truthTxt}.`,
-      chain, cost: null, incomeIds: [], shipmentId: null,
+      chain, cost: null, incomeIds: [], shipmentId: null, source, where,
     };
   }
 
@@ -316,6 +333,120 @@ export function diagnoseGuide(manual: Mark | null, f: GuideFacts, ctx: DiagnoseC
     cost: dayIncomes.length ? Number(dayIncomes[0].cost) : null,
     incomeIds: dayIncomes.map((i) => i.id),
     shipmentId: f.shipmentId ?? null,
+    source,
+    where,
+  };
+}
+
+const ddmm = (d: string | null | undefined) => (d ? `${d.slice(8, 10)}/${d.slice(5, 7)}` : '—');
+
+/** "Dónde está en el sistema", en llano. */
+function whereOf(f: GuideFacts): string {
+  if (f.kind === 'novan') {
+    const n = f.novan;
+    return ['No VAN', n?.routeDay ? `Ruta ${ddmm(n.routeDay)}` : null, n?.driver].filter(Boolean).join(' · ');
+  }
+  if (f.kind === 'charge') {
+    const carga = `Carga ${f.consolidado?.consNumber ?? ''}`.trim();
+    return f.twinPackage ? `Paquete ${f.twinPackage.consNumber ?? ''} + ${carga}`.replace('  ', ' ') : carga;
+  }
+  if (f.kind === 'shipment') return `Paquete ${f.consolidado?.consNumber ?? ''}`.trim();
+  return 'No existe';
+}
+
+/**
+ * No VAN: el chofer la reportó en el cierre y no venía en archivos, así que no hay paquete. Se
+ * compara el conteo con lo que dice FedEx y con el cobro del cierre (día del conteo o de la ruta).
+ * Mismo criterio de cobro que el cierre: 31.5 no cobra; POD/07 según la regla; 08 con 3 visitas.
+ */
+function diagnoseNoVan(
+  manual: Mark | null,
+  f: GuideFacts,
+  ctx: DiagnoseContext,
+  t: { fedexSays: DayOutcome; systemSays: DayOutcome; fedexLabel: string; truthTxt: string; where: string },
+): DiagnosisRow {
+  const { day } = ctx;
+  const n = f.novan!;
+  const routeTxt = `la ruta del ${ddmm(n.routeDay)}${n.driver ? ` (${n.driver})` : ''}`;
+  const head = `La anotaron como No VAN en el cierre de ${routeTxt}`;
+  const truth = t.fedexSays;
+  const incomes = f.incomes.filter((i) => i.active && (i.day === day || i.day === n.routeDay));
+  const charged = incomes.map((i) => i.mark).filter((m): m is Mark => !!m);
+  const chain: ChainStep[] = [
+    { step: 1, label: 'Existe en la sucursal', ok: true, detail: `No es paquete del sistema: ${head.charAt(0).toLowerCase()}${head.slice(1)}.` },
+    { step: 3, label: 'Salió a ruta', ok: true, detail: `Ruta ${n.folio ?? ''}`.trim() + '.' },
+    { step: 5, label: 'FedEx en vivo', ok: f.fedex?.ok ? true : null, detail: f.fedex?.ok ? `FedEx dice ${t.fedexLabel}.` : 'FedEx no respondió.' },
+  ];
+
+  let expected: Mark | null = null;
+  let noChargeWhy = 'no hay desenlace cobrable ese día';
+  if (n.is315) noChargeWhy = 'la ruta es 31.5 (los No VAN no cobran)';
+  else if (truth === '08') {
+    const { visitsToDay, chargeDay } = dex08WeekStatus(f.fedex?.dex08Dates ?? [], day);
+    if (chargeDay !== day) noChargeWhy = `DEX08 con ${plural(visitsToDay, 'visita', 'visitas')} en la semana (necesita 3 días distintos)`;
+    else if (!ctx.isChargeable('08')) noChargeWhy = 'la regla de cobro de la sucursal no cobra DEX08';
+    else expected = '08';
+  } else if (truth === 'POD' || truth === '07') {
+    if (ctx.isChargeable(truth === 'POD' ? 'DELIVERED' : '07')) expected = truth;
+    else noChargeWhy = `la regla de cobro de la sucursal no cobra ${MARK_LABEL[truth]}`;
+  }
+  chain.push({ step: 6, label: 'Reglas de cobro', ok: true, detail: expected ? `Debe cobrar ${MARK_LABEL[expected]}.` : `No cobra: ${noChargeWhy}.` });
+
+  const chargedTxt = charged.length ? charged.map((m) => MARK_LABEL[m]).join(' + ') : 'nada';
+  let verdict: Verdict;
+  let cause: Cause | null = null;
+  let explanation: string;
+  if (charged.length && (!expected || !charged.includes(expected))) {
+    verdict = 'ERROR_SISTEMA';
+    cause = 'COBRO_DE_MAS';
+    explanation = `${head}; se cobró ${chargedTxt} pero ${expected ? `debía cobrar ${MARK_LABEL[expected]}` : `no debía cobrar: ${noChargeWhy}`}.`;
+  } else if (expected && !charged.length) {
+    verdict = 'ERROR_SISTEMA';
+    cause = 'NOVAN_SIN_COBRO';
+    explanation = `${head}; FedEx dice ${t.truthTxt} y no se cobró.`;
+  } else if (manual === expected || (!manual && !expected)) {
+    verdict = 'CUADRA';
+    explanation = expected ? `${head}; ${MARK_LABEL[expected]} contado y cobrado.` : `${head}; no cobra y no se contó.`;
+  } else if (n.is315 && manual) {
+    verdict = 'REGLA';
+    cause = 'NOVAN_31_5';
+    explanation = `${head}, que es 31.5: los No VAN de rutas 31.5 no cobran.`;
+  } else if (manual && manual === truth && !expected) {
+    verdict = 'REGLA';
+    cause = 'REGLA_NO_COBRA';
+    explanation = `${head}; FedEx confirma ${MARK_LABEL[manual]} pero por regla no cobra: ${noChargeWhy}.`;
+  } else {
+    verdict = 'ERROR_CONTEO';
+    cause = 'ERROR_CONTEO';
+    explanation = !manual
+      ? `${head}; no la contaron, pero corresponde ${MARK_LABEL[expected!]} y así está cobrada.`
+      : `${head}; contó ${MARK_LABEL[manual]} pero FedEx dice ${t.truthTxt}.`;
+  }
+  const incomeBroken = cause === 'COBRO_DE_MAS' || cause === 'NOVAN_SIN_COBRO';
+  chain.push({ step: 7, label: 'Ingreso registrado', ok: !incomeBroken, detail: `Cobrado: ${chargedTxt}.` });
+  const countOk = manual === expected || (!manual && !expected);
+  chain.push({ step: 8, label: 'Conteo del usuario', ok: countOk, detail: countOk ? 'El conteo coincide.' : `Contó ${manual ? MARK_LABEL[manual] : 'nada'}.` });
+
+  return {
+    trackingNumber: f.trackingNumber,
+    manual,
+    fedexSays: t.fedexSays,
+    systemSays: t.systemSays,
+    fedexLabel: t.fedexLabel,
+    systemLabel: 'No VAN (no es paquete)',
+    charged,
+    expected,
+    deliveredDay: f.fedex?.deliveredDay ?? null,
+    verdict,
+    cause,
+    subCause: null,
+    explanation,
+    chain,
+    cost: incomes.length ? Number(incomes[0].cost) : null,
+    incomeIds: incomes.map((i) => i.id),
+    shipmentId: null,
+    source: 'novan',
+    where: t.where,
   };
 }
 

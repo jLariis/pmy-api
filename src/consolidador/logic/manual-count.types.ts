@@ -41,7 +41,7 @@ export interface IncomeRef {
 
 export interface GuideFacts {
   trackingNumber: string;
-  kind: 'shipment' | 'charge' | null; // null = no existe en el sistema
+  kind: 'shipment' | 'charge' | 'novan' | null; // null = no existe en el sistema; novan = solo como No VAN de un cierre
   shipmentId?: string | null; // fila vigente (envío) — para generar el cobro desde la pantalla
   subsidiaryId: string | null;
   transferredIn: boolean; // traspaso hacia la sucursal consultada
@@ -55,6 +55,10 @@ export interface GuideFacts {
   incomes: IncomeRef[]; // envío, activos y anulados
   returned: boolean; // devolución registrada ese día o después
   warehouseDelivered: boolean; // entregado en bodega ese día
+  /** Solo en No VAN: la ruta en cuyo cierre la reportaron. */
+  novan?: { dispatchId: string | null; routeDay: string | null; folio: string | null; driver: string | null; is315: boolean } | null;
+  /** Carga (F2 / 1.5 ton) que TAMBIÉN está como paquete en la sucursal: si el paquete se cobró, es doble. */
+  twinPackage?: { shipmentId: string; consNumber: string | null; consDay: string | null } | null;
 }
 
 export interface DiagnoseContext {
@@ -82,7 +86,10 @@ export type Cause =
   | 'ERROR_CONTEO'
   | 'REGLA_NO_COBRA'
   | 'F2_INFORMATIVO'
-  | 'ENTREGADO_OTRO_DIA';
+  | 'ENTREGADO_OTRO_DIA'
+  | 'NOVAN_SIN_COBRO'
+  | 'NOVAN_31_5'
+  | 'DOBLE_PAQUETE_CARGA';
 
 export interface ChainStep {
   step: number;
@@ -114,6 +121,10 @@ export interface DiagnosisRow {
   shipmentId: string | null;
   /** Día diagnosticado (en la revisión por semana una guía puede salir en varios días). */
   day?: string;
+  /** Dónde vive la guía en el sistema: paquete, carga, No VAN o en ningún lado. */
+  source: 'shipment' | 'charge' | 'novan' | null;
+  /** "Dónde está en el sistema", en llano (p. ej. "Paquete 305823283233 + Carga 305823555448"). */
+  where: string;
 }
 
 /** Revisión por día (un día) o por semana (lunes–domingo, el conteo de toda la semana junto). */
@@ -146,6 +157,14 @@ export interface ManualLists {
   dex08: string[];
   /** Recolecciones contadas a mano (opcional: si viene vacío no se revisan). */
   recolecciones?: string[];
+  /** Contra qué más se compara (si falta, todo prendido). */
+  sources?: ManualCountSources;
+}
+
+export interface ManualCountSources {
+  charges: boolean;
+  collections: boolean;
+  novan: boolean;
 }
 
 // ───────────────────────── Recolecciones ─────────────────────────
