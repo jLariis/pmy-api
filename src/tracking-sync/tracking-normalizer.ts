@@ -23,10 +23,11 @@ export class TrackingNormalizer {
       .sort((a, b) => a.occurredAt.getTime() - b.occurredAt.getTime());
 
     // Entrega FANTASMA (DL seguido de más movimiento, caso 383915660048): no es entrega → tránsito.
-    const scanLike = events.map((e) => ({ date: e.occurredAt, eventType: e.eventType, derivedStatusCode: e.derivedCode }));
+    const header = track?.latestStatusDetail ?? null;
+    const scanLike = events.map((e) => ({ date: e.occurredAt, eventType: e.eventType, derivedStatusCode: e.derivedCode, exceptionCode: e.exceptionCode }));
     for (const e of events) {
       if (e.status !== ShipmentStatusType.ENTREGADO) continue;
-      if (!isPhantomDelivery(scanLike, { date: e.occurredAt, eventType: e.eventType, derivedStatusCode: e.derivedCode })) continue;
+      if (!isPhantomDelivery(scanLike, { date: e.occurredAt, eventType: e.eventType, derivedStatusCode: e.derivedCode }, header)) continue;
       e.status = ShipmentStatusType.EN_TRANSITO;
       e.shadowKey = buildShadowKey(e.occurredAt.getTime(), e.exceptionCode, e.status);
     }
@@ -38,7 +39,7 @@ export class TrackingNormalizer {
       events,
       latest,
       commitDateTime: this.extractCommitDateTime(track),
-      header: this.buildHeader(track, scanEvents, onlyPhantomDeliveries(scanLike)),
+      header: this.buildHeader(track, scanEvents, onlyPhantomDeliveries(scanLike, header)),
       validation: this.validate(track, events),
     };
   }

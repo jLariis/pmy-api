@@ -1,0 +1,11 @@
+{
+  "kind": "correccion",
+  "title": "Un paquete entregado ya no se \"desentrega\"",
+  "summary": "Cuando FedEx confirma la entrega, el paquete se queda como entregado y con su cobro, aunque después lleguen escaneos de la estación local (67/44) con la hora adelantada. Esos escaneos tampoco regresan a bodega un paquete que va en ruta.",
+  "where": "Estatus de los paquetes y cobros",
+  "steps": [
+    "No tienes que hacer nada: el sistema lo corrige solo al actualizar con FedEx.",
+    "Los escaneos 67/44 siguen apareciendo en el historial de la guía."
+  ],
+  "audience": "todos"
+}

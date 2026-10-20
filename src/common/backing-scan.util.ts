@@ -1,6 +1,6 @@
 import { ShipmentStatusType } from 'src/common/enums/shipment-status-type.enum';
 import { mapFedexStatusToLocalStatus } from 'src/utils/fedex.utils';
-import { realDeliveryScan } from './phantom-delivery.util';
+import { DeliveryHeaderLike, realDeliveryScan } from './phantom-delivery.util';
 
 /**
  * Cron legacy de FedEx (master y F2): el estatus final se decide con TODOS los escaneos (y el
@@ -41,8 +41,12 @@ export function needsBackingHistory(input: {
  * Escaneo FedEx que respalda `finalStatus`: para entregas, la entrega REAL más reciente (nunca
  * una fantasma); para lo demás, el último escaneo que mapea a ese estatus. `null` si no hay.
  */
-export function selectBackingScan<T extends ScanEvent>(scanEvents: readonly T[], finalStatus: string): T | null {
-  if (DELIVERED.has(finalStatus)) return realDeliveryScan([...scanEvents]);
+export function selectBackingScan<T extends ScanEvent>(
+  scanEvents: readonly T[],
+  finalStatus: string,
+  header?: DeliveryHeaderLike | null,
+): T | null {
+  if (DELIVERED.has(finalStatus)) return realDeliveryScan([...scanEvents], header);
   let best: T | null = null;
   for (const e of scanEvents ?? []) {
     const mapped = mapFedexStatusToLocalStatus(e.derivedStatusCode || '', e.exceptionCode || '');
