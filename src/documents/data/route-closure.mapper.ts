@@ -10,9 +10,10 @@ const STATUS_TO_DEX: Record<string, string> = {
   cliente_no_disponible: 'DEX08',
   rechazado: 'DEX07',
   cambio_fecha_solicitado: 'DEX17',
+  empresa_cerrada: 'STAT42',
 };
 
-/** Fiel a `getDexCode` del frontend: mapea `status` → "DEX03"/"DEX07"/"DEX08"/"DEX17", o null. */
+/** Fiel a `getDexCode` del frontend: mapea `status` → "DEX03"/"DEX07"/"DEX08"/"DEX17"/"STAT42", o null. */
 export function mapStatusToDex(status?: string): string | null {
   if (!status) return null;
   return STATUS_TO_DEX[status] ?? null;
