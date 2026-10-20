@@ -5,6 +5,7 @@ import { ChargeShipment } from 'src/entities/charge-shipment.entity';
 import { ShipmentStatus } from 'src/entities/shipment-status.entity';
 import { TrackingSyncRun } from 'src/entities/tracking-sync-run.entity';
 import { TrackingSyncObservation } from 'src/entities/tracking-sync-observation.entity';
+import { TrackingSyncIncomeObservation } from 'src/entities/tracking-sync-income-observation.entity';
 import { PackageDispatchHistory } from 'src/entities/package-dispatch-history.entity';
 import { FedexService } from 'src/shipments/fedex.service';
 import { ShipmentsModule } from 'src/shipments/shipments.module';
@@ -32,6 +33,7 @@ import { PreRegResolvedRule } from './rules/pre-reg-resolved.rule';
 import { Code44Rule } from './rules/code44.rule';
 import { MetadataPersistRule } from './rules/metadata-persist.rule';
 import { IncomeHeaderSafetyNetRule } from './rules/income-header-safety-net.rule';
+import { VendorScanRouteRule } from './rules/vendor-scan-route.rule';
 import { IncomeExecutor } from './income/income-executor';
 import { IncomeReconciler } from './income/income-reconciler';
 import { CobrosReconciliationService } from './income/cobros-reconciliation.service';
@@ -47,7 +49,7 @@ import { SYNC_RULES } from './tracking-sync.types';
  */
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Shipment, ChargeShipment, ShipmentStatus, PackageDispatchHistory, TrackingSyncRun, TrackingSyncObservation]),
+    TypeOrmModule.forFeature([Shipment, ChargeShipment, ShipmentStatus, PackageDispatchHistory, TrackingSyncRun, TrackingSyncObservation, TrackingSyncIncomeObservation]),
     ShipmentsModule, // para ShipmentsService.getShipmentsToValidate()
     AuditModule, // para AuditService (registro de correcciones manuales)
   ],
@@ -76,6 +78,7 @@ import { SYNC_RULES } from './tracking-sync.types';
     Code44Rule,
     MetadataPersistRule,
     IncomeHeaderSafetyNetRule,
+    VendorScanRouteRule,
     IncomeExecutor,
     IncomeReconciler,
     CobrosReconciliationService,
@@ -85,9 +88,9 @@ import { SYNC_RULES } from './tracking-sync.types';
     {
       provide: SYNC_RULES,
       // El pipeline ordena por `priority` (mayor primero); el orden aquí es indiferente.
-      useFactory: (terminal, external, income, notification, deliveryHeader, timeShield, preReg, preRegResolved, code44, metadata, incomeHeader) =>
-        [terminal, external, income, notification, deliveryHeader, timeShield, preReg, preRegResolved, code44, metadata, incomeHeader],
-      inject: [TerminalLockRule, ExternalDeliveryRule, IncomeRule, NotificationRule, DeliveryHeaderRule, TimeShieldRule, PreRegistrationRule, PreRegResolvedRule, Code44Rule, MetadataPersistRule, IncomeHeaderSafetyNetRule],
+      useFactory: (terminal, external, income, notification, deliveryHeader, timeShield, preReg, preRegResolved, code44, metadata, incomeHeader, vendorScan) =>
+        [terminal, external, income, notification, deliveryHeader, timeShield, preReg, preRegResolved, code44, metadata, incomeHeader, vendorScan],
+      inject: [TerminalLockRule, ExternalDeliveryRule, IncomeRule, NotificationRule, DeliveryHeaderRule, TimeShieldRule, PreRegistrationRule, PreRegResolvedRule, Code44Rule, MetadataPersistRule, IncomeHeaderSafetyNetRule, VendorScanRouteRule],
     },
   ],
   // Exportado para que el cierre a ruta reconcile/persista el estatus FedEx al abrir

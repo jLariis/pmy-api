@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { TrackingSyncRun } from 'src/entities/tracking-sync-run.entity';
+import { TrackingSyncIncomeObservation } from 'src/entities/tracking-sync-income-observation.entity';
 import { TrackingNormalizer } from './tracking-normalizer';
 import { EventReconciler } from './event-reconciler';
 import { SyncRulesPipeline } from './sync-rules.pipeline';
@@ -9,7 +10,7 @@ import { ExistingEventLoader } from './existing-event-loader';
 import { FedexTrackingSource } from './sources/fedex-tracking.source';
 import { ShadowSyncSink } from './sinks/shadow-sync.sink';
 import { createLimit } from './concurrency.util';
-import { IncomeReconciler } from './income/income-reconciler';
+import { IncomeReconciler, IncomeReconcileRow } from './income/income-reconciler';
 import { NormalizedEvent, RawTrackingResult, SyncContext, Trackable, TrackableItem } from './tracking-sync.types';
 
 /**
@@ -24,6 +25,7 @@ export class TrackingSyncOrchestrator {
 
   constructor(
     @InjectRepository(TrackingSyncRun) private readonly runRepo: Repository<TrackingSyncRun>,
+    @InjectRepository(TrackingSyncIncomeObservation) private readonly incomeObsRepo: Repository<TrackingSyncIncomeObservation>,
     private readonly source: FedexTrackingSource,
     private readonly normalizer: TrackingNormalizer,
     private readonly reconciler: EventReconciler,
@@ -32,6 +34,30 @@ export class TrackingSyncOrchestrator {
     private readonly loader: ExistingEventLoader,
     private readonly incomeReconciler: IncomeReconciler,
   ) {}
+
+  /**
+   * Guarda guía por guía los cobros que el motor propondría (paridad de cobros vs legacy). Nunca
+   * rompe la corrida de sombra: si falla, solo se registra.
+   */
+  private async saveIncomeObservations(runId: string, rows: IncomeReconcileRow[]): Promise<void> {
+    if (!rows.length) return;
+    try {
+      await this.incomeObsRepo.insert(rows.map((r) => ({
+        runId,
+        shipmentId: r.shipmentId,
+        subsidiaryId: r.subsidiaryId,
+        trackingNumber: r.trackingNumber,
+        incomeType: r.incomeType,
+        exceptionCode: r.exceptionCode,
+        cost: String(r.cost ?? 0),
+        occurredAt: r.occurredAt,
+        sourceEventKey: r.sourceEventKey ?? null,
+        alreadyExists: r.alreadyExists,
+      })));
+    } catch (err: any) {
+      this.logger.warn(`No se pudo guardar la sombra de cobros: ${err?.message}`);
+    }
+  }
 
   /** Acepta rastreables (normales y/o F2). Agrupa por (kind, trackingNumber). */
   async runShadow(items: TrackableItem[]) {
@@ -103,6 +129,7 @@ export class TrackingSyncOrchestrator {
                 const inc = await this.incomeReconciler.reconcile(ctx.deferredEffects);
                 cobrosWould += inc.rows.length;
                 cobrosMissing += inc.missingCount;
+                await this.saveIncomeObservations(run.id, inc.rows);
               }
               ok++;
             } catch (err: any) {

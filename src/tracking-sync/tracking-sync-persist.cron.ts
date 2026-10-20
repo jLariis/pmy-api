@@ -4,11 +4,8 @@ import { ShipmentsService } from 'src/shipments/shipments.service';
 import { TrackingCompareService } from './tracking-compare.service';
 import { RouteUniverseService } from './route-universe.service';
 import { prioritizeTrackables } from './cadence/prioritize.util';
-import { isCutoverEnabled, isSubsidiaryInCutover } from './cutover.config';
+import { cutoverMode, isCutoverEnabled, isEngineHour, isSubsidiaryInCutover } from './cutover.config';
 import { TrackableItem } from './tracking-sync.types';
-
-const START_HOUR = Number(process.env.FEDEX_SYNC_START_HOUR || 7);
-const END_HOUR = Number(process.env.FEDEX_SYNC_END_HOUR || 22);
 
 /**
  * Cron de CUTOVER (F3/F4). Solo actúa cuando `TRACKING_SYNC_CUTOVER=true`.
@@ -16,7 +13,8 @@ const END_HOUR = Number(process.env.FEDEX_SYNC_END_HOUR || 22);
  *    (routeDate = hoy) que NO estén en estatus terminal. Barato y casi en vivo.
  *  - Barrida diaria (05:00 Hermosillo): toda la cola pendiente, como respaldo para resoluciones
  *    fuera de ruta (ocurre, DL tardío, OD de terceros).
- * DEFAULT OFF: no hace nada hasta encender la bandera. El cron legacy se apaga en paralelo.
+ * DEFAULT OFF: no hace nada hasta encender la bandera. En 'coexist' (piloto por sucursal) el legacy
+ * cede solo estas rutas del día; en 'full' el legacy deja FedEx y solo rastrea DHL.
  */
 @Injectable()
 export class TrackingSyncPersistCron {
@@ -35,7 +33,7 @@ export class TrackingSyncPersistCron {
   async handleRouteSync(): Promise<void> {
     if (!isCutoverEnabled()) return;
     const hour = this.routeUniverse.hermosilloHour();
-    if (hour < START_HOUR || hour >= END_HOUR) return; // fuera de horario hábil
+    if (!isEngineHour(hour)) return; // fuera de horario hábil
     if (this.runningRoute) { this.logger.warn('⏭️ [rutas] corrida anterior en curso; se omite.'); return; }
     this.runningRoute = true;
     const t0 = Date.now();
@@ -57,7 +55,8 @@ export class TrackingSyncPersistCron {
 
   @Cron('0 0 5 * * *', { timeZone: 'America/Hermosillo' }) // barrida diaria 05:00
   async handleDailySweep(): Promise<void> {
-    if (!isCutoverEnabled()) return;
+    // Solo en 'full': en 'coexist' el legacy horario sigue cubriendo lo que no es ruta del día.
+    if (cutoverMode() !== 'full') return;
     if (this.runningSweep) { this.logger.warn('⏭️ [barrida] corrida anterior en curso; se omite.'); return; }
     this.runningSweep = true;
     const t0 = Date.now();
