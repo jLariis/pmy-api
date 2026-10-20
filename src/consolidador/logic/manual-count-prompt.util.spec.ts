@@ -19,6 +19,8 @@ const row = (tn: string, over: Partial<DiagnosisRow> = {}): DiagnosisRow => ({
   cost: 52,
   incomeIds: ['i1'],
   shipmentId: null,
+  source: 'shipment',
+  where: 'Paquete 220926365',
   ...over,
 });
 

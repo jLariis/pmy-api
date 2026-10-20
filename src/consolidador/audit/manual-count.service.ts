@@ -10,6 +10,7 @@ import { diagnoseGuide, summarize } from '../logic/manual-count-diagnose.util';
 import { pickShipmentRowForDay } from '../logic/manual-count-facts.util';
 import { buildManualCountPrompt } from '../logic/manual-count-prompt.util';
 import { assignWeekMarks, weekDaysOf } from '../logic/manual-count-week.util';
+import { runTotals } from '../logic/manual-count-run.util';
 import { collectionDayOf, diagnoseCollection, pickedUpDayOf, summarizeCollections } from '../logic/manual-count-collection.util';
 import {
   Cause,
@@ -22,12 +23,14 @@ import {
   IncomeRef,
   ManualCountReport,
   ManualCountScope,
+  ManualCountSources,
   ManualLists,
   Mark,
   RouteRef,
 } from '../logic/manual-count.types';
 
 const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
+const ALL_SOURCES: ManualCountSources = { charges: true, collections: true, novan: true };
 const FEDEX_BLOCK = 25;
 const FEDEX_PARALLEL = 3;
 const CACHE_TTL_MS = 15 * 60 * 1000;
@@ -67,7 +70,7 @@ export class ManualCountService {
     return { done: tns.length, failed };
   }
 
-  async diagnose(subsidiaryId: string, day: string, lists: ManualLists, scope: ManualCountScope = 'day'): Promise<ManualCountReport> {
+  async diagnose(subsidiaryId: string, day: string, lists: ManualLists, scope: ManualCountScope = 'day', userId?: string | null): Promise<ManualCountReport> {
     if (!DAY_RE.test(day)) throw new BadRequestException('La fecha debe tener el formato AAAA-MM-DD.');
     const days = scope === 'week' ? weekDaysOf(day) : [day];
 
@@ -87,7 +90,8 @@ export class ManualCountService {
     const subsidiaryName: string | null = subRow[0].name ?? null;
     const expectedCost = Number(subRow[0].fedexCostPackage ?? 0);
 
-    const universe = new Set<string>([...manual.keys(), ...(await this.systemUniverse(subsidiaryId, days[0], days[days.length - 1]))]);
+    const sources: ManualCountSources = { ...ALL_SOURCES, ...(lists.sources ?? {}) };
+    const universe = new Set<string>([...manual.keys(), ...(await this.systemUniverse(subsidiaryId, days[0], days[days.length - 1], sources.novan))]);
     const tns = [...universe];
 
     const resolver = await this.chargeRules.buildResolver(subsidiaryId);
@@ -95,7 +99,7 @@ export class ManualCountService {
 
     // Hechos por día (la fila vigente, los eventos y la bodega dependen del día) + FedEx una sola vez.
     const factsByDay = new Map<string, Map<string, GuideFacts>>();
-    for (const d of days) factsByDay.set(d, await this.loadFacts(subsidiaryId, d, tns));
+    for (const d of days) factsByDay.set(d, await this.loadFacts(subsidiaryId, d, tns, sources));
     const firstFacts = factsByDay.get(days[0])!;
     await this.ensureFedex(tns.filter((tn) => firstFacts.get(tn)?.kind));
     let fedexFailures = 0;
@@ -114,8 +118,9 @@ export class ManualCountService {
     const rows: DiagnosisRow[] = [];
     for (const tn of tns) {
       const marks = manual.get(tn);
-      // Cargas F2 se cuentan aparte (por carga): solo entran si el usuario las contó.
-      if (!marks && firstFacts.get(tn)!.kind === 'charge') continue;
+      // Cargas F2 se cuentan aparte (por carga): solo entran si el usuario las contó, o si
+      // además están como paquete (puede haber cobro doble).
+      if (!marks && firstFacts.get(tn)!.kind === 'charge' && !firstFacts.get(tn)!.twinPackage) continue;
       const ctxOf = (d: string) => ({ day: d, subsidiaryId, expectedCost, isChargeable });
       // Diagnóstico sin conteo de cada día → decide a qué día va cada marca del usuario.
       const blank = days.map((d) => ({ day: d, row: diagnoseGuide(null, factsByDay.get(d)!.get(tn)!, ctxOf(d)) }));
@@ -130,13 +135,31 @@ export class ManualCountService {
     rows.sort((a, b) => a.day!.localeCompare(b.day!) || a.trackingNumber.localeCompare(b.trackingNumber));
 
     // Recolecciones: solo si el usuario pegó alguna.
-    const recs = clean(lists.recolecciones ?? []);
+    const recs = sources.collections ? clean(lists.recolecciones ?? []) : [];
     const collections = recs.length ? await this.diagnoseCollections(subsidiaryId, days, recs, expectedCost) : undefined;
 
-    return {
+    const report: ManualCountReport = {
       subsidiaryId, subsidiaryName, day: days[0], scope, from: days[0], to: days[days.length - 1],
-      fedexFailures, totals: summarize(rows), rows, ...(collections ? { collections } : {}),
+      fedexFailures, expectedCost, totals: summarize(rows), rows, ...(collections ? { collections } : {}),
     };
+    await this.saveRun(report, expectedCost, userId ?? null);
+    return report;
+  }
+
+  /** Guarda los totales del conteo (para el Resumen). Si falla solo se avisa en el log. */
+  private async saveRun(r: ManualCountReport, expectedCost: number, userId: string | null): Promise<void> {
+    try {
+      const t = runTotals(r.rows, expectedCost);
+      // Sin nada contado (p. ej. una sucursal de la zona sin guías pegadas) no hay conteo que guardar.
+      if (!t.counted && !r.collections?.rows.some((c) => c.counted)) return;
+      await this.dataSource.query(
+        `INSERT INTO manual_count_run (id, subsidiaryId, scope, fromDay, toDay, counted, matched, differences, missingAmount, extraAmount, createdById)
+         VALUES (UUID(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [r.subsidiaryId, r.scope ?? 'day', r.from ?? r.day, r.to ?? r.day, t.counted, t.matched, t.differences, t.missingAmount, t.extraAmount, userId],
+      );
+    } catch (e: any) {
+      this.logger.warn(`[ManualCount] No se guardó el resumen del conteo: ${e?.message}`);
+    }
   }
 
   /**
@@ -220,7 +243,7 @@ export class ManualCountService {
   }
 
   /** Guías del sistema con ingreso, desenlace o ruta en esos días (fromDay..toDay) en la sucursal. */
-  private async systemUniverse(subsidiaryId: string, fromDay: string, toDay: string): Promise<string[]> {
+  private async systemUniverse(subsidiaryId: string, fromDay: string, toDay: string, includeNoVan = true): Promise<string[]> {
     const { start } = this.dayWindow(fromDay);
     const { end } = this.dayWindow(toDay);
     const rows = await this.dataSource.query(
@@ -242,10 +265,17 @@ export class ManualCountService {
         WHERE pd.subsidiaryId = ? AND pd.routeDate >= ? AND pd.routeDate <= ?`,
       [subsidiaryId, start, end, subsidiaryId, start, end, subsidiaryId, start, end, subsidiaryId, fromDay, toDay],
     );
-    return rows.map((r: any) => r.tn).filter(Boolean).map(String);
+    const novan = includeNoVan
+      ? await this.dataSource.query(
+          `SELECT n.trackingNumber AS tn FROM shipment_not_in_files n JOIN package_dispatch pd ON pd.id = n.dispatchId
+            WHERE n.subsidiaryId = ? AND pd.routeDate >= ? AND pd.routeDate <= ?`,
+          [subsidiaryId, fromDay, toDay],
+        )
+      : [];
+    return [...rows, ...novan].map((r: any) => r.tn).filter(Boolean).map(String);
   }
 
-  private async loadFacts(subsidiaryId: string, day: string, tns: string[]): Promise<Map<string, GuideFacts>> {
+  private async loadFacts(subsidiaryId: string, day: string, tns: string[], sources: ManualCountSources = ALL_SOURCES): Promise<Map<string, GuideFacts>> {
     const out = new Map<string, GuideFacts>();
     for (const tn of tns) {
       out.set(tn, {
@@ -275,7 +305,8 @@ export class ManualCountService {
     // Varias filas por guía (reingreso / reciclada / F2): se usa la vigente ese día, pero
     // las rutas y eventos se juntan de TODAS sus filas.
     const rowsByTn = new Map<string, any[]>();
-    for (const r of shipRows) {
+    // "Comparar también contra: Cargas" apagado → las filas de carga no cuentan.
+    for (const r of shipRows.filter((x: any) => sources.charges || x.kind !== 'charge')) {
       const tn = String(r.tn);
       const consDay = r.consDay ? toDayString(r.consDay) : null;
       rowsByTn.set(tn, [...(rowsByTn.get(tn) ?? []), { ...r, id: String(r.id), consDay }]);
@@ -290,6 +321,40 @@ export class ManualCountService {
       f.systemStatus = r.status ?? null;
       // Envío: el consolidado registrado. Carga F2: la carga misma hace de constancia.
       f.consolidado = r.consId ? { consNumber: r.consNumber ?? null, day: r.consDay } : null;
+      // Guía que está como paquete Y como carga en la sucursal (≤ 14 días entre una y otra): se
+      // revisa como carga y se anota el paquete gemelo (si el paquete se cobró, es doble).
+      const pkgOf = (c: any) =>
+        (rowsByTn.get(tn) ?? []).find((x) => x.kind === 'shipment' && x.subsidiaryId === subsidiaryId && daysApart(x.consDay, c.consDay) <= 14);
+      const chargeRow = r.kind === 'charge' ? r : (rowsByTn.get(tn) ?? []).find((x) => x.kind === 'charge' && x.subsidiaryId === subsidiaryId && pkgOf(x));
+      const twin = chargeRow ? pkgOf(chargeRow) : null;
+      if (chargeRow && twin) {
+        f.kind = 'charge';
+        f.shipmentId = null;
+        f.consolidado = chargeRow.consId ? { consNumber: chargeRow.consNumber ?? null, day: chargeRow.consDay } : null;
+        f.twinPackage = { shipmentId: String(twin.id), consNumber: twin.consNumber ?? null, consDay: twin.consDay };
+      }
+    }
+
+    // No VAN: la guía no existe como paquete ni carga pero el chofer la reportó en un cierre.
+    const missing = tns.filter((tn) => !out.get(tn)!.kind);
+    if (sources.novan && missing.length) {
+      const nvRows = await this.dataSource.query(
+        `SELECT n.trackingNumber AS tn, n.createdAt, pd.id AS dispatchId, pd.trackingNumber AS folio, pd.routeDate, pd.is315,
+                (SELECT GROUP_CONCAT(d.name SEPARATOR ', ') FROM package_dispatch_drivers pdd JOIN driver d ON d.id = pdd.driverId WHERE pdd.dispatchId = pd.id) AS driver
+           FROM shipment_not_in_files n LEFT JOIN package_dispatch pd ON pd.id = n.dispatchId
+          WHERE n.subsidiaryId = ? AND n.trackingNumber IN (${inList(missing.length)})
+          ORDER BY n.createdAt`,
+        [subsidiaryId, ...missing],
+      );
+      // Si la reportaron en varios cierres se queda el último que no sea posterior al día.
+      for (const r of nvRows) {
+        const routeDay = r.routeDate ? toDayString(r.routeDate) : toHermosilloDateString(new Date(r.createdAt));
+        const f = out.get(String(r.tn))!;
+        if (f.novan?.routeDay && routeDay > day && f.novan.routeDay <= day) continue;
+        f.kind = 'novan';
+        f.subsidiaryId = subsidiaryId;
+        f.novan = { dispatchId: r.dispatchId ? String(r.dispatchId) : null, routeDay, folio: r.folio ?? null, driver: r.driver ?? null, is315: Number(r.is315) === 1 };
+      }
     }
 
     const allRows = [...rowsByTn.values()].flat();
@@ -399,6 +464,15 @@ export class ManualCountService {
 
   // ───────────────────────── FedEx ─────────────────────────
 
+  /**
+   * Último rastreo de FedEx ya en caché (de este conteo o de "Verificar con FedEx"); null si no
+   * se ha consultado o FedEx no respondió. Lo usan las auditorías de recolecciones y No VAN.
+   */
+  cachedTrack(tn: string): any | null {
+    const c = this.cached(tn);
+    return c?.ok ? selectLatestGeneration(c.results) : null;
+  }
+
   private cached(tn: string): CachedTrack | undefined {
     const c = ManualCountService.cache.get(tn);
     if (!c) return undefined;
@@ -432,6 +506,12 @@ export class ManualCountService {
       this.logger.warn(`[ManualCount] FedEx falló para un bloque de ${tns.length}: ${e?.message}`);
     }
   }
+}
+
+/** Días entre dos 'YYYY-MM-DD' (Infinity si falta alguno). */
+function daysApart(a: string | null, b: string | null): number {
+  if (!a || !b) return Infinity;
+  return Math.abs(new Date(`${a}T00:00:00Z`).getTime() - new Date(`${b}T00:00:00Z`).getTime()) / 86400000;
 }
 
 function safeJson(s: string): unknown {

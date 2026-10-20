@@ -1,6 +1,8 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule'; // Tu servicio que accede a la BD
-import { isCutoverEnabled } from 'src/tracking-sync/cutover.config';
+import { DataSource } from 'typeorm';
+import { cutoverMode, cutoverSubsidiaryIds, hermosilloHour, legacyFedexScope } from 'src/tracking-sync/cutover.config';
+import { loadCutoverRouteIds } from 'src/tracking-sync/cutover-route-ids';
 import { ShipmentsService } from 'src/shipments/shipments.service';
 import { UnloadingService } from 'src/unloading/unloading.service';
 import { DhlService } from 'src/shipments/dhl.service';
@@ -28,6 +30,7 @@ export class TrackingCronService implements OnModuleInit {
     private readonly shipmentService: ShipmentsService,
     private readonly unloadingService: UnloadingService,
     private readonly dhlService: DhlService,
+    private readonly dataSource: DataSource,
   ) {}
 
   /**
@@ -41,12 +44,6 @@ export class TrackingCronService implements OnModuleInit {
 
   @Cron(CronExpression.EVERY_HOUR)
   async handleCron() {
-    // CUTOVER (F3/F4): si el motor por eventos está en persistente, el legacy se APAGA
-    // para no doble-escribir estatus/cobros. DEFAULT OFF → corre normal.
-    if (isCutoverEnabled()) {
-      this.logger.log('🔀 [legacy] cutover activo: el motor por eventos maneja estatus/cobros; se omite el cron legacy.');
-      return;
-    }
     if (this.isRunning) {
       this.logger.warn('⏭️ La corrida anterior sigue en curso; se omite este disparo del cron.');
       return;
@@ -57,11 +54,25 @@ export class TrackingCronService implements OnModuleInit {
     this.logger.log('🕐 Iniciando verificación de envíos (Normales y F2)...');
 
     try {
-      // 1. Obtención de datos en paralelo
-      const [shipments, chargeShipments] = await Promise.all([
-        this.shipmentService.getShipmentsToValidate(),
-        this.shipmentService.getSimpleChargeShipments()
-      ]);
+      // 1. Obtención de datos en paralelo. CUTOVER: el legacy cede al motor nuevo exactamente lo
+      // que el motor rastrea (ver cutover.config): en 'coexist' las rutas del día de las sucursales
+      // piloto en horario del motor; en 'full' todo FedEx. DHL siempre corre aquí.
+      const scope = legacyFedexScope(cutoverMode(), hermosilloHour());
+      let [shipments, chargeShipments] = scope === null
+        ? [[], []] as [Awaited<ReturnType<ShipmentsService['getShipmentsToValidate']>>, Awaited<ReturnType<ShipmentsService['getSimpleChargeShipments']>>]
+        : await Promise.all([
+          this.shipmentService.getShipmentsToValidate(),
+          this.shipmentService.getSimpleChargeShipments()
+        ]);
+      if (scope === null) {
+        this.logger.log('🔀 [legacy] cutover completo: el motor nuevo rastrea FedEx; aquí solo DHL.');
+      } else if (scope === 'except-cutover-routes') {
+        const ceded = await loadCutoverRouteIds(this.dataSource, cutoverSubsidiaryIds());
+        const before = shipments.length + chargeShipments.length;
+        shipments = shipments.filter((s) => !ceded.shipments.has(s.id));
+        chargeShipments = chargeShipments.filter((c: any) => !ceded.charges.has(c.id));
+        this.logger.log(`🔀 [legacy] convivencia: ${before - shipments.length - chargeShipments.length} guías de rutas del día las rastrea el motor nuevo (sucursales piloto).`);
+      }
 
       if (shipments.length === 0 && chargeShipments.length === 0) {
         this.logger.log('📪 No hay envíos FedEx ni F2 para procesar; continúo con DHL.');

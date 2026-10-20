@@ -1,0 +1,11 @@
+{
+  "kind": "mejora",
+  "title": "Permiso propio para el Conteo manual",
+  "summary": "El Conteo manual del Consolidador ya tiene su propio permiso, así que se le puede dar a otra persona sin hacerla superadmin.",
+  "where": "Configuración → Roles y Permisos",
+  "steps": [
+    "Busca \"Consolidador · Conteo manual\" en el grupo Finanzas.",
+    "Por ahora solo lo tiene el superadmin."
+  ],
+  "audience": "superadmin"
+}

@@ -24,7 +24,7 @@ import { IncomeSourceType } from 'src/common/enums/income-source-type.enum';
 import { FedexService } from 'src/shipments/fedex.service';
 import { TemplateService } from 'src/documents/template.service';
 import { buildRouteClosureData, RouteClosureInput, RouteClosurePackage, RouteClosureNoVanPackage } from 'src/documents/data/route-closure.mapper';
-import { noVanIncomeDecision, NoVanFedexOutcome } from './novan-income.util';
+import { noVanIncomeDecision, noVanOutcomeFromTrack, NoVanFedexOutcome } from './novan-income.util';
 import { TrackingCompareService } from 'src/tracking-sync/tracking-compare.service';
 import { ApplyActor } from 'src/tracking-sync/sinks/persistent-sync.sink';
 import { TrackableKind } from 'src/tracking-sync/tracking-sync.types';
@@ -964,36 +964,7 @@ export class RouteclosureService {
    */
   private async resolveNoVanOutcome(trackingNumber: string): Promise<NoVanFedexOutcome> {
     try {
-      const winner = await this.getWinningTrackResult(trackingNumber);
-      if (!winner) {
-        return { trackingNumber, delivered: false, dexCode: null, resolved: false };
-      }
-
-      const headerCode = winner.latestStatusDetail?.code; // p.ej. 'DL' (entregado), 'DE' (excepción)
-      const scans = winner.scanEvents || [];
-      const latestScan = [...scans].sort(
-        (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime(),
-      )[0];
-
-      // Entregado.
-      if (headerCode === 'DL' || latestScan?.eventType === 'DL') {
-        return { trackingNumber, delivered: true, dexCode: null, resolved: true };
-      }
-
-      // Excepción de entrega (DEX): extraer el código específico.
-      if (headerCode === 'DE' || latestScan?.eventType === 'DE') {
-        const specificCode = latestScan?.exceptionCode
-          || winner.latestStatusDetail?.ancillaryDetails?.[0]?.reason
-          || null;
-        // Todos los 08 que reporta FedEx (para la regla de 3 visitas en la misma semana).
-        const dex08Dates = scans
-          .filter((s) => s.eventType === 'DE' && s.exceptionCode === '08' && s.date)
-          .map((s) => new Date(s.date));
-        return { trackingNumber, delivered: false, dexCode: specificCode, resolved: true, dex08Dates };
-      }
-
-      // Otro estatus: resuelto pero sin código que aplicar.
-      return { trackingNumber, delivered: false, dexCode: null, resolved: true };
+      return noVanOutcomeFromTrack(trackingNumber, await this.getWinningTrackResult(trackingNumber));
     } catch (error) {
       this.logger.error(`[NoVan:${trackingNumber}] resolveNoVanOutcome error: ${error.message}`);
       return { trackingNumber, delivered: false, dexCode: null, resolved: false };

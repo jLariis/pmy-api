@@ -1,3 +1,4 @@
+import { badRequestMessage } from './bad-request-message';
 import {
     ArgumentsHost,
     Catch,
@@ -40,8 +41,8 @@ export class CustomExceptionFilter implements ExceptionFilter {
 
                 body = new BusinessException(
                     'generic',
-                    exception.getResponse()['message'][0],
-                    exception.getResponse()['message'][0],
+                    badRequestMessage(exception.getResponse(), exception.message),
+                    badRequestMessage(exception.getResponse(), exception.message),
                     exception.getStatus(),
                 );
                 status = exception.getStatus();

@@ -10,6 +10,10 @@ export interface IncomeReconcileRow {
   alreadyExists: boolean;
   missing: boolean;
   cost: number;
+  occurredAt: Date;
+  shipmentId: string | null;
+  subsidiaryId: string | null;
+  exceptionCode: string | null;
 }
 
 /**
@@ -33,6 +37,10 @@ export class IncomeReconciler {
       alreadyExists: p.exists,
       missing: !p.exists,
       cost: p.cost,
+      occurredAt: p.occurredAt,
+      shipmentId: p.shipmentId ?? null,
+      subsidiaryId: p.subsidiaryId ?? null,
+      exceptionCode: p.exceptionCode ?? null,
     }));
     const missingCount = rows.filter((r) => r.missing).length;
     return { rows, missingCount, okCount: rows.length - missingCount };

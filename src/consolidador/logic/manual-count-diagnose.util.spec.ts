@@ -373,3 +373,63 @@ describe('summarize', () => {
     expect(t.byVerdict).toEqual({ CUADRA: 1, ERROR_SISTEMA: 1, ERROR_CONTEO: 0, REGLA: 0, OTRO_DIA: 0 });
   });
 });
+
+describe('diagnoseGuide — No VAN y guías dobles (paquete + carga)', () => {
+  const novan = (outcome: Mark | 'OTRO' | null, over: Partial<GuideFacts> = {}): GuideFacts =>
+    facts(outcome, {
+      kind: 'novan',
+      consolidado: null,
+      routes: [],
+      systemStatus: null,
+      systemOutcome: null,
+      novan: { dispatchId: 'd9', routeDay: DAY, folio: 'R-9', driver: 'Gustavo', is315: false },
+      ...over,
+    });
+
+  it('No VAN cobrado el día → cuadra, source novan', () => {
+    const r = diagnoseGuide('POD', novan('POD', { incomes: [income('POD')] }), ctx());
+    expect(r).toMatchObject({ verdict: 'CUADRA', source: 'novan', incomeIds: ['inc-POD'] });
+    expect(r.where).toContain('No VAN');
+    expect(r.explanation).toContain('No VAN');
+  });
+
+  it('No VAN sin cobro y FedEx POD ese día → error de sistema NOVAN_SIN_COBRO', () => {
+    const r = diagnoseGuide('POD', novan('POD'), ctx());
+    expect(r).toMatchObject({ verdict: 'ERROR_SISTEMA', cause: 'NOVAN_SIN_COBRO', expected: 'POD', source: 'novan' });
+  });
+
+  it('No VAN en ruta 31.5 → regla NOVAN_31_5', () => {
+    const r = diagnoseGuide('POD', novan('POD', { novan: { dispatchId: 'd9', routeDay: DAY, folio: 'R-9', driver: null, is315: true } }), ctx());
+    expect(r).toMatchObject({ verdict: 'REGLA', cause: 'NOVAN_31_5', expected: null });
+  });
+
+  const dobleCarga = (over: Partial<GuideFacts> = {}) =>
+    facts('POD', {
+      kind: 'charge',
+      consolidado: { consNumber: '305823555448', day: DAY },
+      routes: [],
+      twinPackage: { shipmentId: 's-1', consNumber: '305823283233', consDay: DAY },
+      ...over,
+    });
+
+  it('carga que también está como paquete y el paquete se cobró → DOBLE_PAQUETE_CARGA', () => {
+    const r = diagnoseGuide(null, dobleCarga({ incomes: [income('POD')] }), ctx());
+    expect(r).toMatchObject({ verdict: 'ERROR_SISTEMA', cause: 'DOBLE_PAQUETE_CARGA', incomeIds: ['inc-POD'], source: 'charge', shipmentId: 's-1' });
+    expect(r.where).toBe('Paquete 305823283233 + Carga 305823555448');
+  });
+
+  it('carga con paquete gemelo SIN cobro → informativo de carga (no falta cobrar)', () => {
+    const r = diagnoseGuide('POD', dobleCarga(), ctx());
+    expect(r).toMatchObject({ verdict: 'CUADRA', cause: null, source: 'charge' });
+  });
+
+  it('guía que no existe → NO_EXISTE con "No existe"', () => {
+    const r = diagnoseGuide('POD', facts('POD', { kind: null }), ctx());
+    expect(r).toMatchObject({ cause: 'NO_EXISTE', source: null, where: 'No existe' });
+  });
+
+  it('carga → source charge y where con la carga', () => {
+    const r = diagnoseGuide('POD', facts('POD', { kind: 'charge', consolidado: { consNumber: '305824072785', day: DAY } }), ctx());
+    expect(r).toMatchObject({ source: 'charge', where: 'Carga 305824072785' });
+  });
+});

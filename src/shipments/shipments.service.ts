@@ -57,7 +57,8 @@ import { ShipmentToSaveDto } from './dto/shipment-to-save.dto';
 import * as ExcelJS from 'exceljs';
 import { DataSource, QueryRunner } from 'typeorm';
 import pLimit from 'p-limit';
-import { onlyPhantomDeliveries, phantomDeliveryTimes, realDeliveryScan } from 'src/common/phantom-delivery.util';
+import { DeliveryHeaderLike, onlyPhantomDeliveries, phantomDeliveryTimes, realDeliveryScan } from 'src/common/phantom-delivery.util';
+import { keepRouteOverVendorScan } from 'src/common/vendor-scan.util';
 import { decideMasterRemoval, MasterRemovalDecision } from './f2-master-removal.util';
 import { needsBackingHistory, selectBackingScan } from 'src/common/backing-scan.util';
 import { PackageDispatch } from 'src/entities/package-dispatch.entity';
@@ -1481,7 +1482,7 @@ export class ShipmentsService {
       if (!tr || (tr as any).error || scanEvents.length === 0) return empty;
 
       const histories = await this.processFedexScanEventsToStatusesResp(scanEvents, { trackingNumber } as Shipment);
-      const phantomTimes = phantomDeliveryTimes(scanEvents);
+      const phantomTimes = phantomDeliveryTimes(scanEvents, tr?.latestStatusDetail);
       for (const h of histories ?? []) {
         h.shipment = undefined;
         if (h.status === ShipmentStatusType.ENTREGADO && phantomTimes.has(new Date(h.timestamp).getTime())) {
@@ -1490,8 +1491,8 @@ export class ShipmentsService {
         }
       }
       const lsd = tr.latestStatusDetail;
-      const delivered = !!realDeliveryScan(scanEvents) ||
-        ((lsd?.code === 'DL' || lsd?.derivedCode === 'DL') && !onlyPhantomDeliveries(scanEvents));
+      const delivered = !!realDeliveryScan(scanEvents, lsd) ||
+        ((lsd?.code === 'DL' || lsd?.derivedCode === 'DL') && !onlyPhantomDeliveries(scanEvents, lsd));
       return {
         found: true,
         histories: histories ?? [],
@@ -3144,7 +3145,7 @@ export class ShipmentsService {
 
       // Entrega FANTASMA (DL seguido de más movimiento): queda en el historial como tránsito,
       // nunca como entregado (no marca ENTREGADO ni cobra). Caso 383915660048.
-      const phantomTimes = phantomDeliveryTimes(scanEvents);
+      const phantomTimes = phantomDeliveryTimes(scanEvents, lsdHeader);
       for (const h of histories ?? []) {
         if (h.status === ShipmentStatusType.ENTREGADO && phantomTimes.has(new Date(h.timestamp).getTime())) {
           h.status = ShipmentStatusType.EN_TRANSITO;
@@ -3163,8 +3164,8 @@ export class ShipmentsService {
       // SUPREMACÍA DE ENTREGA (DL manda sobre TODO)
       // Solo una entrega REAL (sin movimiento después) cuenta; el header DL no vale si todas las
       // entregas del historial son fantasma.
-      const isDelivered = !!realDeliveryScan(scanEvents) ||
-                          ((lsdHeader?.code === 'DL' || lsdHeader?.derivedCode === 'DL') && !onlyPhantomDeliveries(scanEvents));
+      const isDelivered = !!realDeliveryScan(scanEvents, lsdHeader) ||
+                          ((lsdHeader?.code === 'DL' || lsdHeader?.derivedCode === 'DL') && !onlyPhantomDeliveries(scanEvents, lsdHeader));
       
       if (isDelivered) {
           finalStatus = ShipmentStatusType.ENTREGADO;
@@ -4519,7 +4520,7 @@ export class ShipmentsService {
               select: ['status'],
             });
             if (needsBackingHistory({ prevStatus: prevChargeStatus, finalStatus: mappedStatus, historyStatuses: chargeHistory.map((h) => h.status) })) {
-              const scan = selectBackingScan(latestTrackResult.scanEvents ?? [], mappedStatus);
+              const scan = selectBackingScan(latestTrackResult.scanEvents ?? [], mappedStatus, latestTrackResult.latestStatusDetail);
               if (scan?.date) {
                 await this.shipmentStatusRepository.save(this.shipmentStatusRepository.create({
                   status: mappedStatus,
@@ -8668,10 +8669,11 @@ export class ShipmentsService {
         scanEvents: any[],
         processedSignatures: Set<string>,
         tn: string,
+        header?: DeliveryHeaderLike | null,
       ): Promise<void> {
         const historyStatuses = [...existingHistory.map((h) => h.status), ...insertedStatuses];
         if (!needsBackingHistory({ prevStatus, finalStatus, historyStatuses })) return;
-        const scan = selectBackingScan(scanEvents ?? [], finalStatus);
+        const scan = selectBackingScan(scanEvents ?? [], finalStatus, header);
         if (!scan?.date) return;
         const at = new Date(scan.date);
         const code = (scan.exceptionCode || '').trim();
@@ -8778,8 +8780,8 @@ export class ShipmentsService {
 
             const trackResult = allTrackResults[0]; 
             const scanEvents = trackResult.scanEvents || [];
-            const phantomTimes = phantomDeliveryTimes(scanEvents); // entregas fantasma (DL + movimiento después)
             const lsdHeader = trackResult.latestStatusDetail;
+            const phantomTimes = phantomDeliveryTimes(scanEvents, lsdHeader); // entregas fantasma (DL + movimiento después; el encabezado DL las descarta)
 
             // --- 2. TRANSACCIÓN BD ---
             const queryRunner = this.dataSource.createQueryRunner();
@@ -9036,7 +9038,7 @@ export class ShipmentsService {
                 }
 
                 // 🚨 SAFETY NET: RESPALDO FINANCIERO (Header Backup)
-                const isDeliveredGlobal = (lsdHeader?.code === 'DL' || lsdHeader?.derivedCode === 'DL') && !onlyPhantomDeliveries(scanEvents);
+                const isDeliveredGlobal = (lsdHeader?.code === 'DL' || lsdHeader?.derivedCode === 'DL') && !onlyPhantomDeliveries(scanEvents, lsdHeader);
                 const headerDeliveryStr = trackResult.dateAndTimes?.find(d => d.type === 'ACTUAL_DELIVERY')?.dateTime;
                 if (isDeliveredGlobal && (!hasODInHistory || isOurDelivery(headerDeliveryStr ? new Date(headerDeliveryStr) : null))) {
                     const actualDeliveryDateStr = headerDeliveryStr;
@@ -9117,7 +9119,7 @@ export class ShipmentsService {
                 }
 
                 // 4. Prioridad de Entrega Absoluta (Garantía)
-                if (realDeliveryScan(scanEvents) || ((lsdHeader?.code === 'DL' || lsdHeader?.derivedCode === 'DL') && !onlyPhantomDeliveries(scanEvents))) {
+                if (realDeliveryScan(scanEvents, lsdHeader) || ((lsdHeader?.code === 'DL' || lsdHeader?.derivedCode === 'DL') && !onlyPhantomDeliveries(scanEvents, lsdHeader))) {
                     fedexProposedStatus = ShipmentStatusType.ENTREGADO;
                 }
 
@@ -9129,6 +9131,8 @@ export class ShipmentsService {
                 if (newestEventTime > lastOpTime || fedexProposedStatus === ShipmentStatusType.ENTREGADO) {
                     finalStatus = fedexProposedStatus;
                 }
+                // Un 67/44 (hora adelantada de FedEx) nunca regresa a bodega un paquete en ruta.
+                finalStatus = keepRouteOverVendorScan(mainShipment.status, finalStatus, newestEvent?.exceptionCode);
 
                 // 6. Aplicación de OD (Terceros / Subsidiarias)
                 if (subConfig.trackExternalDelivery) {
@@ -9250,7 +9254,7 @@ export class ShipmentsService {
 
                 if (!isLocked) {
                     await this.saveBackingHistory(queryRunner, 'shipment', shipmentList, prevStatus, finalStatus,
-                        existingHistory, insertedStatuses, scanEvents, processedSignatures, tn);
+                        existingHistory, insertedStatuses, scanEvents, processedSignatures, tn, lsdHeader);
                 }
 
                 // Log por paquete SOLO cuando cambia el estatus (la señal que importa).
@@ -9382,8 +9386,8 @@ export class ShipmentsService {
 
             const trackResult = allTrackResults[0]; 
             const scanEvents = trackResult.scanEvents || [];
-            const phantomTimes = phantomDeliveryTimes(scanEvents); // entregas fantasma (DL + movimiento después)
             const lsdHeader = trackResult.latestStatusDetail;
+            const phantomTimes = phantomDeliveryTimes(scanEvents, lsdHeader); // entregas fantasma (DL + movimiento después; el encabezado DL las descarta)
 
             // --- 2. TRANSACCIÓN BD ---
             const queryRunner = this.dataSource.createQueryRunner();
@@ -9588,7 +9592,7 @@ export class ShipmentsService {
                 }
 
                 // Prioridad de Entrega Absoluta
-                if (realDeliveryScan(scanEvents) || ((lsdHeader?.code === 'DL' || lsdHeader?.derivedCode === 'DL') && !onlyPhantomDeliveries(scanEvents))) {
+                if (realDeliveryScan(scanEvents, lsdHeader) || ((lsdHeader?.code === 'DL' || lsdHeader?.derivedCode === 'DL') && !onlyPhantomDeliveries(scanEvents, lsdHeader))) {
                     fedexProposedStatus = ShipmentStatusType.ENTREGADO;
                 }
 
@@ -9598,6 +9602,8 @@ export class ShipmentsService {
                 if (newestEventTime > lastOpTime || fedexProposedStatus === ShipmentStatusType.ENTREGADO) {
                     finalStatus = fedexProposedStatus;
                 }
+                // Un 67/44 (hora adelantada de FedEx) nunca regresa a bodega un paquete en ruta.
+                finalStatus = keepRouteOverVendorScan(mainCharge.status, finalStatus, newestEvent?.exceptionCode);
 
                 // Aplicación de OD
                 if (subConfig.trackExternalDelivery) {
@@ -9696,7 +9702,7 @@ export class ShipmentsService {
 
                 if (!isLocked) {
                     await this.saveBackingHistory(queryRunner, 'charge', chargeList, prevStatus, finalStatus,
-                        existingHistory, insertedStatuses, scanEvents, processedSignatures, tn);
+                        existingHistory, insertedStatuses, scanEvents, processedSignatures, tn, lsdHeader);
                 }
 
                 // Log por paquete SOLO cuando cambia el estatus (la señal que importa).

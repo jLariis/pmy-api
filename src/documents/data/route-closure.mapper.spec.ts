@@ -33,6 +33,7 @@ it('mapStatusToDex replica getDexCode del frontend', () => {
   expect(mapStatusToDex('cliente_no_disponible')).toBe('DEX08');
   expect(mapStatusToDex('rechazado')).toBe('DEX07');
   expect(mapStatusToDex('cambio_fecha_solicitado')).toBe('DEX17');
+  expect(mapStatusToDex('empresa_cerrada')).toBe('STAT42');
   expect(mapStatusToDex('entregado')).toBeNull();
   expect(mapStatusToDex(undefined)).toBeNull();
 });

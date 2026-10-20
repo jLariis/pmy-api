@@ -1,0 +1,10 @@
+{
+  "kind": "correccion",
+  "title": "Mensajes de error completos",
+  "summary": "Algunos avisos de error se mostraban con una sola letra. Ahora se lee el mensaje completo.",
+  "where": "Toda la app",
+  "steps": [
+    "Cuando algo no se puede guardar, el aviso explica el motivo completo."
+  ],
+  "audience": "todos"
+}

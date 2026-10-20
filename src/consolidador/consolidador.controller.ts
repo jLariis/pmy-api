@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, ForbiddenException, Get, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { ConsolidadorAccessGuard } from '../auth/guards/consolidador-access.guard';
 import { ConsolidadorReadService } from './read/consolidador-read.service';
@@ -22,6 +22,14 @@ import { RepairIncomeDto } from './dto/repair-income.dto';
 import { ReassignSubsidiaryDto } from './dto/reassign-subsidiary.dto';
 import { DateRealignApplyDto } from './dto/date-realign.dto';
 import { IncomeDateRealignService } from './income/income-date-realign.service';
+import { PermissionsGuard } from '../auth/guards/permissions.guard';
+import { RequirePermission } from '../auth/decorators/require-permission.decorator';
+import { ZoneService } from './zone/zone.service';
+import { ZoneManualCountService } from './audit/zone-manual-count.service';
+import { ConsolidadorViewsService } from './zone/consolidador-views.service';
+
+/** Conteo manual vs sistema: permiso propio (por defecto solo superadmin). */
+const CONTEO_MANUAL = 'finanzas.consolidador.conteoManual';
 
 @ApiTags('consolidador')
 @ApiBearerAuth()
@@ -37,34 +45,40 @@ export class ConsolidadorController {
     private readonly cobrosAudit: CobrosAuditService,
     private readonly manualCount: ManualCountService,
     private readonly dateRealign: IncomeDateRealignService,
+    private readonly zone: ZoneService,
+    private readonly views: ConsolidadorViewsService,
+    private readonly zoneManualCount: ZoneManualCountService,
   ) {}
-
-  /** El conteo manual vs sistema es solo para superadmin (expone detalle interno y prompt). */
-  private assertSuperadmin(req: any) {
-    const role = String(req.user?.role ?? '').toLowerCase();
-    if (!ConsolidadorAccessGuard.GLOBAL_ROLES.includes(role)) {
-      throw new ForbiddenException('Solo superadmin puede usar esta herramienta.');
-    }
-  }
 
   /** Conteo manual: precalienta FedEx en vivo para un bloque de ≤25 guías (progreso en el front). */
   @Post(':subsidiaryId/manual-count/fedex')
+  @UseGuards(PermissionsGuard)
+  @RequirePermission(CONTEO_MANUAL)
   manualCountFedex(@Body() dto: ManualCountFedexDto, @Req() req: any) {
-    this.assertSuperadmin(req);
     return this.manualCount.prefetchFedex(dto.trackingNumbers);
   }
 
   /** Conteo manual vs sistema: diagnóstico por guía del día (FedEx + rutas + consolidados + ingresos). */
   @Post(':subsidiaryId/:day/manual-count')
+  @UseGuards(PermissionsGuard)
+  @RequirePermission(CONTEO_MANUAL)
   manualCountDiagnose(@Param('subsidiaryId') subsidiaryId: string, @Param('day') day: string, @Body() dto: ManualCountDto, @Req() req: any) {
-    this.assertSuperadmin(req);
-    return this.manualCount.diagnose(subsidiaryId, day, dto, dto.scope ?? 'day');
+    return this.manualCount.diagnose(subsidiaryId, day, dto, dto.scope ?? 'day', req.user?.userId ?? null);
+  }
+
+  /** Conteo manual de TODA la zona: cada guía pegada se ubica en su sucursal y se revisa ahí. */
+  @Post('zone/:zoneId/:day/manual-count')
+  @UseGuards(PermissionsGuard)
+  @RequirePermission(CONTEO_MANUAL)
+  manualCountZone(@Param('zoneId') zoneId: string, @Param('day') day: string, @Body() dto: ManualCountDto, @Req() req: any) {
+    return this.zoneManualCount.diagnose(zoneId, req.user, day, dto, dto.scope ?? 'day');
   }
 
   /** Conteo manual: prompt para corregir en Claude Code los errores del sistema encontrados. */
   @Post(':subsidiaryId/:day/manual-count/prompt')
+  @UseGuards(PermissionsGuard)
+  @RequirePermission(CONTEO_MANUAL)
   manualCountPrompt(@Param('subsidiaryId') subsidiaryId: string, @Param('day') day: string, @Body() dto: ManualCountPromptDto, @Req() req: any) {
-    this.assertSuperadmin(req);
     return this.manualCount.prompt(subsidiaryId, day, dto, dto.causes as Cause[] | undefined, dto.scope ?? 'day');
   }
 
@@ -106,7 +120,6 @@ export class ConsolidadorController {
     @Param('toDate') toDate: string,
     @Req() req: any,
   ) {
-    this.assertSuperadmin(req);
     return this.dateRealign.preview(subsidiaryId, fromDate, toDate);
   }
 
@@ -119,7 +132,6 @@ export class ConsolidadorController {
     @Body() dto: DateRealignApplyDto,
     @Req() req: any,
   ) {
-    this.assertSuperadmin(req);
     return this.dateRealign.apply(subsidiaryId, fromDate, toDate, dto.incomeIds, dto.reason, req.user?.userId);
   }
 
@@ -223,6 +235,53 @@ export class ConsolidadorController {
     const from = new Date(`${fromDate}T00:00:00.000`);
     const to = new Date(`${toDate}T23:59:59.999`);
     return this.groups.getByConsolidado(subsidiaryId, from, to);
+  }
+
+  /** Resumen de la semana de la sucursal: cobrado, falta, de más, dobles, recolecciones, No VAN y último conteo. */
+  @Get(':subsidiaryId/:fromDate/:toDate/summary')
+  summaryWeek(@Param('subsidiaryId') subsidiaryId: string, @Param('fromDate') fromDate: string, @Param('toDate') toDate: string) {
+    return this.views.forSubsidiary('summary', subsidiaryId, fromDate, toDate);
+  }
+
+  /** Guías de las cargas de la semana; marca las que también están como paquete (cobradas dos veces). */
+  @Get(':subsidiaryId/:fromDate/:toDate/charge-guides')
+  chargeGuidesWeek(@Param('subsidiaryId') subsidiaryId: string, @Param('fromDate') fromDate: string, @Param('toDate') toDate: string) {
+    return this.views.forSubsidiary('charge-guides', subsidiaryId, fromDate, toDate);
+  }
+
+  /** Recolecciones registradas en la semana: ruta, 31.5, cobro y FedEx "recogido" (si ya se verificó). */
+  @Get(':subsidiaryId/:fromDate/:toDate/collections')
+  collectionsWeek(@Param('subsidiaryId') subsidiaryId: string, @Param('fromDate') fromDate: string, @Param('toDate') toDate: string) {
+    return this.views.forSubsidiary('collections', subsidiaryId, fromDate, toDate);
+  }
+
+  /** No VAN de la semana: ruta, chofer, 31.5, cobro y FedEx (si ya se verificó). */
+  @Get(':subsidiaryId/:fromDate/:toDate/novan')
+  noVanWeek(@Param('subsidiaryId') subsidiaryId: string, @Param('fromDate') fromDate: string, @Param('toDate') toDate: string) {
+    return this.views.forSubsidiary('novan', subsidiaryId, fromDate, toDate);
+  }
+
+  /** "Verificar con FedEx" de las auditorías (recolecciones / No VAN): consulta ≤25 guías y las deja en caché. */
+  @Post('fedex/prefetch')
+  fedexPrefetch(@Body() dto: ManualCountFedexDto) {
+    return this.manualCount.prefetchFedex(dto.trackingNumbers);
+  }
+
+  /**
+   * Consolidador por ZONA: corre la vista pedida en cada sucursal de la zona (2 a la vez) y
+   * devuelve una parte por sucursal `{ subsidiaryId, subsidiaryName, data, error }`.
+   * El acceso por sucursal se valida al resolver la zona (los no globales solo ven las suyas).
+   */
+  @Get('zone/:zoneId/:fromDate/:toDate/:view')
+  zoneView(
+    @Param('zoneId') zoneId: string,
+    @Param('fromDate') fromDate: string,
+    @Param('toDate') toDate: string,
+    @Param('view') view: string,
+    @Req() req: any,
+  ) {
+    const v = this.views.assertView(view);
+    return this.zone.run(zoneId, req.user, (s) => this.views.forSubsidiary(v, s.id, fromDate, toDate));
   }
 
   /**

@@ -1,10 +1,12 @@
-import { ArrayMaxSize, ArrayMinSize, IsArray, IsIn, IsOptional, IsString } from 'class-validator';
+import { Type } from 'class-transformer';
+import { ArrayMaxSize, ArrayMinSize, IsArray, IsBoolean, IsIn, IsOptional, IsString, ValidateNested } from 'class-validator';
 
 const MAX_PER_LIST = 2000;
 const CAUSES = [
   'NO_EXISTE', 'OTRA_SUCURSAL', 'SIN_CONSOLIDADO', 'SIN_RUTA', 'RUTA_OTRO_DIA', 'ESTATUS_DESFASADO',
   'COBRO_DE_MAS', 'COBRO_FALTANTE', 'INGRESO_OTRO_DIA', 'DUPLICADO', 'MONTO_INCORRECTO',
   'ERROR_CONTEO', 'REGLA_NO_COBRA', 'F2_INFORMATIVO', 'ENTREGADO_OTRO_DIA',
+  'NOVAN_SIN_COBRO', 'NOVAN_31_5', 'DOBLE_PAQUETE_CARGA',
 ];
 
 export class ManualCountFedexDto {
@@ -13,6 +15,18 @@ export class ManualCountFedexDto {
   @ArrayMaxSize(25, { message: 'Se consultan máximo 25 guías por bloque.' })
   @IsString({ each: true, message: 'Cada guía debe ser texto.' })
   trackingNumbers: string[];
+}
+
+/** "Comparar también contra": cargas, recolecciones y No VAN (todas prendidas si no se manda). */
+export class ManualCountSourcesDto {
+  @IsBoolean({ message: 'Indica si se compara contra las cargas.' })
+  charges: boolean;
+
+  @IsBoolean({ message: 'Indica si se compara contra las recolecciones.' })
+  collections: boolean;
+
+  @IsBoolean({ message: 'Indica si se compara contra los No VAN.' })
+  novan: boolean;
 }
 
 export class ManualCountDto {
@@ -42,6 +56,11 @@ export class ManualCountDto {
   @IsOptional()
   @IsIn(['day', 'week'], { message: 'La revisión debe ser por día o por semana.' })
   scope?: 'day' | 'week';
+
+  @IsOptional()
+  @ValidateNested({ message: 'Las opciones de comparación no son válidas.' })
+  @Type(() => ManualCountSourcesDto)
+  sources?: ManualCountSourcesDto;
 }
 
 export class ManualCountPromptDto extends ManualCountDto {

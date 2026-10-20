@@ -19,6 +19,7 @@ export interface ProposedIncome {
   occurredAt: Date;
   subsidiaryId: string | null;
   shipmentId: string;
+  exceptionCode: string | null;
   exists: boolean;
 }
 
@@ -75,6 +76,7 @@ export class IncomeExecutor {
         occurredAt,
         subsidiaryId: p.subsidiaryId,
         shipmentId: p.shipmentId,
+        exceptionCode: p.exceptionCode ?? null,
         exists: !!existing,
       });
 
