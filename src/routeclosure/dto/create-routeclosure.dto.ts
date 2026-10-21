@@ -1,6 +1,7 @@
 import { Shipment, Subsidiary, User } from "src/entities";
 import { PackageDispatch } from "src/entities/package-dispatch.entity";
 import { DhlStatusType } from "src/common/enums/dhl-status-type.enum";
+import type { ManualStatusChangeInput } from "../pre-closure/apply-manual-changes";
 
 /**
  * Paquete enviado en el cierre de ruta. Para DHL: `code` es el código propio del
@@ -34,4 +35,8 @@ export class CreateRouteclosureDto {
     actualKms: string;
     collections: string[];
     noVanPackages: (NoVanPackageInput | string)[];
+    /** Cierre con pre-cierre: estatus corregidos a mano en la comprobación con el chofer. */
+    manualStatusChanges?: ManualStatusChangeInput[];
+    /** Cierre con pre-cierre: cuándo se generó el PDF de pre-cierre (ISO). */
+    preClosureGeneratedAt?: string | null;
 }

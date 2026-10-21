@@ -23,7 +23,7 @@ const REASON_LABEL: Record<IncomeAnnulReason, string> = {
  */
 export async function annulDeliveredIncome(
   manager: EntityManager,
-  auditService: AuditService,
+  auditService: Pick<AuditService, 'log'> | undefined,
   args: { trackingNumber: string; shipmentId: string; opDate: Date; userId: string | null; reason: IncomeAnnulReason },
 ): Promise<string[]> {
   const { trackingNumber, shipmentId, opDate, userId, reason } = args;
@@ -65,7 +65,7 @@ export async function annulDeliveredIncome(
     );
 
     // 3) Auditoría (dominio): quién anuló, monto, sucursal.
-    auditService.log({
+    auditService?.log({
       module: AuditModule.INGRESOS,
       action: AuditAction.DELETE,
       result: AuditResult.SUCCESS,

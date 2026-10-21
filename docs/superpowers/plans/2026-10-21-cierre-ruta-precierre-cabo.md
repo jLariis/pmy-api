@@ -71,7 +71,7 @@
 
 **Interfaces:**
 - Produces:
-  - `type ManualOption = 'ENTREGADO' | 'DEX03' | 'DEX07' | 'DEX08' | 'DEX12' | 'OCURRE'`. `manualOptionToStatus(o): { status: ShipmentStatusType; exceptionCode: string | null }` — ENTREGADO→`entregado`/null, DEX03→`direccion_incorrecta`/'03', DEX07→`rechazado`/'07', DEX08→`cliente_no_disponible`/'08', DEX12→`empresa_cerrada`/'12', OCURRE→`es_ocurre`/null. (DHL usa sus códigos actuales, flujo DHL existente.)
+  - `type ManualOption = 'ENTREGADO' | 'DEX03' | 'DEX07' | 'DEX08' | 'DEX12' | 'OCURRE'`. `manualOptionToStatus(o): { status: ShipmentStatusType; exceptionCode: string | null }` — ENTREGADO→`entregado`/null, DEX03→`direccion_incorrecta`/'03', DEX07→`rechazado`/'07', DEX08→`cliente_no_disponible`/'08', DEX12→`no_entregado`/'12' (empresa_cerrada es STAT42), OCURRE→`es_ocurre`/null. (DHL usa sus códigos actuales, flujo DHL existente.)
   - `buildManualReason(i: { userName; trackingNumber; from; to; folio; routeDay; driverNames }): string` — texto fijo de Global Constraints.
   - `manualIncomeEffect(i: { isCharge: boolean; is315: boolean; from: string; to: string; hasDeliveredIncome: boolean }): 'create_delivered' | 'annul_delivered' | 'none'` — `isCharge || is315` → none; `to` entregado y `from` no entregado → create_delivered; `from` entregado y `to` no entregado y `hasDeliveredIncome` → annul_delivered.
   - `annulDeliveredIncome(manager: EntityManager, trackingNumber: string, shipmentId: string, opDate: Date, userId: string | null): Promise<string[]>`.

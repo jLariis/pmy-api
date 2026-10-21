@@ -1,5 +1,5 @@
 import { ShipmentStatusType } from 'src/common/enums/shipment-status-type.enum';
-import { buildManualReason, manualIncomeEffect, manualOptionToStatus } from './manual-status.util';
+import { buildManualReason, manualIncomeEffect, manualOptionToStatus, statusLabel } from './manual-status.util';
 
 describe('manualOptionToStatus', () => {
   it.each([
@@ -11,6 +11,19 @@ describe('manualOptionToStatus', () => {
     ['OCURRE', ShipmentStatusType.ES_OCURRE, null],
   ] as const)('%s → %s / %s', (option, status, exceptionCode) => {
     expect(manualOptionToStatus(option)).toEqual({ status, exceptionCode });
+  });
+});
+
+describe('statusLabel', () => {
+  it.each([
+    ['entregado', null, 'Entregado'],
+    ['direccion_incorrecta', '03', 'DEX03'],
+    ['no_entregado', '12', 'DEX12'],
+    ['no_entregado', null, 'No entregado'],
+    ['es_ocurre', null, 'Ocurre'],
+    ['en_ruta', null, 'En ruta'],
+  ])('%s (%s) → %s', (status, code, label) => {
+    expect(statusLabel(status, code)).toBe(label);
   });
 });
 

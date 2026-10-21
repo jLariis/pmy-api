@@ -26,6 +26,23 @@ export function manualOptionToStatus(option: ManualOption): { status: ShipmentSt
   return { ...OPTION_STATUS[option] };
 }
 
+const CODE_LABEL: Record<string, string> = {
+  [ShipmentStatusType.ENTREGADO]: 'Entregado',
+  [ShipmentStatusType.DIRECCION_INCORRECTA]: 'DEX03',
+  [ShipmentStatusType.RECHAZADO]: 'DEX07',
+  [ShipmentStatusType.CLIENTE_NO_DISPONIBLE]: 'DEX08',
+  [ShipmentStatusType.ES_OCURRE]: 'Ocurre',
+};
+
+/** Etiqueta en llano de un estatus para el motivo ("Entregado", "DEX08", "En ruta"…). */
+export function statusLabel(status: string, exceptionCode?: string | null): string {
+  const s = String(status ?? '').toLowerCase();
+  if (s === ShipmentStatusType.NO_ENTREGADO && exceptionCode) return `DEX${exceptionCode}`;
+  if (CODE_LABEL[s]) return CODE_LABEL[s];
+  const text = s.replace(/_/g, ' ');
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
 export interface ManualReasonInput {
   userName: string;
   trackingNumber: string;
