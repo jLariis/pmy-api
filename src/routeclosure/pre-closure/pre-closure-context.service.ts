@@ -49,6 +49,12 @@ export function assemblePreClosureContext(i: {
   packages: PackageRow[];
   statusRows: StatusRow[];
   deliveredIncomeShipmentIds: Set<string>;
+  /**
+   * Estatus con el que el cierre ve cada guía (el del DÍA DE LA RUTA, llave "s:<id>"/"c:<id>").
+   * El LD se mide con ese, no con el vivo: una guía sin resultado el día de la ruta que FedEx
+   * entregó después sigue en riesgo para el pre-cierre de ese día.
+   */
+  closureStatuses?: Map<string, string>;
 }): PreClosureContext {
   const routeDay = routeDayOf(i.dispatch.routeDate ? new Date(i.dispatch.routeDate) : new Date(i.dispatch.createdAt))!;
 
@@ -70,7 +76,7 @@ export function assemblePreClosureContext(i: {
       const isCharge = !!Number(p.isCharge);
       const k = key(isCharge, p.id);
       const signals = buildLdSignals({
-        status: p.status,
+        status: i.closureStatuses?.get(k) ?? p.status,
         commitDateTime: p.commitDateTime,
         routeDay,
         eventDays: eventDays.get(k) ?? new Set(),
@@ -96,7 +102,8 @@ export function assemblePreClosureContext(i: {
 export class PreClosureContextService {
   constructor(private readonly dataSource: DataSource) {}
 
-  async getContext(dispatchId: string): Promise<PreClosureContext> {
+  async getContext(dispatchId: string, closureStatuses?: { id: string; isCharge: boolean; status: string }[]): Promise<PreClosureContext> {
+    const overrides = new Map((closureStatuses ?? []).filter((c) => c?.id && c?.status).map((c) => [key(!!c.isCharge, c.id), String(c.status)]));
     const [dispatch] = await this.dataSource.query(
       `SELECT id, routeDate, createdAt, is315 FROM package_dispatch WHERE id = ?`,
       [dispatchId],
@@ -115,7 +122,7 @@ export class PreClosureContextService {
       [dispatchId],
     );
     if (packages.length === 0) {
-      return assemblePreClosureContext({ dispatch, packages, statusRows: [], deliveredIncomeShipmentIds: new Set() });
+      return assemblePreClosureContext({ dispatch, packages, statusRows: [], deliveredIncomeShipmentIds: new Set(), closureStatuses: overrides });
     }
 
     const shipmentIds = packages.filter((p) => !Number(p.isCharge)).map((p) => p.id);
@@ -151,7 +158,7 @@ export class PreClosureContextService {
       );
     }
 
-    return assemblePreClosureContext({ dispatch, packages, statusRows, deliveredIncomeShipmentIds: delivered });
+    return assemblePreClosureContext({ dispatch, packages, statusRows, deliveredIncomeShipmentIds: delivered, closureStatuses: overrides });
   }
 }
 

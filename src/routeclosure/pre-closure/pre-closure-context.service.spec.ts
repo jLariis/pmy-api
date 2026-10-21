@@ -33,6 +33,17 @@ describe('assemblePreClosureContext', () => {
     ]);
   });
 
+  it('mide el LD con el estatus del día de la ruta: entregada después sigue en riesgo', () => {
+    const ctx = assemblePreClosureContext({
+      dispatch,
+      packages: [{ id: 's9', isCharge: 0, trackingNumber: 'T9', status: 'entregado', commitDateTime: DUE_TODAY }],
+      statusRows: [{ shipmentId: 's9', chargeShipmentId: null, status: 'entregado', exceptionCode: '', timestamp: '2026-10-21T18:00:00.000Z' }],
+      deliveredIncomeShipmentIds: new Set(),
+      closureStatuses: new Map([['s:s9', 'en_ruta']]),
+    });
+    expect(ctx.packages[0]).toMatchObject({ noMovement: true, dueToday: true, ldState: 'possible_ld' });
+  });
+
   it('carga → hasDeliveredIncome false aunque su id aparezca', () => {
     const ctx = assemblePreClosureContext({ dispatch, packages: [packages[2]], statusRows: [], deliveredIncomeShipmentIds: new Set(['c1']) });
     expect(ctx.packages[0].hasDeliveredIncome).toBe(false);

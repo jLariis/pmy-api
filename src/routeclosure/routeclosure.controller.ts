@@ -32,10 +32,14 @@ export class RouteclosureController {
   }
 
   // Cierre con pre-cierre: por guía, si ya tiene ingreso entregado y sus señales de riesgo de LD.
+  // POST (solo lectura): la pantalla manda el estatus del día de la ruta con el que ve cada guía.
   @NoAudit()
-  @Get(':packageDispatchId/pre-closure-context')
-  preClosureContext(@Param('packageDispatchId') packageDispatchId: string) {
-    return this.preClosureContextService.getContext(packageDispatchId);
+  @Post(':packageDispatchId/pre-closure-context')
+  preClosureContext(
+    @Param('packageDispatchId') packageDispatchId: string,
+    @Body('closureStatuses') closureStatuses?: { id: string; isCharge: boolean; status: string }[],
+  ) {
+    return this.preClosureContextService.getContext(packageDispatchId, closureStatuses);
   }
 
   @Get(':id')

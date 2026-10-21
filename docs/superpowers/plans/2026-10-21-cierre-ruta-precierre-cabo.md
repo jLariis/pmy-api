@@ -4,7 +4,7 @@
 
 **Goal:** Pantalla completa de cierre de ruta (por flag de sucursal) con pre-cierre PDF obligatorio, comprobación guía por guía con cambios manuales auditados y señales de riesgo de LD.
 
-**Architecture:** Back: migración 115 + utils puros (estatus manual, efectos de ingreso, señales LD) + endpoint de contexto + extensión de `routeclosure.create` en la misma transacción. Front: página nueva `operaciones/salidas-a-ruta/[id]/cierre` con wizard v2 (componentes nuevos), PDF con `@react-pdf/renderer`, y el candado de Salidas a ruta decide diálogo vs pantalla según el flag.
+**Architecture:** Back: migración 115 + utils puros (estatus manual, efectos de ingreso, señales LD) + endpoint de contexto + extensión de `routeclosure.create` en la misma transacción. Front: página nueva `operaciones/salidas-a-ruta/cierre?salida=<id>` (la app es export estático: sin rutas [id]) con wizard v2 (componentes nuevos), PDF con `@react-pdf/renderer`, y el candado de Salidas a ruta decide diálogo vs pantalla según el flag.
 
 **Tech Stack:** NestJS + TypeORM (MySQL), jest · Next.js app router, shadcn + Tailwind, `@react-pdf/renderer`, vitest.
 

@@ -34,7 +34,7 @@ corrección quede auditada.
 
 En Salidas a ruta (`package-dispatch-control.tsx`), el botón del candado:
 - flag apagado → abre el diálogo actual;
-- flag encendido → navega a `app/operaciones/salidas-a-ruta/[id]/cierre/page.tsx` (también el query
+- flag encendido → navega a `app/operaciones/salidas-a-ruta/cierre/page.tsx?salida=<id>` (export estático, sin rutas [id]) (también el query
   param `cerrar` respeta el flag).
 
 La pantalla es un componente nuevo (`components/route-closure-v2/…`), dentro de
