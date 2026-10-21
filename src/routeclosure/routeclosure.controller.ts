@@ -10,6 +10,7 @@ import { ClosureDoctorService } from './closure-doctor.service';
 import { ApplyClosureFixesDto } from './dto/apply-closure-fixes.dto';
 import { RouteRiskReportDto } from './dto/route-risk-report.dto';
 import { RouteRiskReportService } from './risk-report/route-risk-report.service';
+import { PreClosureContextService } from './pre-closure/pre-closure-context.service';
 
 @Controller('route-closure')
 export class RouteclosureController {
@@ -17,6 +18,7 @@ export class RouteclosureController {
     private readonly routeclosureService: RouteclosureService,
     private readonly closureDoctor: ClosureDoctorService,
     private readonly riskReportService: RouteRiskReportService,
+    private readonly preClosureContextService: PreClosureContextService,
   ) {}
 
   @Post()
@@ -27,6 +29,13 @@ export class RouteclosureController {
   @Get(':subsidiryId')
   findAll(@Param('subsidiaryId') subsidiaryId: string) {
     return this.routeclosureService.findAll(subsidiaryId);
+  }
+
+  // Cierre con pre-cierre: por guía, si ya tiene ingreso entregado y sus señales de riesgo de LD.
+  @NoAudit()
+  @Get(':packageDispatchId/pre-closure-context')
+  preClosureContext(@Param('packageDispatchId') packageDispatchId: string) {
+    return this.preClosureContextService.getContext(packageDispatchId);
   }
 
   @Get(':id')

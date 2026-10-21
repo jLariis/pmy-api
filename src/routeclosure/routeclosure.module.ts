@@ -13,10 +13,11 @@ import { DocumentsModule } from 'src/documents/documents.module';
 import { TrackingSyncModule } from 'src/tracking-sync/tracking-sync.module';
 import { ClosureDoctorService } from './closure-doctor.service';
 import { RouteRiskReportService } from './risk-report/route-risk-report.service';
+import { PreClosureContextService } from './pre-closure/pre-closure-context.service';
 
 @Module({
   imports: [TypeOrmModule.forFeature([RouteClosure, PackageDispatch, Income, RouteClosureManualStatus]), DocumentsModule, TrackingSyncModule, VehicleKmsModule],
   controllers: [RouteclosureController],
-  providers: [RouteclosureService, ClosureDoctorService, RouteRiskReportService, MailService, FedexService],
+  providers: [RouteclosureService, ClosureDoctorService, RouteRiskReportService, PreClosureContextService, MailService, FedexService],
 })
 export class RouteclosureModule {}
