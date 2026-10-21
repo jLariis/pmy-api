@@ -4,6 +4,7 @@ import { RouteclosureService } from './routeclosure.service';
 import { RouteclosureController } from './routeclosure.controller';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { RouteClosure } from 'src/entities/route-closure.entity';
+import { RouteClosureManualStatus } from 'src/entities/route-closure-manual-status.entity';
 import { PackageDispatch } from 'src/entities/package-dispatch.entity';
 import { MailService } from 'src/mail/mail.service';
 import { Income } from 'src/entities/income.entity';
@@ -14,7 +15,7 @@ import { ClosureDoctorService } from './closure-doctor.service';
 import { RouteRiskReportService } from './risk-report/route-risk-report.service';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([RouteClosure, PackageDispatch, Income]), DocumentsModule, TrackingSyncModule, VehicleKmsModule],
+  imports: [TypeOrmModule.forFeature([RouteClosure, PackageDispatch, Income, RouteClosureManualStatus]), DocumentsModule, TrackingSyncModule, VehicleKmsModule],
   controllers: [RouteclosureController],
   providers: [RouteclosureService, ClosureDoctorService, RouteRiskReportService, MailService, FedexService],
 })

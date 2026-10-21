@@ -273,6 +273,15 @@ export class Subsidiary {
   closureUntilNextDispatch: boolean;
 
   /**
+   * Cierre de ruta en pantalla completa con pre-cierre obligatorio y comprobación guía por guía
+   * (cambios manuales auditados en `route_closure_manual_status`). Default false = diálogo de
+   * siempre. Configuración normal de sucursal; se siembra en true solo para Cabo San Lucas en la
+   * migración 1786000000115.
+   */
+  @Column({ default: false })
+  routeClosureWithPreClosure: boolean;
+
+  /**
    * Cierre de ruta, INGRESOS: si está activo, el cierre cobra cada guía con la fecha y hora exacta
    * del evento FedEx guardado en `shipment_status.timestamp` (entrega o DEX), aunque sea de un día
    * posterior al de la ruta; nunca fecha con el día de la ruta. Solo afecta el cobro, no la
