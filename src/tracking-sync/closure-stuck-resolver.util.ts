@@ -238,9 +238,39 @@ export function resolveClosureStatus(input: ClosureStatusInput): RouteDayFedexEv
   const base = input.untilNextDispatch
     ? resolveRouteWindowClosureStatus(input.history, input.routeAnchor, input.nextDispatchAt)
     : resolveRouteDayClosureStatus(input.history, input.routeAnchor);
-  return applyAnyDayDeliveryToClosure(
+  const withDelivery = applyAnyDayDeliveryToClosure(
     base,
     { status: input.liveStatus, history: input.history },
     input.acceptAnyDayDelivery,
   );
+  return applyLaterOcurreToClosure(withDelivery, input.history, input.routeAnchor, input.nextDispatchAt);
+}
+
+/** Desenlaces resueltos EN SUCURSAL (bucket "Ocurre" del cierre; espejo de OCURRE_CLOSURE_STATUSES del front). */
+const OCURRE_STATUSES = new Set<string>([ShipmentStatusType.ES_OCURRE, ShipmentStatusType.ENTREGADO_EN_BODEGA]);
+
+/**
+ * Regla general (decisión del usuario 2026-10-21, La Paz 216860773726): el Ocurre / entregado en
+ * bodega se captura cuando el paquete regresa a la sucursal, muchas veces al día siguiente. Si el
+ * día de la ruta quedó SIN desenlace (en ruta, pendiente…), un Ocurre registrado después — y antes
+ * de que la guía vuelva a salir en otra ruta — es el resultado de ESTA ruta. Devoluciones y DEX de
+ * otro día siguen sin cambiar el cierre (regla del día de la ruta).
+ */
+export function applyLaterOcurreToClosure(
+  current: RouteDayFedexEvent | null,
+  history: ClosureHistoryEntry[] | null | undefined,
+  routeAnchor: Date | string | null,
+  nextDispatchAt: Date | null,
+): RouteDayFedexEvent | null {
+  if (current && isResolvedFedexOutcome(current.status)) return current;
+  const routeDay = routeDayOf(routeAnchor);
+  if (!routeDay) return current;
+  const endMs = nextDispatchAt ? nextDispatchAt.getTime() : Infinity;
+  let lastOcurre: RouteDayFedexEvent | null = null;
+  for (const e of toClosureEvents(history)) {
+    if (!OCURRE_STATUSES.has(e.status) || toHermosilloDateString(e.occurredAt) <= routeDay) continue;
+    if (e.occurredAt.getTime() >= endMs) continue;
+    if (!lastOcurre || e.occurredAt > lastOcurre.occurredAt) lastOcurre = e;
+  }
+  return lastOcurre ?? current;
 }

@@ -281,3 +281,43 @@ describe('resolveClosureStatus — estatus final que ve el cierre', () => {
     expect(resolveClosureStatus({ ...base, override })?.status).toBe(ShipmentStatusType.RECHAZADO);
   });
 });
+
+describe('resolveClosureStatus — Ocurre registrado después del día de la ruta (La Paz 216860773726)', () => {
+  // Historial real de 384196175181 (carga): salió a ruta el 20-oct y el Ocurre se capturó el 21 en la mañana.
+  const history = [
+    { status: ShipmentStatusType.EN_BODEGA, timestamp: '2026-10-20T17:15:00.000Z', exceptionCode: '67' },
+    { status: ShipmentStatusType.EN_RUTA, timestamp: '2026-10-20T18:41:00.000Z' },
+    { status: ShipmentStatusType.PENDIENTE, timestamp: '2026-10-20T20:35:00.000Z' },
+    { status: ShipmentStatusType.ES_OCURRE, timestamp: '2026-10-21T15:24:00.000Z' },
+    { status: ShipmentStatusType.ES_OCURRE, timestamp: '2026-10-21T22:33:00.000Z' },
+  ];
+  const base = {
+    history, routeAnchor: new Date('2026-10-20T00:00:00.000Z'), liveStatus: ShipmentStatusType.DEVUELTO_A_FEDEX,
+    untilNextDispatch: false, nextDispatchAt: null, acceptAnyDayDelivery: true, override: null,
+  };
+
+  it('sin resultado el día de la ruta + Ocurre al día siguiente → Ocurre', () => {
+    const r = resolveClosureStatus(base);
+    expect(r?.status).toBe(ShipmentStatusType.ES_OCURRE);
+    expect(r?.occurredAt.toISOString()).toBe('2026-10-21T22:33:00.000Z');
+  });
+
+  it('entregado en bodega después también cuenta', () => {
+    const h = [...history.slice(0, 3), { status: ShipmentStatusType.ENTREGADO_EN_BODEGA, timestamp: '2026-10-22T16:00:00.000Z' }];
+    expect(resolveClosureStatus({ ...base, history: h })?.status).toBe(ShipmentStatusType.ENTREGADO_EN_BODEGA);
+  });
+
+  it('si la guía ya salió en otra ruta, el Ocurre posterior a esa salida no cuenta', () => {
+    expect(resolveClosureStatus({ ...base, nextDispatchAt: new Date('2026-10-21T14:00:00.000Z') })?.status).toBe(ShipmentStatusType.PENDIENTE);
+  });
+
+  it('si el día de la ruta ya tuvo desenlace (DEX), se queda el DEX', () => {
+    const h = [...history.slice(0, 2), { status: ShipmentStatusType.CLIENTE_NO_DISPONIBLE, timestamp: '2026-10-20T20:00:00.000Z', exceptionCode: '08' }, history[3]];
+    expect(resolveClosureStatus({ ...base, history: h })?.status).toBe(ShipmentStatusType.CLIENTE_NO_DISPONIBLE);
+  });
+
+  it('una devolución u otro DEX posterior sigue sin cambiar el cierre', () => {
+    const h = [...history.slice(0, 3), { status: ShipmentStatusType.RECHAZADO, timestamp: '2026-10-21T16:00:00.000Z', exceptionCode: '07' }];
+    expect(resolveClosureStatus({ ...base, history: h })?.status).toBe(ShipmentStatusType.PENDIENTE);
+  });
+});
