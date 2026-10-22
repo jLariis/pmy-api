@@ -66,6 +66,10 @@ export class RouteClosure {
     @Column({ nullable: true })
     createdById: string;
 
+    /** Cuándo se generó el PDF de pre-cierre (solo sucursales con routeClosureWithPreClosure). */
+    @Column({ type: 'datetime', nullable: true })
+    preClosureGeneratedAt: Date | null;
+
     @BeforeInsert()
     setDefaults() {
         this.createdAt = new Date();

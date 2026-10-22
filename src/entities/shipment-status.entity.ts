@@ -46,6 +46,10 @@ export class ShipmentStatus {
   @Column({ nullable: true })
   notes?: string;
 
+  /** Origen del renglón: 'route_closure_manual' si se capturó a mano en el cierre; null = los demás. */
+  @Column({ type: 'varchar', length: 32, nullable: true })
+  source?: string | null;
+
   @Column({ type: 'datetime', default: () => 'CURRENT_TIMESTAMP' })
   createdAt: Date;
 

@@ -3,6 +3,7 @@ import { RouteclosureController } from './routeclosure.controller';
 import { RouteclosureService } from './routeclosure.service';
 import { ClosureDoctorService } from './closure-doctor.service';
 import { RouteRiskReportService } from './risk-report/route-risk-report.service';
+import { PreClosureContextService } from './pre-closure/pre-closure-context.service';
 
 describe('RouteclosureController', () => {
   let controller: RouteclosureController;
@@ -16,6 +17,7 @@ describe('RouteclosureController', () => {
         { provide: RouteclosureService, useValue: {} },
         { provide: ClosureDoctorService, useValue: {} },
         { provide: RouteRiskReportService, useValue: {} },
+        { provide: PreClosureContextService, useValue: {} },
       ],
     }).compile();
 

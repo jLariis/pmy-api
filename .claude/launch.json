@@ -4,13 +4,31 @@
     {
       "name": "backend",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "start:dev"],
+      "runtimeArgs": [
+        "run",
+        "start:dev"
+      ],
       "port": 3000
     },
     {
       "name": "frontend",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["--prefix", "../app-pmy", "run", "dev:lean"],
+      "runtimeArgs": [
+        "--prefix",
+        "../app-pmy",
+        "run",
+        "dev:lean"
+      ],
+      "port": 4000,
+      "autoPort": true
+    },
+    {
+      "name": "frontend-api-local",
+      "runtimeExecutable": "cmd",
+      "runtimeArgs": [
+        "/c",
+        "set NEXT_PUBLIC_API_URL=http://localhost:3001/api&& npm --prefix ../app-pmy run dev:lean"
+      ],
       "port": 4000,
       "autoPort": true
     }

@@ -3,6 +3,7 @@ import { CreateDevolutionDto } from './dto/create-devolution.dto';
 import { Between, DataSource, EntityManager, In, IsNull, Repository } from 'typeorm';
 import { Devolution, DevolutionAppliedChanges } from 'src/entities/devolution.entity';
 import { shipmentIncomeWhere } from 'src/common/shipment-income-where.util';
+import { annulDeliveredIncome } from 'src/common/income-annul.util';
 import { loadDevolutionRecords } from './devolution-records.loader';
 import { isInOpenRoute, recordKey, recordsToMark, suggestDevolutionRecord } from './devolution-target.util';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -170,7 +171,7 @@ export class DevolutionsService {
     // el front. El paquete se regresa a FedEx: el cliente no lo recibió, ese cobro no procede.
     const annulledIncomeIds =
       dto.annulEntregadoIncome && chosen.kind === 'shipment'
-        ? await this.annulEntregadoIncomeFor(manager, trackingNumber, chosen.id, opDate, opts.userId ?? null)
+        ? await annulDeliveredIncome(manager, this.auditService, { trackingNumber, shipmentId: chosen.id, opDate, userId: opts.userId ?? null, reason: 'devolucion' })
         : [];
 
     if (!existingDevolution) {
@@ -203,74 +204,6 @@ export class DevolutionsService {
       });
     }
     return 'duplicate';
-  }
-
-  /**
-   * Anula (soft) el/los ingreso(s) `entregado` VIGENTE(s) de una guía y crea por cada uno una
-   * fila de REVERSA (−cost) ligada por `reversalOfIncomeId`. Ambas quedan `active=false`: los
-   * reportes que SUMAN netean a 0 (incluyan o no inactivos) y los que CUENTAN filtran `active`.
-   * Queda registrado quién anuló (en `annulledById` del original y en `createdById` de la reversa)
-   * y una entrada en `audit_log`. Solo shipment (las cargas cobran agrupado).
-   */
-  private async annulEntregadoIncomeFor(
-    manager: EntityManager,
-    trackingNumber: string,
-    shipmentId: string,
-    opDate: Date,
-    userId: string | null,
-  ): Promise<string[]> {
-    // Solo el ingreso del registro elegido (o el de la guía sin registro ligado): el de otro
-    // consolidado es otro flujo y no se toca.
-    const originals = await manager.find(Income, {
-      where: shipmentIncomeWhere(shipmentId, trackingNumber, {
-        incomeType: IncomeStatus.ENTREGADO,
-        sourceType: IncomeSourceType.SHIPMENT,
-      }),
-      relations: ['subsidiary', 'shipment'],
-    });
-
-    for (const original of originals) {
-      // 1) Soft-anular el original (quién / cuándo).
-      await manager.update(Income, original.id, {
-        active: false,
-        annulledAt: opDate,
-        annulledById: userId,
-      });
-
-      // 2) Fila de reversa (−cost) atribuida a quien anuló, ligada al original.
-      await manager.save(
-        manager.create(Income, {
-          trackingNumber: original.trackingNumber,
-          subsidiary: original.subsidiary ? ({ id: original.subsidiary.id } as any) : null,
-          shipment: original.shipment ? ({ id: original.shipment.id } as any) : null,
-          shipmentType: original.shipmentType,
-          cost: -Number(original.cost),
-          incomeType: IncomeStatus.ENTREGADO,
-          nonDeliveryStatus: original.nonDeliveryStatus,
-          isGrouped: false,
-          sourceType: IncomeSourceType.SHIPMENT,
-          date: opDate,
-          createdById: userId,
-          active: false,
-          reversalOfIncomeId: original.id,
-        }),
-      );
-
-      // 3) Auditoría (dominio): quién anuló, monto, sucursal.
-      this.auditService.log({
-        module: AuditModule.INGRESOS,
-        action: AuditAction.DELETE,
-        result: AuditResult.SUCCESS,
-        severity: AuditSeverity.WARNING,
-        userId: userId ?? undefined,
-        subsidiaryId: original.subsidiary?.id,
-        entityName: 'income',
-        entityId: original.id,
-        description: `Ingreso "entregado" anulado por devolución de la guía ${trackingNumber} ($${Number(original.cost)})`,
-        metadata: { trackingNumber, cost: Number(original.cost), reason: 'devolucion' },
-      });
-    }
-    return originals.map((o) => o.id);
   }
 
   async findAll(subsidiaryId: string) {

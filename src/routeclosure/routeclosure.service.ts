@@ -1,5 +1,7 @@
 import { canonicalFedexExceptionCode } from 'src/common/fedex-exception-code.util';
 import { Injectable, Logger, BadRequestException, InternalServerErrorException, Optional } from '@nestjs/common';
+import { AuditService } from 'src/audit/audit.service';
+import { applyManualChanges } from './pre-closure/apply-manual-changes';
 import { VehicleKmsService } from 'src/maintenance/vehicle-kms.service';
 import { CreateRouteclosureDto } from './dto/create-routeclosure.dto';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -11,7 +13,7 @@ import { ValidatedPackageDispatchDto } from 'src/package-dispatch/dto/validated-
 import { ShipmentStatusType } from 'src/common/enums/shipment-status-type.enum';
 import { DhlStatusType } from 'src/common/enums/dhl-status-type.enum';
 import { mapDhlCodeToInternal } from 'src/utils/dhl.utils';
-import { ShipmentStatus, Collection, Shipment, Income, ChargeShipment, ShipmentNotInFiles } from 'src/entities';
+import { ShipmentStatus, Collection, Shipment, Income, ChargeShipment, ShipmentNotInFiles, User } from 'src/entities';
 import { DispatchStatus } from 'src/common/enums/dispatch-enum';
 import { MailService } from 'src/mail/mail.service';
 import { fromZonedTime } from 'date-fns-tz';
@@ -54,6 +56,7 @@ export class RouteclosureService {
     private readonly templateService: TemplateService,
     private readonly trackingCompare: TrackingCompareService,
     @Optional() private readonly vehicleKms?: VehicleKmsService,
+    @Optional() private readonly auditService?: AuditService,
   ) {}
 
   /**
@@ -382,9 +385,10 @@ export class RouteclosureService {
       this.logger.log('🟡 [RouteClosure] Iniciando proceso de cierre de ruta...');
 
       // 1. Validar el Despacho
+      const manualStatusChanges = createRouteclosureDto.manualStatusChanges ?? [];
       const packageDispatch = await queryRunner.manager.findOne(PackageDispatch, {
         where: { id: createRouteclosureDto.packageDispatch.id },
-        relations: ['subsidiary'],
+        relations: manualStatusChanges.length ? ['subsidiary', 'drivers'] : ['subsidiary'],
       });
 
       if (!packageDispatch) {
@@ -427,6 +431,9 @@ export class RouteclosureService {
         collections: trackingNumbers,
         subsidiary: packageDispatch.subsidiary,
         createdById: userId ?? null,
+        preClosureGeneratedAt: createRouteclosureDto.preClosureGeneratedAt
+          ? new Date(createRouteclosureDto.preClosureGeneratedAt)
+          : null,
       });
 
       const savedClosure = await queryRunner.manager.save(RouteClosure, newRouteClosure);
@@ -750,6 +757,28 @@ export class RouteclosureService {
 
       this.logger.log(`🟢 [RouteClosure] Se procesaron ${processedDhlCount} paquetes de DHL.`);
 
+      // Cierre con pre-cierre: estatus corregidos a mano contra lo que entregó el chofer
+      // (estatus + historial + auditoría + ingreso), en esta misma transacción.
+      if (manualStatusChanges.length > 0) {
+        const user = userId
+          ? await queryRunner.manager.findOne(User, { where: { id: userId }, select: ['id', 'name', 'lastName'] })
+          : null;
+        const manualResult = await applyManualChanges(queryRunner.manager, this.auditService, {
+          dispatchId: packageDispatch.id,
+          is315: !!packageDispatch.is315,
+          subsidiary: { id: packageDispatch.subsidiary?.id, fedexCostPackage: packageDispatch.subsidiary?.fedexCostPackage },
+          routeClosureId: savedClosure.id,
+          userId: userId ?? null,
+          userName: [user?.name, user?.lastName].filter(Boolean).join(' ') || 'usuario sin nombre',
+          folio: packageDispatch.trackingNumber ?? null,
+          routeDay: toHermosilloDateString(routeIncomeDate),
+          driverNames: (packageDispatch.drivers ?? []).map((d) => d.name).join(', '),
+          routeIncomeDate,
+          now: new Date(),
+        }, manualStatusChanges);
+        this.logger.log(`🟢 [RouteClosure] Cambios manuales aplicados: ${JSON.stringify(manualResult)}`);
+      }
+
       // 6. Finalizar transacción
       await queryRunner.commitTransaction();
       this.logger.log(`✅ [RouteClosure] Cierre de ruta completado con éxito: ${savedClosure.id}`);
@@ -760,6 +789,8 @@ export class RouteclosureService {
 
     } catch (error) {
       await queryRunner.rollbackTransaction();
+      // Validaciones (guía que cambió mientras se cerraba, etc.): el mensaje ya está en llano.
+      if (error instanceof BadRequestException) throw error;
       this.logger.error(`🔴 [RouteClosure] Error crítico procesando el cierre: ${error.message}`, error.stack);
       throw new InternalServerErrorException(`Error al procesar el cierre: ${error.message}`);
     } finally {
