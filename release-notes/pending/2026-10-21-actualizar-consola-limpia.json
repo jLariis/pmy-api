@@ -1,0 +1,6 @@
+{
+  "kind": "correccion",
+  "title": "Actualizar: la versión nueva arranca y la consola se lee clara",
+  "summary": "La actualización compila igual que a mano, revisa antes de reiniciar y, si algo falla, muestra por qué. La consola ya no muestra códigos raros ni consultas.",
+  "audience": "superadmin"
+}

@@ -17,6 +17,9 @@ FROM_COMMIT=""
 TO_COMMIT=""
 
 mkdir -p "$LOG_DIR"
+# Sin colores de terminal: la consola web no los entiende.
+export NO_COLOR=1 FORCE_COLOR=0 NPM_CONFIG_COLOR=false
+ESC=$(printf '\033')
 
 json_str() {
   local s="$1"
@@ -26,11 +29,17 @@ json_str() {
 now_ms() { date +%s%3N; }
 elapsed() { echo $(( $(now_ms) - START_MS )); }
 emit() { printf '%s\n' "$1" >> "$LOG"; }
+# Quita los códigos de color/estilo de la terminal (ESC[...m) que algunas herramientas igual mandan.
+strip_ansi() { printf '%s' "$1" | sed -E "s/${ESC}\[[0-9;?]*[A-Za-z]//g"; }
 emit_log() {
-  local type="log"
-  case "$1" in *[Ww][Aa][Rr][Nn]*|*[Ee][Rr][Rr][Oo][Rr]*) type="warn" ;; esac
-  emit "{\"type\":\"$type\",\"line\":\"$(json_str "$1")\",\"elapsedMs\":$(elapsed)}"
+  local type="log" line
+  line=$(strip_ansi "$1")
+  case "$line" in *[Ww][Aa][Rr][Nn]*|*[Ee][Rr][Rr][Oo][Rr]*) type="warn" ;; esac
+  emit "{\"type\":\"$type\",\"line\":\"$(json_str "$line")\",\"elapsedMs\":$(elapsed)}"
 }
+ok_line() { emit "{\"type\":\"skip\",\"key\":\"$CURRENT_STEP\",\"line\":\"$(json_str "$1")\",\"elapsedMs\":$(elapsed)}"; }
+# emit_tail <archivo> <n>: muestra las últimas n líneas de una salida guardada (para fallas).
+emit_tail() { tail -n "$2" "$1" 2>/dev/null | while IFS= read -r line; do emit_log "$line"; done; }
 phase() { # phase <n> <key> <label>
   CURRENT_STEP="$2"
   emit "{\"type\":\"phase\",\"step\":$1,\"total\":$TOTAL,\"key\":\"$2\",\"label\":\"$(json_str "$3")\",\"elapsedMs\":$(elapsed)}"
@@ -94,9 +103,24 @@ else
   run npm install --no-save --include=dev --no-audit --no-fund || fail "Falló la instalación de dependencias. La versión anterior sigue en línea."
 fi
 
-# 3. Migraciones
+# 3. Migraciones (sin el registro de SQL; solo qué migración se aplicó)
 phase 3 migrate "Migraciones"
-run npm run migration:run || fail "Falló una migración de la base de datos. La versión anterior sigue en línea."
+MIG_OUT="$LOG_DIR/$RUN_ID.migrations.txt"
+DB_LOGGING=false npm run --silent migration:run > "$MIG_OUT" 2>&1
+MIG_RC=$?
+APPLIED=0
+while IFS= read -r line; do
+  line=$(strip_ansi "$line")
+  if [[ "$line" =~ Migration[[:space:]]+([A-Za-z0-9_]+)[[:space:]]+has[[:space:]]been[[:space:]]executed ]]; then
+    ok_line "✓ Migración $(printf '%s' "${BASH_REMATCH[1]}" | sed -E 's/[0-9]{10,}$//') aplicada"; APPLIED=$((APPLIED + 1))
+  fi
+done < "$MIG_OUT"
+if [ "$MIG_RC" -ne 0 ]; then
+  emit_log "La migración falló. Últimas líneas:"
+  emit_tail "$MIG_OUT" 40
+  fail "Falló una migración de la base de datos. La versión anterior sigue en línea."
+fi
+[ "$APPLIED" -eq 0 ] && ok_line "✓ Sin migraciones nuevas"
 
 # 4. Build en carpeta aparte (dist sigue sirviendo mientras tanto)
 phase 4 build "Compilar"
@@ -107,10 +131,24 @@ cat > .tsconfig.deploy.json <<'EOF'
   "compilerOptions": { "outDir": "./dist-next", "tsBuildInfoFile": "./dist-next/tsconfig.build.tsbuildinfo" }
 }
 EOF
-run npx tsc -p .tsconfig.deploy.json
+# nest build (igual que a mano): convierte los imports "src/..." en rutas relativas. Con tsc
+# solo quedaban require("src/...") y la API no arrancaba.
+BUILD_OUT="$LOG_DIR/$RUN_ID.build.txt"
+npx nest build -p .tsconfig.deploy.json > "$BUILD_OUT" 2>&1
 BUILD_RC=$?
 rm -f .tsconfig.deploy.json
-[ "$BUILD_RC" -eq 0 ] && [ -f dist-next/main.js ] || fail "Falló la compilación. La versión anterior sigue en línea."
+if [ "$BUILD_RC" -ne 0 ] || [ ! -f dist-next/main.js ]; then
+  emit_log "La compilación falló. Últimas líneas:"
+  emit_tail "$BUILD_OUT" 40
+  fail "Falló la compilación. La versión anterior sigue en línea."
+fi
+# Candado: si quedara algún require("src/...") la API no arrancaría; mejor no reiniciar.
+BAD=$(grep -rl --include=*.js 'require("src/' dist-next 2>/dev/null | head -3)
+if [ -n "$BAD" ]; then
+  emit_log "Archivos con rutas sin convertir: $BAD"
+  fail "La compilación quedó incompleta. No se reinició; la versión anterior sigue en línea."
+fi
+ok_line "✓ Compilado sin errores"
 for asset in config/ssl ssl; do
   if [ -d "src/$asset" ]; then mkdir -p "dist-next/$asset" && cp -r "src/$asset/." "dist-next/$asset/"; fi
 done
@@ -119,7 +157,11 @@ done
 phase 5 restart "Reiniciar"
 rm -rf dist-prev
 mv dist dist-prev && mv dist-next dist || fail "No se pudo cambiar a la versión nueva. La versión anterior sigue en línea."
-if ! run pm2 restart "$PM2_NAME"; then
+PM2_OUT="$LOG_DIR/$RUN_ID.pm2.txt"
+if pm2 restart "$PM2_NAME" --silent > "$PM2_OUT" 2>&1; then
+  emit_log "pm2 reinició $PM2_NAME"
+else
+  emit_tail "$PM2_OUT" 20
   rm -rf dist && mv dist-prev dist
   fail "pm2 no pudo reiniciar. Se regresó a la versión anterior."
 fi
@@ -132,12 +174,15 @@ for _ in $(seq 1 45); do
   sleep 2
 done
 if [ "$OK" -ne 1 ]; then
-  emit_log "La API no respondió en 90 s; regresando a la versión anterior…"
+  emit_log "La versión nueva no respondió en 90 s. Por qué no arrancó (últimas líneas del error):"
+  pm2 logs "$PM2_NAME" --err --lines 30 --nostream --raw > "$PM2_OUT" 2>&1
+  emit_tail "$PM2_OUT" 30
+  emit_log "Regresando a la versión anterior…"
   rm -rf dist-failed && mv dist dist-failed && mv dist-prev dist
-  run pm2 restart "$PM2_NAME"
+  pm2 restart "$PM2_NAME" --silent > /dev/null 2>&1
   fail "La versión nueva no arrancó. Se regresó a la anterior (las migraciones ya aplicadas se quedan)."
 fi
-emit_log "La API respondió: $(curl -fsS -m 3 "$HEALTH_URL" 2>/dev/null)"
+ok_line "✓ El sistema respondió"
 
 write_status success "Actualización terminada."
 emit "{\"type\":\"done\",\"ok\":true,\"durationMs\":$(elapsed)}"
