@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { trackingRefFor } from 'src/shipments/fedex-generation.util';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Shipment } from 'src/entities/shipment.entity';
@@ -338,7 +339,7 @@ export class TrackingCompareService {
   async prefetchRaw(entities: Trackable[]): Promise<Map<string, RawTrackingResult>> {
     const refs = entities
       .filter((e) => (e as any)?.active !== false)
-      .map((e) => ({ trackingNumber: e.trackingNumber, fedexUniqueId: e.fedexUniqueId, carrierCode: e.carrierCode }));
+      .map((e) => trackingRefFor(e));
     const out = new Map<string, RawTrackingResult>();
     for (const r of await this.source.fetch(refs)) if (r?.trackingNumber) out.set(r.trackingNumber, r);
     return out;
@@ -399,7 +400,7 @@ export class TrackingCompareService {
       prefetched ??
       (
         await this.source.fetch([
-          { trackingNumber: entity.trackingNumber, fedexUniqueId: entity.fedexUniqueId, carrierCode: entity.carrierCode },
+          trackingRefFor(entity),
         ])
       )[0];
     if (!raw || raw.trackResults.length === 0) return null;

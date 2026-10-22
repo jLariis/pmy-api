@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { trackingRefFor } from 'src/shipments/fedex-generation.util';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { TrackingSyncRun } from 'src/entities/tracking-sync-run.entity';
@@ -151,8 +152,9 @@ export class TrackingSyncOrchestrator {
     return { runId: run.id, ok, noData, failed, aborted, cobrosWould, cobrosMissing };
   }
 
+  /** Amarrada a su envío solo si la guía ya está cerrada (ver trackingRefFor). */
   private refFor(e: Trackable) {
-    return { trackingNumber: e.trackingNumber, fedexUniqueId: e.fedexUniqueId, carrierCode: e.carrierCode };
+    return trackingRefFor(e);
   }
 
   private isConnectivity(err: any): boolean {

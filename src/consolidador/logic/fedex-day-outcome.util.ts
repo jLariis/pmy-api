@@ -1,17 +1,14 @@
 import { toHermosilloDateString } from 'src/common/utils';
+import { pickActiveGeneration } from 'src/shipments/fedex-generation.util';
 import { DayOutcome, FedexLive, Mark } from './manual-count.types';
 import { fedexEventLabel } from './status-labels.util';
 
 /**
- * De los `trackResults` de FedEx, la generación más reciente (secuencia del UniqueID más
- * alta). Una guía reciclada trae varias generaciones; la vigente es la de mayor secuencia.
- * Misma selección que usa el cierre de ruta.
+ * De los `trackResults` de FedEx, el envío vivo (el del escaneo más reciente; la secuencia solo
+ * desempata). Reciclada o dos etiquetas: misma regla que el cron, el motor y el cierre.
  */
 export function selectLatestGeneration(results: any[]): any | null {
-  if (!results?.length) return null;
-  if (results.length === 1) return results[0];
-  const seq = (r: any) => parseInt(r?.trackingNumberInfo?.trackingNumberUniqueId?.split('~')[0] || '0', 10);
-  return [...results].sort((a, b) => seq(b) - seq(a))[0];
+  return pickActiveGeneration(results);
 }
 
 const PRIORITY: Mark[] = ['POD', '07', '08']; // entregado gana a DEX; 07 gana a 08

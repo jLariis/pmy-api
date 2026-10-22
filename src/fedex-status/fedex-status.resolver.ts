@@ -1,4 +1,5 @@
 import { canonicalFedexExceptionCode } from 'src/common/fedex-exception-code.util';
+import { pickActiveGeneration } from 'src/shipments/fedex-generation.util';
 import { Injectable, Logger } from '@nestjs/common';
 import { FedexService } from 'src/shipments/fedex.service';
 import { LatestScanEvent, LatestStatusResult, StatusValidation } from './fedex-status.types';
@@ -26,7 +27,7 @@ export class FedexStatusResolver {
         opts.fedexUniqueId,
         opts.carrierCode,
       );
-      const track = response?.output?.completeTrackResults?.[0]?.trackResults?.[0];
+      const track = pickActiveGeneration(response?.output?.completeTrackResults?.[0]?.trackResults || []);
       return this.buildResult(trackingNumber, track);
     } catch (error: any) {
       this.logger.warn(`No se pudo resolver estatus de ${trackingNumber}: ${error?.message}`);
@@ -44,7 +45,7 @@ export class FedexStatusResolver {
         unique.map((trackingNumber) => ({ trackingNumber })),
         'fedex-status',
       );
-      return unique.map((tn) => this.buildResult(tn, map.get(tn)?.[0]));
+      return unique.map((tn) => this.buildResult(tn, pickActiveGeneration(map.get(tn) || [])));
     } catch (error: any) {
       this.logger.warn(`Batch de estatus falló: ${error?.message}`);
       return unique.map((tn) => this.emptyResult(tn, error?.message ?? 'Error consultando FedEx'));

@@ -1,4 +1,5 @@
 import { canonicalFedexExceptionCode } from 'src/common/fedex-exception-code.util';
+import { orderByActiveGeneration, pickActiveGeneration, trackingRefFor } from './fedex-generation.util';
 import { isOurRouteDelivery, routeDaysOf } from 'src/common/our-route-delivery.util';
 import { BadRequestException, forwardRef, HttpStatus, Inject, Injectable, InternalServerErrorException, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -1472,12 +1473,7 @@ export class ShipmentsService {
     try {
       const data = await this.fedexService.trackPackage(trackingNumber);
       const results = data.output?.completeTrackResults?.[0]?.trackResults || [];
-      results.sort((a, b) => {
-        const seqA = parseInt(a.trackingNumberInfo?.trackingNumberUniqueId?.split('~')[0] || '0');
-        const seqB = parseInt(b.trackingNumberInfo?.trackingNumberUniqueId?.split('~')[0] || '0');
-        return seqB - seqA;
-      });
-      const tr = results[0];
+      const tr = pickActiveGeneration(results);
       const scanEvents = tr?.scanEvents || [];
       if (!tr || (tr as any).error || scanEvents.length === 0) return empty;
 
@@ -1838,11 +1834,7 @@ export class ShipmentsService {
               }
 
               const trackResults = shipmentInfo.output.completeTrackResults[0].trackResults;
-              const latestTrackResult = trackResults.find((r) => r.latestStatusDetail?.derivedCode === 'DL') || trackResults.sort((a, b) => {
-                const dateA = a.scanEvents[0]?.date ? new Date(a.scanEvents[0].date).getTime() : 0;
-                const dateB = b.scanEvents[0]?.date ? new Date(b.scanEvents[0].date).getTime() : 0;
-                return dateB - dateA;
-              })[0];
+              const latestTrackResult = pickActiveGeneration(trackResults);
               const latestStatusDetail = latestTrackResult.latestStatusDetail;
               this.logger.log(`📣 Último estatus de FedEx para ${trackingNumber}: ${latestStatusDetail?.derivedCode} - ${latestStatusDetail?.statusByLocale}`);
 
@@ -2249,11 +2241,7 @@ export class ShipmentsService {
               }
 
               const trackResults = shipmentInfo.output.completeTrackResults[0].trackResults;
-              const latestTrackResult = trackResults.find((r) => r.latestStatusDetail?.derivedCode === 'DL') || trackResults.sort((a, b) => {
-                const dateA = a.scanEvents[0]?.date ? new Date(a.scanEvents[0].date).getTime() : 0;
-                const dateB = b.scanEvents[0]?.date ? new Date(b.scanEvents[0].date).getTime() : 0;
-                return dateB - dateA;
-              })[0];
+              const latestTrackResult = pickActiveGeneration(trackResults);
               const latestStatusDetail = latestTrackResult.latestStatusDetail;
               this.logger.log(`📣 Último estatus de FedEx para ${trackingNumber}: ${latestStatusDetail?.derivedCode} - ${latestStatusDetail?.statusByLocale}`);
 
@@ -3088,17 +3076,9 @@ export class ShipmentsService {
     // 🛡️ CORRECCIÓN 1: SELECTOR DE GENERACIÓN (Jerarquía de UniqueID)
     // =================================================================================
     if (allTrackResults.length > 1) {
-        allTrackResults.sort((a, b) => {
-            const seqA = parseInt(a.trackingNumberInfo?.trackingNumberUniqueId?.split('~')[0] || '0');
-            const seqB = parseInt(b.trackingNumberInfo?.trackingNumberUniqueId?.split('~')[0] || '0');
-            if (seqA !== seqB) return seqB - seqA;
-            const timeA = new Date(a.scanEvents?.[0]?.date || 0).getTime();
-            const timeB = new Date(b.scanEvents?.[0]?.date || 0).getTime();
-            return timeB - timeA;
-        });
-
+        allTrackResults = orderByActiveGeneration(allTrackResults);
         const winner = allTrackResults[0];
-        this.logger.log(`[${trackingNumber}] 🚀 Selector de Generación: Elegido ID ${winner.trackingNumberInfo?.trackingNumberUniqueId} (Secuencia Mayor).`);
+        this.logger.log(`[${trackingNumber}] 🚀 Selector de Generación: Elegido ID ${winner.trackingNumberInfo?.trackingNumberUniqueId} (escaneo más reciente).`);
     }
 
     const trackResult = allTrackResults[0]; 
@@ -4456,13 +4436,8 @@ export class ShipmentsService {
             const trackResults = shipmentInfo.output.completeTrackResults[0].trackResults;
             this.logger.debug(`📊 Se encontraron ${trackResults.length} track results para ${trackingNumber}`);
 
-            // Encontrar el último estado (priorizando 'DL' o el más reciente)
-            const latestTrackResult = trackResults.find((r) => r.latestStatusDetail?.derivedCode === 'DL') || 
-              trackResults.sort((a, b) => {
-                const dateA = a.scanEvents[0]?.date ? new Date(a.scanEvents[0].date).getTime() : 0;
-                const dateB = b.scanEvents[0]?.date ? new Date(b.scanEvents[0].date).getTime() : 0;
-                return dateB - dateA;
-              })[0];
+            // El envío vivo: el del escaneo más reciente (regla única, fedex-generation.util).
+            const latestTrackResult = pickActiveGeneration(trackResults);
 
             if (!latestTrackResult?.latestStatusDetail) {
               const reason = `No se pudo determinar el último estado para ${trackingNumber}`;
@@ -6356,13 +6331,7 @@ export class ShipmentsService {
             h.id = undefined;
           });
 
-          const latestResult =
-            trackResults.find(r => r.latestStatusDetail?.derivedCode === "DL") ??
-            [...trackResults].sort((a, b) => {
-              const da = a.scanEvents?.[0]?.date ? new Date(a.scanEvents[0].date).getTime() : 0;
-              const db = b.scanEvents?.[0]?.date ? new Date(b.scanEvents[0].date).getTime() : 0;
-              return db - da;
-            })[0];
+          const latestResult = pickActiveGeneration(trackResults);
 
           receivedByName = latestResult?.deliveryDetails?.receivedByName || '';
           fedexUniqueId = latestResult?.trackingNumberInfo?.trackingNumberUniqueId || null;
@@ -8165,15 +8134,7 @@ export class ShipmentsService {
       const today = herDay(new Date());
 
       for (const tn of tns) {
-        const results = map.get(tn) || [];
-        if (results.length > 1) {
-          results.sort((a: any, b: any) => {
-            const seqA = parseInt(a.trackingNumberInfo?.trackingNumberUniqueId?.split('~')[0] || '0');
-            const seqB = parseInt(b.trackingNumberInfo?.trackingNumberUniqueId?.split('~')[0] || '0');
-            return seqB - seqA;
-          });
-        }
-        const top = results[0];
+        const top = pickActiveGeneration(map.get(tn) || []);
         const events: any[] = top?.scanEvents || [];
 
         // Cuenta el 67 Y el 44 (dos fases del escaneo local; ver localScanCodeTimes). Antes solo
@@ -8303,15 +8264,7 @@ export class ShipmentsService {
       const today = herDay(new Date());
 
       for (const tn of tns) {
-        const results = map.get(tn) || [];
-        if (results.length > 1) {
-          results.sort((a: any, b: any) => {
-            const seqA = parseInt(a.trackingNumberInfo?.trackingNumberUniqueId?.split('~')[0] || '0');
-            const seqB = parseInt(b.trackingNumberInfo?.trackingNumberUniqueId?.split('~')[0] || '0');
-            return seqB - seqA;
-          });
-        }
-        const top = results[0];
+        const top = pickActiveGeneration(map.get(tn) || []);
         const events: any[] = top?.scanEvents || [];
 
         // FedEx NO manda el 44 en scanEvents; lo reporta en latestStatusDetail.ancillaryDetails.reason='44'.
@@ -8446,15 +8399,8 @@ export class ShipmentsService {
           continue;
         }
 
-        // Misma jerarquía que processMasterFedexUpdate: la generación con secuencia mayor.
-        if (results.length > 1) {
-          results.sort((a: any, b: any) => {
-            const seqA = parseInt(a.trackingNumberInfo?.trackingNumberUniqueId?.split('~')[0] || '0');
-            const seqB = parseInt(b.trackingNumberInfo?.trackingNumberUniqueId?.split('~')[0] || '0');
-            return seqB - seqA;
-          });
-        }
-        const top = results[0];
+        // Misma regla que processMasterFedexUpdate: el envío del escaneo más reciente.
+        const top = pickActiveGeneration(results);
         const fxError = top.error; // FedEx devuelve un error POR guía (no encontrada / sin info).
         const lsd = top.latestStatusDetail;
         const newestEvent = [...(top.scanEvents || [])].sort(
@@ -8615,10 +8561,13 @@ export class ShipmentsService {
         const meta = new Map<string, { fedexUniqueId?: string; carrierCode?: string }>();
         for (const s of source) {
           if (!s?.trackingNumber) continue;
+          // Solo se amarra al envío guardado si la guía ya está cerrada (ver trackingRefFor):
+          // abierta se consulta por número y gana el envío del escaneo más reciente.
           const prev = meta.get(s.trackingNumber) || {};
+          const ref = trackingRefFor(s as any);
           meta.set(s.trackingNumber, {
-            fedexUniqueId: prev.fedexUniqueId || (s as any).fedexUniqueId || undefined,
-            carrierCode: prev.carrierCode || (s as any).carrierCode || undefined,
+            fedexUniqueId: prev.fedexUniqueId || ref.fedexUniqueId || undefined,
+            carrierCode: prev.carrierCode || ref.carrierCode || undefined,
           });
         }
 
@@ -8764,18 +8713,9 @@ export class ShipmentsService {
             // 🛡️ SELECTOR DE GENERACIÓN (Jerarquía de UniqueID)
             // =================================================================================
             if (allTrackResults.length > 1) {
-                allTrackResults.sort((a, b) => {
-                    const seqA = parseInt(a.trackingNumberInfo?.trackingNumberUniqueId?.split('~')[0] || '0');
-                    const seqB = parseInt(b.trackingNumberInfo?.trackingNumberUniqueId?.split('~')[0] || '0');
-                    if (seqA !== seqB) return seqB - seqA;
-
-                    const timeA = new Date(a.scanEvents?.[0]?.date || 0).getTime();
-                    const timeB = new Date(b.scanEvents?.[0]?.date || 0).getTime();
-                    return timeB - timeA;
-                });
-
+                allTrackResults = orderByActiveGeneration(allTrackResults);
                 const winner = allTrackResults[0];
-                this.logger.log(`[${tn}] 🚀 Selector de Generación: Elegido ID ${winner.trackingNumberInfo?.trackingNumberUniqueId} (Secuencia Mayor).`);
+                this.logger.log(`[${tn}] 🚀 Selector de Generación: Elegido ID ${winner.trackingNumberInfo?.trackingNumberUniqueId} (escaneo más reciente).`);
             }
 
             const trackResult = allTrackResults[0]; 
@@ -9370,18 +9310,9 @@ export class ShipmentsService {
             // 🛡️ SELECTOR DE GENERACIÓN (Jerarquía de UniqueID)
             // =================================================================================
             if (allTrackResults.length > 1) {
-                allTrackResults.sort((a: any, b: any) => {
-                    const seqA = parseInt(a.trackingNumberInfo?.trackingNumberUniqueId?.split('~')[0] || '0');
-                    const seqB = parseInt(b.trackingNumberInfo?.trackingNumberUniqueId?.split('~')[0] || '0');
-                    if (seqA !== seqB) return seqB - seqA;
-
-                    const timeA = new Date(a.scanEvents?.[0]?.date || 0).getTime();
-                    const timeB = new Date(b.scanEvents?.[0]?.date || 0).getTime();
-                    return timeB - timeA;
-                });
-
+                allTrackResults = orderByActiveGeneration(allTrackResults);
                 const winner = allTrackResults[0];
-                this.logger.log(`[C2 - ${tn}] 🚀 Selector de Generación: Elegido ID ${winner.trackingNumberInfo?.trackingNumberUniqueId}`);
+                this.logger.log(`[C2 - ${tn}] 🚀 Selector de Generación: Elegido ID ${winner.trackingNumberInfo?.trackingNumberUniqueId} (escaneo más reciente)`);
             }
 
             const trackResult = allTrackResults[0]; 
@@ -9980,7 +9911,7 @@ export class ShipmentsService {
                   // 3. OBTENER DATOS FEDEX
                   let fedexInfo;
                   try {
-                      fedexInfo = await this.fedexService.trackPackage(tn, entity.fedexUniqueId || undefined);
+                      fedexInfo = await this.fedexService.trackPackage(tn, trackingRefFor(entity).fedexUniqueId);
                   } catch (e) {
                       audit.status = 'FEDEX_API_ERROR';
                       audit.analysis.push(`Error API: ${e.message}`);
@@ -10008,14 +9939,7 @@ export class ShipmentsService {
                   }
 
                   // SELECTOR DE GENERACIÓN
-                  if (allTrackResults.length > 1) {
-                      allTrackResults.sort((a, b) => {
-                          const seqA = parseInt(a.trackingNumberInfo?.trackingNumberUniqueId?.split('~')[0] || '0');
-                          const seqB = parseInt(b.trackingNumberInfo?.trackingNumberUniqueId?.split('~')[0] || '0');
-                          if (seqA !== seqB) return seqB - seqA;
-                          return new Date(b.scanEvents?.[0]?.date || 0).getTime() - new Date(a.scanEvents?.[0]?.date || 0).getTime();
-                      });
-                  }
+                  if (allTrackResults.length > 1) allTrackResults = orderByActiveGeneration(allTrackResults);
 
                   const trackResult = allTrackResults[0]; 
                   const scanEvents = trackResult.scanEvents || [];
@@ -10252,7 +10176,7 @@ export class ShipmentsService {
           trackingNumbers.map(async (tn) => {
             try {
               const fedexInfo = await this.fedexService.trackPackage(tn);
-              const trackDetail = fedexInfo?.output?.completeTrackResults?.[0]?.trackResults?.[0];
+              const trackDetail = pickActiveGeneration(fedexInfo?.output?.completeTrackResults?.[0]?.trackResults || []);
               
               if (!trackDetail) return { trackingNumber: tn, isError: true, description: 'No encontrado' };
 

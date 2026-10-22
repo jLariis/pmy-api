@@ -1,4 +1,5 @@
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
+import { pickActiveGeneration } from 'src/shipments/fedex-generation.util';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, EntityManager, In, Repository } from 'typeorm';
 import { CollectionDto } from './dto/collection.dto';
@@ -160,7 +161,7 @@ export class CollectionsService {
 
         const fedexData: FedExTrackingResponseDto = await this.fedexService.trackPackage(trackingNumber);
 
-        const scanEvents = fedexData?.output?.completeTrackResults?.[0]?.trackResults?.[0]?.scanEvents;
+        const scanEvents = pickActiveGeneration(fedexData?.output?.completeTrackResults?.[0]?.trackResults || [])?.scanEvents;
 
         if (!Array.isArray(scanEvents) || scanEvents.length === 0) {
           return {
@@ -201,7 +202,7 @@ export class CollectionsService {
         }
 
         const fedexData: FedExTrackingResponseDto = await this.fedexService.trackPackage(trackingNumber);
-        const trackResult = fedexData?.output?.completeTrackResults?.[0]?.trackResults?.[0];
+        const trackResult = pickActiveGeneration(fedexData?.output?.completeTrackResults?.[0]?.trackResults || []);
         const scanEvents = trackResult?.scanEvents;
 
         if (!Array.isArray(scanEvents) || scanEvents.length === 0) {
