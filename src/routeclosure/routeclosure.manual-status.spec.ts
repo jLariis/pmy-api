@@ -215,9 +215,39 @@ describe('applyManualChanges', () => {
     });
   });
 
+  it('movida después del día de la ruta: solo registro del cierre (no toca estatus vivo ni ingreso)', async () => {
+    const { manager, tables } = makeDb({
+      shipments: [fedex('s1', 'T1', 'entregado')],
+      history: [{ dispatchId: 'd1', shipmentId: 's1' }],
+      incomes: [{ id: 'i1', shipmentId: 's1', trackingNumber: 'T1', incomeType: IncomeStatus.ENTREGADO, sourceType: IncomeSourceType.SHIPMENT, date: new Date('2026-10-21T07:00:00Z'), active: true, cost: 59 }],
+    });
+    const res = await applyManualChanges(manager, audit, ctx, [{ ...change('s1', 'T1', 'entregado', 'DEX08'), closureStatus: 'en_bodega' }]);
+
+    expect(res).toMatchObject({ applied: 1, recordOnly: 1, incomesAnnulled: 0, incomesCreated: 0 });
+    expect(tables.get(Shipment)![0].status).toBe('entregado');
+    expect(liveIncomes(tables)).toEqual([expect.objectContaining({ id: 'i1', active: true })]);
+    expect(tables.get(ShipmentStatus)![0]).toMatchObject({
+      status: 'cliente_no_disponible',
+      exceptionCode: '08',
+      source: 'route_closure_manual',
+      // Fin del día de la ruta (23:59:59 Hermosillo), antes de la entrega posterior.
+      timestamp: new Date('2026-10-21T06:59:59.000Z'),
+    });
+    expect(tables.get(ShipmentStatus)![0].notes).toContain('Solo registro del cierre: después la guía quedó Entregado.');
+    expect(tables.get(RouteClosureManualStatus)![0]).toMatchObject({ previousStatus: 'en_bodega', newStatus: 'cliente_no_disponible', appliedToLive: false });
+  });
+
+  it('closureStatus igual al vivo → se aplica normal', async () => {
+    const { manager, tables } = makeDb({ shipments: [fedex('s1', 'T1', 'en_ruta')], history: [{ dispatchId: 'd1', shipmentId: 's1' }] });
+    const res = await applyManualChanges(manager, audit, ctx, [{ ...change('s1', 'T1', 'en_ruta', 'ENTREGADO'), closureStatus: 'en_ruta' }]);
+    expect(res).toMatchObject({ recordOnly: 0, incomesCreated: 1 });
+    expect(tables.get(Shipment)![0].status).toBe('entregado');
+    expect(tables.get(RouteClosureManualStatus)![0]).toMatchObject({ appliedToLive: true });
+  });
+
   it('sin cambios no toca nada', async () => {
     const { manager } = makeDb({});
-    expect(await applyManualChanges(manager, audit, ctx, [])).toEqual({ applied: 0, incomesCreated: 0, incomesUpgraded: 0, incomesAnnulled: 0 });
+    expect(await applyManualChanges(manager, audit, ctx, [])).toEqual({ applied: 0, recordOnly: 0, incomesCreated: 0, incomesUpgraded: 0, incomesAnnulled: 0 });
     expect(manager.query).not.toHaveBeenCalled();
   });
 });

@@ -28,6 +28,12 @@ export interface ManualStatusChangeInput {
   /** Estatus que el sistema tenía cuando se abrió la pantalla (detecta cambios del cron). */
   previousStatus: string;
   option: ManualOption;
+  /**
+   * Estatus con el que el cierre veía la guía (el del DÍA DE LA RUTA). Si es distinto del vivo, la
+   * guía se movió después (p. ej. FedEx la entregó al día siguiente): el cambio queda SOLO como
+   * registro del cierre y no toca el estatus vivo ni el ingreso (decisión del usuario 2026-10-21).
+   */
+  closureStatus?: string;
 }
 
 export interface ManualChangesContext {
@@ -47,8 +53,13 @@ export interface ManualChangesContext {
   now: Date;
 }
 
+/** 23:59:59 Hermosillo del día de la ruta (routeIncomeDate = 00:00 Hermosillo = 07:00Z). */
+const routeDayEnd = (ctx: ManualChangesContext) => new Date(ctx.routeIncomeDate.getTime() + 24 * 3600 * 1000 - 1000);
+
 export interface ManualChangesResult {
   applied: number;
+  /** Cambios que solo quedaron como registro del cierre (guía movida después del día de la ruta). */
+  recordOnly: number;
   incomesCreated: number;
   incomesUpgraded: number;
   incomesAnnulled: number;
@@ -72,24 +83,29 @@ export async function applyManualChanges(
   ctx: ManualChangesContext,
   changes: ManualStatusChangeInput[],
 ): Promise<ManualChangesResult> {
-  const result: ManualChangesResult = { applied: 0, incomesCreated: 0, incomesUpgraded: 0, incomesAnnulled: 0 };
+  const result: ManualChangesResult = { applied: 0, recordOnly: 0, incomesCreated: 0, incomesUpgraded: 0, incomesAnnulled: 0 };
   if (!changes?.length) return result;
 
   const loaded = await loadAndValidate(manager, ctx.dispatchId, changes);
 
   for (const { input, entity } of loaded) {
     const { status, exceptionCode } = manualOptionToStatus(input.option);
-    const reason = buildManualReason({
+    const recordOnly = !!input.closureStatus && String(input.closureStatus) !== String(entity.status);
+    const fromStatus = recordOnly ? String(input.closureStatus) : entity.status;
+    let reason = buildManualReason({
       userName: ctx.userName,
       trackingNumber: entity.trackingNumber,
-      from: statusLabel(entity.status),
+      from: statusLabel(fromStatus),
       to: statusLabel(status, exceptionCode),
       folio: ctx.folio,
       routeDay: ctx.routeDay,
       driverNames: ctx.driverNames,
     });
+    if (recordOnly) reason += ` Solo registro del cierre: después la guía quedó ${statusLabel(entity.status)}.`;
 
-    await manager.update(input.isCharge ? ChargeShipment : Shipment, { id: entity.id }, { status });
+    if (!recordOnly) {
+      await manager.update(input.isCharge ? ChargeShipment : Shipment, { id: entity.id }, { status });
+    }
 
     await manager.save(
       ShipmentStatus,
@@ -97,7 +113,8 @@ export async function applyManualChanges(
         ...(input.isCharge ? { chargeShipment: { id: entity.id } } : { shipment: { id: entity.id } }),
         status,
         exceptionCode: exceptionCode ?? '',
-        timestamp: ctx.now,
+        // Solo registro: al final del día de la ruta, antes de lo que pasó después.
+        timestamp: recordOnly ? routeDayEnd(ctx) : ctx.now,
         notes: reason,
         source: ROUTE_CLOSURE_MANUAL_SOURCE,
       } as any),
@@ -110,15 +127,17 @@ export async function applyManualChanges(
         shipmentId: input.isCharge ? null : entity.id,
         chargeShipmentId: input.isCharge ? entity.id : null,
         trackingNumber: entity.trackingNumber,
-        previousStatus: entity.status,
+        previousStatus: fromStatus,
         newStatus: status,
         exceptionCode,
         reason,
+        appliedToLive: !recordOnly,
         createdById: ctx.userId,
       }),
     );
 
-    await applyIncomeEffect(manager, auditService, ctx, input, entity, exceptionCode, result);
+    if (recordOnly) result.recordOnly++;
+    else await applyIncomeEffect(manager, auditService, ctx, input, entity, exceptionCode, result);
     result.applied++;
   }
   return result;

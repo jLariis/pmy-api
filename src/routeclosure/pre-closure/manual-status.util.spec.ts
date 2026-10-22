@@ -22,6 +22,7 @@ describe('statusLabel', () => {
     ['no_entregado', null, 'No entregado'],
     ['es_ocurre', null, 'Ocurre'],
     ['en_ruta', null, 'En ruta'],
+    ['llegado_despues', '31', 'Llegado después'],
   ])('%s (%s) → %s', (status, code, label) => {
     expect(statusLabel(status, code)).toBe(label);
   });

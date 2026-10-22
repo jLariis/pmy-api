@@ -117,6 +117,15 @@ Por cada cambio manual:
 
 Además `route_closure.preClosureGeneratedAt` (nullable).
 
+## Guías que se movieron después del día de la ruta
+
+Decisión del usuario (2026-10-21): si el estatus vivo de la guía ya no es el del día de la ruta
+(p. ej. FedEx la entregó al día siguiente), corregirla en el cierre queda **solo como registro del
+cierre**: renglón de `shipment_status` (source manual) con hora 23:59:59 Hermosillo del día de la
+ruta y auditoría con `appliedToLive = false`; NO cambia el estatus vivo ni el ingreso. En pantalla:
+"Después: Entregado · solo registro" bajo el selector, sin aviso de ingreso, y la etiqueta "Solo
+registro" en Finalizar. El payload manda `closureStatus` (estatus del día de la ruta).
+
 ## FedEx después del cierre
 
 Decisión del usuario: como nosotros ponemos el estatus y la historia, el cron verá el mismo estatus y no

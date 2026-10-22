@@ -32,6 +32,12 @@ const CODE_LABEL: Record<string, string> = {
   [ShipmentStatusType.RECHAZADO]: 'DEX07',
   [ShipmentStatusType.CLIENTE_NO_DISPONIBLE]: 'DEX08',
   [ShipmentStatusType.ES_OCURRE]: 'Ocurre',
+  // Los que llevan acento (el resto se arma del valor: en_ruta → "En ruta").
+  [ShipmentStatusType.LLEGADO_DESPUES]: 'Llegado después',
+  [ShipmentStatusType.EN_TRANSITO]: 'En tránsito',
+  [ShipmentStatusType.RECOLECCION]: 'Recolección',
+  [ShipmentStatusType.ESTACION_FEDEX]: 'Estación FedEx',
+  [ShipmentStatusType.CAMBIO_FECHA_SOLICITADO]: 'Cambio de fecha solicitado',
 };
 
 /** Etiqueta en llano de un estatus para el motivo ("Entregado", "DEX08", "En ruta"…). */

@@ -52,6 +52,7 @@ export class RouteClosurePreClosure1786000000115 implements MigrationInterface {
         \`newStatus\` varchar(64) NOT NULL,
         \`exceptionCode\` varchar(16) NULL,
         \`reason\` text NOT NULL,
+        \`appliedToLive\` tinyint(1) NOT NULL DEFAULT 1,
         \`createdById\` varchar(36) NULL,
         \`createdAt\` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
         PRIMARY KEY (\`id\`),
@@ -59,6 +60,12 @@ export class RouteClosurePreClosure1786000000115 implements MigrationInterface {
         INDEX \`idx_rcms_trackingNumber\` (\`trackingNumber\`)
       ) ENGINE=InnoDB`,
     );
+    // Columna agregada después de crear la tabla en algunos entornos de desarrollo.
+    if (!(await this.columnExists(queryRunner, 'route_closure_manual_status', 'appliedToLive'))) {
+      await queryRunner.query(
+        `ALTER TABLE \`route_closure_manual_status\` ADD COLUMN \`appliedToLive\` tinyint(1) NOT NULL DEFAULT 1 AFTER \`reason\``,
+      );
+    }
 
     await queryRunner.query(
       `UPDATE \`subsidiary\` SET \`routeClosureWithPreClosure\` = 1 WHERE \`id\` = ?`,

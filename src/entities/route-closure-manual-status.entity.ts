@@ -41,6 +41,10 @@ export class RouteClosureManualStatus {
     @Column({ type: 'text' })
     reason: string;
 
+    /** false = solo registro del cierre (la guía se movió después del día de la ruta; no tocó estatus vivo ni ingreso). */
+    @Column({ default: true })
+    appliedToLive: boolean;
+
     @Column({ type: 'varchar', length: 36, nullable: true })
     createdById: string | null;
 
