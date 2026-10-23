@@ -75,13 +75,15 @@ export function effectiveChargeCode(income: CountableIncomeLike): string {
  * - Recolecciones: siempre cuentan.
  * - Envíos/cargas: según `charge_rule` para (carrier, código). Sin regla → `noRuleFallback`
  *   (FedEx: no cobra desde el corte). Sin resolver (no se cargaron reglas) → cuenta.
- * - manual u otros sourceType: NO cuentan (preserva el comportamiento previo).
+ * - manual ("Otro" del Consolidador sin guía): siempre cuenta — es una corrección capturada a
+ *   mano y el usuario debe verla reflejada en Ingresos, Dashboard y Estado de Resultados.
+ * - otros sourceType: NO cuentan.
  */
 export function isCountableIncome(income: CountableIncomeLike, opts?: CountableOptions): boolean {
   const st = String(income.sourceType || '').toLowerCase();
 
   if (TRANSFER_SOURCES.has(st)) return opts?.countTransfers ?? true;
-  if (st === 'collection') return true;
+  if (st === 'collection' || st === 'manual') return true;
 
   if (st === 'shipment' || st === 'charge') {
     const carrier = String(income.shipmentType || '').toLowerCase();

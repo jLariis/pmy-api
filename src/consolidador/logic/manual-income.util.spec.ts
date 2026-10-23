@@ -8,6 +8,7 @@ describe('resolveManualIncomeCost', () => {
       cost: 120,
       sourceType: IncomeSourceType.COLLECTION,
       incomeType: IncomeStatus.ENTREGADO,
+      nonDeliveryStatus: '',
     });
   });
   it('pod → shipment/entregado', () => {
@@ -15,13 +16,23 @@ describe('resolveManualIncomeCost', () => {
       cost: 100,
       sourceType: IncomeSourceType.SHIPMENT,
       incomeType: IncomeStatus.ENTREGADO,
+      nonDeliveryStatus: '',
     });
   });
-  it('dex → shipment/3ra visita', () => {
+  it('dex → shipment/no_entregado con código 08 (igual que el automático)', () => {
     expect(resolveManualIncomeCost('dex', { cost: 80 })).toEqual({
       cost: 80,
       sourceType: IncomeSourceType.SHIPMENT,
-      incomeType: IncomeStatus.CLIENTE_NO_DISPONIBLE_3RA_VISITA,
+      incomeType: IncomeStatus.NO_ENTREGADO,
+      nonDeliveryStatus: '08',
+    });
+  });
+  it('dex07 → shipment/no_entregado con código 07 (rechazo, igual que el automático)', () => {
+    expect(resolveManualIncomeCost('dex07', { cost: 52 })).toEqual({
+      cost: 52,
+      sourceType: IncomeSourceType.SHIPMENT,
+      incomeType: IncomeStatus.NO_ENTREGADO,
+      nonDeliveryStatus: '07',
     });
   });
   it('manual → manual/entregado', () => {
@@ -29,6 +40,7 @@ describe('resolveManualIncomeCost', () => {
       cost: 50,
       sourceType: IncomeSourceType.MANUAL,
       incomeType: IncomeStatus.ENTREGADO,
+      nonDeliveryStatus: '',
     });
   });
   it('redondea a 2 decimales y trata cost ausente como 0', () => {
@@ -46,6 +58,7 @@ describe('linkManualIncomeToShipment', () => {
       cost: 52,
       sourceType: IncomeSourceType.SHIPMENT,
       incomeType: IncomeStatus.ENTREGADO,
+      nonDeliveryStatus: '',
       shipmentId: 'sh-1',
       shipmentType: 'fedex',
     });
@@ -55,7 +68,8 @@ describe('linkManualIncomeToShipment', () => {
     const base = resolveManualIncomeCost('dex', { cost: 52 });
     expect(linkManualIncomeToShipment(base, { id: 'sh-2', shipmentType: 'dhl' })).toMatchObject({
       sourceType: IncomeSourceType.SHIPMENT,
-      incomeType: IncomeStatus.CLIENTE_NO_DISPONIBLE_3RA_VISITA,
+      incomeType: IncomeStatus.NO_ENTREGADO,
+      nonDeliveryStatus: '08',
       shipmentId: 'sh-2',
       shipmentType: 'dhl',
     });

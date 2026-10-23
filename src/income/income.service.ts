@@ -1,12 +1,13 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Expense, Income, Shipment, Subsidiary } from 'src/entities';
+import { Expense, Income, Shipment, Subsidiary, User } from 'src/entities';
+import { correctionAt, correctionAuthorId, correctionKind, isCorrectionIncome } from 'src/common/income-correction.util';
 import { formatCurrency } from 'src/utils/format.util';
 import { CountableOptions, isCountableIncome } from 'src/common/income-rules.util';
 import { effectiveLocalInstant, rawUtcBounds } from 'src/common/income-window.util';
 import { ChargeRulesService } from 'src/charge-rules/charge-rules.service';
 import { toHermosilloDateString } from 'src/common/utils';
-import { Between, Repository } from 'typeorm';
+import { Between, In, Repository } from 'typeorm';
 import { Collection } from 'src/entities/collection.entity';
 import { FormatIncomesDto } from './dto/format-incomes.dto';
 import { DailyExpenses } from './dto/daily-expenses.dto';
@@ -130,7 +131,8 @@ export class IncomeService {
       const { rawStart, rawEnd } = rawUtcBounds(startDayStr, endDayStr);
 
       const incomes = await this.loadActiveIncomeRows(subsidiaryId, rawStart, rawEnd);
-      const formattedIncome = await this.formatIncomesNew(incomes, startDay, endDay, ctx);
+      const authors = await this.loadCorrectionAuthors(incomes);
+      const formattedIncome = await this.formatIncomesNew(incomes, startDay, endDay, ctx, authors);
 
       // El total del dashboard se DERIVA del desglose diario ya facturado → cuadra por
       // construcción con la tabla de ingresos (misma regla, mismas filas activas).
@@ -194,7 +196,8 @@ export class IncomeService {
 
         // 4. Formatear con las reglas de ingreso de la sucursal (regla única).
         const ctx = await this.getCountContext(subsidiaryId);
-        const currentFormatted = await this.formatIncomesNew(currentIncomes, fromDate, toDate, ctx);
+        const authors = await this.loadCorrectionAuthors(currentIncomes);
+        const currentFormatted = await this.formatIncomesNew(currentIncomes, fromDate, toDate, ctx, authors);
 
         const lastWeekFrom = dayjs(fromDate).subtract(7, 'day').toDate();
         const lastWeekTo = dayjs(toDate).subtract(7, 'day').toDate();
@@ -222,11 +225,23 @@ export class IncomeService {
         };
       }
 
+      /** Nombre de quien hizo cada corrección (id de usuario → "Nombre Apellido"). */
+      private async loadCorrectionAuthors(incomes: Income[]): Promise<Map<string, string>> {
+          const ids = [...new Set(incomes.filter(isCorrectionIncome).map(correctionAuthorId).filter(Boolean))] as string[];
+          if (ids.length === 0) return new Map();
+          const users = await this.incomeRepository.manager.getRepository(User).find({
+              where: { id: In(ids) },
+              select: ['id', 'name', 'lastName', 'email'],
+          });
+          return new Map(users.map(u => [u.id, [u.name, u.lastName].filter(Boolean).join(' ') || u.email]));
+      }
+
       async formatIncomesNew(
           incomes: Income[],
           hermFromDate: Date,
           hermToDate: Date,
           ctx: CountableOptions = {},
+          authors: Map<string, string> = new Map(),
       ): Promise<FormatIncomesDto[]> {
           const report: FormatIncomesDto[] = [];
 
@@ -264,10 +279,16 @@ export class IncomeService {
               const dayShipments = dayIncomes.filter(i => i.sourceType === 'shipment');
               const dayCollections = dayIncomes.filter(i => i.sourceType === 'collection');
               const dayCharges = dayIncomes.filter(i => i.sourceType === 'charge');
+              // "Otro" del Consolidador sin guía: columna propia.
+              const dayOthers = dayIncomes.filter(i => i.sourceType === 'manual');
 
               // Suma SOLO lo que cuenta según las reglas de la sucursal.
+              const countable = (i: Income) => isCountableIncome(i, ctx);
               const sumCountable = (arr: Income[]) =>
-                  arr.filter(i => isCountableIncome(i, ctx)).reduce((sum, i) => sum + (Number(i.cost) || 0), 0);
+                  arr.filter(countable).reduce((sum, i) => sum + (Number(i.cost) || 0), 0);
+              const countBilled = (arr: Income[], pred: (i: Income) => boolean = () => true) =>
+                  arr.filter(i => pred(i) && countable(i)).length;
+              const dayCorrections = dayIncomes.filter(isCorrectionIncome);
 
               // Traslados del día (tyco/aeropuerto/especial).
               const dayTransfers = dayIncomes.filter(i =>
@@ -294,15 +315,32 @@ export class IncomeService {
               const collectionTotalIncome = sumCountable(dayCollections);
               const chargeTotalIncome = sumCountable(dayCharges);
               const transferTotalIncome = sumCountable(dayTransfers);
+              const othersTotalIncome = sumCountable(dayOthers);
+
+              const isDex = (code: string) => (i: Income) =>
+                  i.incomeType === 'no_entregado' && i.nonDeliveryStatus === code;
+              const billed = {
+                  fedexPod: countBilled(fedexIncomes, i => i.incomeType === 'entregado'),
+                  fedexDex07: countBilled(fedexIncomes, isDex('07')),
+                  fedexDex08: countBilled(fedexIncomes, isDex('08')),
+                  dhlBa: countBilled(dhlIncomes, i => i.incomeType === 'entregado'),
+                  dhlNe: countBilled(dhlIncomes, i => i.incomeType === 'no_entregado'),
+                  collections: countBilled(dayCollections),
+                  cargas: countBilled(dayCharges),
+                  transfers: countBilled(dayTransfers),
+                  otros: countBilled(dayOthers),
+                  total: countBilled(dayIncomes),
+              };
 
               // Construcción de items detallados
               const items = dayIncomes.map(i => {
                   const hermDate = toHermosilloDate(i.date);
                   
                   // Mapeo dinámico del tipo para el frontend
-                  let displayType: 'shipment' | 'collection' | 'carga' | 'traslado' = 'shipment';
+                  let displayType: 'shipment' | 'collection' | 'carga' | 'traslado' | 'otro' = 'shipment';
                   if (i.sourceType === 'collection') displayType = 'collection';
                   if (i.sourceType === 'charge') displayType = 'carga';
+                  if (i.sourceType === 'manual') displayType = 'otro';
                   if (['tyco', 'aeropuerto', 'special_transfer'].includes(String(i.sourceType))) displayType = 'traslado';
 
                   // Estatus mostrado en el detalle. Una recolección se cobra COMO
@@ -314,6 +352,8 @@ export class IncomeService {
                       displayStatus = 'recoleccion';
                   } else if (i.sourceType === 'charge') {
                       displayStatus = 'carga';
+                  } else if (i.sourceType === 'manual') {
+                      displayStatus = 'otro';
                   } else if (i.shipmentType === 'fedex' && i.incomeType === 'no_entregado' && ['07', '08'].includes(i.nonDeliveryStatus ?? '')) {
                       displayStatus = `DEX${i.nonDeliveryStatus}`;
                   } else {
@@ -336,6 +376,15 @@ export class IncomeService {
                       date: hermDate.format('YYYY-MM-DD HH:mm:ss'),
                       cost: Number(i.cost) || 0,
                       secondAbord,
+                      countable: countable(i),
+                      correction: isCorrectionIncome(i)
+                          ? {
+                              kind: correctionKind(i),
+                              by: authors.get(correctionAuthorId(i) ?? '') ?? null,
+                              reason: i.editReason ?? null,
+                              at: correctionAt(i)?.toISOString() ?? null,
+                          }
+                          : null,
                       statusHistory: i.shipment?.statusHistory || [],
                       commitDateTime: i.shipment?.commitDateTime
                   };
@@ -369,8 +418,14 @@ export class IncomeService {
                   },
                   collections: dayCollections.length,
                   cargas: dayCharges.length,
+                  collectionsIncome: formatCurrency(collectionTotalIncome),
+                  cargasIncome: formatCurrency(chargeTotalIncome),
+                  otros: { total: dayOthers.length, totalIncome: formatCurrency(othersTotalIncome) },
                   total: dayIncomes.length,
-                  totalIncome: formatCurrency(fedexTotalIncome + dhlTotalIncome + chargeTotalIncome + collectionTotalIncome + transferTotalIncome),
+                  totalIncome: formatCurrency(fedexTotalIncome + dhlTotalIncome + chargeTotalIncome + collectionTotalIncome + transferTotalIncome + othersTotalIncome),
+                  corrections: { count: dayCorrections.length, totalIncome: formatCurrency(sumCountable(dayCorrections)) },
+                  billed,
+                  notBilled: dayIncomes.length - billed.total,
                   items,
               });
 

@@ -6,6 +6,32 @@ import * as ExcelJS from 'exceljs';
 import { dailyShareForDay, consultedRangeLabel } from 'src/common/expense-proration.util';
 import { TemplateService } from 'src/documents/template.service';
 import { buildIncomeStatementData, dayLabel, IncomeStatementDetailRow, IncomeStatementInput } from 'src/documents/data/income-statement.mapper';
+import { ChargeRulesService } from 'src/charge-rules/charge-rules.service';
+import { CountableOptions, isCountableIncome } from 'src/common/income-rules.util';
+import { effectiveLocalDay, rawUtcBounds } from 'src/common/income-window.util';
+import { isCorrectionIncome } from 'src/common/income-correction.util';
+
+/** Renglón de ingreso del Estado de Resultados (mismos grupos que Finanzas → Ingresos). */
+export function incomeStatementCategory(i: Pick<Income, 'sourceType' | 'shipmentType'>): string {
+  switch (String(i.sourceType)) {
+    case 'shipment':
+      return String(i.shipmentType) === 'dhl' ? 'Envíos DHL' : 'Envíos FedEx';
+    case 'charge':
+      return 'Cargas';
+    case 'collection':
+      return 'Recolecciones';
+    case 'tyco':
+      return 'Traslados Tyco';
+    case 'aeropuerto':
+      return 'Traslados aeropuerto';
+    case 'special_transfer':
+      return 'Traslados especiales';
+    case 'manual':
+      return 'Otros ingresos';
+    default:
+      return 'Ingreso general';
+  }
+}
 
 @Injectable()
 export class ResportsService {
@@ -19,6 +45,7 @@ export class ResportsService {
     @InjectRepository(Subsidiary)
     private readonly subsidiaryRepository: Repository<Subsidiary>,
     private readonly templateService: TemplateService,
+    private readonly chargeRules: ChargeRulesService,
   ) {}
 
   /**
@@ -93,11 +120,37 @@ export class ResportsService {
     const expenseSubsidiaryCondition = hasSubsidiaryFilter ? 'expense.subsidiaryId IN (:...subsidiaryIds)' : '1=1';
 
     // 2. OBTENCIÓN DE DATOS DE INGRESOS Y EGRESOS
-    const allIncomes = await this.incomeRepository
+    // Regla ÚNICA (igual que Finanzas → Ingresos y el Dashboard): solo ingresos activos, por
+    // DÍA LOCAL canónico (`effectiveLocalDay`: cargas a 00:00Z en su día) y solo lo que cuenta
+    // según las reglas de cobro de cada sucursal. Las cotas crudas solo acotan el escaneo.
+    const { rawStart, rawEnd } = rawUtcBounds(baseStartDate, baseEndDate);
+    const rawIncomes = await this.incomeRepository
       .createQueryBuilder('income')
+      .leftJoin('income.subsidiary', 'sub')
+      .addSelect(['sub.id', 'sub.countTransfersAsIncome'])
       .where(subsidiaryCondition, { subsidiaryIds })
-      .andWhere('income.date >= :start AND income.date <= :end', { start: parsedStartDate, end: parsedEndDate })
+      .andWhere('income.active = 1')
+      .andWhere('income.date BETWEEN :rawStart AND :rawEnd', { rawStart, rawEnd })
       .getMany();
+    const countContexts = new Map<string, Promise<CountableOptions>>();
+    const contextFor = (sub?: Subsidiary | null): Promise<CountableOptions> => {
+      const id = sub?.id ?? '';
+      if (!countContexts.has(id)) {
+        countContexts.set(
+          id,
+          this.chargeRules
+            .buildResolver(id || undefined)
+            .then((resolver) => ({ resolver, countTransfers: sub?.countTransfersAsIncome ?? true })),
+        );
+      }
+      return countContexts.get(id)!;
+    };
+    const allIncomes: Income[] = [];
+    for (const inc of rawIncomes) {
+      const day = effectiveLocalDay(inc);
+      if (day < baseStartDate || day > baseEndDate) continue;
+      if (isCountableIncome(inc, await contextFor(inc.subsidiary))) allIncomes.push(inc);
+    }
 
     const allExpenses = await this.expenseRepository
       .createQueryBuilder('expense')
@@ -122,8 +175,8 @@ export class ResportsService {
     const expenseMatrix: Record<string, Record<string, number>> = {};
 
     allIncomes.forEach(inc => {
-      const cat = inc.sourceType || 'Ingreso General';
-      const dStr = new Date(inc.date).toISOString().split('T')[0];
+      const cat = incomeStatementCategory(inc);
+      const dStr = effectiveLocalDay(inc);
       if (!incomeMatrix[cat]) incomeMatrix[cat] = {};
       incomeMatrix[cat][dStr] = (incomeMatrix[cat][dStr] || 0) + Number(inc.cost);
     });
@@ -143,7 +196,8 @@ export class ResportsService {
     // 5. HOJA 2 (desglose): mismo orden que el legacy (ingresos primero, luego egresos)
     const detailRows: IncomeStatementDetailRow[] = [
       ...allIncomes.map((i): IncomeStatementDetailRow => ({
-        date: i.date, ref: (i as any).trackingNumber || 'N/A', type: 'INGRESO', category: i.sourceType, desc: '', amount: Number(i.cost),
+        date: i.date, ref: i.trackingNumber || 'N/A', type: 'INGRESO', category: incomeStatementCategory(i),
+        desc: isCorrectionIncome(i) ? `Corrección: ${i.editReason}` : '', amount: Number(i.cost),
       })),
       ...allExpenses.map((e): IncomeStatementDetailRow => ({
         date: e.date, ref: 'N/A', type: 'EGRESO', category: e.category?.name || '', desc: e.description || '', amount: Number(e.amount),

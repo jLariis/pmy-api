@@ -2,10 +2,19 @@ import { IsIn, IsNumber, IsOptional, IsString, Min, MinLength } from 'class-vali
 
 export class CreateManualIncomeDto {
   @IsString() subsidiaryId: string;
-  @IsIn(['recoleccion', 'pod', 'dex', 'manual']) kind: 'recoleccion' | 'pod' | 'dex' | 'manual';
+  @IsIn(['recoleccion', 'pod', 'dex', 'dex07', 'manual']) kind: 'recoleccion' | 'pod' | 'dex' | 'dex07' | 'manual';
   @IsOptional() @IsString() trackingNumber?: string;
   @IsNumber() @Min(0) cost: number;
   /** YYYY-MM-DD: día de la operación (debe caer dentro de la semana). */
   @IsString() date: string;
   @IsString() @MinLength(3) reason: string;
+}
+
+/** Vista previa del alta manual ("Así quedará"): mismos datos que el alta, sin monto ni motivo. */
+export class PreviewManualIncomeDto {
+  @IsString() subsidiaryId: string;
+  @IsIn(['recoleccion', 'pod', 'dex', 'dex07', 'manual']) kind: 'recoleccion' | 'pod' | 'dex' | 'dex07' | 'manual';
+  @IsOptional() @IsString() trackingNumber?: string;
+  /** YYYY-MM-DD. */
+  @IsOptional() @IsString() date?: string;
 }

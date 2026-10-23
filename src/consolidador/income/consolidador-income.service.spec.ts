@@ -2,6 +2,7 @@ import { ConsolidadorIncomeService } from './consolidador-income.service';
 
 const auditStub: any = { record: async () => undefined };
 const noShipmentRepo: any = { findOne: async () => null };
+const chargeRulesStub: any = { buildResolver: async () => ({ isChargeable: () => undefined }) };
 
 function makeService(income: any, subsidiary: any = { id: 'sub', secondAbordAmount: 594, chargeSecondAbord: true }) {
   const incomeRepo: any = {
@@ -9,7 +10,7 @@ function makeService(income: any, subsidiary: any = { id: 'sub', secondAbordAmou
     save: async (x: any) => x,
   };
   const subsidiaryRepo: any = { findOne: async () => subsidiary };
-  return new ConsolidadorIncomeService(incomeRepo, subsidiaryRepo, auditStub, noShipmentRepo);
+  return new ConsolidadorIncomeService(incomeRepo, subsidiaryRepo, auditStub, noShipmentRepo, chargeRulesStub);
 }
 
 /** Service para probar createManual: controla el resultado del findOne de duplicados y captura el create. */
@@ -25,7 +26,7 @@ function makeCreateService(existingDuplicate: any = null, shipment: any = null) 
   };
   const subsidiaryRepo: any = { findOne: async () => ({ id: 'sub' }) };
   const shipmentRepo: any = { findOne: async () => shipment };
-  const svc = new ConsolidadorIncomeService(incomeRepo, subsidiaryRepo, auditStub, shipmentRepo);
+  const svc = new ConsolidadorIncomeService(incomeRepo, subsidiaryRepo, auditStub, shipmentRepo, chargeRulesStub);
   return { svc, getCreated: () => created };
 }
 
@@ -82,7 +83,7 @@ describe('ConsolidadorIncomeService auditoría', () => {
     const income: any = { id: 'i1', cost: '4594', originalCost: null, date: new Date(), charge: null, shipment: { id: 's1' } };
     const incomeRepo: any = { findOne: async () => income, save: async (x: any) => x };
     const subsidiaryRepo: any = { findOne: async () => ({ id: 'sub' }) };
-    const svc = new ConsolidadorIncomeService(incomeRepo, subsidiaryRepo, audit, noShipmentRepo);
+    const svc = new ConsolidadorIncomeService(incomeRepo, subsidiaryRepo, audit, noShipmentRepo, chargeRulesStub);
     await svc.editCost('i1', 4000, 'ajuste', 'user-1');
     expect(calls).toHaveLength(1);
     expect(calls[0]).toMatchObject({ action: 'cost_edit', field: 'cost', oldValue: 4594, newValue: 4000, userId: 'user-1' });
@@ -96,7 +97,7 @@ describe('ConsolidadorIncomeService.deleteIncome', () => {
     const income: any = { id: 'i1', cost: '100', active: true, date: new Date(), charge: null, shipment: { id: 's1' } };
     const incomeRepo: any = { findOne: async () => income, save: async (x: any) => x };
     const subsidiaryRepo: any = { findOne: async () => ({ id: 'sub' }) };
-    const svc = new ConsolidadorIncomeService(incomeRepo, subsidiaryRepo, audit, noShipmentRepo);
+    const svc = new ConsolidadorIncomeService(incomeRepo, subsidiaryRepo, audit, noShipmentRepo, chargeRulesStub);
     const res = await svc.deleteIncome('i1', 'duplicado', 'user-1');
     expect(income.active).toBe(false);
     expect(income.annulledById).toBe('user-1');
@@ -153,5 +154,74 @@ describe('ConsolidadorIncomeService.createManual — liga a la guía (caso 87824
     );
     expect(getCreated().sourceType).toBe('manual');
     expect(getCreated().shipment).toBeUndefined();
+  });
+});
+
+describe('ConsolidadorIncomeService.createManual — DEX igual que el automático', () => {
+  it('DEX se guarda como no_entregado con código 08', async () => {
+    const { svc, getCreated } = makeCreateService(null, { id: 'sh-1', shipmentType: 'fedex' });
+    await svc.createManual(
+      { subsidiaryId: 'hmo', kind: 'dex', trackingNumber: '771234500018', cost: 40, date: '2026-10-20', reason: '3ra visita' },
+      'user-1',
+    );
+    expect(getCreated().incomeType).toBe('no_entregado');
+    expect(getCreated().nonDeliveryStatus).toBe('08');
+  });
+});
+
+describe('ConsolidadorIncomeService.createManual — DEX07', () => {
+  it('DEX07 se guarda como no_entregado con código 07 y busca duplicado del mismo código', async () => {
+    let dupWhere: any = null;
+    let created: any = null;
+    const incomeRepo: any = {
+      findOne: async (q: any) => { dupWhere = q.where; return null; },
+      create: (x: any) => (created = { ...x, id: 'n1' }),
+      save: async (x: any) => x,
+    };
+    const svc = new ConsolidadorIncomeService(incomeRepo, { findOne: async () => ({}) } as any, auditStub, { findOne: async () => ({ id: 'sh', shipmentType: 'fedex' }) } as any, chargeRulesStub);
+    await svc.createManual({ subsidiaryId: 'hmo', kind: 'dex07', trackingNumber: '384068513928', cost: 52, date: '2026-10-16', reason: 'rechazo del 16' }, 'u1');
+    expect(created).toMatchObject({ incomeType: 'no_entregado', nonDeliveryStatus: '07', shipment: { id: 'sh' } });
+    expect(dupWhere).toMatchObject({ incomeType: 'no_entregado', nonDeliveryStatus: '07', active: true });
+  });
+});
+
+describe('ConsolidadorIncomeService.previewManual', () => {
+  function makePreviewService(opts: { shipment?: any; sameDay?: any; chargeable?: boolean | undefined } = {}) {
+    const incomeRepo: any = { findOne: async () => opts.sameDay ?? null };
+    const subsidiaryRepo: any = { findOne: async () => ({ id: 'hmo', countTransfersAsIncome: true, fedexCostPackage: '52.00', dhlCostPackage: '45.00' }) };
+    const shipmentRepo: any = { findOne: async () => opts.shipment ?? null };
+    const rules: any = { buildResolver: async () => ({ isChargeable: () => opts.chargeable }) };
+    return new ConsolidadorIncomeService(incomeRepo, subsidiaryRepo, auditStub, shipmentRepo, rules);
+  }
+
+  it('"Otro" sin guía → columna Otros, suma, sin monto sugerido', async () => {
+    const p = await makePreviewService().previewManual({ subsidiaryId: 'hmo', kind: 'manual', date: '2026-10-20' });
+    expect(p).toMatchObject({ shipment: null, sourceType: 'manual', column: 'otros', countable: true, suggestedCost: null });
+  });
+
+  it('DEX de guía DHL → columna DHL con la tarifa DHL de la sucursal', async () => {
+    const shipment = { id: 'sh', shipmentType: 'dhl', status: 'no_entregado', subsidiary: { id: 'hmo', name: 'Hermosillo' } };
+    const p = await makePreviewService({ shipment, chargeable: true }).previewManual({
+      subsidiaryId: 'hmo', kind: 'dex', trackingNumber: '1234567890', date: '2026-10-20',
+    });
+    expect(p).toMatchObject({
+      column: 'dhl', countable: true, suggestedCost: 45, nonDeliveryStatus: '08',
+      shipment: { carrier: 'dhl', subsidiaryName: 'Hermosillo' },
+    });
+  });
+
+  it('avisa cuando la regla de cobro de la sucursal no cobra', async () => {
+    const shipment = { id: 'sh', shipmentType: 'fedex', status: 'entregado', subsidiary: { id: 'hmo', name: 'Hermosillo' } };
+    const p = await makePreviewService({ shipment, chargeable: false }).previewManual({
+      subsidiaryId: 'hmo', kind: 'pod', trackingNumber: 'T1', date: '2026-10-20',
+    });
+    expect(p.countable).toBe(false);
+  });
+
+  it('reporta el ingreso de esa guía ese mismo día', async () => {
+    const p = await makePreviewService({ sameDay: { cost: '52.00', sourceType: 'shipment', incomeType: 'entregado' } }).previewManual({
+      subsidiaryId: 'hmo', kind: 'pod', trackingNumber: 'T1', date: '2026-10-20',
+    });
+    expect(p.sameDayIncome).toEqual({ cost: 52, sourceType: 'shipment', incomeType: 'entregado' });
   });
 });

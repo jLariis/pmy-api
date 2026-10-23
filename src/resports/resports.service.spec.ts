@@ -3,6 +3,7 @@ import { getRepositoryToken } from '@nestjs/typeorm';
 import { Expense, Income, Subsidiary } from 'src/entities';
 import { TemplateService } from 'src/documents/template.service';
 import { ResportsService } from './resports.service';
+import { ChargeRulesService } from 'src/charge-rules/charge-rules.service';
 
 // Repositorio TypeORM mockeado (solo lo que el servicio pudiera invocar).
 const mockRepo = () => ({
@@ -26,6 +27,7 @@ describe('ResportsService', () => {
         { provide: getRepositoryToken(Income), useValue: mockRepo() },
         { provide: getRepositoryToken(Subsidiary), useValue: mockRepo() },
         { provide: TemplateService, useValue: { render: jest.fn() } },
+        { provide: ChargeRulesService, useValue: { buildResolver: jest.fn() } },
       ],
     }).compile();
 

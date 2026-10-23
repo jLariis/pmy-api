@@ -50,8 +50,12 @@ describe('isCountableIncome (traslados / recolecciones)', () => {
   it('recolecciones siempre cuentan', () => {
     expect(isCountableIncome({ sourceType: 'collection' }, { countTransfers: false })).toBe(true);
   });
-  it('manual/otros no cuentan', () => {
-    expect(isCountableIncome({ sourceType: 'manual' })).toBe(false);
+  it('manual ("Otro" del Consolidador) siempre cuenta, aun con reglas cargadas', () => {
+    expect(isCountableIncome({ sourceType: 'manual' })).toBe(true);
+    expect(isCountableIncome({ sourceType: 'manual', shipmentType: 'fedex' }, { resolver: GLOBAL })).toBe(true);
+  });
+  it('otros sourceType no cuentan', () => {
+    expect(isCountableIncome({ sourceType: 'desconocido' })).toBe(false);
   });
 });
 

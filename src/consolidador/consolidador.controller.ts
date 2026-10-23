@@ -14,7 +14,7 @@ import { ConsolidadorQueryDto } from './dto/consolidador-query.dto';
 import { EditCostDto } from './dto/edit-cost.dto';
 import { EditDateDto } from './dto/edit-date.dto';
 import { SecondAbordDto } from './dto/second-abord.dto';
-import { CreateManualIncomeDto } from './dto/create-manual-income.dto';
+import { CreateManualIncomeDto, PreviewManualIncomeDto } from './dto/create-manual-income.dto';
 import { FixStatusDto } from './dto/fix-status.dto';
 import { SearchBatchDto } from './dto/search-batch.dto';
 import { DeleteIncomeDto } from './dto/delete-income.dto';
@@ -163,6 +163,12 @@ export class ConsolidadorController {
   @Patch('income/:id/subsidiary')
   reassignSubsidiary(@Param('id') id: string, @Body() dto: ReassignSubsidiaryDto, @Req() req: any) {
     return this.income.reassignSubsidiary(id, dto.subsidiaryId, dto.reason, req.user?.userId);
+  }
+
+  /** Vista previa del alta manual: cómo se guardará, dónde suma y avisos. No escribe nada. */
+  @Get('income/manual-preview')
+  previewManual(@Query() dto: PreviewManualIncomeDto) {
+    return this.income.previewManual(dto);
   }
 
   /** Alta manual de ingreso (recolección / POD / DEX / manual). */

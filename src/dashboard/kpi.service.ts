@@ -32,13 +32,14 @@ const CHARGE_RULE_GLOBAL_JOIN = `crg.subsidiaryId IS NULL AND crg.carrier = inco
  * Condición "contable" según las reglas de la sucursal (regla ÚNICA, espejo SQL de
  * `isCountableIncome`): traslados solo si countTransfersAsIncome; recolecciones
  * siempre; envíos/cargas según `charge_rule` (override de sucursal → global →
- * noRuleFallbackSql: FedEx sin regla no cobra desde 19-oct-2026); manual u otros fuera. Requiere `leftJoin('income.subsidiary','sub')`
+ * noRuleFallbackSql: FedEx sin regla no cobra desde 19-oct-2026); manual ("Otro" del
+ * Consolidador) siempre; otros fuera. Requiere `leftJoin('income.subsidiary','sub')`
  * + los JOINs `crs`/`crg` a charge_rule (ver CHARGE_RULE_*_JOIN).
  */
 const COUNTABLE_COND = `(
   CASE
     WHEN income.sourceType IN ('tyco','aeropuerto','special_transfer') THEN sub.countTransfersAsIncome
-    WHEN income.sourceType = 'collection' THEN 1
+    WHEN income.sourceType IN ('collection','manual') THEN 1
     WHEN income.sourceType IN ('shipment','charge') THEN COALESCE(crs.chargeable, crg.chargeable, ${noRuleFallbackSql('income')})
     ELSE 0
   END
@@ -64,6 +65,8 @@ const REVENUE_COLLECTIONS_SQL = countableRevenue(`income.sourceType = 'collectio
 const REVENUE_TYCO_SQL = countableRevenue(`income.sourceType = 'tyco'`);
 const REVENUE_AEROPUERTO_SQL = countableRevenue(`income.sourceType = 'aeropuerto'`);
 const REVENUE_SPECIAL_SQL = countableRevenue(`income.sourceType = 'special_transfer'`);
+// "Otro" capturado a mano en el Consolidador sin guía.
+const REVENUE_OTROS_SQL = countableRevenue(`income.sourceType = 'manual'`);
 
 /**
  * Paquetes FACTURADOS: # de ingresos contables (los que suman al total), con su desglose
@@ -370,6 +373,7 @@ export class KpiService {
         .addSelect(REVENUE_TYCO_SQL, 'revenueTyco')
         .addSelect(REVENUE_AEROPUERTO_SQL, 'revenueAeropuerto')
         .addSelect(REVENUE_SPECIAL_SQL, 'revenueSpecial')
+        .addSelect(REVENUE_OTROS_SQL, 'revenueOtros')
         .addSelect(BILLED_TOTAL_SQL, 'billedTotal')
         .addSelect(BILLED_DELIVERED_SQL, 'billedDelivered')
         .addSelect(BILLED_DEX07_SQL, 'billedDex07')
@@ -403,6 +407,7 @@ export class KpiService {
         tyco: Number(iStats.revenueTyco || 0),
         aeropuerto: Number(iStats.revenueAeropuerto || 0),
         especial: Number(iStats.revenueSpecial || 0),
+        otros: Number(iStats.revenueOtros || 0),
       };
       // Paquetes FACTURADOS (explican el dinero): total = # ingresos contables; el resto
       // del desglose por desenlace. `otros` = facturados que no son entregado/DEX07/DEX08.
@@ -491,6 +496,7 @@ export class KpiService {
       tyco: sumBucket('tyco'),
       aeropuerto: sumBucket('aeropuerto'),
       especial: sumBucket('especial'),
+      otros: sumBucket('otros'),
     };
     // Desglose general de gastos por categoría (suma de todas las sucursales).
     const generalExpenseBreakdown: Record<string, number> = {};

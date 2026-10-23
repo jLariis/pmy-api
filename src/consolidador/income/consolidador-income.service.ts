@@ -10,6 +10,9 @@ import { linkManualIncomeToShipment, ManualKind, resolveManualIncomeCost } from 
 import { mapIncomeToRow } from '../read/consolidador-row.mapper';
 import { ConsolidadorRow } from '../consolidador.types';
 import { ConsolidadorAuditService } from '../audit/consolidador-audit.service';
+import { ChargeRulesService } from '../../charge-rules/charge-rules.service';
+import { isCountableIncome } from '../../common/income-rules.util';
+import { IncomeStatus } from '../../common/enums/income-status.enum';
 
 @Injectable()
 export class ConsolidadorIncomeService {
@@ -18,6 +21,7 @@ export class ConsolidadorIncomeService {
     @InjectRepository(Subsidiary) private readonly subsidiaryRepo: Repository<Subsidiary>,
     private readonly audit: ConsolidadorAuditService,
     @InjectRepository(Shipment) private readonly shipmentRepo: Repository<Shipment>,
+    private readonly chargeRules: ChargeRulesService,
   ) {}
 
   private async load(id: string): Promise<Income> {
@@ -86,36 +90,20 @@ export class ConsolidadorIncomeService {
     userId: string,
   ): Promise<ConsolidadorRow> {
     // Con guía que existe en el sistema, el ingreso se liga a su registro más reciente: así
-    // cuenta como uno automático (un sourceType=manual no suma en ningún reporte).
-    const shipment = dto.trackingNumber
-      ? await this.shipmentRepo.findOne({
-          where: { trackingNumber: dto.trackingNumber },
-          select: ['id', 'shipmentType'],
-          order: { createdAt: 'DESC' },
-        })
-      : null;
-    const { cost, sourceType, incomeType, shipmentId, shipmentType } = linkManualIncomeToShipment(
+    // cuenta como uno automático, en la columna de su paquetería.
+    const shipment = dto.trackingNumber ? await this.findLatestShipment(dto.trackingNumber) : null;
+    const { cost, sourceType, incomeType, nonDeliveryStatus, shipmentId, shipmentType } = linkManualIncomeToShipment(
       resolveManualIncomeCost(dto.kind, { cost: dto.cost }),
       shipment,
     );
 
     // Día de la operación (mediodía local para caer con holgura dentro del día).
     const day = new Date(`${dto.date}T12:00:00.000`);
-    const dayStart = new Date(`${dto.date}T00:00:00.000`);
-    const dayEnd = new Date(`${dto.date}T23:59:59.999`);
 
     // Anti-duplicado: misma sucursal + guía + tipo + día. Solo cuando hay guía (una manual
     // libre sin guía no se puede deduplicar con certeza).
     if (dto.trackingNumber) {
-      const existing = await this.incomeRepo.findOne({
-        where: {
-          subsidiary: { id: dto.subsidiaryId },
-          trackingNumber: dto.trackingNumber,
-          incomeType,
-          date: Between(dayStart, dayEnd),
-          active: true,
-        },
-      });
+      const existing = await this.findSameDayIncome(dto.subsidiaryId, dto.trackingNumber, dto.date, { incomeType, nonDeliveryStatus });
       if (existing) {
         throw new ConflictException('Ya existe un ingreso equivalente ese día para esa guía');
       }
@@ -126,6 +114,7 @@ export class ConsolidadorIncomeService {
       trackingNumber: dto.trackingNumber,
       shipmentType: (shipmentType as ShipmentType) ?? ShipmentType.FEDEX,
       incomeType,
+      nonDeliveryStatus,
       cost,
       isGrouped: false,
       sourceType,
@@ -217,4 +206,111 @@ export class ConsolidadorIncomeService {
     });
     return { id, deleted: true };
   }
+
+  /** Registro más reciente de una guía (al que se liga un alta manual). */
+  private findLatestShipment(trackingNumber: string) {
+    return this.shipmentRepo.findOne({
+      where: { trackingNumber },
+      relations: ['subsidiary'],
+      select: { id: true, shipmentType: true, status: true, subsidiary: { id: true, name: true } },
+      order: { createdAt: 'DESC' },
+    });
+  }
+
+  /**
+   * Ingreso activo de la guía ese día en la sucursal; con `kind`, solo del mismo tipo y código
+   * (un DEX08 no bloquea un DEX07 del mismo día).
+   */
+  private findSameDayIncome(
+    subsidiaryId: string,
+    trackingNumber: string,
+    date: string,
+    kind?: { incomeType: IncomeStatus; nonDeliveryStatus: string },
+  ) {
+    return this.incomeRepo.findOne({
+      where: {
+        subsidiary: { id: subsidiaryId },
+        trackingNumber,
+        ...(kind ? { incomeType: kind.incomeType, ...(kind.nonDeliveryStatus ? { nonDeliveryStatus: kind.nonDeliveryStatus } : {}) } : {}),
+        date: Between(new Date(`${date}T00:00:00.000`), new Date(`${date}T23:59:59.999`)),
+        active: true,
+      },
+    });
+  }
+
+  /**
+   * Vista previa del alta manual ("Así quedará"): cómo se guardará, en qué columna de
+   * Finanzas → Ingresos cae, si suma según las reglas de la sucursal y avisos (guía que no
+   * existe, ingreso de esa guía ese mismo día). No escribe nada.
+   */
+  async previewManual(dto: {
+    subsidiaryId: string;
+    kind: ManualKind;
+    trackingNumber?: string;
+    date?: string;
+  }): Promise<ManualIncomePreview> {
+    const tracking = dto.trackingNumber?.trim() || undefined;
+    const [shipment, subsidiary, resolver] = await Promise.all([
+      tracking ? this.findLatestShipment(tracking) : Promise.resolve(null),
+      this.subsidiaryRepo.findOne({
+        where: { id: dto.subsidiaryId },
+        select: ['id', 'countTransfersAsIncome', 'fedexCostPackage', 'dhlCostPackage'],
+      }),
+      this.chargeRules.buildResolver(dto.subsidiaryId),
+    ]);
+    const linked = linkManualIncomeToShipment(resolveManualIncomeCost(dto.kind, {}), shipment);
+    const shipmentType = linked.shipmentType ?? ShipmentType.FEDEX;
+    const countable = isCountableIncome(
+      { ...linked, shipmentType, date: dto.date ? new Date(`${dto.date}T12:00:00.000`) : new Date() },
+      { resolver, countTransfers: subsidiary?.countTransfersAsIncome ?? true },
+    );
+    const existing = tracking && dto.date ? await this.findSameDayIncome(dto.subsidiaryId, tracking, dto.date) : null;
+
+    const suggestedCost =
+      dto.kind === 'manual'
+        ? null
+        : Number((shipmentType === ShipmentType.DHL ? subsidiary?.dhlCostPackage : subsidiary?.fedexCostPackage) ?? 0) || null;
+
+    return {
+      shipment: shipment
+        ? {
+            carrier: shipment.shipmentType,
+            status: shipment.status,
+            subsidiaryId: shipment.subsidiary?.id ?? null,
+            subsidiaryName: shipment.subsidiary?.name ?? null,
+          }
+        : null,
+      sourceType: linked.sourceType,
+      incomeType: linked.incomeType,
+      nonDeliveryStatus: linked.nonDeliveryStatus,
+      shipmentType,
+      column: manualIncomeColumn(linked.sourceType, shipmentType),
+      countable,
+      suggestedCost,
+      sameDayIncome: existing ? { cost: Number(existing.cost), sourceType: existing.sourceType, incomeType: existing.incomeType } : null,
+    };
+  }
+}
+
+/** Respuesta de la vista previa del alta manual. */
+export interface ManualIncomePreview {
+  shipment: { carrier: string; status: string; subsidiaryId: string | null; subsidiaryName: string | null } | null;
+  sourceType: string;
+  incomeType: string;
+  nonDeliveryStatus: string;
+  shipmentType: string;
+  /** Columna de Finanzas → Ingresos donde suma. */
+  column: 'fedex' | 'dhl' | 'collections' | 'otros';
+  /** ¿Suma según las reglas de cobro de la sucursal? */
+  countable: boolean;
+  /** Tarifa de la sucursal para precargar el monto; null si no aplica. */
+  suggestedCost: number | null;
+  /** Ingreso activo de esa guía ese día (aviso antes de duplicar). */
+  sameDayIncome: { cost: number; sourceType: string; incomeType: string } | null;
+}
+
+function manualIncomeColumn(sourceType: string, shipmentType: string): ManualIncomePreview['column'] {
+  if (sourceType === 'collection') return 'collections';
+  if (sourceType === 'manual') return 'otros';
+  return shipmentType === ShipmentType.DHL ? 'dhl' : 'fedex';
 }

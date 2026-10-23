@@ -52,7 +52,7 @@ export class DashboardController {
         // ni siquiera por la red). Los gastos sí se permiten.
         if (elevated) return metrics;
 
-        const ZERO_BREAKDOWN = { fedex: 0, dhl: 0, cargas: 0, collections: 0, tyco: 0, aeropuerto: 0, especial: 0 };
+        const ZERO_BREAKDOWN = { fedex: 0, dhl: 0, cargas: 0, collections: 0, tyco: 0, aeropuerto: 0, especial: 0, otros: 0 };
         const ZERO_BILLED = { total: 0, delivered: 0, dex07: 0, dex08: 0, other: 0 };
         return (metrics as any[]).map((m) => ({
             ...m,
