@@ -212,7 +212,9 @@ export class ConsolidadorIncomeService {
     return this.shipmentRepo.findOne({
       where: { trackingNumber },
       relations: ['subsidiary'],
-      select: { id: true, shipmentType: true, status: true, subsidiary: { id: true, name: true } },
+      // createdAt va en el select porque se ordena por él: con `relations`, TypeORM arma una
+      // subconsulta DISTINCT y truena ("Unknown column distinctAlias.Shipment_createdAt") si falta.
+      select: { id: true, shipmentType: true, status: true, createdAt: true, subsidiary: { id: true, name: true } },
       order: { createdAt: 'DESC' },
     });
   }
