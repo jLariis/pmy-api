@@ -14,14 +14,16 @@ import { SubsidiariesService } from 'src/subsidiaries/subsidiaries.service';
 import { ConsolidatedService } from 'src/consolidated/consolidated.service';
 import { Unloading } from 'src/entities/unloading.entity';
 import { PackageDispatchHistory } from 'src/entities/package-dispatch-history.entity';
+import { PackageDispatchChange } from 'src/entities/package-dispatch-change.entity';
+import { DispatchEditService } from './dispatch-edit.service';
 import { DhlService } from 'src/shipments/dhl.service';
 import { DocumentsModule } from 'src/documents/documents.module';
 import { EmailLogModule } from 'src/email-log/email-log.module';
 import { HolidaysModule } from 'src/holidays/holidays.module';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([PackageDispatch, Shipment, ChargeShipment, Subsidiary, Consolidated, Devolution, Income, Charge, ShipmentStatus, ForPickUp, Unloading, PackageDispatchHistory]), DocumentsModule, EmailLogModule, HolidaysModule, VehicleKmsModule], // Add your entities here
+  imports: [TypeOrmModule.forFeature([PackageDispatch, Shipment, ChargeShipment, Subsidiary, Consolidated, Devolution, Income, Charge, ShipmentStatus, ForPickUp, Unloading, PackageDispatchHistory, PackageDispatchChange]), DocumentsModule, EmailLogModule, HolidaysModule, VehicleKmsModule], // Add your entities here
   controllers: [PackageDispatchController],
-  providers: [PackageDispatchService, MailService, FedexService, ShipmentsService, DhlService, SubsidiariesService, ConsolidatedService],
+  providers: [PackageDispatchService, DispatchEditService, MailService, FedexService, ShipmentsService, DhlService, SubsidiariesService, ConsolidatedService],
 })
 export class PackageDispatchModule {}

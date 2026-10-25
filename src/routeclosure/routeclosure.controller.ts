@@ -1,6 +1,9 @@
 import { Controller, Get, Post, Body, Param, Delete, BadRequestException, UploadedFiles, UseInterceptors, Req, UseGuards } from '@nestjs/common';
 import { RouteclosureService } from './routeclosure.service';
 import { CreateRouteclosureDto } from './dto/create-routeclosure.dto';
+import { CreateGroupClosureDto } from './dto/create-group-closure.dto';
+import { Audit } from 'src/audit/audit.decorator';
+import { AuditAction, AuditModule } from 'src/common/enums/audit.enum';
 import { ValidateTrackingsForClosureDto } from './dto/validate-trackings-for-closure';
 import { FilesInterceptor } from '@nestjs/platform-express';
 import { ApiOperation, ApiConsumes, ApiBody } from '@nestjs/swagger';
@@ -24,6 +27,29 @@ export class RouteclosureController {
   @Post()
   create(@Body() createRouteclosureDto: CreateRouteclosureDto, @Req() req: any) {
     return this.routeclosureService.create(createRouteclosureDto, req.user?.userId);
+  }
+
+  /** Cerrar juntas las rutas de un chofer del mismo día (una sola transacción). */
+  @Post('group')
+  @Audit({
+    module: AuditModule.CIERRE_RUTA,
+    action: AuditAction.CREATE,
+    entityName: 'route_closure',
+    resolveEntityId: ({ response }) => response?.closureGroupId,
+    describe: ({ body, response, result }) =>
+      result === 'success'
+        ? { message: `Cerró ${response?.closures?.length ?? 0} rutas juntas (cierre agrupado)`, details: { rutas: body?.dispatchIds, grupo: response?.closureGroupId } }
+        : { message: 'Intentó cerrar rutas juntas', details: { rutas: body?.dispatchIds } },
+  })
+  createGroup(@Body() dto: CreateGroupClosureDto, @Req() req: any) {
+    return this.routeclosureService.createGroup(dto.dispatchIds, dto.closure, req.user?.userId);
+  }
+
+  /** Rutas abiertas que se pueden cerrar juntas (mismo día y chofer, 2 o más). */
+  @NoAudit()
+  @Get('groups/:subsidiaryId')
+  findGroupCandidates(@Param('subsidiaryId') subsidiaryId: string) {
+    return this.routeclosureService.findGroupCandidates(subsidiaryId);
   }
 
   @Get(':subsidiryId')

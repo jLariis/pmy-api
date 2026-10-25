@@ -6,7 +6,9 @@ import { VehicleKmsService } from 'src/maintenance/vehicle-kms.service';
 import { CreateRouteclosureDto } from './dto/create-routeclosure.dto';
 import { InjectRepository } from '@nestjs/typeorm';
 import { RouteClosure } from 'src/entities/route-closure.entity';
-import { DataSource, In, Repository } from 'typeorm';
+import { DataSource, EntityManager, In, Repository } from 'typeorm';
+import { randomUUID } from 'crypto';
+import { GroupClosureInput, GroupDispatchInfo, groupClosureProblem, splitGroupClosure } from './group-closure.util';
 import { ValidateTrackingsForClosureDto } from './dto/validate-trackings-for-closure';
 import { PackageDispatch } from 'src/entities/package-dispatch.entity';
 import { ValidatedPackageDispatchDto } from 'src/package-dispatch/dto/validated-package-dispatch.dto';
@@ -382,402 +384,7 @@ export class RouteclosureService {
     await queryRunner.startTransaction();
 
     try {
-      this.logger.log('🟡 [RouteClosure] Iniciando proceso de cierre de ruta...');
-
-      // 1. Validar el Despacho
-      const manualStatusChanges = createRouteclosureDto.manualStatusChanges ?? [];
-      const packageDispatch = await queryRunner.manager.findOne(PackageDispatch, {
-        where: { id: createRouteclosureDto.packageDispatch.id },
-        relations: manualStatusChanges.length ? ['subsidiary', 'drivers'] : ['subsidiary'],
-      });
-
-      if (!packageDispatch) {
-        throw new BadRequestException(`El despacho con ID ${createRouteclosureDto.packageDispatch.id} no existe.`);
-      }
-
-      // 2. Actualizar estado del Despacho
-      packageDispatch.status = DispatchStatus.COMPLETADA;
-      packageDispatch.closedAt = new Date();
-      await queryRunner.manager.save(PackageDispatch, packageDispatch);
-
-      // 3. Preparar datos para RouteClosure
-      const trackingNumbers = createRouteclosureDto.collections.map(item => 
-        typeof item === 'string' ? item : (item as any).trackingNumber
-      );
-
-      // Filtramos los arreglos usando la propiedad isCharge para evitar errores de FK
-      // 1. Filtramos los POD: Solo dejamos lo que NO es Charge y NO es No VAN
-      const validPodShipments = createRouteclosureDto.podPackages
-        .filter(pkg => {
-          const isCharge = (pkg as any).isCharge;
-          const isNoVan = typeof (pkg as any).id === 'string' && (pkg as any).id.startsWith('novan-');
-          // SOLO permitimos los que existen en la tabla 'shipment'
-          return !isCharge && !isNoVan;
-        })
-        .map(pkg => ({ id: typeof pkg === 'string' ? pkg : (pkg as any).id }));
-
-      const validReturnedShipments = createRouteclosureDto.returnedPackages
-        .filter(pkg => {
-          const isCharge = (pkg as any).isCharge;
-          const isNoVan = typeof (pkg as any).id === 'string' && (pkg as any).id.startsWith('novan-');
-          return !isCharge && !isNoVan;
-        })
-        .map(pkg => ({ id: typeof pkg === 'string' ? pkg : (pkg as any).id }));
-
-      const newRouteClosure = queryRunner.manager.create(RouteClosure, {
-        ...createRouteclosureDto,
-        podPackages: validPodShipments,
-        returnedPackages: validReturnedShipments,
-        collections: trackingNumbers,
-        subsidiary: packageDispatch.subsidiary,
-        createdById: userId ?? null,
-        preClosureGeneratedAt: createRouteclosureDto.preClosureGeneratedAt
-          ? new Date(createRouteclosureDto.preClosureGeneratedAt)
-          : null,
-      });
-
-      const savedClosure = await queryRunner.manager.save(RouteClosure, newRouteClosure);
-
-      // El ingreso del cierre (DHL, recolecciones y No VAN) pertenece al DÍA DE LA RUTA,
-      // ahora fijado explícitamente al crear la salida a ruta (packageDispatch.routeDate).
-      // Fallback a createdAt para rutas viejas sin la prop; last-resort hoy. Anclamos al
-      // inicio de día Hermosillo (07:00Z) para caer en el bucket correcto del dashboard.
-      const routeIncomeDate = hermosilloDayStartFromInstant(
-        packageDispatch.routeDate ?? packageDispatch.createdAt ?? new Date(),
-      );
-
-      // Pre-resolución FedEx de los No VAN: solo si la ruta NO es 31.5 (si es 31.5 no cobran).
-      // Las llamadas FedEx son de solo lectura, acotadas al # de No VAN de la ruta. Si FedEx
-      // falla, el outcome sale resolved=false y esa guía simplemente no cobra (el cierre no
-      // se rompe). Se resuelve aquí, antes de generar los ingresos.
-      const noVanInputs = (createRouteclosureDto.noVanPackages ?? []).map(pkg =>
-        typeof pkg === 'string' ? { trackingNumber: pkg } : pkg,
-      );
-      let noVanOutcomes: NoVanFedexOutcome[] = [];
-      if (!packageDispatch.is315 && noVanInputs.length > 0) {
-        noVanOutcomes = await Promise.all(
-          noVanInputs.map(n => this.resolveNoVanOutcome(n.trackingNumber)),
-        );
-      }
-
-      // =====================================================================
-      // 🛡️ GUARDAR PAQUETES NO VAN (ShipmentNotInFiles)
-      // =====================================================================
-      if (createRouteclosureDto.noVanPackages && createRouteclosureDto.noVanPackages.length > 0) {
-        this.logger.log(`🟡 [RouteClosure] Registrando ${createRouteclosureDto.noVanPackages.length} paquetes No VAN...`);
-        
-        const noVanEntities = createRouteclosureDto.noVanPackages.map(pkg => {
-          // Extraemos el tracking independientemente de si pkg viene como objeto o string (por seguridad)
-          const tNumber = typeof pkg === 'string' ? pkg : (pkg as any).trackingNumber;
-
-          return queryRunner.manager.create(ShipmentNotInFiles, {
-            trackingNumber: tNumber,
-            subsidiary: packageDispatch.subsidiary,
-            subsidiaryId: packageDispatch.subsidiary.id,
-            dispatchId: packageDispatch.id,
-            routeClosureId: savedClosure.id,
-          });
-        });
-
-        await queryRunner.manager.save(ShipmentNotInFiles, noVanEntities);
-        this.logger.log(`🟢 [RouteClosure] ${noVanEntities.length} registros insertados en shipment_not_in_files.`);
-
-        // Ingreso de No VAN — espejo del patrón DHL: se guarda SIEMPRE el costo completo +
-        // código; qué CUENTA lo decide charge_rule en lectura. Solo si la ruta NO es 31.5.
-        if (packageDispatch.is315) {
-          this.logger.log('🟡 [RouteClosure] Ruta 31.5: los No VAN NO generan ingreso.');
-        } else {
-          const noVanCost = packageDispatch.subsidiary?.fedexCostPackage ?? 0;
-          const noVanIncomes = [];
-          for (const outcome of noVanOutcomes) {
-            // Decisión pura (probada en novan-income.util.spec): null ⇒ no se genera ingreso
-            // (sin validación FedEx, o en tránsito sin entregar ni DEX).
-            const decision = noVanIncomeDecision(outcome);
-            if (!decision) {
-              if (!outcome.resolved) {
-                this.logger.warn(`⚠️ [RouteClosure] No VAN ${outcome.trackingNumber} sin estatus FedEx; no se cobra.`);
-              }
-              continue;
-            }
-
-            const existingIncome = await queryRunner.manager.findOne(Income, {
-              where: {
-                trackingNumber: outcome.trackingNumber,
-                sourceType: IncomeSourceType.SHIPMENT,
-                active: true,
-              },
-            });
-            if (existingIncome) {
-              this.logger.warn(`⚠️ [RouteClosure] Ya existe ingreso (shipment) para No VAN ${outcome.trackingNumber}. Omitiendo.`);
-              continue;
-            }
-
-            // Alerta de configuración: si debe cobrar pero la sucursal tiene costo 0,
-            // el ingreso se registra en $0 (consistente con el FINANCE_ERROR de DHL/FedEx).
-            if (noVanCost <= 0) {
-              this.logger.error(
-                `❌ FINANCE_ERROR: La sucursal "${packageDispatch.subsidiary?.name ?? packageDispatch.subsidiary?.id}" tiene fedexCostPackage=0; ` +
-                `el ingreso No VAN de la guía ${outcome.trackingNumber} se registró en $0. Revisa la configuración de costo FedEx.`,
-              );
-            }
-
-            noVanIncomes.push(queryRunner.manager.create(Income, {
-              trackingNumber: outcome.trackingNumber,
-              subsidiary: packageDispatch.subsidiary,
-              shipmentType: ShipmentType.FEDEX,
-              cost: noVanCost,
-              incomeType: decision.incomeType,
-              nonDeliveryStatus: decision.nonDeliveryStatus,
-              isGrouped: false,
-              sourceType: IncomeSourceType.SHIPMENT,
-              date: routeIncomeDate, // día de la RUTA, no del cierre
-              createdById: userId ?? null,
-            }));
-          }
-
-          if (noVanIncomes.length > 0) {
-            await queryRunner.manager.save(Income, noVanIncomes);
-            this.logger.log(`🟢 [RouteClosure] Se crearon ${noVanIncomes.length} ingresos de No VAN.`);
-          }
-        }
-      }
-
-      // 4. Crear registros independientes en la tabla 'Collection' + su INGRESO.
-      if (trackingNumbers.length > 0) {
-        const now = new Date();
-        const utcDate = fromZonedTime(now, 'America/Hermosillo');
-
-        // Guard de duplicados (defensa en profundidad, espejo de `saveCollectionsWithManager`):
-        // si un input sucio del cierre se reenvía (p. ej. el escáner del front no limpió su
-        // buffer persistido), no insertamos filas `Collection` repetidas por `trackingNumber`.
-        const existing = await queryRunner.manager.find(Collection, {
-          where: { trackingNumber: In(trackingNumbers) },
-          select: ['trackingNumber'],
-        });
-        const existingTrackings = new Set(existing.map(c => c.trackingNumber));
-        const newTrackings = [...new Set(trackingNumbers)].filter(tn => !existingTrackings.has(tn));
-        const skipped = trackingNumbers.length - newTrackings.length;
-        if (skipped > 0) {
-          this.logger.warn(`⚠️ [RouteClosure] Se omitieron ${skipped} recolección(es) ya existentes por trackingNumber.`);
-        }
-
-        const collectionsToInsert = newTrackings.map(tn => {
-          return queryRunner.manager.create(Collection, {
-            trackingNumber: tn,
-            subsidiary: packageDispatch.subsidiary,
-            status: 'COLECTADO_EN_CIERRE',
-            isPickUp: true,
-            createdAt: utcDate,
-            createdById: userId ?? null,
-          });
-        });
-
-        const savedCollections = await queryRunner.manager.save(Collection, collectionsToInsert);
-        this.logger.log(`🟢 [RouteClosure] Se insertaron ${savedCollections.length} registros en la tabla Collection.`);
-
-        // 4.1 Ingreso por recolección — MISMA REGLA que el flujo directo
-        // (collections.service): sourceType=collection, costo = fedexCostPackage de la
-        // sucursal. Antes las recolecciones del cierre NO generaban ingreso (solo se
-        // insertaba la Collection), por eso no aparecían en finanzas › ingresos. Se ancla
-        // al DÍA DE LA RUTA (routeIncomeDate) igual que el ingreso DHL. Guard por
-        // (trackingNumber, sourceType=collection) para no duplicar si la guía ya tenía
-        // ingreso de recolección.
-        //
-        // REGLA 31.5: si la ruta es `is315`, las recolecciones se SIGUEN registrando
-        // (arriba) pero NO generan ingreso — espejo del criterio de los No VAN, donde la
-        // ruta 31.5 tampoco cobra. Fuera de 31.5 el cobro es el de siempre.
-        if (packageDispatch.is315) {
-          this.logger.log('🟡 [RouteClosure] Ruta 31.5: las recolecciones NO generan ingreso.');
-        } else {
-          const collectionCost = packageDispatch.subsidiary?.fedexCostPackage ?? 0;
-
-          // Alerta de configuración: si la sucursal tiene costo 0, los ingresos de
-          // recolección se registran en $0 (consistente con el FINANCE_ERROR de DHL/FedEx).
-          if (collectionCost <= 0) {
-            this.logger.error(
-              `❌ FINANCE_ERROR: La sucursal "${packageDispatch.subsidiary?.name ?? packageDispatch.subsidiary?.id}" tiene fedexCostPackage=0; ` +
-              `los ingresos de recolección del cierre se registraron en $0. Revisa la configuración de costo FedEx.`,
-            );
-          }
-
-          const collectionIncomes = [];
-          for (const collection of savedCollections) {
-            const existingIncome = await queryRunner.manager.findOne(Income, {
-              where: {
-                trackingNumber: collection.trackingNumber,
-                sourceType: IncomeSourceType.COLLECTION,
-                active: true,
-              },
-            });
-
-            if (existingIncome) {
-              this.logger.warn(`⚠️ [RouteClosure] Ya existe ingreso de recolección para ${collection.trackingNumber}. Omitiendo cobro.`);
-              continue;
-            }
-
-            collectionIncomes.push(queryRunner.manager.create(Income, {
-              trackingNumber: collection.trackingNumber,
-              subsidiary: packageDispatch.subsidiary,
-              shipmentType: ShipmentType.FEDEX,
-              cost: collectionCost,
-              incomeType: IncomeStatus.ENTREGADO,
-              isGrouped: false,
-              sourceType: IncomeSourceType.COLLECTION,
-              collection: { id: collection.id },
-              date: routeIncomeDate, // día de la RUTA, no del cierre
-              createdById: userId ?? null,
-            }));
-          }
-
-          if (collectionIncomes.length > 0) {
-            await queryRunner.manager.save(Income, collectionIncomes);
-            this.logger.log(`🟢 [RouteClosure] Se crearon ${collectionIncomes.length} ingresos de recolección.`);
-          }
-        }
-      }
-
-      // ==========================================
-      // 5. PROCESAR PAQUETES DHL (Cobros y Estatus)
-      // ==========================================
-      this.logger.log('🟡 [RouteClosure] Evaluando paquetes DHL para actualización e ingresos...');
-
-      // `code` = código propio de DHL (OK/NH/BA/RD/CM). `isCharge` = la pieza es un
-      // ChargeShipment (carga), NO significa "cobrar". `isDelivered` = de qué lista vino
-      // (pod = entregado), se usa como RESPALDO seguro si el frontend aún no manda `code`:
-      // pod sin código → OK; returned sin código → no entregado, sin cobro (nunca "todos OK").
-      const packagesToProcess = [
-        ...createRouteclosureDto.podPackages.map(pkg => ({
-          id: typeof pkg === 'string' ? pkg : (pkg as any).id,
-          code: (pkg as any).code as DhlStatusType | undefined,
-          isCharge: (pkg as any).isCharge,
-          isDelivered: true,
-        })),
-        ...createRouteclosureDto.returnedPackages.map(pkg => ({
-          id: typeof pkg === 'string' ? pkg : (pkg as any).id,
-          code: (pkg as any).code as DhlStatusType | undefined,
-          isCharge: (pkg as any).isCharge,
-          isDelivered: false,
-        }))
-      ];
-
-      let processedDhlCount = 0;
-
-      for (const item of packagesToProcess) {
-        if (!item.id) continue;
-
-        let pPackage = null;
-
-        if (item.isCharge) {
-          pPackage = await queryRunner.manager.findOne(ChargeShipment, {
-            where: { id: item.id },
-            relations: ['subsidiary']
-          });
-        } else {
-          pPackage = await queryRunner.manager.findOne(Shipment, {
-            where: { id: item.id },
-            relations: ['subsidiary']
-          });
-        }
-
-        if (pPackage && pPackage.shipmentType === ShipmentType.DHL) {
-          processedDhlCount++;
-
-          // Traductor DHL → capa canónica interna. Respaldo si no viene `code`:
-          // pod → OK; returned → no entregado (sin código).
-          const dhlCode = item.code ?? (item.isDelivered ? DhlStatusType.OK : null);
-          const { internalStatus } = dhlCode
-            ? mapDhlCodeToInternal(dhlCode)
-            : { internalStatus: ShipmentStatusType.NO_ENTREGADO };
-          const isDeliveredDhl = internalStatus === ShipmentStatusType.ENTREGADO;
-
-          // REGLA DE NEGOCIO: las CARGAS (ChargeShipment) NO generan ingreso por paquete.
-          // El ingreso solo se crea para envíos (Shipment). Las cargas solo actualizan
-          // su estatus/historial más abajo.
-          if (!item.isCharge) {
-            const existingIncome = await queryRunner.manager.findOne(Income, {
-              where: shipmentIncomeWhere(pPackage.id, pPackage.trackingNumber, { sourceType: IncomeSourceType.SHIPMENT }),
-            });
-
-            if (existingIncome) {
-              this.logger.warn(`⚠️ [RouteClosure] El ingreso para el tracking DHL ${pPackage.trackingNumber} ya existe. Omitiendo cobro.`);
-            } else {
-              // CONSISTENTE CON FEDEX: se guarda SIEMPRE el costo completo (con código);
-              // qué CUENTA como ingreso lo decide `charge_rule` en lectura (isCountableIncome
-              // / espejo SQL en kpi.service). Así se puede prender el cobro de un no-entregado
-              // DHL desde Configuración sin tocar código. `nonDeliveryStatus` guarda el CÓDIGO
-              // DHL (RD/NH/BA/CM), alfabético → nunca choca con los DEX numéricos de FedEx.
-              // Sin código (returned sin `code`) → costo 0 (no facturable, no hay regla que aplicar).
-              const calculatedCost = dhlCode ? (pPackage.subsidiary?.dhlCostPackage ?? 0) : 0;
-
-              // Alerta de configuración: si el paquete DEBERÍA cobrar (tiene código DHL)
-              // pero la sucursal tiene costo 0, se genera un ingreso en $0 silencioso.
-              // Consistente con el FINANCE_ERROR del flujo FedEx (shipments.service).
-              if (dhlCode && calculatedCost <= 0) {
-                this.logger.error(
-                  `❌ FINANCE_ERROR: La sucursal "${pPackage.subsidiary?.name ?? pPackage.subsidiary?.id}" tiene dhlCostPackage=0; ` +
-                  `el ingreso DHL de la guía ${pPackage.trackingNumber} se registró en $0. Revisa la configuración de costo DHL.`,
-                );
-              }
-
-              const newIncome = queryRunner.manager.create(Income, {
-                trackingNumber: pPackage.trackingNumber,
-                subsidiary: pPackage.subsidiary,
-                shipmentType: pPackage.shipmentType,
-                cost: calculatedCost,
-                incomeType: isDeliveredDhl ? IncomeStatus.ENTREGADO : IncomeStatus.NO_ENTREGADO,
-                nonDeliveryStatus: isDeliveredDhl ? null : dhlCode,
-                isGrouped: false,
-                sourceType: IncomeSourceType.SHIPMENT,
-                shipment: pPackage as Shipment,
-                date: routeIncomeDate, // día de la RUTA, no del cierre
-                createdById: userId ?? null,
-              });
-
-              await queryRunner.manager.save(Income, newIncome);
-            }
-          }
-
-          // Historial: fila shipment_status con el código DHL en `exceptionCode` (trazabilidad).
-          const history = new ShipmentStatus();
-          history.status = internalStatus;
-          history.exceptionCode = dhlCode ?? '';
-          history.timestamp = new Date();
-          if (item.isCharge) history.chargeShipment = pPackage as ChargeShipment;
-          else history.shipment = pPackage as Shipment;
-          await queryRunner.manager.save(ShipmentStatus, history);
-
-          // Estatus canónico interno en la entidad (agnóstico al carrier).
-          if (item.isCharge) {
-            await queryRunner.manager.update(ChargeShipment, { id: item.id }, { status: internalStatus });
-          } else {
-            await queryRunner.manager.update(Shipment, { id: item.id }, { status: internalStatus });
-          }
-        }
-      }
-
-      this.logger.log(`🟢 [RouteClosure] Se procesaron ${processedDhlCount} paquetes de DHL.`);
-
-      // Cierre con pre-cierre: estatus corregidos a mano contra lo que entregó el chofer
-      // (estatus + historial + auditoría + ingreso), en esta misma transacción.
-      if (manualStatusChanges.length > 0) {
-        const user = userId
-          ? await queryRunner.manager.findOne(User, { where: { id: userId }, select: ['id', 'name', 'lastName'] })
-          : null;
-        const manualResult = await applyManualChanges(queryRunner.manager, this.auditService, {
-          dispatchId: packageDispatch.id,
-          is315: !!packageDispatch.is315,
-          subsidiary: { id: packageDispatch.subsidiary?.id, fedexCostPackage: packageDispatch.subsidiary?.fedexCostPackage },
-          routeClosureId: savedClosure.id,
-          userId: userId ?? null,
-          userName: [user?.name, user?.lastName].filter(Boolean).join(' ') || 'usuario sin nombre',
-          folio: packageDispatch.trackingNumber ?? null,
-          routeDay: toHermosilloDateString(routeIncomeDate),
-          driverNames: (packageDispatch.drivers ?? []).map((d) => d.name).join(', '),
-          routeIncomeDate,
-          now: new Date(),
-        }, manualStatusChanges);
-        this.logger.log(`🟢 [RouteClosure] Cambios manuales aplicados: ${JSON.stringify(manualResult)}`);
-      }
+      const { savedClosure, packageDispatch } = await this.createWithManager(queryRunner.manager, createRouteclosureDto, userId);
 
       // 6. Finalizar transacción
       await queryRunner.commitTransaction();
@@ -796,6 +403,503 @@ export class RouteclosureService {
     } finally {
       await queryRunner.release();
     }
+  }
+
+  /**
+   * Cierre agrupado: las rutas de un chofer del mismo día se cierran en UNA sola
+   * transacción (si algo falla, no se cierra ninguna). Por dentro queda un cierre por
+   * ruta con el mismo `closureGroupId`; ingresos, reportes e historial siguen por ruta.
+   */
+  async createGroup(dispatchIds: string[], input: GroupClosureInput, userId?: string) {
+    const ids = Array.from(new Set((dispatchIds ?? []).filter(Boolean)));
+    const infos: (GroupDispatchInfo & { createdAt: Date })[] = ids.length
+      ? await this.dataSource.query(
+          `SELECT pd.id, pd.subsidiaryId, DATE_FORMAT(pd.routeDate, '%Y-%m-%d') AS routeDate, pd.status, pd.createdAt,
+                  GROUP_CONCAT(pdd.driverId) AS drivers
+             FROM package_dispatch pd LEFT JOIN package_dispatch_drivers pdd ON pdd.dispatchId = pd.id
+            WHERE pd.id IN (?) GROUP BY pd.id`,
+          [ids],
+        ).then((rows: any[]) => rows.map((r) => ({ ...r, driverIds: String(r.drivers ?? '').split(',').filter(Boolean) })))
+      : [];
+    const problem = groupClosureProblem(infos, ids);
+    if (problem) throw new BadRequestException(problem);
+
+    // Primera ruta del día = la que salió primero (recolecciones/No VAN); última = km final.
+    const ordered = [...infos].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()).map((d) => d.id);
+    const rows: { dispatchId: string; shipmentId: string | null; chargeShipmentId: string | null }[] = await this.dataSource.query(
+      'SELECT dispatchId, shipmentId, chargeShipmentId FROM package_dispatch_history WHERE dispatchId IN (?)',
+      [ordered],
+    );
+    const membership = new Map<string, string>();
+    for (const r of rows) membership.set((r.shipmentId ?? r.chargeShipmentId) as string, r.dispatchId);
+
+    let parts: ReturnType<typeof splitGroupClosure>;
+    try {
+      parts = splitGroupClosure(input, ordered, membership);
+    } catch (e: any) {
+      throw new BadRequestException(e.message);
+    }
+
+    const groupId = randomUUID();
+    const queryRunner = this.dataSource.createQueryRunner();
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
+    try {
+      const closures: RouteClosure[] = [];
+      for (const part of parts) {
+        const { savedClosure } = await this.createWithManager(queryRunner.manager, part.dto, userId, groupId);
+        closures.push(savedClosure);
+      }
+      await queryRunner.commitTransaction();
+      this.logger.log(`✅ [RouteClosure] Cierre agrupado ${groupId}: ${closures.length} rutas.`);
+      const last = parts[parts.length - 1];
+      await this.vehicleKms?.bumpFromDispatch(last.dispatchId, last.dto.actualKms, 'closure');
+      return { closureGroupId: groupId, closures: closures.map((c, i) => ({ id: c.id, dispatchId: parts[i].dispatchId })) };
+    } catch (error) {
+      await queryRunner.rollbackTransaction();
+      if (error instanceof BadRequestException) throw error;
+      this.logger.error(`🔴 [RouteClosure] Error en cierre agrupado: ${error.message}`, error.stack);
+      throw new InternalServerErrorException(`No se cerró ninguna ruta: ${error.message}`);
+    } finally {
+      await queryRunner.release();
+    }
+  }
+
+  /**
+   * Rutas abiertas que se pueden cerrar juntas: por sucursal, agrupadas por día de
+   * ruta + chofer, solo grupos de 2 o más.
+   */
+  async findGroupCandidates(subsidiaryId: string) {
+    const rows: any[] = await this.dataSource.query(
+      `SELECT pd.id, pd.trackingNumber AS folio, DATE_FORMAT(pd.routeDate, '%Y-%m-%d') AS routeDate, pd.createdAt,
+              d.id AS driverId, d.name AS driverName,
+              (SELECT GROUP_CONCAT(r.name SEPARATOR ', ') FROM package_dispatch_routes pr JOIN route r ON r.id = pr.routeId WHERE pr.dispatchId = pd.id) AS routeNames,
+              (SELECT COUNT(*) FROM package_dispatch_history h WHERE h.dispatchId = pd.id) AS packages
+         FROM package_dispatch pd
+         JOIN package_dispatch_drivers pdd ON pdd.dispatchId = pd.id
+         JOIN driver d ON d.id = pdd.driverId
+        WHERE pd.subsidiaryId = ? AND pd.status NOT IN ('Completada', 'Cancelada') AND pd.routeDate IS NOT NULL
+        ORDER BY pd.routeDate DESC, d.name, pd.createdAt`,
+      [subsidiaryId],
+    );
+    const groups = new Map<string, any>();
+    for (const r of rows) {
+      const key = `${r.routeDate}|${r.driverId}`;
+      if (!groups.has(key)) groups.set(key, { key, routeDate: r.routeDate, driverId: r.driverId, driverName: r.driverName, dispatches: [] });
+      groups.get(key).dispatches.push({ id: r.id, folio: r.folio, routeNames: r.routeNames ?? '', createdAt: r.createdAt, packages: Number(r.packages) || 0 });
+    }
+    return [...groups.values()].filter((g) => g.dispatches.length > 1);
+  }
+
+  /**
+   * Cierre de UNA salida dentro de la transacción del llamador (cierre normal o agrupado).
+   * `closureGroupId` marca los cierres hechos juntos (mismo chofer, mismo día).
+   */
+  private async createWithManager(
+    manager: EntityManager,
+    createRouteclosureDto: CreateRouteclosureDto,
+    userId?: string,
+    closureGroupId: string | null = null,
+  ): Promise<{ savedClosure: RouteClosure; packageDispatch: PackageDispatch }> {
+    this.logger.log('🟡 [RouteClosure] Iniciando proceso de cierre de ruta...');
+
+    // 1. Validar el Despacho
+    const manualStatusChanges = createRouteclosureDto.manualStatusChanges ?? [];
+    const packageDispatch = await manager.findOne(PackageDispatch, {
+      where: { id: createRouteclosureDto.packageDispatch.id },
+      relations: manualStatusChanges.length ? ['subsidiary', 'drivers'] : ['subsidiary'],
+    });
+
+    if (!packageDispatch) {
+      throw new BadRequestException(`El despacho con ID ${createRouteclosureDto.packageDispatch.id} no existe.`);
+    }
+
+    // 2. Actualizar estado del Despacho
+    packageDispatch.status = DispatchStatus.COMPLETADA;
+    packageDispatch.closedAt = new Date();
+    await manager.save(PackageDispatch, packageDispatch);
+
+    // 3. Preparar datos para RouteClosure
+    const trackingNumbers = createRouteclosureDto.collections.map(item => 
+      typeof item === 'string' ? item : (item as any).trackingNumber
+    );
+
+    // Filtramos los arreglos usando la propiedad isCharge para evitar errores de FK
+    // 1. Filtramos los POD: Solo dejamos lo que NO es Charge y NO es No VAN
+    const validPodShipments = createRouteclosureDto.podPackages
+      .filter(pkg => {
+        const isCharge = (pkg as any).isCharge;
+        const isNoVan = typeof (pkg as any).id === 'string' && (pkg as any).id.startsWith('novan-');
+        // SOLO permitimos los que existen en la tabla 'shipment'
+        return !isCharge && !isNoVan;
+      })
+      .map(pkg => ({ id: typeof pkg === 'string' ? pkg : (pkg as any).id }));
+
+    const validReturnedShipments = createRouteclosureDto.returnedPackages
+      .filter(pkg => {
+        const isCharge = (pkg as any).isCharge;
+        const isNoVan = typeof (pkg as any).id === 'string' && (pkg as any).id.startsWith('novan-');
+        return !isCharge && !isNoVan;
+      })
+      .map(pkg => ({ id: typeof pkg === 'string' ? pkg : (pkg as any).id }));
+
+    const newRouteClosure = manager.create(RouteClosure, {
+      ...createRouteclosureDto,
+      podPackages: validPodShipments,
+      returnedPackages: validReturnedShipments,
+      collections: trackingNumbers,
+      subsidiary: packageDispatch.subsidiary,
+      createdById: userId ?? null,
+      preClosureGeneratedAt: createRouteclosureDto.preClosureGeneratedAt
+        ? new Date(createRouteclosureDto.preClosureGeneratedAt)
+        : null,
+      closureGroupId,
+    });
+
+    const savedClosure = await manager.save(RouteClosure, newRouteClosure);
+
+    // El ingreso del cierre (DHL, recolecciones y No VAN) pertenece al DÍA DE LA RUTA,
+    // ahora fijado explícitamente al crear la salida a ruta (packageDispatch.routeDate).
+    // Fallback a createdAt para rutas viejas sin la prop; last-resort hoy. Anclamos al
+    // inicio de día Hermosillo (07:00Z) para caer en el bucket correcto del dashboard.
+    const routeIncomeDate = hermosilloDayStartFromInstant(
+      packageDispatch.routeDate ?? packageDispatch.createdAt ?? new Date(),
+    );
+
+    // Pre-resolución FedEx de los No VAN: solo si la ruta NO es 31.5 (si es 31.5 no cobran).
+    // Las llamadas FedEx son de solo lectura, acotadas al # de No VAN de la ruta. Si FedEx
+    // falla, el outcome sale resolved=false y esa guía simplemente no cobra (el cierre no
+    // se rompe). Se resuelve aquí, antes de generar los ingresos.
+    const noVanInputs = (createRouteclosureDto.noVanPackages ?? []).map(pkg =>
+      typeof pkg === 'string' ? { trackingNumber: pkg } : pkg,
+    );
+    let noVanOutcomes: NoVanFedexOutcome[] = [];
+    if (!packageDispatch.is315 && noVanInputs.length > 0) {
+      noVanOutcomes = await Promise.all(
+        noVanInputs.map(n => this.resolveNoVanOutcome(n.trackingNumber)),
+      );
+    }
+
+    // =====================================================================
+    // 🛡️ GUARDAR PAQUETES NO VAN (ShipmentNotInFiles)
+    // =====================================================================
+    if (createRouteclosureDto.noVanPackages && createRouteclosureDto.noVanPackages.length > 0) {
+      this.logger.log(`🟡 [RouteClosure] Registrando ${createRouteclosureDto.noVanPackages.length} paquetes No VAN...`);
+      
+      const noVanEntities = createRouteclosureDto.noVanPackages.map(pkg => {
+        // Extraemos el tracking independientemente de si pkg viene como objeto o string (por seguridad)
+        const tNumber = typeof pkg === 'string' ? pkg : (pkg as any).trackingNumber;
+
+        return manager.create(ShipmentNotInFiles, {
+          trackingNumber: tNumber,
+          subsidiary: packageDispatch.subsidiary,
+          subsidiaryId: packageDispatch.subsidiary.id,
+          dispatchId: packageDispatch.id,
+          routeClosureId: savedClosure.id,
+        });
+      });
+
+      await manager.save(ShipmentNotInFiles, noVanEntities);
+      this.logger.log(`🟢 [RouteClosure] ${noVanEntities.length} registros insertados en shipment_not_in_files.`);
+
+      // Ingreso de No VAN — espejo del patrón DHL: se guarda SIEMPRE el costo completo +
+      // código; qué CUENTA lo decide charge_rule en lectura. Solo si la ruta NO es 31.5.
+      if (packageDispatch.is315) {
+        this.logger.log('🟡 [RouteClosure] Ruta 31.5: los No VAN NO generan ingreso.');
+      } else {
+        const noVanCost = packageDispatch.subsidiary?.fedexCostPackage ?? 0;
+        const noVanIncomes = [];
+        for (const outcome of noVanOutcomes) {
+          // Decisión pura (probada en novan-income.util.spec): null ⇒ no se genera ingreso
+          // (sin validación FedEx, o en tránsito sin entregar ni DEX).
+          const decision = noVanIncomeDecision(outcome);
+          if (!decision) {
+            if (!outcome.resolved) {
+              this.logger.warn(`⚠️ [RouteClosure] No VAN ${outcome.trackingNumber} sin estatus FedEx; no se cobra.`);
+            }
+            continue;
+          }
+
+          const existingIncome = await manager.findOne(Income, {
+            where: {
+              trackingNumber: outcome.trackingNumber,
+              sourceType: IncomeSourceType.SHIPMENT,
+              active: true,
+            },
+          });
+          if (existingIncome) {
+            this.logger.warn(`⚠️ [RouteClosure] Ya existe ingreso (shipment) para No VAN ${outcome.trackingNumber}. Omitiendo.`);
+            continue;
+          }
+
+          // Alerta de configuración: si debe cobrar pero la sucursal tiene costo 0,
+          // el ingreso se registra en $0 (consistente con el FINANCE_ERROR de DHL/FedEx).
+          if (noVanCost <= 0) {
+            this.logger.error(
+              `❌ FINANCE_ERROR: La sucursal "${packageDispatch.subsidiary?.name ?? packageDispatch.subsidiary?.id}" tiene fedexCostPackage=0; ` +
+              `el ingreso No VAN de la guía ${outcome.trackingNumber} se registró en $0. Revisa la configuración de costo FedEx.`,
+            );
+          }
+
+          noVanIncomes.push(manager.create(Income, {
+            trackingNumber: outcome.trackingNumber,
+            subsidiary: packageDispatch.subsidiary,
+            shipmentType: ShipmentType.FEDEX,
+            cost: noVanCost,
+            incomeType: decision.incomeType,
+            nonDeliveryStatus: decision.nonDeliveryStatus,
+            isGrouped: false,
+            sourceType: IncomeSourceType.SHIPMENT,
+            date: routeIncomeDate, // día de la RUTA, no del cierre
+            createdById: userId ?? null,
+          }));
+        }
+
+        if (noVanIncomes.length > 0) {
+          await manager.save(Income, noVanIncomes);
+          this.logger.log(`🟢 [RouteClosure] Se crearon ${noVanIncomes.length} ingresos de No VAN.`);
+        }
+      }
+    }
+
+    // 4. Crear registros independientes en la tabla 'Collection' + su INGRESO.
+    if (trackingNumbers.length > 0) {
+      const now = new Date();
+      const utcDate = fromZonedTime(now, 'America/Hermosillo');
+
+      // Guard de duplicados (defensa en profundidad, espejo de `saveCollectionsWithManager`):
+      // si un input sucio del cierre se reenvía (p. ej. el escáner del front no limpió su
+      // buffer persistido), no insertamos filas `Collection` repetidas por `trackingNumber`.
+      const existing = await manager.find(Collection, {
+        where: { trackingNumber: In(trackingNumbers) },
+        select: ['trackingNumber'],
+      });
+      const existingTrackings = new Set(existing.map(c => c.trackingNumber));
+      const newTrackings = [...new Set(trackingNumbers)].filter(tn => !existingTrackings.has(tn));
+      const skipped = trackingNumbers.length - newTrackings.length;
+      if (skipped > 0) {
+        this.logger.warn(`⚠️ [RouteClosure] Se omitieron ${skipped} recolección(es) ya existentes por trackingNumber.`);
+      }
+
+      const collectionsToInsert = newTrackings.map(tn => {
+        return manager.create(Collection, {
+          trackingNumber: tn,
+          subsidiary: packageDispatch.subsidiary,
+          status: 'COLECTADO_EN_CIERRE',
+          isPickUp: true,
+          createdAt: utcDate,
+          createdById: userId ?? null,
+        });
+      });
+
+      const savedCollections = await manager.save(Collection, collectionsToInsert);
+      this.logger.log(`🟢 [RouteClosure] Se insertaron ${savedCollections.length} registros en la tabla Collection.`);
+
+      // 4.1 Ingreso por recolección — MISMA REGLA que el flujo directo
+      // (collections.service): sourceType=collection, costo = fedexCostPackage de la
+      // sucursal. Antes las recolecciones del cierre NO generaban ingreso (solo se
+      // insertaba la Collection), por eso no aparecían en finanzas › ingresos. Se ancla
+      // al DÍA DE LA RUTA (routeIncomeDate) igual que el ingreso DHL. Guard por
+      // (trackingNumber, sourceType=collection) para no duplicar si la guía ya tenía
+      // ingreso de recolección.
+      //
+      // REGLA 31.5: si la ruta es `is315`, las recolecciones se SIGUEN registrando
+      // (arriba) pero NO generan ingreso — espejo del criterio de los No VAN, donde la
+      // ruta 31.5 tampoco cobra. Fuera de 31.5 el cobro es el de siempre.
+      if (packageDispatch.is315) {
+        this.logger.log('🟡 [RouteClosure] Ruta 31.5: las recolecciones NO generan ingreso.');
+      } else {
+        const collectionCost = packageDispatch.subsidiary?.fedexCostPackage ?? 0;
+
+        // Alerta de configuración: si la sucursal tiene costo 0, los ingresos de
+        // recolección se registran en $0 (consistente con el FINANCE_ERROR de DHL/FedEx).
+        if (collectionCost <= 0) {
+          this.logger.error(
+            `❌ FINANCE_ERROR: La sucursal "${packageDispatch.subsidiary?.name ?? packageDispatch.subsidiary?.id}" tiene fedexCostPackage=0; ` +
+            `los ingresos de recolección del cierre se registraron en $0. Revisa la configuración de costo FedEx.`,
+          );
+        }
+
+        const collectionIncomes = [];
+        for (const collection of savedCollections) {
+          const existingIncome = await manager.findOne(Income, {
+            where: {
+              trackingNumber: collection.trackingNumber,
+              sourceType: IncomeSourceType.COLLECTION,
+              active: true,
+            },
+          });
+
+          if (existingIncome) {
+            this.logger.warn(`⚠️ [RouteClosure] Ya existe ingreso de recolección para ${collection.trackingNumber}. Omitiendo cobro.`);
+            continue;
+          }
+
+          collectionIncomes.push(manager.create(Income, {
+            trackingNumber: collection.trackingNumber,
+            subsidiary: packageDispatch.subsidiary,
+            shipmentType: ShipmentType.FEDEX,
+            cost: collectionCost,
+            incomeType: IncomeStatus.ENTREGADO,
+            isGrouped: false,
+            sourceType: IncomeSourceType.COLLECTION,
+            collection: { id: collection.id },
+            date: routeIncomeDate, // día de la RUTA, no del cierre
+            createdById: userId ?? null,
+          }));
+        }
+
+        if (collectionIncomes.length > 0) {
+          await manager.save(Income, collectionIncomes);
+          this.logger.log(`🟢 [RouteClosure] Se crearon ${collectionIncomes.length} ingresos de recolección.`);
+        }
+      }
+    }
+
+    // ==========================================
+    // 5. PROCESAR PAQUETES DHL (Cobros y Estatus)
+    // ==========================================
+    this.logger.log('🟡 [RouteClosure] Evaluando paquetes DHL para actualización e ingresos...');
+
+    // `code` = código propio de DHL (OK/NH/BA/RD/CM). `isCharge` = la pieza es un
+    // ChargeShipment (carga), NO significa "cobrar". `isDelivered` = de qué lista vino
+    // (pod = entregado), se usa como RESPALDO seguro si el frontend aún no manda `code`:
+    // pod sin código → OK; returned sin código → no entregado, sin cobro (nunca "todos OK").
+    const packagesToProcess = [
+      ...createRouteclosureDto.podPackages.map(pkg => ({
+        id: typeof pkg === 'string' ? pkg : (pkg as any).id,
+        code: (pkg as any).code as DhlStatusType | undefined,
+        isCharge: (pkg as any).isCharge,
+        isDelivered: true,
+      })),
+      ...createRouteclosureDto.returnedPackages.map(pkg => ({
+        id: typeof pkg === 'string' ? pkg : (pkg as any).id,
+        code: (pkg as any).code as DhlStatusType | undefined,
+        isCharge: (pkg as any).isCharge,
+        isDelivered: false,
+      }))
+    ];
+
+    let processedDhlCount = 0;
+
+    for (const item of packagesToProcess) {
+      if (!item.id) continue;
+
+      let pPackage = null;
+
+      if (item.isCharge) {
+        pPackage = await manager.findOne(ChargeShipment, {
+          where: { id: item.id },
+          relations: ['subsidiary']
+        });
+      } else {
+        pPackage = await manager.findOne(Shipment, {
+          where: { id: item.id },
+          relations: ['subsidiary']
+        });
+      }
+
+      if (pPackage && pPackage.shipmentType === ShipmentType.DHL) {
+        processedDhlCount++;
+
+        // Traductor DHL → capa canónica interna. Respaldo si no viene `code`:
+        // pod → OK; returned → no entregado (sin código).
+        const dhlCode = item.code ?? (item.isDelivered ? DhlStatusType.OK : null);
+        const { internalStatus } = dhlCode
+          ? mapDhlCodeToInternal(dhlCode)
+          : { internalStatus: ShipmentStatusType.NO_ENTREGADO };
+        const isDeliveredDhl = internalStatus === ShipmentStatusType.ENTREGADO;
+
+        // REGLA DE NEGOCIO: las CARGAS (ChargeShipment) NO generan ingreso por paquete.
+        // El ingreso solo se crea para envíos (Shipment). Las cargas solo actualizan
+        // su estatus/historial más abajo.
+        if (!item.isCharge) {
+          const existingIncome = await manager.findOne(Income, {
+            where: shipmentIncomeWhere(pPackage.id, pPackage.trackingNumber, { sourceType: IncomeSourceType.SHIPMENT }),
+          });
+
+          if (existingIncome) {
+            this.logger.warn(`⚠️ [RouteClosure] El ingreso para el tracking DHL ${pPackage.trackingNumber} ya existe. Omitiendo cobro.`);
+          } else {
+            // CONSISTENTE CON FEDEX: se guarda SIEMPRE el costo completo (con código);
+            // qué CUENTA como ingreso lo decide `charge_rule` en lectura (isCountableIncome
+            // / espejo SQL en kpi.service). Así se puede prender el cobro de un no-entregado
+            // DHL desde Configuración sin tocar código. `nonDeliveryStatus` guarda el CÓDIGO
+            // DHL (RD/NH/BA/CM), alfabético → nunca choca con los DEX numéricos de FedEx.
+            // Sin código (returned sin `code`) → costo 0 (no facturable, no hay regla que aplicar).
+            const calculatedCost = dhlCode ? (pPackage.subsidiary?.dhlCostPackage ?? 0) : 0;
+
+            // Alerta de configuración: si el paquete DEBERÍA cobrar (tiene código DHL)
+            // pero la sucursal tiene costo 0, se genera un ingreso en $0 silencioso.
+            // Consistente con el FINANCE_ERROR del flujo FedEx (shipments.service).
+            if (dhlCode && calculatedCost <= 0) {
+              this.logger.error(
+                `❌ FINANCE_ERROR: La sucursal "${pPackage.subsidiary?.name ?? pPackage.subsidiary?.id}" tiene dhlCostPackage=0; ` +
+                `el ingreso DHL de la guía ${pPackage.trackingNumber} se registró en $0. Revisa la configuración de costo DHL.`,
+              );
+            }
+
+            const newIncome = manager.create(Income, {
+              trackingNumber: pPackage.trackingNumber,
+              subsidiary: pPackage.subsidiary,
+              shipmentType: pPackage.shipmentType,
+              cost: calculatedCost,
+              incomeType: isDeliveredDhl ? IncomeStatus.ENTREGADO : IncomeStatus.NO_ENTREGADO,
+              nonDeliveryStatus: isDeliveredDhl ? null : dhlCode,
+              isGrouped: false,
+              sourceType: IncomeSourceType.SHIPMENT,
+              shipment: pPackage as Shipment,
+              date: routeIncomeDate, // día de la RUTA, no del cierre
+              createdById: userId ?? null,
+            });
+
+            await manager.save(Income, newIncome);
+          }
+        }
+
+        // Historial: fila shipment_status con el código DHL en `exceptionCode` (trazabilidad).
+        const history = new ShipmentStatus();
+        history.status = internalStatus;
+        history.exceptionCode = dhlCode ?? '';
+        history.timestamp = new Date();
+        if (item.isCharge) history.chargeShipment = pPackage as ChargeShipment;
+        else history.shipment = pPackage as Shipment;
+        await manager.save(ShipmentStatus, history);
+
+        // Estatus canónico interno en la entidad (agnóstico al carrier).
+        if (item.isCharge) {
+          await manager.update(ChargeShipment, { id: item.id }, { status: internalStatus });
+        } else {
+          await manager.update(Shipment, { id: item.id }, { status: internalStatus });
+        }
+      }
+    }
+
+    this.logger.log(`🟢 [RouteClosure] Se procesaron ${processedDhlCount} paquetes de DHL.`);
+
+    // Cierre con pre-cierre: estatus corregidos a mano contra lo que entregó el chofer
+    // (estatus + historial + auditoría + ingreso), en esta misma transacción.
+    if (manualStatusChanges.length > 0) {
+      const user = userId
+        ? await manager.findOne(User, { where: { id: userId }, select: ['id', 'name', 'lastName'] })
+        : null;
+      const manualResult = await applyManualChanges(manager, this.auditService, {
+        dispatchId: packageDispatch.id,
+        is315: !!packageDispatch.is315,
+        subsidiary: { id: packageDispatch.subsidiary?.id, fedexCostPackage: packageDispatch.subsidiary?.fedexCostPackage },
+        routeClosureId: savedClosure.id,
+        userId: userId ?? null,
+        userName: [user?.name, user?.lastName].filter(Boolean).join(' ') || 'usuario sin nombre',
+        folio: packageDispatch.trackingNumber ?? null,
+        routeDay: toHermosilloDateString(routeIncomeDate),
+        driverNames: (packageDispatch.drivers ?? []).map((d) => d.name).join(', '),
+        routeIncomeDate,
+        now: new Date(),
+      }, manualStatusChanges);
+      this.logger.log(`🟢 [RouteClosure] Cambios manuales aplicados: ${JSON.stringify(manualResult)}`);
+    }
+
+    return { savedClosure, packageDispatch };
   }
 
   async findAll(subsidiaryId: string) {

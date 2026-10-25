@@ -67,6 +67,8 @@ export const RBAC_PERMISSIONS: RbacPermissionDef[] = [
   { code: 'operaciones.pagosFedex', name: 'Pagos a FedEx', groupName: 'Operaciones', roles: OPERATIVE },
   { code: 'operaciones.traslados', name: 'Traslados', groupName: 'Operaciones', roles: OPERATIVE },
   { code: 'operaciones.salidasARutas', name: 'Salidas a Rutas', groupName: 'Operaciones', roles: OPERATIVE },
+  // Acción: agregar/quitar paquetes de una salida abierta (con motivo e historial). Asignable por rol.
+  { code: 'operaciones.salidas.editar', name: 'Salidas a Rutas · Editar ruta', groupName: 'Operaciones', roles: ['superadmin'] },
   { code: 'operaciones.pegarFedex', name: 'Pegar FedEx (experimental)', groupName: 'Operaciones', roles: ['superadmin'] },
   // Correos (bandeja de FedEx y DHL)
   { code: 'correo.bandeja', name: 'Ver bandeja de correos', groupName: 'Correos', roles: ['superadmin'] },

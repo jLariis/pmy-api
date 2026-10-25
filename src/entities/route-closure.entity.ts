@@ -70,6 +70,10 @@ export class RouteClosure {
     @Column({ type: 'datetime', nullable: true })
     preClosureGeneratedAt: Date | null;
 
+    /** Cierre agrupado: los cierres de las rutas de un chofer del mismo día hechos juntos comparten este id (mig 118). */
+    @Column({ type: 'char', length: 36, nullable: true })
+    closureGroupId: string | null;
+
     @BeforeInsert()
     setDefaults() {
         this.createdAt = new Date();

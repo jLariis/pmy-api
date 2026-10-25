@@ -1,4 +1,10 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete, UseInterceptors, UploadedFile, BadRequestException, UploadedFiles, Req, Query } from '@nestjs/common';
+import { Controller, Get, Post, Body, Patch, Param, Delete, UseInterceptors, UploadedFile, BadRequestException, UploadedFiles, Req, Query, UseGuards } from '@nestjs/common';
+import { PermissionsGuard } from 'src/auth/guards/permissions.guard';
+import { RequirePermission } from 'src/auth/decorators/require-permission.decorator';
+import { Audit } from 'src/audit/audit.decorator';
+import { AuditAction, AuditModule } from 'src/common/enums/audit.enum';
+import { DispatchEditService } from './dispatch-edit.service';
+import { AddDispatchPackagesDto, RemoveDispatchPackagesDto } from './dto/edit-package-dispatch.dto';
 import { parseDispatchListFilters } from './dispatch-list-filters.util';
 import { PackageDispatchService } from './package-dispatch.service';
 import { CreatePackageDispatchDto } from './dto/create-package-dispatch.dto';
@@ -11,7 +17,51 @@ import { FilesInterceptor } from '@nestjs/platform-express';
 @ApiBearerAuth()
 @Controller('package-dispatchs')
 export class PackageDispatchController {
-  constructor(private readonly packageDispatchService: PackageDispatchService) {}
+  constructor(
+    private readonly packageDispatchService: PackageDispatchService,
+    private readonly dispatchEditService: DispatchEditService,
+  ) {}
+
+  // ── Edición de una salida abierta (permiso especial, asignable por rol) ──
+
+  @Post(':id/packages')
+  @UseGuards(PermissionsGuard)
+  @RequirePermission('operaciones.salidas.editar')
+  @Audit({
+    module: AuditModule.SALIDAS_RUTA,
+    action: AuditAction.UPDATE,
+    entityName: 'package_dispatch',
+    resolveEntityId: ({ params }) => params?.id,
+    describe: ({ body, response, result }) =>
+      result === 'success'
+        ? { message: `Agregó ${response?.trackingNumbers?.length ?? 0} guía(s) a la salida`, details: { guias: response?.trackingNumbers, motivo: body?.reason } }
+        : { message: 'Intentó agregar guías a la salida', details: { guias: body?.trackingNumbers, motivo: body?.reason } },
+  })
+  addPackages(@Param('id') id: string, @Body() dto: AddDispatchPackagesDto, @Req() req: any) {
+    return this.dispatchEditService.addPackages(id, dto.trackingNumbers, dto.reason, req.user?.userId);
+  }
+
+  @Post(':id/packages/remove')
+  @UseGuards(PermissionsGuard)
+  @RequirePermission('operaciones.salidas.editar')
+  @Audit({
+    module: AuditModule.SALIDAS_RUTA,
+    action: AuditAction.UPDATE,
+    entityName: 'package_dispatch',
+    resolveEntityId: ({ params }) => params?.id,
+    describe: ({ body, response, result }) =>
+      result === 'success'
+        ? { message: `Quitó ${response?.trackingNumbers?.length ?? 0} guía(s) de la salida`, details: { guias: response?.trackingNumbers, motivo: body?.reason } }
+        : { message: 'Intentó quitar guías de la salida', details: { motivo: body?.reason } },
+  })
+  removePackages(@Param('id') id: string, @Body() dto: RemoveDispatchPackagesDto, @Req() req: any) {
+    return this.dispatchEditService.removePackages(id, dto.ids, dto.reason, req.user?.userId);
+  }
+
+  @Get(':id/changes')
+  listChanges(@Param('id') id: string) {
+    return this.dispatchEditService.listChanges(id);
+  }
 
   @Get('info/:packageDispatchId')
   async getShipmentsByPackageDispatchId(@Param('packageDispatchId') packageDispatchId: string) {
