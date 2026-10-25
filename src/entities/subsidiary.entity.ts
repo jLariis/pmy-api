@@ -208,6 +208,14 @@ export class Subsidiary {
   sortDispatchByPostalCode: boolean;
 
   /**
+   * Salidas a ruta: agrupa por paquetería (FedEx, incluidas F2, y luego DHL) en el
+   * escaneo, PDF y Excel. Se combina con `sortDispatchByPostalCode` (CP dentro de
+   * cada paquetería). Migración 117 (Bodega Obregon).
+   */
+  @Column({ default: false })
+  sortDispatchByCarrier: boolean;
+
+  /**
    * Salidas a ruta: modo de validación de paquetes. Si está activo, el escaneo
    * completo se valida en UN solo request por lista (endpoint batch) y el backend
    * devuelve los paquetes ya ordenados. Si está en false (default), se conserva el

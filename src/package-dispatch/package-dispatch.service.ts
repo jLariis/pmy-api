@@ -32,6 +32,13 @@ import { hermosilloDayStartFromInstant } from 'src/common/utils';
 import { resolveClosureStatus } from 'src/tracking-sync/closure-stuck-resolver.util';
 import { loadRouteWindowContext, routeWindowKey } from './route-window.query';
 import { DispatchListFilters } from './dispatch-list-filters.util';
+import {
+  DispatchSortable,
+  DispatchSortMode,
+  isDispatchSortMode,
+  sortForDispatch,
+  subsidiaryDispatchSortMode,
+} from './dispatch-sort.util';
 
 /** Módulo con el que se etiquetan bitácora y adjuntos de correo de salidas a ruta. */
 const EMAIL_MODULE = 'package_dispatch';
@@ -79,40 +86,22 @@ export class PackageDispatchService {
   ){ }
 
   /**
-   * Ordena envíos por código postal del destinatario (recipientZip) para que la
-   * "salida a ruta" salga ordenada por CP. CP mexicano = 5 dígitos; los registros
-   * sin CP van al final. No muta el arreglo original.
+   * Ordena los envíos de una salida a ruta (paquetería+CP, CP o escaneo). Único
+   * punto de decisión de orden en backend; la regla vive en dispatch-sort.util.
    */
-  private sortByRecipientZip<T extends { recipientZip?: string }>(items: T[] = []): T[] {
-    return [...items].sort((a, b) => {
-      const za = (a?.recipientZip ?? '').toString().trim();
-      const zb = (b?.recipientZip ?? '').toString().trim();
-      if (!za && !zb) return 0;
-      if (!za) return 1;
-      if (!zb) return -1;
-      const na = Number(za);
-      const nb = Number(zb);
-      if (!Number.isNaN(na) && !Number.isNaN(nb)) return na - nb;
-      return za.localeCompare(zb);
-    });
+  /** Orden guardado en la salida; las viejas (null) usan el de la sucursal. */
+  private dispatchSortModeOf(d: Pick<PackageDispatch, 'sortMode' | 'subsidiary'>): DispatchSortMode {
+    return isDispatchSortMode(d?.sortMode) ? d.sortMode : subsidiaryDispatchSortMode(d?.subsidiary);
   }
 
-  /**
-   * Ordena según la config de la sucursal: por CP si `sortByPostalCode` está
-   * activo, o conservando el orden de entrada (orden de escaneo) si no. Único
-   * punto de decisión de orden en backend para salidas a ruta.
-   */
-  private sortShipmentsForSubsidiary<T extends { recipientZip?: string }>(
-    items: T[] = [],
-    sortByPostalCode?: boolean,
-  ): T[] {
-    return sortByPostalCode ? this.sortByRecipientZip(items) : [...items];
+  private sortShipmentsForDispatch<T extends DispatchSortable>(items: T[] = [], mode: DispatchSortMode): T[] {
+    return sortForDispatch(items, mode);
   }
 
   /**
    * Valida una lista completa de trackings en un solo request (modo batch por
    * sucursal). Reusa `validateTrackingNumber` por cada código y devuelve los
-   * resultados ordenados según `sortDispatchByPostalCode` de la sucursal.
+   * resultados ordenados según el orden configurado en la sucursal.
    */
   async validateTrackingsList(dto: ValidateTrackingsDto): Promise<any[]> {
     const { subsidiaryId } = dto;
@@ -131,7 +120,7 @@ export class PackageDispatchService {
       codes.map(code => this.validateTrackingNumber(code, subsidiaryId)),
     );
 
-    return this.sortShipmentsForSubsidiary(results, subsidiary?.sortDispatchByPostalCode);
+    return this.sortShipmentsForDispatch(results, subsidiaryDispatchSortMode(subsidiary));
   }
 
   async create(dto: CreatePackageDispatchDto, userId: string): Promise<PackageDispatch> {
@@ -187,6 +176,7 @@ export class PackageDispatchService {
         subsidiary: dto.subsidiary,
         kms: dto.kms,
         is315: dto.is315 ?? false,
+        sortMode: isDispatchSortMode(dto.sortMode) ? dto.sortMode : null,
         // Día operativo de la ruta. Si el front manda `routeDate` ('YYYY-MM-DD') se ancla a
         // las 07:00Z (00:00 Hermosillo, UTC-7) para que el día no se corra por zona horaria al
         // truncar a DATE. Sin fecha ⇒ inicio de día Hermosillo de hoy.
@@ -1154,13 +1144,13 @@ export class PackageDispatchService {
 
     // === 4. RETORNAR EL OBJETO ARMADO ===
     // Devolvemos el dispatch original pero le incrustamos los arreglos de envíos
-    // ordenados según la config de la sucursal (CP o orden de escaneo). Esto hace
-    // match perfecto con tu interface PackageDispatch en el frontend.
-    const sortByCp = dispatch.subsidiary?.sortDispatchByPostalCode;
+    // en el orden con que se armó la salida (o el de la sucursal si es vieja). Esto
+    // hace match perfecto con tu interface PackageDispatch en el frontend.
+    const sortMode = this.dispatchSortModeOf(dispatch);
     return {
       ...dispatch,
-      shipments: this.sortShipmentsForSubsidiary(shipments, sortByCp),
-      chargeShipments: this.sortShipmentsForSubsidiary(chargeShipments, sortByCp)
+      shipments: this.sortShipmentsForDispatch(shipments, sortMode),
+      chargeShipments: this.sortShipmentsForDispatch(chargeShipments, sortMode)
     };
   }
 
@@ -1346,6 +1336,7 @@ export class PackageDispatchService {
       packages: [...shipments.map((s) => map(s, false)), ...chargeShipments.map((s) => map(s, true))],
       invalidTrackings: [],
       sortByPostalCode: Boolean(dispatch?.subsidiary?.sortDispatchByPostalCode),
+      sortMode: dispatch ? this.dispatchSortModeOf(dispatch) : undefined,
       createdAt: dispatch?.createdAt,
     };
   }
@@ -1693,10 +1684,10 @@ export class PackageDispatchService {
       history.filter((h) => h.chargeShipment).map((h) => annotate(h.chargeShipment, 'charge')),
     );
 
-    // Ordenar los envíos según la config de la sucursal (CP o orden de escaneo).
-    const sortByCp = packageDispatch.subsidiary?.sortDispatchByPostalCode;
-    (packageDispatch as any).shipments = this.sortShipmentsForSubsidiary(shipments, sortByCp);
-    (packageDispatch as any).chargeShipments = this.sortShipmentsForSubsidiary(chargeShipments, sortByCp);
+    // Ordenar los envíos con el orden de la salida (o el de la sucursal si es vieja).
+    const sortMode = this.dispatchSortModeOf(packageDispatch);
+    (packageDispatch as any).shipments = this.sortShipmentsForDispatch(shipments, sortMode);
+    (packageDispatch as any).chargeShipments = this.sortShipmentsForDispatch(chargeShipments, sortMode);
 
     return packageDispatch;
   }

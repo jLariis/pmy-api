@@ -54,6 +54,6 @@ import { TemplatesBootstrapSeeder } from './templates-bootstrap.seeder';
     MailService,
     TemplatesBootstrapSeeder,
   ],
-  exports: [TemplateService, BrandingService, TemplateStore, TemplateAdminService],
+  exports: [TemplateService, BrandingService, TemplateStore, TemplateAdminService, HtmlToPdfService],
 })
 export class DocumentsModule {}

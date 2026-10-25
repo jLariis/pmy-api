@@ -92,6 +92,7 @@ export class CreateSubsidiaryDto {
   @IsBoolean() @IsOptional() forceFedexStatusOverride?: boolean;
   @IsBoolean() @IsOptional() allowSameDayPreRegistrationFedexEvents?: boolean;
   @IsBoolean() @IsOptional() sortDispatchByPostalCode?: boolean;
+  @IsBoolean() @IsOptional() sortDispatchByCarrier?: boolean;
   @IsBoolean() @IsOptional() validateDispatchByList?: boolean;
 
   // Reglas de ingreso por sucursal.

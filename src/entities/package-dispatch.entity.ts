@@ -10,6 +10,7 @@ import { RouteClosure } from "./route-closure.entity";
 import { PackageDispatchHistory } from "./package-dispatch-history.entity";
 import { User } from "./user.entity";
 import { EmailStatus } from "src/common/enums/email-status.enum";
+import type { DispatchSortMode } from "src/package-dispatch/dispatch-sort.util";
 
 @Entity('package_dispatch')
 export class PackageDispatch {
@@ -80,6 +81,11 @@ export class PackageDispatch {
   // Marca de ruta 31.5. true ⇒ los paquetes "No VAN" NO generan ingreso en el cierre.
   @Column({ type: 'boolean', default: false })
   is315: boolean;
+
+  // Orden con el que se armó la salida ('carrier_cp' | 'cp' | 'scan'). Reenviar o
+  // regenerar el PDF/Excel usa este orden. null = salida vieja (config de la sucursal).
+  @Column({ type: 'varchar', length: 16, nullable: true })
+  sortMode: DispatchSortMode | null;
 
   @Column({ type: 'timestamp', default: () => 'CURRENT_TIMESTAMP' })
   createdAt: Date;

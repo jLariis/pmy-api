@@ -4,6 +4,7 @@ import {
   InternalServerErrorException,
   Logger,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import { CreateWarehouseDto } from './dto/create-warehouse.dto';
 import {
@@ -39,6 +40,8 @@ import * as ExcelJS from 'exceljs';
 const pdfMake = require('pdfmake');
 import { TDocumentDefinitions, TableCell } from 'pdfmake/interfaces';
 import { TemplateService } from 'src/documents/template.service';
+import { HtmlToPdfService } from 'src/documents/html-to-pdf.service';
+import { dispatchCarrier } from 'src/package-dispatch/dispatch-sort.util';
 
 /**
  * Envío re-hidratado desde BD (Shipment o ChargeShipment) con los datos de
@@ -90,6 +93,41 @@ interface NotificationHeader {
    * vez de la guía maestra.
    */
   dhlShowsUniqueId?: boolean;
+}
+
+const CARRIER_SECTION_LABEL = { fedex: 'FEDEX', dhl: 'DHL', other: 'OTRA PAQUETERÍA' } as const;
+
+/**
+ * Salida a ruta agrupada por paquetería → una sección por paquetería (hoja propia
+ * en el PDF, pestaña propia en el Excel, numeración desde 1). Solo cuando la lista
+ * viene AGRUPADA (cada paquetería en un solo bloque), hay más de una y todas son
+ * FedEx/DHL. Nunca en traspasos (Administración procesa esos archivos en otro
+ * sistema). `[]` = documento único, como siempre.
+ */
+export function carrierSections(packages: any[], header: any): { label: string; items: any[] }[] {
+  if (header?.blankMissing || !packages.length) return [];
+  const runs: { carrier: keyof typeof CARRIER_SECTION_LABEL; items: any[] }[] = [];
+  for (const p of packages) {
+    const c = dispatchCarrier(p);
+    const last = runs[runs.length - 1];
+    if (last && last.carrier === c) last.items.push(p);
+    else runs.push({ carrier: c, items: [p] });
+  }
+  const distinct = new Set(runs.map((r) => r.carrier));
+  // Sin paquetería conocida (datos incompletos) no se separa: sería engañoso.
+  if (runs.length < 2 || distinct.size !== runs.length || distinct.has('other')) return [];
+  return runs.map((r) => ({ label: CARRIER_SECTION_LABEL[r.carrier], items: r.items }));
+}
+
+/** Une los <body> de varios HTML ya renderizados en un solo documento, con salto de página entre ellos. */
+export function joinHtmlPages(htmls: string[]): string {
+  const bodyOf = (h: string) => {
+    const a = h.indexOf('<body>');
+    const b = h.lastIndexOf('</body>');
+    return a >= 0 && b > a ? h.slice(a + '<body>'.length, b) : h;
+  };
+  const head = htmls[0].slice(0, htmls[0].indexOf('<body>') + '<body>'.length);
+  return `${head}${htmls.map(bodyOf).join('<div style="break-before:page"></div>')}</body></html>`;
 }
 
 /**
@@ -290,6 +328,7 @@ export class WarehouseService {
     private readonly dataSource: DataSource,
     private readonly mailService: MailService,
     private readonly templateService: TemplateService,
+    @Optional() private readonly htmlToPdf?: HtmlToPdfService,
   ) {
      // Configuración de pdfmake 0.3.x (API unificada por instancia)
     pdfMake.addFonts(this.fonts);
@@ -1871,6 +1910,14 @@ export class WarehouseService {
   }
 
   private async generateExcelBuffer(header: NotificationHeader, packages: any[]): Promise<Buffer> {
+    const sections = carrierSections(packages, header);
+    if (sections.length > 1) {
+      const joined = await this.renderExcelBySection(header, sections).catch((e: any) => {
+        this.logger?.warn?.(`Excel por paquetería falló (${e?.message}); va en una sola hoja`);
+        return null;
+      });
+      if (joined) return joined;
+    }
     try {
       const data = buildWarehouseExcelData(header, packages, this.timeZone);
       const r = await this.templateService.render('warehouse_dispatch_excel', data);
@@ -1880,6 +1927,53 @@ export class WarehouseService {
       this.logger?.warn?.(`Excel por motor falló (${e?.message}); usando generador legacy`);
     }
     return this.generateExcelBufferLegacy(header, packages);
+  }
+
+  /** Cabecera de una sección: el título lleva la paquetería ("SALIDA A RUTA · FEDEX"). */
+  private sectionHeader(header: NotificationHeader, label: string): NotificationHeader {
+    return { ...header, title: `${header.title ?? 'SALIDA A RUTA'} · ${label}` };
+  }
+
+  /**
+   * Excel con una pestaña por paquetería: cada sección se genera con la misma
+   * plantilla y se copia como hoja aparte. null si el motor no devuelve archivo.
+   */
+  private async renderExcelBySection(
+    header: NotificationHeader,
+    sections: { label: string; items: any[] }[],
+  ): Promise<Buffer | null> {
+    const out = new ExcelJS.Workbook();
+    for (const sec of sections) {
+      const data = buildWarehouseExcelData(this.sectionHeader(header, sec.label), sec.items, this.timeZone);
+      const r = await this.templateService.render('warehouse_dispatch_excel', data);
+      if (!r.buffer) return null;
+      const wb = new ExcelJS.Workbook();
+      await wb.xlsx.load(r.buffer as any);
+      const name = sec.label === 'FEDEX' ? 'FedEx' : sec.label;
+      const src = wb.worksheets[0].model as any;
+      // `merges` (lectura) → `mergeCells` (escritura): sin esto se pierden las celdas combinadas.
+      out.addWorksheet(name).model = { ...src, name, mergeCells: src.merges } as any;
+    }
+    return Buffer.from((await out.xlsx.writeBuffer()) as ArrayBuffer);
+  }
+
+  /**
+   * PDF con una hoja (o más) por paquetería: cada sección se genera con la misma
+   * plantilla y se unen con salto de página. null si el motor no devuelve HTML.
+   */
+  private async renderPdfBySection(
+    header: NotificationHeader,
+    sections: { label: string; items: any[] }[],
+  ): Promise<Buffer | null> {
+    if (!this.htmlToPdf) return null;
+    const htmls: string[] = [];
+    for (const sec of sections) {
+      const data = buildWarehousePdfData(this.sectionHeader(header, sec.label), sec.items, this.timeZone);
+      const r = await this.templateService.render('warehouse_dispatch_pdf', data);
+      if (!r.html) return null;
+      htmls.push(r.html);
+    }
+    return this.htmlToPdf.convert(joinHtmlPages(htmls));
   }
 
   private async generateExcelBufferLegacy(
@@ -1976,6 +2070,14 @@ export class WarehouseService {
   }
 
   private async generatePdfBuffer(header: NotificationHeader, packages: any[]): Promise<Buffer> {
+    const sections = carrierSections(packages, header);
+    if (sections.length > 1) {
+      const joined = await this.renderPdfBySection(header, sections).catch((e: any) => {
+        this.logger?.warn?.(`PDF por paquetería falló (${e?.message}); va en un solo bloque`);
+        return null;
+      });
+      if (joined) return joined;
+    }
     try {
       const data = buildWarehousePdfData(header, packages, this.timeZone);
       const r = await this.templateService.render('warehouse_dispatch_pdf', data);

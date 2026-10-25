@@ -4,7 +4,7 @@ import { ArrayNotEmpty, IsArray, IsString } from 'class-validator';
 /**
  * Body del endpoint batch de validación de salidas a ruta. Valida toda la lista
  * escaneada en un solo request y devuelve los paquetes ordenados según la config
- * de la sucursal (`sortDispatchByPostalCode`).
+ * de la sucursal (`sortDispatchByCarrier` / `sortDispatchByPostalCode`).
  */
 export class ValidateTrackingsDto {
   @ApiProperty({ type: [String], example: ['794613...', 'JD0142...'] })

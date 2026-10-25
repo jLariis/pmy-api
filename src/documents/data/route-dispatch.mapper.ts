@@ -1,5 +1,6 @@
 import { format } from 'date-fns';
 import { toZonedTime } from 'date-fns-tz';
+import { DispatchSortMode, dispatchCarrier, sortForDispatch } from 'src/package-dispatch/dispatch-sort.util';
 
 const TZ = 'America/Hermosillo';
 const NO_PHONE = ['sin teléfono', 'sin telefono', 's/telefono', 's/teléfono', 's/tel', 'sin tel', 'not phone'];
@@ -27,6 +28,8 @@ export interface RouteDispatchInput {
   packages: RouteDispatchPackage[];
   invalidTrackings?: string[];
   sortByPostalCode?: boolean; // default true
+  /** Orden de la salida; si viene, manda sobre `sortByPostalCode`. */
+  sortMode?: DispatchSortMode;
   now?: Date;
   createdAt?: string | Date;
 }
@@ -68,7 +71,11 @@ export function buildRouteDispatchData(input: RouteDispatchInput): Record<string
   const dispatchAt = input.createdAt ? new Date(input.createdAt) : now;
   const dispatchDateTime = format(toZonedTime(dispatchAt, TZ), 'yyyy-MM-dd HH:mm');
 
-  const ordered = input.sortByPostalCode === false ? input.packages : sortByZip(input.packages);
+  const ordered = input.sortMode
+    ? sortForDispatch(input.packages, input.sortMode)
+    : input.sortByPostalCode === false ? input.packages : sortByZip(input.packages);
+  const byZip = input.sortMode ? input.sortMode !== 'scan' : input.sortByPostalCode !== false;
+  const CARRIER_LABEL = { fedex: 'FEDEX', dhl: 'DHL', other: 'OTRA PAQUETERÍA' } as const;
 
   const stats = {
     total: ordered.length, regularCount: 0, f2Count: 0, cargaCount: 0, highValueCount: 0,
@@ -97,7 +104,11 @@ export function buildRouteDispatchData(input: RouteDispatchInput): Record<string
 
     const icons = `${p.consolidated?.type === 'aereo' ? '[A]' : ''}${p.isCharge ? '[C]' : ''}${p.payment ? '[$]' : ''}${p.isHighValue ? '[H]' : ''}`;
     const zone = (p.recipientZip || '').slice(0, 2);
-    const zoneChanged = input.sortByPostalCode !== false && i > 0 && zone !== prevZone;
+    // Paquetería+CP: etiqueta del grupo en la primera fila de cada paquetería.
+    const groupLabel = input.sortMode === 'carrier_cp' && (i === 0 || dispatchCarrier(ordered[i - 1]) !== dispatchCarrier(p))
+      ? CARRIER_LABEL[dispatchCarrier(p)]
+      : '';
+    const zoneChanged = byZip && i > 0 && !groupLabel && zone !== prevZone;
     prevZone = zone;
 
     const rowClass = [i % 2 === 0 ? 'even' : '', hasPayment ? 'pago' : '', isExpiringToday ? 'vencehoy' : '', zoneChanged ? 'zone' : '']
@@ -120,6 +131,7 @@ export function buildRouteDispatchData(input: RouteDispatchInput): Record<string
       recipientPhone: formatPhone(p.recipientPhone),
       rowClass,
       rowFill,
+      groupLabel,
     };
   });
   stats.regularCount = stats.total - stats.f2Count - stats.highValueCount;
