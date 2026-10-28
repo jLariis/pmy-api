@@ -41,6 +41,10 @@ export function groupClosureProblem(dispatches: GroupDispatchInfo[], requestedId
  *  - Kilometraje final → a la ÚLTIMA ruta del día (las demás quedan sin km).
  * `membership`: id de shipment o carga → salida. Un paquete que no es de ninguna
  * salida del grupo es error (la pantalla está desactualizada).
+ *
+ * Una guía que salió en DOS rutas del grupo (p. ej. Constitución 878413801340, 22-oct)
+ * cuenta UNA sola vez, en la ruta donde está ahora (la más reciente: el llamador arma
+ * `membership` en orden de `addedAt`). Antes, cerrando ruta por ruta, se contaba dos veces.
  */
 export function splitGroupClosure(
   input: GroupClosureInput,
@@ -52,17 +56,25 @@ export function splitGroupClosure(
   const empty = () => ({ pod: [] as any[], returned: [] as any[], manual: [] as any[] });
   const parts = new Map(orderedDispatchIds.map((id) => [id, empty()]));
   const unknown: string[] = [];
+  const seen = new Set<string>();
 
   const route = (pkg: any, bucket: 'pod' | 'returned') => {
     const id = idOf(pkg);
     if (isNoVan(id)) return; // los No VAN viajan aparte (noVanPackages)
+    const key = `${pkg?.isCharge ? 'c' : 's'}:${id}`;
+    if (seen.has(key)) return; // misma guía repetida (venía en dos rutas del grupo)
+    seen.add(key);
     const owner = id ? membership.get(id) : undefined;
     if (!owner || !parts.has(owner)) { unknown.push(pkg?.trackingNumber ?? id ?? '?'); return; }
     parts.get(owner)![bucket].push(pkg);
   };
   (input.podPackages ?? []).forEach((p) => route(p, 'pod'));
   (input.returnedPackages ?? []).forEach((p) => route(p, 'returned'));
+  const seenManual = new Set<string>();
   for (const ch of input.manualStatusChanges ?? []) {
+    const mkey = `${ch.isCharge ? 'c' : 's'}:${ch.id}`;
+    if (seenManual.has(mkey)) continue;
+    seenManual.add(mkey);
     const owner = membership.get(ch.id);
     if (!owner || !parts.has(owner)) { unknown.push(ch.trackingNumber); continue; }
     parts.get(owner)!.manual.push(ch);

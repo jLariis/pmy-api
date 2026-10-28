@@ -427,7 +427,8 @@ export class RouteclosureService {
     // Primera ruta del día = la que salió primero (recolecciones/No VAN); última = km final.
     const ordered = [...infos].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()).map((d) => d.id);
     const rows: { dispatchId: string; shipmentId: string | null; chargeShipmentId: string | null }[] = await this.dataSource.query(
-      'SELECT dispatchId, shipmentId, chargeShipmentId FROM package_dispatch_history WHERE dispatchId IN (?)',
+      // Orden por addedAt: si una guía salió en dos rutas del grupo, gana la más reciente.
+      'SELECT dispatchId, shipmentId, chargeShipmentId FROM package_dispatch_history WHERE dispatchId IN (?) ORDER BY addedAt',
       [ordered],
     );
     const membership = new Map<string, string>();

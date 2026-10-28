@@ -45,4 +45,10 @@ describe('splitGroupClosure', () => {
   it('un paquete ajeno a las rutas del grupo es error', () => {
     expect(() => splitGroupClosure({ ...input, podPackages: [{ id: 'zz', trackingNumber: 'T9' }] }, ['A', 'B'], membership)).toThrow(/T9/);
   });
+
+  it('una guía que salió en dos rutas del grupo cuenta una sola vez, en su ruta actual', () => {
+    const m = new Map([['p1', 'B']]); // membership ya resuelta a la ruta más reciente
+    const parts = splitGroupClosure({ ...input, podPackages: [{ id: 'p1' }, { id: 'p1' }], returnedPackages: [], manualStatusChanges: [] }, ['A', 'B'], m);
+    expect(parts.map((p) => p.dto.podPackages.length)).toEqual([0, 1]);
+  });
 });
