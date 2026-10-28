@@ -909,7 +909,8 @@ export class ShipmentsService {
       // Historial FedEx de cada guía (como el master) y paquetes del master de ESTE consolidado.
       const toCreate = shipmentsToProcess.map((d: any) => String(d.trackingNumber || '').trim()).filter((t) => t && !dupSet.has(t));
       const fedexByTracking = await this.fetchChargeFedexHistories(toCreate);
-      const masterPackages = await this.findMasterPackagesForF2(queryRunner.manager, toCreate, consNumber, subsidiaryId);
+      const masterPackages = await this.findMasterPackagesForF2(queryRunner.manager, toCreate, subsidiaryId);
+      const removedFromMasterCons = new Map<string, number>(); // consolidado del master → guías que salieron
 
       // Consolidado para las guías NUEVAS (escenario B). Las migradas (escenario A) ya
       // heredan el consolidatedId del shipment original vía `...original`, así que NO se tocan.
@@ -938,9 +939,9 @@ export class ShipmentsService {
           if (tnF2 && (dupSet.has(tnF2) || seenF2.has(tnF2))) { duplicatedF2++; continue; }
           if (tnF2) seenF2.add(tnF2);
 
-          // La carga nace como registro nuevo (nunca se clona). Registros de consolidados
-          // ANTERIORES no se tocan (bug 2026-10-07: la migración clonaba devueltos). Si el master
-          // de ESTE consolidado ya la subió como paquete, ese paquete se elimina abajo.
+          // La carga nace como registro nuevo (nunca se clona). Registros de días ANTERIORES no
+          // se tocan (bug 2026-10-07: la migración clonaba devueltos). Si el master la subió hoy
+          // como paquete (aunque con otro consolidado), ese paquete se elimina abajo.
           // commitDateTime (columna NOT NULL): del Excel o fallback hoy 18:00.
           let csCommitDateTime: Date | undefined;
           if (data.commitDate) {
@@ -991,6 +992,9 @@ export class ShipmentsService {
           if (masterPkg?.decision.action === 'remove') {
             await this.removeMasterPackageForF2(queryRunner.manager, masterPkg, savedCS.id);
             migrated.push(savedCS.trackingNumber);
+            if (masterPkg.consolidatedId) {
+              removedFromMasterCons.set(masterPkg.consolidatedId, (removedFromMasterCons.get(masterPkg.consolidatedId) ?? 0) + 1);
+            }
           } else {
             if (masterPkg?.decision.action === 'keep') keptInMaster.push({ tracking: tnF2, reason: masterPkg.decision.reason });
             createdFromScratch.push(savedCS.trackingNumber);
@@ -1028,11 +1032,21 @@ export class ShipmentsService {
         await queryRunner.manager.save(newIncome);
       }
 
-      // Suma las cargas realmente agregadas (migradas + nuevas) al conteo de la Charge, y
-      // solo las NUEVAS al consolidado: las que venían como paquete en el master de este
-      // consolidado ya estaban contadas (antes se sumaban doble: Cabo 09/12/13-oct).
-      await this.bumpChargeCount(queryRunner.manager, savedCharge, migrated.length + createdFromScratch.length);
-      await this.bumpConsolidatedCount(queryRunner.manager, chargeConsolidated, createdFromScratch.length);
+      // Suma las cargas realmente agregadas (migradas + nuevas) a la Charge y al consolidado del
+      // F2; el consolidado del master pierde las guías que pasaron a carga. Si es el MISMO
+      // consolidado, esas guías ya estaban contadas y no se tocan (antes se sumaban doble:
+      // Cabo 09/12/13-oct).
+      const added = migrated.length + createdFromScratch.length;
+      const alreadyInF2Cons = chargeConsolidated ? (removedFromMasterCons.get(chargeConsolidated.id) ?? 0) : 0;
+      if (chargeConsolidated) removedFromMasterCons.delete(chargeConsolidated.id);
+      for (const [consId, count] of removedFromMasterCons) {
+        await queryRunner.manager.query(
+          `UPDATE consolidated SET numberOfPackages = GREATEST(COALESCE(numberOfPackages, 0) - ?, 0) WHERE id = ?`,
+          [count, consId],
+        );
+      }
+      await this.bumpChargeCount(queryRunner.manager, savedCharge, added);
+      await this.bumpConsolidatedCount(queryRunner.manager, chargeConsolidated, added - alreadyInF2Cons);
 
       // Si todo salió bien, confirmamos cambios
       await queryRunner.commitTransaction();
@@ -1530,27 +1544,37 @@ export class ShipmentsService {
   }
 
   /**
-   * Paquetes que el master de ESTE consolidado (consNumber + sucursal) subió y que la F2 trae
-   * como carga. Solo el mismo consolidado: los de consolidados anteriores nunca se tocan.
+   * Paquete del master que la F2 trae como carga: el registro más reciente de la guía en la
+   * sucursal. El F2 llega con OTRO consolidado (el del correo), así que no se filtra por
+   * consNumber; `decideMasterRemoval` solo lo quita si se subió HOY (Hermosillo).
    */
-  private async findMasterPackagesForF2(manager: EntityManager, trackings: string[], consNumber: string, subsidiaryId: string) {
-    const out = new Map<string, { id: string; paymentId: string | null; decision: MasterRemovalDecision }>();
+  private async findMasterPackagesForF2(manager: EntityManager, trackings: string[], subsidiaryId: string) {
+    const out = new Map<string, { id: string; paymentId: string | null; consolidatedId: string | null; decision: MasterRemovalDecision }>();
     const tns = [...new Set(trackings.map((t) => String(t || '').trim()).filter(Boolean))];
     if (!tns.length) return out;
-    const rows: { id: string; trackingNumber: string; paymentId: string | null; hasDispatch: number; hasIncome: number }[] =
-      await manager.query(
-        `SELECT s.id, s.trackingNumber, s.paymentId,
-                EXISTS(SELECT 1 FROM package_dispatch_history h WHERE h.shipmentId = s.id) AS hasDispatch,
-                EXISTS(SELECT 1 FROM income i WHERE i.shipmentId = s.id AND i.active = 1) AS hasIncome
-           FROM shipment s
-          WHERE s.trackingNumber IN (?) AND s.subsidiaryId = ? AND s.consNumber = ? AND s.active = 1`,
-        [tns, subsidiaryId, consNumber],
-      );
+    const rows: {
+      id: string; trackingNumber: string; paymentId: string | null; consolidatedId: string | null;
+      status: string | null; createdAt: Date; hasDispatch: number; hasIncome: number;
+    }[] = await manager.query(
+      `SELECT s.id, s.trackingNumber, s.paymentId, s.consolidatedId, s.status, s.createdAt,
+              EXISTS(SELECT 1 FROM package_dispatch_history h WHERE h.shipmentId = s.id) AS hasDispatch,
+              EXISTS(SELECT 1 FROM income i WHERE i.shipmentId = s.id AND i.active = 1) AS hasIncome
+         FROM shipment s
+        WHERE s.trackingNumber IN (?) AND s.subsidiaryId = ? AND s.active = 1
+        ORDER BY s.createdAt DESC`,
+      [tns, subsidiaryId],
+    );
+    const now = new Date();
     for (const r of rows) {
+      if (out.has(r.trackingNumber)) continue; // solo el más reciente
       out.set(r.trackingNumber, {
         id: r.id,
         paymentId: r.paymentId,
-        decision: decideMasterRemoval({ hasDispatch: !!Number(r.hasDispatch), hasActiveIncome: !!Number(r.hasIncome) }),
+        consolidatedId: r.consolidatedId,
+        decision: decideMasterRemoval({
+          hasDispatch: !!Number(r.hasDispatch), hasActiveIncome: !!Number(r.hasIncome),
+          status: r.status, createdAt: r.createdAt, now,
+        }),
       });
     }
     return out;

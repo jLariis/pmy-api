@@ -3,7 +3,7 @@ jest.mock('p-limit', () => ({ __esModule: true, default: () => (fn: any) => fn()
 jest.mock('src/utils/file-upload.utils', () => ({
   ...jest.requireActual('src/utils/file-upload.utils'),
   pickSheetWithHeaders: () => ({ sheet: {}, sheetName: 'F2' }),
-  parseDynamicFileF2: () => [{ trackingNumber: 'MASTER1' }, { trackingNumber: 'NUEVA1' }, { trackingNumber: 'RUTA1' }],
+  parseDynamicFileF2: () => [{ trackingNumber: 'MASTER1' }, { trackingNumber: 'NUEVA1' }, { trackingNumber: 'RUTA1' }, { trackingNumber: 'VIEJA1' }],
 }));
 
 import * as XLSX from 'xlsx';
@@ -12,11 +12,14 @@ import { Shipment, ShipmentStatus, ChargeShipment } from 'src/entities';
 import { ShipmentStatusType } from 'src/common/enums/shipment-status-type.enum';
 
 /**
- * F2 del MISMO consolidado que el master (Cabo 305823041209, 13-oct-2026): la guía que el master
- * subió como paquete se elimina del master (sin clonar), la carga trae su historial de FedEx y el
- * contador del consolidado no la suma dos veces.
+ * F2 que llega después del master con OTRO consolidado (el del correo; YAQUI, 28-oct-2026): la
+ * guía que el master subió HOY como paquete se elimina del master (sin clonar), la carga trae su
+ * historial de FedEx y los contadores de ambos consolidados cuadran. Lo de días anteriores no se toca.
  */
-function harness() {
+function harness(opts: { masterConsId?: string } = {}) {
+  const masterConsId = opts.masterConsId ?? 'cons-master';
+  const today = new Date();
+  const yesterday = new Date(today.getTime() - 36 * 3600_000);
   const deleted: string[] = [];
   const queries: { sql: string; params: any[] }[] = [];
   const savedStatuses: any[] = [];
@@ -36,8 +39,9 @@ function harness() {
       queries.push({ sql, params });
       if (sql.includes('FROM shipment s')) {
         return [
-          { id: 'ship-master1', trackingNumber: 'MASTER1', paymentId: 'pay-1', hasDispatch: 0, hasIncome: 0 },
-          { id: 'ship-ruta1', trackingNumber: 'RUTA1', paymentId: null, hasDispatch: 1, hasIncome: 0 },
+          { id: 'ship-master1', trackingNumber: 'MASTER1', paymentId: 'pay-1', consolidatedId: masterConsId, status: 'pendiente', createdAt: today, hasDispatch: 0, hasIncome: 0 },
+          { id: 'ship-ruta1', trackingNumber: 'RUTA1', paymentId: null, consolidatedId: masterConsId, status: 'en_ruta', createdAt: today, hasDispatch: 1, hasIncome: 0 },
+          { id: 'ship-vieja1', trackingNumber: 'VIEJA1', paymentId: null, consolidatedId: 'cons-viejo', status: 'pendiente', createdAt: yesterday, hasDispatch: 0, hasIncome: 0 },
         ];
       }
       if (sql.startsWith('SELECT id FROM payment')) return [{ id: 'pay-1' }];
@@ -59,7 +63,7 @@ function harness() {
   svc.incomeRepository = { create: (x: any) => x };
   svc.findOrCreateCharge = jest.fn(async () => ({ charge: { id: 'charge-1', numberOfPackages: 0 }, created: false }));
   svc.findExistingChargeTrackings = jest.fn(async () => new Set());
-  const cons = { id: 'cons-1', numberOfPackages: 140 };
+  const cons = { id: opts.masterConsId ?? 'cons-f2', numberOfPackages: opts.masterConsId ? 140 : 0 };
   svc.findOrCreateChargeConsolidated = jest.fn(async () => cons);
   svc.fedexService = {
     trackPackage: jest.fn(async (tn: string) => tn === 'NUEVA1'
@@ -78,26 +82,38 @@ function harness() {
   return { svc, cons, deleted, queries, savedStatuses, updates, file: { buffer } as any };
 }
 
-describe('processFileF2 — guía que el master del mismo consolidado ya subió como paquete', () => {
-  it('elimina el paquete del master, pasa su cobro a la carga y no suma doble al consolidado', async () => {
+describe('processFileF2 — guía que el master subió hoy como paquete (F2 con otro consolidado)', () => {
+  it('elimina del master solo el paquete de hoy, pasa su cobro a la carga y cuadra ambos contadores', async () => {
     const h = harness();
-    const res: any = await h.svc.processFileF2(h.file, 'sub-cabo', '305823041209', new Date('2026-10-13T00:00:00Z'), 'maria');
+    const res: any = await h.svc.processFileF2(h.file, 'sub-yaqui', '305900000001', new Date(), 'maria');
 
-    expect(h.deleted).toEqual(['ship-master1']);
+    // Sin exigir el mismo consolidado del master.
+    const lookup = h.queries.find((q) => q.sql.includes('FROM shipment s'))!;
+    expect(lookup.sql).not.toContain('consNumber');
+    expect(h.deleted).toEqual(['ship-master1']); // VIEJA1 (ayer) y RUTA1 (ya en ruta) se quedan
     expect(h.queries.some((q) => q.sql.startsWith('UPDATE payment') && q.params[0] && q.params[1] === 'pay-1')).toBe(true);
-    // 140 del master + solo la NUEVA (MASTER1 ya estaba contada; RUTA1 se conserva y sí suma).
-    expect(h.cons.numberOfPackages).toBe(142);
-    expect(res.summary).toMatchObject({ migrated: 1, insertedNew: 2, notFoundInFedex: 1, keptInMaster: 1 });
+    // El consolidado del master pierde la guía que pasó a carga; el del F2 cuenta todas sus guías.
+    expect(h.queries.find((q) => q.sql.startsWith('UPDATE consolidated'))?.params).toEqual([1, 'cons-master']);
+    expect(h.cons.numberOfPackages).toBe(4);
+    expect(res.summary).toMatchObject({ migrated: 1, insertedNew: 3, notFoundInFedex: 1, keptInMaster: 1 });
     expect(res.details.keptInMaster).toEqual([{ tracking: 'RUTA1', reason: 'ya salió a ruta como paquete' }]);
     expect(res.details.notFoundInFedex).toEqual(['NUEVA1']);
   });
 
+  it('si el F2 cae en el mismo consolidado del master, no cuenta dos veces la guía migrada', async () => {
+    const h = harness({ masterConsId: 'cons-same' });
+    await h.svc.processFileF2(h.file, 'sub-yaqui', '305900000001', new Date(), 'maria');
+
+    expect(h.queries.some((q) => q.sql.startsWith('UPDATE consolidated'))).toBe(false);
+    expect(h.cons.numberOfPackages).toBe(143); // 140 + NUEVA1, RUTA1, VIEJA1 (MASTER1 ya estaba)
+  });
+
   it('guarda el historial de FedEx en la carga (ligado a la carga, no a un paquete) y su id FedEx', async () => {
     const h = harness();
-    await h.svc.processFileF2(h.file, 'sub-cabo', '305823041209', new Date('2026-10-13T00:00:00Z'), 'maria');
+    await h.svc.processFileF2(h.file, 'sub-yaqui', '305900000001', new Date(), 'maria');
 
     const fedexRows = h.savedStatuses.filter((r) => r.notes === 'At local FedEx facility');
-    expect(fedexRows).toHaveLength(2); // MASTER1 y RUTA1 (NUEVA1 no existe en FedEx)
+    expect(fedexRows).toHaveLength(3); // MASTER1, RUTA1 y VIEJA1 (NUEVA1 no existe en FedEx)
     for (const r of fedexRows) {
       expect(r.shipment).toBeNull();
       expect(r.chargeShipment?.id).toMatch(/^cs-/);
