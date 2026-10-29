@@ -1,3 +1,4 @@
+import { PackageTimelineController } from './package-timeline.controller';
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { Income, IncomeChangeLog, Shipment, Subsidiary } from '../entities';
@@ -23,7 +24,7 @@ import { ConsolidadorViewsService } from './zone/consolidador-views.service';
 
 @Module({
   imports: [TypeOrmModule.forFeature([Income, Shipment, Subsidiary, IncomeChangeLog]), FedexStatusModule, ChargeRulesModule],
-  controllers: [ConsolidadorController],
+  controllers: [ConsolidadorController, PackageTimelineController],
   providers: [ConsolidadorReadService, ConsolidadorGroupsService, ConsolidadorIncomeService, ConsolidadorStatusService, ConsolidadorAuditService, CobrosAuditService, ManualCountService, IncomeDateRealignService, FedexService, ZoneService, ConsolidadorViewsService, ChargeGuidesService, CollectionsAuditService, NoVanAuditService, ZoneManualCountService, SummaryService],
 })
 export class ConsolidadorModule {}

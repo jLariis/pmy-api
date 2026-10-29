@@ -29,15 +29,33 @@ export class ConsolidadorStatusService {
   ) {}
 
   /**
-   * Timeline unificado del paquete: recibido → consolidado → salida a ruta → eventos FedEx → ingreso.
-   * Ascendente por fecha. Cada evento trae `kind` para pintarlo distinto en el FE.
+   * Timeline unificado del paquete: recibido → consolidado → salidas a ruta (y sus cierres) →
+   * estatus (con código) → ingreso. Ascendente por fecha. Cada evento trae `kind` para pintarlo
+   * distinto en el FE. Sirve para envíos y cargas (F2/31.5); `ref` fija el registro exacto
+   * (una guía puede tener varios registros); sin `ref` toma el registro más reciente.
    */
-  async packageTimeline(tracking: string) {
-    const shipment = await this.shipmentRepo.findOne({
-      where: { trackingNumber: tracking },
-      relations: ['statusHistory'],
-    });
-    if (!shipment) return { events: [] as any[] };
+  async packageTimeline(tracking: string, ref?: { id: string; isCharge: boolean }) {
+    const q = (sql: string, p: any[] = []) => this.shipmentRepo.manager.query(sql, p);
+    let rec: any;
+    if (ref?.id) {
+      [rec] = await q(
+        ref.isCharge
+          ? 'SELECT id, 1 isCharge, status, createdAt, consolidatedId FROM charge_shipment WHERE id = ?'
+          : 'SELECT id, 0 isCharge, status, createdAt, consolidatedId FROM shipment WHERE id = ?',
+        [ref.id],
+      );
+    } else {
+      [rec] = await q(
+        `SELECT * FROM (
+           SELECT id, 0 isCharge, status, createdAt, consolidatedId FROM shipment WHERE trackingNumber = ? AND active = 1
+           UNION ALL SELECT id, 1, status, createdAt, consolidatedId FROM charge_shipment WHERE trackingNumber = ? AND active = 1
+         ) x ORDER BY createdAt DESC LIMIT 1`,
+        [tracking, tracking],
+      );
+    }
+    if (!rec) return { events: [] as any[] };
+    const isCharge = !!Number(rec.isCharge);
+    const col = isCharge ? 'chargeShipmentId' : 'shipmentId';
 
     const iso = (d: Date | string | null | undefined) => (d ? new Date(d).toISOString() : null);
     // `granularity` distingue INSTANTE (fecha+hora reales, p.ej. createdAt/evento FedEx) de
@@ -47,13 +65,11 @@ export class ConsolidadorStatusService {
     type Granularity = 'instant' | 'day';
     const events: Array<{ kind: string; label: string; date: string | null; granularity: Granularity; meta?: any }> = [];
 
-    if (shipment.createdAt)
-      events.push({ kind: 'recibido', label: 'Registrado en el sistema', date: iso(shipment.createdAt), granularity: 'instant' });
+    if (rec.createdAt)
+      events.push({ kind: 'recibido', label: isCharge ? 'Registrada como carga' : 'Registrado en el sistema', date: iso(rec.createdAt), granularity: 'instant' });
 
-    if ((shipment as any).consolidatedId) {
-      const cons = await this.shipmentRepo.manager
-        .getRepository(Consolidated)
-        .findOne({ where: { id: (shipment as any).consolidatedId } });
+    if (rec.consolidatedId) {
+      const cons = await this.shipmentRepo.manager.getRepository(Consolidated).findOne({ where: { id: rec.consolidatedId } });
       if (cons) {
         events.push({
           kind: 'consolidado',
@@ -64,47 +80,61 @@ export class ConsolidadorStatusService {
       }
     }
 
-    if ((shipment as any).routeId) {
-      const pd = await this.shipmentRepo.manager
-        .getRepository(PackageDispatch)
-        .findOne({ where: { id: (shipment as any).routeId } });
-      if (pd)
-        events.push({
-          kind: 'salida_ruta',
-          label: 'Salió a ruta',
-          date: iso((pd as any).routeDate ?? (pd as any).createdAt),
-          granularity: 'day', // routeDate = día de la ruta
-        });
+    // Todas las salidas a ruta en que fue (historial, no solo la relación viva) y su cierre.
+    const routes: any[] = await q(
+      `SELECT pd.trackingNumber folio, pd.createdAt departedAt, MAX(rc.createdAt) closedAt
+         FROM package_dispatch_history h JOIN package_dispatch pd ON pd.id = h.dispatchId
+         LEFT JOIN route_closure rc ON rc.package_dispatch_id = pd.id
+        WHERE h.${col} = ? GROUP BY pd.id, pd.trackingNumber, pd.createdAt`,
+      [rec.id],
+    );
+    for (const r of routes) {
+      events.push({ kind: 'salida_ruta', label: `Salió a ruta ${r.folio ?? ''}`.trim(), date: iso(r.departedAt), granularity: 'instant' });
+      if (r.closedAt) events.push({ kind: 'salida_ruta', label: `Se cerró la ruta ${r.folio ?? ''}`.trim(), date: iso(r.closedAt), granularity: 'instant' });
     }
 
-    for (const s of (shipment as any).statusHistory ?? []) {
+    const history: any[] = await q(
+      `SELECT status, NULLIF(exceptionCode, '') exceptionCode, timestamp FROM shipment_status WHERE ${col} = ?`,
+      [rec.id],
+    );
+    for (const s of history) {
       const origin = statusOrigin(s.status);
+      const code = s.exceptionCode && !['44', '67'].includes(String(s.exceptionCode)) ? ` · ${s.exceptionCode}` : '';
       events.push({
         kind: origin === 'fedex' ? 'estatus_fedex' : 'estatus_interno',
-        label: String(s.status ?? '').replace(/_/g, ' '),
+        label: `${String(s.status ?? '').replace(/_/g, ' ')}${code}`,
         date: iso(s.timestamp),
         granularity: 'instant', // timestamp real del evento
       });
     }
 
-    const income = await this.incomeRepo.findOne({
-      where: { shipment: { id: shipment.id }, active: true },
-      relations: ['subsidiary'],
-    });
-    if (income) {
-      // Ingreso de carga (grouped) usa el día del consolidado; el de envío ancla al evento.
-      const isChargeIncome = income.sourceType === IncomeSourceType.CHARGE;
-      events.push({
-        kind: 'ingreso',
-        label: `Ingreso (${income.incomeType})`,
-        date: iso(income.date),
-        granularity: isChargeIncome ? 'day' : 'instant',
-        meta: { cost: Number(income.cost), subsidiary: (income.subsidiary as any)?.name ?? null },
+    if (!isCharge) {
+      const income = await this.incomeRepo.findOne({
+        where: { shipment: { id: rec.id }, active: true },
+        relations: ['subsidiary'],
       });
+      if (income) {
+        // Ingreso de carga (grouped) usa el día del consolidado; el de envío ancla al evento.
+        const isChargeIncome = income.sourceType === IncomeSourceType.CHARGE;
+        events.push({
+          kind: 'ingreso',
+          label: `Ingreso (${income.incomeType})`,
+          date: iso(income.date),
+          granularity: isChargeIncome ? 'day' : 'instant',
+          meta: { cost: Number(income.cost), subsidiary: (income.subsidiary as any)?.name ?? null },
+        });
+      }
     }
 
     events.sort((a, b) => new Date(a.date ?? 0).getTime() - new Date(b.date ?? 0).getTime());
-    return { tracking, currentStatus: shipment.status, events };
+    // Compacto: el mismo estatus repetido seguido (el cron lo reescribe en cada consulta) se
+    // muestra una vez, con la fecha de la primera.
+    const compact = events.filter((ev, i) => {
+      if (!ev.kind.startsWith('estatus_')) return true;
+      const prev = events.slice(0, i).reverse().find((x) => x.kind.startsWith('estatus_'));
+      return !prev || prev.label !== ev.label;
+    });
+    return { tracking, currentStatus: rec.status, events: compact };
   }
 
   /** Historial de estatus del shipment (status + timestamp), más reciente primero. */

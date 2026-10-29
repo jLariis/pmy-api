@@ -15,6 +15,7 @@ import { ValidatedPackageDispatchDto } from 'src/package-dispatch/dto/validated-
 import { ShipmentStatusType } from 'src/common/enums/shipment-status-type.enum';
 import { DhlStatusType } from 'src/common/enums/dhl-status-type.enum';
 import { mapDhlCodeToInternal } from 'src/utils/dhl.utils';
+import { RouteClosurePackage as RouteClosureSnapshotRow } from 'src/entities/route-closure-package.entity';
 import { ShipmentStatus, Collection, Shipment, Income, ChargeShipment, ShipmentNotInFiles, User } from 'src/entities';
 import { DispatchStatus } from 'src/common/enums/dispatch-enum';
 import { MailService } from 'src/mail/mail.service';
@@ -900,7 +901,55 @@ export class RouteclosureService {
       this.logger.log(`🟢 [RouteClosure] Cambios manuales aplicados: ${JSON.stringify(manualResult)}`);
     }
 
+    // Estatus con el que la pantalla de cierre clasificó cada guía FedEx (el del día de la ruta,
+    // que puede no ser el vivo); DHL trae `code` y su estatus ya quedó escrito arriba.
+    const closedAs = new Map<string, string>();
+    for (const pkg of [...createRouteclosureDto.podPackages, ...createRouteclosureDto.returnedPackages] as any[]) {
+      if (pkg?.id && typeof pkg.status === 'string' && !pkg.code) closedAs.set(`${pkg.isCharge ? 'c' : 's'}:${pkg.id}`, pkg.status);
+    }
+    await this.saveClosureSnapshot(manager, savedClosure.id, packageDispatch.id, closedAs);
+
     return { savedClosure, packageDispatch };
+  }
+
+  /**
+   * Foto del cierre (mig 119): estatus y último código de cada guía/carga de la salida tal
+   * como quedaron al terminar este cierre (ya con DHL y cambios manuales aplicados). "Ver salida"
+   * la muestra en "Al cerrar" y no cambia aunque la guía se corrija después.
+   */
+  private async saveClosureSnapshot(
+    manager: EntityManager,
+    routeClosureId: string,
+    dispatchId: string,
+    closedAs: Map<string, string>,
+  ) {
+    const rows: any[] = await manager.query(
+      `SELECT h.shipmentId, h.chargeShipmentId,
+              COALESCE(s.trackingNumber, c.trackingNumber) trackingNumber, COALESCE(s.status, c.status) status,
+              CASE WHEN h.shipmentId IS NOT NULL
+                THEN (SELECT NULLIF(ss.exceptionCode, '') FROM shipment_status ss WHERE ss.shipmentId = h.shipmentId ORDER BY ss.timestamp DESC, ss.createdAt DESC LIMIT 1)
+                ELSE (SELECT NULLIF(ss.exceptionCode, '') FROM shipment_status ss WHERE ss.chargeShipmentId = h.chargeShipmentId ORDER BY ss.timestamp DESC, ss.createdAt DESC LIMIT 1)
+              END exceptionCode
+         FROM (SELECT shipmentId, chargeShipmentId FROM package_dispatch_history
+                WHERE dispatchId = ? GROUP BY shipmentId, chargeShipmentId) h
+         LEFT JOIN shipment s ON s.id = h.shipmentId
+         LEFT JOIN charge_shipment c ON c.id = h.chargeShipmentId
+        WHERE COALESCE(s.id, c.id) IS NOT NULL`,
+      [dispatchId],
+    );
+    if (!rows.length) return;
+    await manager.insert(
+      RouteClosureSnapshotRow,
+      rows.map((r) => ({
+        routeClosureId,
+        dispatchId,
+        shipmentId: r.shipmentId ?? null,
+        chargeShipmentId: r.chargeShipmentId ?? null,
+        trackingNumber: r.trackingNumber,
+        status: closedAs.get(r.shipmentId ? `s:${r.shipmentId}` : `c:${r.chargeShipmentId}`) ?? r.status,
+        exceptionCode: r.exceptionCode ?? null,
+      })),
+    );
   }
 
   async findAll(subsidiaryId: string) {

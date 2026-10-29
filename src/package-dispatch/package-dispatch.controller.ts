@@ -3,6 +3,7 @@ import { PermissionsGuard } from 'src/auth/guards/permissions.guard';
 import { RequirePermission } from 'src/auth/decorators/require-permission.decorator';
 import { Audit } from 'src/audit/audit.decorator';
 import { AuditAction, AuditModule } from 'src/common/enums/audit.enum';
+import { DispatchOverviewService } from './dispatch-overview.service';
 import { DispatchEditService } from './dispatch-edit.service';
 import { AddDispatchPackagesDto, RemoveDispatchPackagesDto } from './dto/edit-package-dispatch.dto';
 import { parseDispatchListFilters } from './dispatch-list-filters.util';
@@ -20,6 +21,7 @@ export class PackageDispatchController {
   constructor(
     private readonly packageDispatchService: PackageDispatchService,
     private readonly dispatchEditService: DispatchEditService,
+    private readonly dispatchOverviewService: DispatchOverviewService,
   ) {}
 
   // ── Edición de una salida abierta (permiso especial, asignable por rol) ──
@@ -56,6 +58,12 @@ export class PackageDispatchController {
   })
   removePackages(@Param('id') id: string, @Body() dto: RemoveDispatchPackagesDto, @Req() req: any) {
     return this.dispatchEditService.removePackages(id, dto.ids, dto.reason, req.user?.userId);
+  }
+
+  /** "Ver salida": guías con su estatus de hoy y con el que quedaron al cerrar. */
+  @Get(':id/overview')
+  getOverview(@Param('id') id: string) {
+    return this.dispatchOverviewService.getOverview(id);
   }
 
   @Get(':id/changes')
