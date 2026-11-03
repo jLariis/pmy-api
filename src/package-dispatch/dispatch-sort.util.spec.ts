@@ -40,3 +40,23 @@ describe('dispatch-sort.util', () => {
     expect(subsidiaryDispatchSortMode(null)).toBe('scan');
   });
 });
+
+describe('orden por ciudad (Bodega)', () => {
+  const c = (id: string, city: string | null, zip: string, shipmentType = 'fedex', zoneCity?: string) =>
+    ({ id, recipientCity: city, recipientZip: zip, shipmentType, zoneCity });
+  it('ciudad A→Z, sin ciudad al final, luego CP y paquetería', () => {
+    const out = sortForDispatch([
+      c('sin', null, '85000'),
+      c('nav-dhl', 'Navojoa', '85800', 'dhl'),
+      c('alamos', 'Alamos', '85760'),
+      c('nav-fx', 'Navojoa', '85800'),
+      c('bodega', 'BODEGA OBREGON', '85000', 'dhl'),
+    ], 'city');
+    expect(out.map((x) => x.id)).toEqual(['alamos', 'nav-fx', 'nav-dhl', 'sin', 'bodega']);
+  });
+  it('la ciudad de la memoria de CP manda sobre la de la guía', () => {
+    const out = sortForDispatch([c('b', 'Zona', '1', 'fedex', 'Alamos'), c('a', 'Bacum', '1')], 'city');
+    expect(out.map((x) => x.id)).toEqual(['b', 'a']);
+  });
+});
+

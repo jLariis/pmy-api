@@ -4,7 +4,7 @@ import { WarehouseService } from './warehouse.service';
 import { SuperAdminGuard } from 'src/auth/guards/super-admin.guard';
 import { ScannedShipment } from './dto/scanned-shipment.dto';
 import { CreateWarehouseDto } from './dto/create-warehouse.dto';
-import { CreateOutboundDto } from './dto/create-outbound.dto';
+import { CreateOutboundDto, PreviewOutboundDto } from './dto/create-outbound.dto';
 import { Audit } from 'src/audit/audit.decorator';
 import { AuditModule } from 'src/common/enums/audit.enum';
 import { describeOutboundForAudit } from './warehouse-transfer-audit';
@@ -61,6 +61,18 @@ export class WarehouseController {
    * por el MISMO código del backend que envía el correo, para que el archivo
    * descargado en el frontend sea idéntico al notificado.
    */
+  /** "Solo generar PDF": el PDF de la salida a ruta sin guardarla (vista previa). */
+  @Post('outbound/preview-pdf')
+  async previewOutboundPdf(@Body() dto: PreviewOutboundDto, @Res() res: Response) {
+    const { buffer, fileName } = await this.warehouseService.previewOutboundPdf(dto);
+    res.set({
+      'Content-Type': 'application/pdf',
+      'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(fileName)}`,
+      'Content-Length': buffer.length,
+    });
+    res.end(buffer);
+  }
+
   @Get('outbound/:id/pdf')
   async downloadOutboundPdf(@Param('id') id: string, @Res() res: Response) {
     const { buffer, fileName } = await this.warehouseService.getOutboundPdf(id);

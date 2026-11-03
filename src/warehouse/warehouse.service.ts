@@ -6,12 +6,14 @@ import {
   NotFoundException,
   Optional,
 } from '@nestjs/common';
+import { hermosilloDayStartFromInstant } from 'src/common/utils';
 import { CreateWarehouseDto } from './dto/create-warehouse.dto';
 import {
   ChargeShipment,
   Driver,
   PackageDispatch,
   PackageDispatchHistory,
+  Route,
   Shipment,
   ShipmentRemittance,
   ShipmentStatus,
@@ -27,7 +29,7 @@ import { ScannedShipment } from './dto/scanned-shipment.dto';
 import { PaymentTypeEnum } from 'src/common/enums/payment-type.enum';
 import { ShipmentStatusType } from 'src/common/enums';
 import { PaginatedResult, parsePagination, resolveDateRange } from 'src/common/pagination.util';
-import { CreateOutboundDto } from './dto/create-outbound.dto';
+import { CreateOutboundDto, PreviewOutboundDto } from './dto/create-outbound.dto';
 import { assertOutboundConsistency } from './warehouse.validation';
 import { buildTransferAudit, TransferAudit } from './warehouse-transfer-audit';
 import { blankIfMissing, formatPaymentDisplay, hydratePackageIds, resolvePackagePayment, splitShipmentIds, warehousePackageCode } from './warehouse.helpers';
@@ -38,10 +40,10 @@ import { PostalCodeResponse } from './dto/postal-code-response';
 
 import * as ExcelJS from 'exceljs';
 const pdfMake = require('pdfmake');
-import { TDocumentDefinitions, TableCell } from 'pdfmake/interfaces';
+import { Content, TDocumentDefinitions, TableCell } from 'pdfmake/interfaces';
 import { TemplateService } from 'src/documents/template.service';
 import { HtmlToPdfService } from 'src/documents/html-to-pdf.service';
-import { dispatchCarrier } from 'src/package-dispatch/dispatch-sort.util';
+import { dispatchCarrier, isDispatchSortMode } from 'src/package-dispatch/dispatch-sort.util';
 
 /**
  * Envío re-hidratado desde BD (Shipment o ChargeShipment) con los datos de
@@ -53,6 +55,8 @@ interface HydratedPackage {
   id: string;
   trackingNumber: string;
   dhlUniqueId?: string;
+  /** Paquetería (fedex/dhl): sin ella no se puede separar PDF/Excel por paquetería. */
+  shipmentType?: string | null;
   recipientName: string;
   recipientAddress: string;
   recipientZip: string;
@@ -93,6 +97,8 @@ interface NotificationHeader {
    * vez de la guía maestra.
    */
   dhlShowsUniqueId?: boolean;
+  /** Salida a ruta: en el Excel los DHL van con su JD (lo que se escanea), el PDF no cambia. */
+  excelShowsUniqueId?: boolean;
 }
 
 const CARRIER_SECTION_LABEL = { fedex: 'FEDEX', dhl: 'DHL', other: 'OTRA PAQUETERÍA' } as const;
@@ -205,7 +211,7 @@ export function buildWarehouseExcelData(header: any, packages: any[], timeZone: 
     const commit = pkg.commitDateTime ? toZonedTime(new Date(pkg.commitDateTime), timeZone) : null;
     return {
       index: i + 1,
-      trackingNumber: warehousePackageCode(pkg, !!header?.dhlShowsUniqueId),
+      trackingNumber: warehousePackageCode(pkg, !!(header?.dhlShowsUniqueId || header?.excelShowsUniqueId)),
       recipientName: txt(pkg.recipientName),
       recipientAddress: txt(pkg.recipientAddress),
       recipientZip: txt(pkg.recipientZip),
@@ -860,6 +866,7 @@ export class WarehouseService {
           id: true,
           trackingNumber: true,
           dhlUniqueId: true,
+          shipmentType: true,
           recipientName: true,
           recipientAddress: true,
           recipientZip: true,
@@ -875,6 +882,7 @@ export class WarehouseService {
         select: {
           id: true,
           trackingNumber: true,
+          shipmentType: true,
           recipientName: true,
           recipientAddress: true,
           recipientZip: true,
@@ -972,6 +980,7 @@ export class WarehouseService {
         routes: fullDispatch.routes,
         trackingNumber: fullDispatch.trackingNumber,
         title: titleByKind.dispatch,
+        excelShowsUniqueId: true,
       };
     }
 
@@ -1100,6 +1109,7 @@ export class WarehouseService {
         routes: outbound.routes ?? null,
         trackingNumber: outbound.trackingNumber ?? '',
         title: 'SALIDA A RUTA',
+        excelShowsUniqueId: true,
       };
     }
 
@@ -1123,6 +1133,35 @@ export class WarehouseService {
   ): string {
     const safeDate = new Date().toLocaleDateString('es-ES').replace(/\//g, '-');
     return `${label}--${subsidiaryName}--${safeDate}.${ext}`;
+  }
+
+  /**
+   * "Solo generar PDF" de Bodega → Salida tipo ruta: el MISMO PDF que saldría al procesar,
+   * armado con lo capturado en pantalla y SIN guardar nada (no hay salida, folio ni cambios
+   * de estatus). Igual que "Solo generar PDF" de Operaciones → Salidas a ruta.
+   */
+  async previewOutboundPdf(dto: PreviewOutboundDto): Promise<{ buffer: Buffer; fileName: string }> {
+    const m = this.dataSource.manager;
+    const [subsidiary, vehicle, drivers, routes] = await Promise.all([
+      m.findOne(Subsidiary, { where: { id: dto.warehouse } }),
+      dto.vehicle ? m.findOne(Vehicle, { where: { id: dto.vehicle }, select: { id: true, name: true } }) : null,
+      dto.drivers?.length ? m.find(Driver, { where: { id: In(dto.drivers) }, select: { id: true, name: true } }) : [],
+      dto.routes?.length ? m.find(Route, { where: { id: In(dto.routes) }, select: { id: true, name: true } }) : [],
+    ]);
+    // Mismo orden con el que el operador ve la lista (el front ya la manda ordenada).
+    const hydrated = await this.hydrateShipments(hydratePackageIds(dto.shipments));
+    const pos = new Map(dto.shipments.map((sh, i) => [sh.id, i]));
+    const packages = [...hydrated].sort((a: any, b: any) => (pos.get(a.id) ?? 0) - (pos.get(b.id) ?? 0));
+    const header: NotificationHeader = {
+      subsidiary,
+      vehicle,
+      drivers,
+      routes,
+      trackingNumber: 'VISTA PREVIA',
+      title: 'SALIDA A RUTA',
+    };
+    const buffer = await this.generatePdfBuffer(header, packages);
+    return { buffer, fileName: this.buildOutboundFileName('Vista previa salida a ruta', subsidiary?.name ?? 'Bodega', 'pdf') };
   }
 
   /** PDF de una salida (para descarga desde el frontend). Idéntico al del correo. */
@@ -1615,6 +1654,13 @@ export class WarehouseService {
       vehicle: dto.vehicle ? { id: dto.vehicle } : null,
       subsidiary: { id: dto.warehouse },
       kms: dto.kms,
+      // Igual que Operaciones → Salidas a ruta: 31.5, orden y día operativo de la ruta
+      // ('YYYY-MM-DD' anclado a 07:00Z = 00:00 Hermosillo; sin fecha ⇒ hoy).
+      is315: dto.is315 ?? false,
+      sortMode: isDispatchSortMode(dto.sortMode) ? dto.sortMode : null,
+      routeDate: dto.routeDate
+        ? new Date(`${dto.routeDate}T07:00:00.000Z`)
+        : hermosilloDayStartFromInstant(new Date()),
       createdBy: createdBy ? { id: createdBy } : null,
     });
 
@@ -2049,7 +2095,7 @@ export class WarehouseService {
         : null;
       sheet.addRow([
         index + 1,
-        warehousePackageCode(pkg, !!header.dhlShowsUniqueId),
+        warehousePackageCode(pkg, !!(header.dhlShowsUniqueId || header.excelShowsUniqueId)),
         txt(pkg.recipientName),
         txt(pkg.recipientAddress),
         txt(pkg.recipientZip),
@@ -2073,10 +2119,12 @@ export class WarehouseService {
     const sections = carrierSections(packages, header);
     if (sections.length > 1) {
       const joined = await this.renderPdfBySection(header, sections).catch((e: any) => {
-        this.logger?.warn?.(`PDF por paquetería falló (${e?.message}); va en un solo bloque`);
+        this.logger?.warn?.(`PDF por paquetería con Chromium falló (${e?.message}); se separa con el generador de respaldo`);
         return null;
       });
       if (joined) return joined;
+      // Sin Chromium (o si falló) el respaldo también hace una hoja por paquetería.
+      return this.generatePdfBufferLegacy(header, packages, sections);
     }
     try {
       const data = buildWarehousePdfData(header, packages, this.timeZone);
@@ -2092,6 +2140,7 @@ export class WarehouseService {
   private async generatePdfBufferLegacy(
     header: NotificationHeader,
     packages: any[],
+    sections: { label: string; items: any[] }[] = [],
   ): Promise<Buffer> {
     try {
       const currentDate = toZonedTime(new Date(), this.timeZone);
@@ -2124,7 +2173,9 @@ export class WarehouseService {
         ];
       }
 
-      // 1. Construir las filas de la tabla
+      // 1. Bloque de una sección (título + datos + tabla numerada desde 1). Con varias
+      //    paqueterías hay un bloque por paquetería, cada uno en hoja nueva.
+      const sectionContent = (title: string, sectionPackages: any[]): Content[] => {
       const tableBody: TableCell[][] = [];
 
       // Cabecera
@@ -2138,7 +2189,7 @@ export class WarehouseService {
       );
 
       // Filas de datos
-      packages.forEach((pkg, index) => {
+      sectionPackages.forEach((pkg, index) => {
         const { amount, hasPayment, type } = resolvePackagePayment(pkg);
         const isExpiringToday = pkg.commitDateTime
           ? format(
@@ -2191,22 +2242,10 @@ export class WarehouseService {
         tableBody.push(formattedRow as TableCell[]);
       });
 
-      // 2. Definición del documento
-      const docDefinition: TDocumentDefinitions = {
-        pageSize: 'LETTER',
-        pageOrientation: 'landscape',
-        pageMargins: [20, 20, 20, 20],
-        defaultStyle: { font: 'Helvetica', fontSize: 8 },
-        styles: {
-          headerText: { fontSize: 16, bold: true, color: '#8c5e4e' },
-          tableHeader: { bold: true, fontSize: 8, alignment: 'center', margin: [0, 4] },
-          gridLabel: { bold: true, color: '#8c5e4e', fontSize: 7 },
-          gridValue: { color: '#212529', fontSize: 9 },
-        },
-        content: [
+      return [
           {
             columns: [
-              { text: this.toPdfSafe(header.title) || 'SALIDA A RUTA', style: 'headerText', width: '*' },
+              { text: this.toPdfSafe(title) || 'SALIDA A RUTA', style: 'headerText', width: '*' },
               {
                 text: `Fecha: ${formattedDate}\nHora: ${formattedTime}`,
                 alignment: 'right',
@@ -2223,7 +2262,7 @@ export class WarehouseService {
                 [
                   { stack: [{ text: subsidiaryLabel, style: 'gridLabel' }, { text: blank ? blankIfMissing(subsidiaryName) : subsidiaryName, style: 'gridValue' }], fillColor: '#f8f9fa', border: [true, true, true, true] },
                   { stack: [{ text: 'VEHÍCULO', style: 'gridLabel' }, { text: blank ? pdfTxt(header.vehicle?.name) : this.toPdfSafe(header.vehicle?.name) || 'N/A', style: 'gridValue' }], fillColor: '#f8f9fa', border: [true, true, true, true] },
-                  { stack: [{ text: 'TOTAL PAQUETES', style: 'gridLabel' }, { text: `${packages.length}`, style: 'gridValue' }], fillColor: '#f8f9fa', border: [true, true, true, true] },
+                  { stack: [{ text: 'TOTAL PAQUETES', style: 'gridLabel' }, { text: `${sectionPackages.length}`, style: 'gridValue' }], fillColor: '#f8f9fa', border: [true, true, true, true] },
                   { stack: [{ text: 'SEGUIMIENTO', style: 'gridLabel' }, { text: this.toPdfSafe(header.trackingNumber), style: 'gridValue' }], fillColor: '#f8f9fa', border: [true, true, true, true] },
                 ],
               ],
@@ -2239,7 +2278,8 @@ export class WarehouseService {
             margin: [0, 0, 0, 5],
           },
           {
-            table: { headerRows: 1, widths: tableWidths, body: tableBody },
+            // dontBreakRows: una guía nunca se parte entre dos hojas (antes quedaba la mitad arriba de la siguiente).
+            table: { headerRows: 1, dontBreakRows: true, widths: tableWidths, body: tableBody },
             layout: {
               hLineWidth: () => 0.5,
               vLineWidth: () => 0.5,
@@ -2247,7 +2287,28 @@ export class WarehouseService {
               vLineColor: () => '#000000',
             },
           },
-        ],
+      ];
+      };
+
+      // 2. Definición del documento
+      const docDefinition: TDocumentDefinitions = {
+        pageSize: 'LETTER',
+        pageOrientation: 'landscape',
+        pageMargins: [20, 20, 20, 20],
+        defaultStyle: { font: 'Helvetica', fontSize: 8 },
+        styles: {
+          headerText: { fontSize: 16, bold: true, color: '#8c5e4e' },
+          tableHeader: { bold: true, fontSize: 8, alignment: 'center', margin: [0, 4] },
+          gridLabel: { bold: true, color: '#8c5e4e', fontSize: 7 },
+          gridValue: { color: '#212529', fontSize: 9 },
+        },
+        content: (sections.length > 1
+          ? sections.map((sec) => ({ title: this.sectionHeader(header, sec.label).title ?? '', items: sec.items }))
+          : [{ title: header.title ?? '', items: packages }]
+        ).flatMap((sec, i) => {
+          const blocks = sectionContent(sec.title, sec.items);
+          return i === 0 ? blocks : [{ text: '', pageBreak: 'before' } as Content, ...blocks];
+        }),
       };
 
       // 3. Render con la API 0.3.x: createPdf(...).getBuffer()

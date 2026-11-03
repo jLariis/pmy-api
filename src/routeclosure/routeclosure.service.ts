@@ -907,7 +907,14 @@ export class RouteclosureService {
     for (const pkg of [...createRouteclosureDto.podPackages, ...createRouteclosureDto.returnedPackages] as any[]) {
       if (pkg?.id && typeof pkg.status === 'string' && !pkg.code) closedAs.set(`${pkg.isCharge ? 'c' : 's'}:${pkg.id}`, pkg.status);
     }
-    await this.saveClosureSnapshot(manager, savedClosure.id, packageDispatch.id, closedAs);
+    // La foto es informativa: si falla (p. ej. la migración 119 aún no corre en ese servidor)
+    // NO debe tumbar el cierre. En MySQL un error de una sentencia no aborta la transacción;
+    // "Ver salida" reconstruye el "Al cerrar" del historial cuando no hay foto.
+    try {
+      await this.saveClosureSnapshot(manager, savedClosure.id, packageDispatch.id, closedAs);
+    } catch (e: any) {
+      this.logger.warn(`⚠️ [RouteClosure] No se guardó la foto del cierre ${savedClosure.id}: ${e?.message}`);
+    }
 
     return { savedClosure, packageDispatch };
   }

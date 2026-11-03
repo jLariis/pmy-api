@@ -4,17 +4,21 @@
  *
  *  - 'carrier_cp': paquetería (FedEx —incluye F2— y luego DHL) → CP → dirección.
  *  - 'cp': CP → dirección (mezcla paqueterías).
+ *  - 'city': ciudad (A→Z, sin ciudad al final) → CP → paquetería (Bodega → Salida "Por ciudad").
  *  - 'scan': orden en que se escanearon.
  */
-export type DispatchSortMode = 'carrier_cp' | 'cp' | 'scan';
+export type DispatchSortMode = 'carrier_cp' | 'cp' | 'city' | 'scan';
 
-export const DISPATCH_SORT_MODES: DispatchSortMode[] = ['carrier_cp', 'cp', 'scan'];
+export const DISPATCH_SORT_MODES: DispatchSortMode[] = ['carrier_cp', 'cp', 'city', 'scan'];
 
 export interface DispatchSortable {
   recipientZip?: string | null;
   recipientAddress?: string | null;
   shipmentType?: string | null;
   isCharge?: boolean;
+  recipientCity?: string | null;
+  /** Ciudad de la memoria de CP de la sucursal (Bodega); manda sobre la ciudad de la guía. */
+  zoneCity?: string | null;
 }
 
 export type DispatchCarrier = 'fedex' | 'dhl' | 'other';
@@ -54,6 +58,25 @@ export function compareByCarrierThenZip(a: DispatchSortable, b: DispatchSortable
   return c !== 0 ? c : compareByZip(a, b);
 }
 
+/** Ciudad para ordenar: la de la memoria de CP o la de la guía ("BODEGA ..." de DHL no es ciudad). */
+export function dispatchCityLabel(p: DispatchSortable): string {
+  const city = String(p?.zoneCity || p?.recipientCity || '').trim().toUpperCase();
+  return city && city !== 'N/A' && !city.startsWith('BODEGA ') ? city : '';
+}
+
+/** Ciudad A→Z (sin ciudad al final) → CP → paquetería. */
+export function compareByCity(a: DispatchSortable, b: DispatchSortable): number {
+  const ca = dispatchCityLabel(a);
+  const cb = dispatchCityLabel(b);
+  if (ca !== cb) {
+    if (!ca) return 1;
+    if (!cb) return -1;
+    return ca.localeCompare(cb, 'es', { sensitivity: 'base' });
+  }
+  const z = compareByZip(a, b);
+  return z !== 0 ? z : CARRIER_RANK[dispatchCarrier(a)] - CARRIER_RANK[dispatchCarrier(b)];
+}
+
 /** Modo por defecto de la sucursal (la paquetería manda sobre el CP). */
 export function subsidiaryDispatchSortMode(sub?: {
   sortDispatchByCarrier?: boolean | null;
@@ -72,5 +95,6 @@ export function isDispatchSortMode(v: unknown): v is DispatchSortMode {
 export function sortForDispatch<T extends DispatchSortable>(items: T[] = [], mode: DispatchSortMode): T[] {
   if (mode === 'carrier_cp') return [...items].sort(compareByCarrierThenZip);
   if (mode === 'cp') return [...items].sort(compareByZip);
+  if (mode === 'city') return [...items].sort(compareByCity);
   return [...items];
 }
