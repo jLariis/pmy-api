@@ -8,6 +8,8 @@ export interface DispatchListFilters {
   days: string[];
   /** null = sin filtro. */
   is315: boolean | null;
+  /** Solo rutas abiertas que se pueden cerrar junto con otra del mismo chofer y día. */
+  grouped: boolean;
 }
 
 /** Acepta "a,b" o ["a","b"] (query string repetido) y regresa valores limpios sin duplicados. */
@@ -33,6 +35,7 @@ export function parseDispatchListFilters(q: {
   driverId?: unknown;
   day?: unknown;
   is315?: unknown;
+  grouped?: unknown;
 }): DispatchListFilters {
   const flags = list(q.is315).filter((v) => v === 'true' || v === 'false');
   return {
@@ -40,5 +43,6 @@ export function parseDispatchListFilters(q: {
     driverIds: list(q.driverId).filter((d) => UUID_RE.test(d)),
     days: list(q.day).filter((d) => DAY_RE.test(d)),
     is315: flags.length === 1 ? flags[0] === 'true' : null,
+    grouped: list(q.grouped).includes('true'),
   };
 }

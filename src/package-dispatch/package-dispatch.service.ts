@@ -54,6 +54,18 @@ export interface EmailActor {
 /** Día operativo de una salida a ruta: `routeDate` o, si es null, el día Hermosillo de createdAt. */
 const ROUTE_DAY_SQL = "COALESCE(pd.routeDate, DATE(pd.createdAt - INTERVAL 7 HOUR))";
 
+/**
+ * Salida abierta que se puede cerrar junto con otra: hay al menos otra salida abierta y activa
+ * de la misma sucursal, el mismo día de ruta y con un chofer en común. Misma regla que
+ * `RouteclosureService.findGroupCandidates` (grupos de 2 o más).
+ */
+const GROUPABLE_SQL = `pd.status NOT IN ('Completada', 'Cancelada') AND pd.routeDate IS NOT NULL AND EXISTS (
+  SELECT 1 FROM package_dispatch_drivers gmd
+    JOIN package_dispatch_drivers god ON god.driverId = gmd.driverId AND god.dispatchId <> gmd.dispatchId
+    JOIN package_dispatch gpd ON gpd.id = god.dispatchId
+   WHERE gmd.dispatchId = pd.id AND gpd.subsidiaryId = pd.subsidiaryId AND gpd.routeDate = pd.routeDate
+     AND gpd.active = 1 AND gpd.status NOT IN ('Completada', 'Cancelada'))`;
+
 @Injectable()
 export class PackageDispatchService {
   private readonly logger = new Logger(PackageDispatchService.name);
@@ -618,6 +630,7 @@ export class PackageDispatchService {
       if (f?.statuses.length) qb.andWhere('pd.status IN (:...fStatuses)', { fStatuses: f.statuses });
       if (f?.days.length) qb.andWhere(`${ROUTE_DAY_SQL} IN (:...fDays)`, { fDays: f.days });
       if (f && f.is315 !== null) qb.andWhere('pd.is315 = :fIs315', { fIs315: f.is315 });
+      if (f?.grouped) qb.andWhere(GROUPABLE_SQL);
       if (f?.driverIds.length) {
         // Cualquiera de los choferes de la salida (puede tener varios).
         qb.andWhere(
@@ -658,7 +671,7 @@ export class PackageDispatchService {
         .filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)),
     };
 
-    const { entities, raw } = await applyAll(
+    const listQb = applyAll(
       this.packageDispatchRepository
         .createQueryBuilder('pd')
         .leftJoin('pd.subsidiary', 'subsidiary')
@@ -697,8 +710,12 @@ export class PackageDispatchService {
       .groupBy('pd.id')
       .addGroupBy('subsidiary.id')
       .addGroupBy('vehicle.id')
-      .orderBy(ROUTE_DAY_SQL, 'DESC')
-      .addOrderBy('pd.createdAt', 'DESC')
+      .orderBy(ROUTE_DAY_SQL, 'DESC');
+    // Vista "por cerrar juntas": las rutas de un mismo chofer y día quedan seguidas (la pantalla
+    // las pinta bajo un encabezado de grupo), en el orden en que salieron.
+    if (f?.grouped) listQb.addOrderBy('driverName', 'ASC').addOrderBy('pd.createdAt', 'ASC');
+    else listQb.addOrderBy('pd.createdAt', 'DESC');
+    const { entities, raw } = await listQb
       .offset(skip)
       .limit(limit)
       .getRawAndEntities();

@@ -1,3 +1,4 @@
+import { resolveDayRange } from 'src/common/pagination.util';
 import { canonicalFedexExceptionCode } from 'src/common/fedex-exception-code.util';
 import { Injectable, Logger, BadRequestException, InternalServerErrorException, Optional } from '@nestjs/common';
 import { AuditService } from 'src/audit/audit.service';
@@ -469,9 +470,11 @@ export class RouteclosureService {
 
   /**
    * Rutas abiertas que se pueden cerrar juntas: por sucursal, agrupadas por día de
-   * ruta + chofer, solo grupos de 2 o más.
+   * ruta + chofer, solo grupos de 2 o más. Con `from`/`to` (la semana de la pantalla) solo
+   * regresa los grupos de esos días de ruta.
    */
-  async findGroupCandidates(subsidiaryId: string) {
+  async findGroupCandidates(subsidiaryId: string, from?: string, to?: string) {
+    const range = from && to ? resolveDayRange(from, to) : null;
     const rows: any[] = await this.dataSource.query(
       `SELECT pd.id, pd.trackingNumber AS folio, DATE_FORMAT(pd.routeDate, '%Y-%m-%d') AS routeDate, pd.createdAt,
               d.id AS driverId, d.name AS driverName,
@@ -480,9 +483,10 @@ export class RouteclosureService {
          FROM package_dispatch pd
          JOIN package_dispatch_drivers pdd ON pdd.dispatchId = pd.id
          JOIN driver d ON d.id = pdd.driverId
-        WHERE pd.subsidiaryId = ? AND pd.status NOT IN ('Completada', 'Cancelada') AND pd.routeDate IS NOT NULL
+        WHERE pd.subsidiaryId = ? AND pd.active = 1 AND pd.status NOT IN ('Completada', 'Cancelada') AND pd.routeDate IS NOT NULL
+          ${range ? 'AND pd.routeDate BETWEEN ? AND ?' : ''}
         ORDER BY pd.routeDate DESC, d.name, pd.createdAt`,
-      [subsidiaryId],
+      range ? [subsidiaryId, range.fromDay, range.toDay] : [subsidiaryId],
     );
     const groups = new Map<string, any>();
     for (const r of rows) {

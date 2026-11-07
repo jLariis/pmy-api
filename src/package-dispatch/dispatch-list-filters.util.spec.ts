@@ -5,7 +5,7 @@ describe('parseDispatchListFilters', () => {
   const uuid = '52a4e98f-a3ba-47dd-8827-c9d30eb05704';
 
   it('sin filtros → todo vacío', () => {
-    expect(parseDispatchListFilters({})).toEqual({ statuses: [], driverIds: [], days: [], is315: null });
+    expect(parseDispatchListFilters({})).toEqual({ statuses: [], driverIds: [], days: [], is315: null, grouped: false });
   });
 
   it('acepta coma o arreglo, quita duplicados e inválidos', () => {
@@ -24,5 +24,11 @@ describe('parseDispatchListFilters', () => {
     expect(parseDispatchListFilters({ is315: 'false' }).is315).toBe(false);
     expect(parseDispatchListFilters({ is315: 'true,false' }).is315).toBeNull();
     expect(parseDispatchListFilters({ is315: 'x' }).is315).toBeNull();
+  });
+
+  it('grouped solo con "true"', () => {
+    expect(parseDispatchListFilters({ grouped: 'true' }).grouped).toBe(true);
+    expect(parseDispatchListFilters({ grouped: 'false' }).grouped).toBe(false);
+    expect(parseDispatchListFilters({}).grouped).toBe(false);
   });
 });

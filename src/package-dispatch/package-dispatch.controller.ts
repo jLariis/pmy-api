@@ -110,10 +110,12 @@ export class PackageDispatchController {
     @Query('driverId') driverId?: string | string[],
     @Query('day') day?: string | string[],
     @Query('is315') is315?: string | string[],
+    // "true" = solo rutas que se pueden cerrar juntas (mismo chofer y día), agrupadas.
+    @Query('grouped') grouped?: string,
   ) {
     return this.packageDispatchService.findAllBySubsidiary(subsidiaryId, {
       page, limit, from, to, search,
-      filters: parseDispatchListFilters({ status, driverId, day, is315 }),
+      filters: parseDispatchListFilters({ status, driverId, day, is315, grouped }),
     });
   }
 

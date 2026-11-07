@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Body, Param, Delete, BadRequestException, UploadedFiles, UseInterceptors, Req, UseGuards } from '@nestjs/common';
+import { Controller, Get, Post, Body, Param, Delete, BadRequestException, UploadedFiles, UseInterceptors, Req, UseGuards, Query } from '@nestjs/common';
 import { RouteclosureService } from './routeclosure.service';
 import { CreateRouteclosureDto } from './dto/create-routeclosure.dto';
 import { CreateGroupClosureDto } from './dto/create-group-closure.dto';
@@ -48,8 +48,12 @@ export class RouteclosureController {
   /** Rutas abiertas que se pueden cerrar juntas (mismo día y chofer, 2 o más). */
   @NoAudit()
   @Get('groups/:subsidiaryId')
-  findGroupCandidates(@Param('subsidiaryId') subsidiaryId: string) {
-    return this.routeclosureService.findGroupCandidates(subsidiaryId);
+  findGroupCandidates(
+    @Param('subsidiaryId') subsidiaryId: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
+    return this.routeclosureService.findGroupCandidates(subsidiaryId, from, to);
   }
 
   @Get(':subsidiryId')
