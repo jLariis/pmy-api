@@ -24,6 +24,7 @@ import { ReturningModule } from './returning/returning.module';
 import { FedexStatusModule } from './fedex-status/fedex-status.module';
 import { DriversModule } from './drivers/drivers.module';
 import { RoutesModule } from './routes/routes.module';
+import { RouteCoverageModule } from './route-coverage/route-coverage.module';
 import { VehiclesModule } from './vehicles/vehicles.module';
 import { PackageDispatchModule } from './package-dispatch/package-dispatch.module';
 import { UnloadingModule } from './unloading/unloading.module';
@@ -105,6 +106,7 @@ import { DailyTasksModule } from './daily-tasks/daily-tasks.module';
     DevolutionsModule,
     DriversModule,
     RoutesModule,
+    RouteCoverageModule,
     VehiclesModule,
     PackageDispatchModule,
     UnloadingModule,

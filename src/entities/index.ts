@@ -94,3 +94,4 @@ export * from './subsidiary-zip-coverage.entity';
 export * from './ops-alert.entity';
 export * from './app-release.entity';
 export * from './deploy-run.entity';
+export * from './route-zip-coverage.entity';
