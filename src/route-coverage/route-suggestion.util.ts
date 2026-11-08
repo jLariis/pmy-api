@@ -30,6 +30,8 @@ export interface SuggestionPackage {
   kind: 'shipment' | 'charge';
   trackingNumber: string;
   pieceKey: string;
+  /** Lo que se escanea/valida en la salida: dhlUniqueId (pieza DHL) o el número de guía. */
+  scanCode: string;
   zip: string | null;
   recipientName: string | null;
   recipientAddress: string | null;
@@ -45,6 +47,7 @@ export interface SuggestedPackage extends Omit<SuggestionPackage, 'commitDateTim
   daysInWarehouse: number;
   /** Otras rutas que también atienden su CP (≥5%). */
   sharedWith: string[];
+  sharedRouteIds: string[];
 }
 
 export interface RouteSuggestion {
@@ -158,16 +161,16 @@ export function buildSuggestions(input: {
     const bucket = commitBucket(p.commitDateTime, now, offsetMin);
     const cov = zip ? coverage.get(zip)?.filter((c) => routeName.has(c.routeId)) : undefined;
     const routeId = zip ? pickRouteForZip(cov) : null;
-    const sharedWith = routeId
-      ? (cov ?? [])
-          .filter((c) => c.routeId !== routeId && c.status !== 'excluido' && c.share >= SHARED_MIN)
-          .map((c) => routeName.get(c.routeId) ?? '')
+    const sharedCov = routeId
+      ? (cov ?? []).filter((c) => c.routeId !== routeId && c.status !== 'excluido' && c.share >= SHARED_MIN)
       : [];
+    const sharedWith = sharedCov.map((c) => routeName.get(c.routeId) ?? '');
     const sp: SuggestedPackage = {
       id: p.id,
       kind: p.kind,
       trackingNumber: p.trackingNumber,
       pieceKey: p.pieceKey,
+      scanCode: p.scanCode,
       zip,
       recipientName: p.recipientName,
       recipientAddress: p.recipientAddress,
@@ -177,6 +180,7 @@ export function buildSuggestions(input: {
       bucket,
       daysInWarehouse: Math.max(0, Math.floor((now.getTime() - p.createdAt.getTime()) / 86_400_000)),
       sharedWith,
+      sharedRouteIds: sharedCov.map((c) => c.routeId),
     };
     countInto(totals, bucket);
     if (!zip) {

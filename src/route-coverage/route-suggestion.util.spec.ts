@@ -8,6 +8,7 @@ const pkg = (p: Partial<SuggestionPackage>): SuggestionPackage => ({
   kind: 'shipment',
   trackingNumber: 't1',
   pieceKey: p.trackingNumber ?? 't1',
+  scanCode: p.trackingNumber ?? 't1',
   zip: '23400',
   recipientName: 'X',
   recipientAddress: 'Calle 1',
@@ -98,6 +99,8 @@ describe('buildSuggestions', () => {
     expect(r.routes[0]).toMatchObject({ overdue: 1, today: 1, total: 2 });
     expect(r.routes[0].packages.map((p) => p.trackingNumber)).toEqual(['b', 'a']);
     expect(r.routes[1].packages[0].sharedWith).toEqual(['CSL Centro']);
+    expect(r.routes[1].packages[0].sharedRouteIds).toEqual(['r1']);
+    expect(r.routes[1].packages[0].scanCode).toBe('c');
     expect(r.routes[1].topZips[0]).toEqual({ zip: '23450', count: 1, shared: true });
     expect(r.unassigned.total).toBe(1);
     expect(r.noZip).toMatchObject({ total: 1, today: 1 });
