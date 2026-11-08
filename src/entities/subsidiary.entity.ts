@@ -290,6 +290,14 @@ export class Subsidiary {
   routeClosureWithPreClosure: boolean;
 
   /**
+   * Salida a ruta con la pantalla nueva (escáner primero, confirmación, avance por pasos y
+   * "Salida lista"). Default false = pantalla de siempre. Se siembra solo en Cabo San Lucas
+   * (migración 1786000000121); la pantalla de siempre sigue disponible como "versión clásica".
+   */
+  @Column({ default: false })
+  dispatchScreenV2: boolean;
+
+  /**
    * Cierre de ruta, INGRESOS: si está activo, el cierre cobra cada guía con la fecha y hora exacta
    * del evento FedEx guardado en `shipment_status.timestamp` (entrega o DEX), aunque sea de un día
    * posterior al de la ruta; nunca fecha con el día de la ruta. Solo afecta el cobro, no la

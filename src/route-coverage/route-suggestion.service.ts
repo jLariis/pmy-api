@@ -12,6 +12,7 @@ import {
   SuggestionPackage,
   SuggestionsResult,
 } from './route-suggestion.util';
+import { DispatchDefaults, lastPlausibleKms, pickDispatchDefaults, RecentDispatch } from './dispatch-defaults.util';
 
 /** Solo se miran guías recientes: un "pendiente" de hace meses ya no es de salida de hoy. */
 const WINDOW_DAYS = Number(process.env.ROUTE_SUGGESTION_DAYS ?? 30);
@@ -27,6 +28,43 @@ export class RouteSuggestionService {
     @InjectRepository(RouteZipCoverage) private readonly coverage: Repository<RouteZipCoverage>,
     private readonly ds: DataSource,
   ) {}
+
+  /**
+   * Repartidor y unidad que suelen ir a estas rutas (últimas salidas de 60 días). Solo lectura;
+   * la pantalla lo muestra como sugerencia que el usuario acepta o cambia.
+   */
+  async dispatchDefaults(subsidiaryId: string, routeIds: string[]): Promise<DispatchDefaults> {
+    if (!subsidiaryId || routeIds.length === 0) return { driverIds: [], vehicleId: null, driverHits: 0, sample: 0 };
+    const rows: any[] = await this.ds.query(
+      `SELECT pd.id AS dispatchId, pd.createdAt, pd.vehicleId, GROUP_CONCAT(DISTINCT pdd.driverId) AS driverIds
+       FROM package_dispatch pd
+       JOIN package_dispatch_routes pdr ON pdr.dispatchId = pd.id AND pdr.routeId IN (${routeIds.map(() => '?').join(',')})
+       LEFT JOIN package_dispatch_drivers pdd ON pdd.dispatchId = pd.id
+       WHERE pd.subsidiaryId = ? AND pd.status <> 'Cancelada' AND pd.createdAt >= DATE_SUB(NOW(), INTERVAL 60 DAY)
+       GROUP BY pd.id, pd.createdAt, pd.vehicleId
+       ORDER BY pd.createdAt DESC
+       LIMIT 20`,
+      [...routeIds, subsidiaryId],
+    );
+    const recent: RecentDispatch[] = rows.map((r) => ({
+      dispatchId: r.dispatchId,
+      createdAt: new Date(r.createdAt),
+      vehicleId: r.vehicleId ?? null,
+      driverIds: String(r.driverIds ?? '').split(',').filter(Boolean),
+    }));
+    return pickDispatchDefaults(recent);
+  }
+
+  /** Último kilometraje creíble de la unidad (referencia para la captura, no bloquea). */
+  async vehicleLastKms(vehicleId: string): Promise<{ lastKms: number | null }> {
+    if (!vehicleId) return { lastKms: null };
+    const [veh]: any[] = await this.ds.query('SELECT kms FROM vehicle WHERE id = ?', [vehicleId]);
+    const recent: any[] = await this.ds.query(
+      `SELECT kms FROM package_dispatch WHERE vehicleId = ? AND createdAt >= DATE_SUB(NOW(), INTERVAL 120 DAY) ORDER BY createdAt DESC LIMIT 30`,
+      [vehicleId],
+    );
+    return { lastKms: lastPlausibleKms([veh?.kms, ...recent.map((r) => r.kms)]) };
+  }
 
   async forSubsidiary(subsidiaryId: string, now = new Date()): Promise<SuggestionsResult> {
     if (!subsidiaryId) throw new BadRequestException('Elige la sucursal');
