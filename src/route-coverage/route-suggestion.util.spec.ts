@@ -79,6 +79,22 @@ describe('buildSuggestions', () => {
     ],
   ]);
 
+  it('cuenta los que vencen después y los sin fecha (todo en bodega)', () => {
+    const r = buildSuggestions({
+      packages: [
+        pkg({ trackingNumber: 'a' }), // hoy
+        pkg({ trackingNumber: 'b', commitDateTime: new Date('2026-11-12T18:00:00Z') }), // después
+        pkg({ trackingNumber: 'c', commitDateTime: null }), // sin fecha
+      ],
+      coverage,
+      routes,
+      dispatchInfo: new Map(),
+      now: NOW,
+    });
+    expect(r.routes[0]).toMatchObject({ today: 1, later: 1, noDate: 1, total: 3 });
+    expect(r.routes[0].packages.map((p) => p.trackingNumber)).toEqual(['a', 'b', 'c']);
+  });
+
   it('agrupa por ruta, separa sin ruta y sin CP, y ordena por urgencia', () => {
     const r = buildSuggestions({
       packages: [
@@ -94,7 +110,7 @@ describe('buildSuggestions', () => {
       dispatchInfo: new Map([['r1', { lastDispatchAt: new Date('2026-11-06T16:00:00Z'), openToday: 0 }]]),
       now: NOW,
     });
-    expect(r.totals).toEqual({ total: 5, overdue: 1, today: 3, tomorrow: 1, routes: 2 });
+    expect(r.totals).toEqual({ total: 5, overdue: 1, today: 3, tomorrow: 1, later: 0, noDate: 0, routes: 2 });
     expect(r.routes.map((x) => x.routeId)).toEqual(['r1', 'r2']);
     expect(r.routes[0]).toMatchObject({ overdue: 1, today: 1, total: 2 });
     expect(r.routes[0].packages.map((p) => p.trackingNumber)).toEqual(['b', 'a']);

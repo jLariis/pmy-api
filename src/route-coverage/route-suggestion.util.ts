@@ -56,6 +56,10 @@ export interface RouteSuggestion {
   overdue: number;
   today: number;
   tomorrow: number;
+  /** Vencen pasado mañana o después. */
+  later: number;
+  /** Sin fecha de vencimiento. */
+  noDate: number;
   total: number;
   topZips: { zip: string; count: number; shared: boolean }[];
   lastDispatchAt: string | null;
@@ -67,6 +71,8 @@ export interface SuggestionBucket {
   overdue: number;
   today: number;
   tomorrow: number;
+  later: number;
+  noDate: number;
   total: number;
   topZips: { zip: string; count: number }[];
   packages: SuggestedPackage[];
@@ -74,7 +80,7 @@ export interface SuggestionBucket {
 
 export interface SuggestionsResult {
   generatedAt: string;
-  totals: { total: number; overdue: number; today: number; tomorrow: number; routes: number };
+  totals: { total: number; overdue: number; today: number; tomorrow: number; later: number; noDate: number; routes: number };
   routes: RouteSuggestion[];
   /** CP válido pero ninguna ruta lo atiende. */
   unassigned: SuggestionBucket;
@@ -125,13 +131,17 @@ export function latestPerPiece(rows: SuggestionPackage[]): SuggestionPackage[] {
 
 const urgencyRank: Record<CommitBucket, number> = { vencido: 0, hoy: 1, manana: 2, despues: 3, sin_fecha: 4 };
 
-const emptyBucket = (): SuggestionBucket => ({ overdue: 0, today: 0, tomorrow: 0, total: 0, topZips: [], packages: [] });
+const emptyBucket = (): SuggestionBucket => ({ overdue: 0, today: 0, tomorrow: 0, later: 0, noDate: 0, total: 0, topZips: [], packages: [] });
 
-function countInto(t: { overdue: number; today: number; tomorrow: number; total: number }, b: CommitBucket) {
+type Counts = { overdue: number; today: number; tomorrow: number; later: number; noDate: number; total: number };
+
+function countInto(t: Counts, b: CommitBucket) {
   t.total++;
   if (b === 'vencido') t.overdue++;
   else if (b === 'hoy') t.today++;
   else if (b === 'manana') t.tomorrow++;
+  else if (b === 'despues') t.later++;
+  else t.noDate++;
 }
 
 function topZipsOf(pkgs: SuggestedPackage[], limit = 4) {
@@ -154,7 +164,7 @@ export function buildSuggestions(input: {
   const perRoute = new Map<string, SuggestedPackage[]>();
   const unassigned = emptyBucket();
   const noZip = emptyBucket();
-  const totals = { total: 0, overdue: 0, today: 0, tomorrow: 0, routes: 0 };
+  const totals = { total: 0, overdue: 0, today: 0, tomorrow: 0, later: 0, noDate: 0, routes: 0 };
 
   for (const p of latestPerPiece(input.packages)) {
     const zip = cleanZip(p.zip);
@@ -198,7 +208,7 @@ export function buildSuggestions(input: {
     urgencyRank[a.bucket] - urgencyRank[b.bucket] || (a.commitDateTime ?? '').localeCompare(b.commitDateTime ?? '') || (a.zip ?? '').localeCompare(b.zip ?? '');
 
   const routeCards: RouteSuggestion[] = [...perRoute.entries()].map(([routeId, pkgs]) => {
-    const c = { overdue: 0, today: 0, tomorrow: 0, total: 0 };
+    const c: Counts = { overdue: 0, today: 0, tomorrow: 0, later: 0, noDate: 0, total: 0 };
     for (const p of pkgs) countInto(c, p.bucket);
     const info = dispatchInfo.get(routeId);
     const sharedZip = new Set(pkgs.filter((p) => p.sharedWith.length).map((p) => p.zip));
