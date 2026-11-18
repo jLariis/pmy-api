@@ -5,9 +5,8 @@ import { CreateInventoryDto } from './dto/create-inventory.dto';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Inventory } from 'src/entities/inventory.entity';
 import { Between, DataSource, In, Not, Repository } from 'typeorm';
-import { pickScanCandidate } from 'src/common/scan-candidate.util';
 import { PaginatedResult, parsePagination, resolveDateRange } from 'src/common/pagination.util';
-import { ChargeShipment, Consolidated, Shipment, ShipmentStatus, Subsidiary } from 'src/entities';
+import { ChargeShipment, Shipment, ShipmentStatus, Subsidiary } from 'src/entities';
 import { ValidatedPackageDispatchDto } from 'src/package-dispatch/dto/validated-package-dispatch.dto';
 import { ValidationPayloadDto } from 'src/unloading/dto/validate-payload.dto';
 import { MailService } from 'src/mail/mail.service';
@@ -20,6 +19,18 @@ import { TemplateService } from 'src/documents/template.service';
 import { buildInventoryData, InventoryInput } from 'src/documents/data/inventory.mapper';
 import { buildInventoryNo67Data } from 'src/documents/data/inventory-no67.mapper';
 import { buildMissingScanReport, MISSING_SCAN_REPORT_WINDOW, missingScanWhere } from './missing-scan-report';
+import { INVENTORY_STATUS_SOURCE, realMovementSql } from 'src/common/inventory-movement.util';
+import { buildCcList, escapeHtml, pickCriticalPackages } from './inventory-critical.util';
+import { canAccessSubsidiary, foreignTrackings } from './inventory-scope.util';
+import {
+  diffInventories,
+  emptyGoneCounts,
+  inventoryGoneBucket,
+  InventoryGoneCounts,
+  inventoryPackageKey,
+  InventoryPackageRow,
+} from './inventory-compare.util';
+import { herDay } from 'src/common/ld-rule.util';
 import { daysWithoutLocalScan, isLocalScanCode, latestLocalScan, LocalScan, localScanCategory, LOCAL_SCAN_CODES_SQL } from 'src/utils/local-scan-visibility.util';
 
 // Candado temporal del reporte "Sin código 44": vive con su motor (missing-scan-report.ts).
@@ -66,8 +77,6 @@ export class InventoriesService {
     private readonly shipmentRepository: Repository<Shipment>,
     @InjectRepository(ChargeShipment)
     private readonly chargeShipmentRepository: Repository<ChargeShipment>,
-    @InjectRepository(Consolidated)
-    private readonly consolidatedRepository: Repository<Consolidated>,
     @InjectRepository(Subsidiary)
     private readonly subsidiaryRepository: Repository<Subsidiary>,
     private readonly mailService: MailService,
@@ -100,10 +109,10 @@ export class InventoriesService {
     try {
       // 1. Cargar las entidades necesarias dentro de la transacción
       const shipmentsToSave = shipments.length
-        ? await queryRunner.manager.findBy(Shipment, { id: In(shipments) })
+        ? await queryRunner.manager.find(Shipment, { where: { id: In(shipments) }, relations: ['subsidiary'] })
         : [];
       const chargeShipmentsToSave = chargeShipments.length
-        ? await queryRunner.manager.findBy(ChargeShipment, { id: In(chargeShipments) })
+        ? await queryRunner.manager.find(ChargeShipment, { where: { id: In(chargeShipments) }, relations: ['subsidiary'] })
         : [];
       const subsidiaryObj = await queryRunner.manager.findOneBy(Subsidiary, {
         id: subsidiary.id
@@ -111,6 +120,13 @@ export class InventoriesService {
 
       if (!subsidiaryObj) {
         throw new BadRequestException('La sucursal seleccionada no existe.');
+      }
+
+      // Todo paquete del inventario debe ser de ESA sucursal (antes se aceptaba cualquier id).
+      const foreign = foreignTrackings([...shipmentsToSave, ...chargeShipmentsToSave], subsidiaryObj.id);
+      if (foreign.length > 0) {
+        const list = foreign.slice(0, 20).join(', ') + (foreign.length > 20 ? ` y ${foreign.length - 20} más` : '');
+        throw new BadRequestException(`Estas guías son de otra sucursal: ${list}. Quítalas o traspásalas antes de guardar.`);
       }
 
       // 2. Crear y Guardar el Inventario
@@ -140,6 +156,7 @@ export class InventoriesService {
           status: s.status, // Mantenemos su status actual (probablemente EN_BODEGA)
           notes: `Paquete confirmado en inventario físico (Folio Inv: ${savedInventory.id}) en ${subsidiaryObj.name}`,
           timestamp: now,
+          source: INVENTORY_STATUS_SOURCE, // no es movimiento (ver inventory-movement.util)
           shipment: s
         }));
       });
@@ -150,6 +167,7 @@ export class InventoriesService {
           status: cs.status,
           notes: `Paquete F2 confirmado en inventario físico (Folio Inv: ${savedInventory.id}) en ${subsidiaryObj.name}`,
           timestamp: now,
+          source: INVENTORY_STATUS_SOURCE,
           chargeShipment: cs
         }));
       });
@@ -157,6 +175,26 @@ export class InventoriesService {
       // Guardado masivo de historiales
       if (historyRecords.length > 0) {
         await queryRunner.manager.save(ShipmentStatus, historyRecords);
+      }
+
+      // Foto del estatus de cada paquete AL MOMENTO del inventario (mig 122). Si la columna aún
+      // no existe (migración pendiente) se avisa y el inventario se guarda igual: en MySQL un
+      // error de sentencia no aborta la transacción.
+      try {
+        if (shipmentsToSave.length) {
+          await queryRunner.query(
+            'UPDATE inventory_shipment j JOIN shipment s ON s.id = j.shipmentId SET j.statusAtInventory = s.status WHERE j.inventoryId = ?',
+            [savedInventory.id],
+          );
+        }
+        if (chargeShipmentsToSave.length) {
+          await queryRunner.query(
+            'UPDATE inventory_charge_shipments j JOIN charge_shipment cs ON cs.id = j.chargeShipmentId SET j.statusAtInventory = cs.status WHERE j.inventoryId = ?',
+            [savedInventory.id],
+          );
+        }
+      } catch (e) {
+        this.logger.warn(`No se guardó el estatus al inventario (¿falta la migración 122?): ${e?.message}`);
       }
 
       // 5. Confirmar transacción
@@ -229,80 +267,6 @@ export class InventoriesService {
         isValid,
         reason
       };
-  }
-
-  async validateTrackingNumber(
-    trackingNumber: string,
-    subsidiaryId?: string
-  ): Promise<ValidatedPackageDispatchDto & { isCharge?: boolean; consolidated?: Consolidated }> {
-    const [liveShipment, liveCharge] = await Promise.all([
-      this.shipmentRepository.findOne({
-        where: {
-          trackingNumber,
-          status: Not(ShipmentStatusType.DEVUELTO_A_FEDEX)
-        },
-        relations: ['subsidiary', 'statusHistory', 'payment'],
-        order: { createdAt: 'DESC' }
-      }),
-      this.chargeShipmentRepository.findOne({
-        where: {
-          trackingNumber,
-          status: Not(ShipmentStatusType.DEVUELTO_A_FEDEX)
-        },
-        relations: ['subsidiary', 'charge', 'payment'],
-        order: { createdAt: 'DESC' }
-      }),
-    ]);
-
-    // Entre shipment y carga gana el registro más reciente (no siempre el shipment).
-    const pick = pickScanCandidate(liveShipment, liveCharge);
-    const shipment = pick?.kind === 'shipment' ? pick.record : null;
-
-    if (!shipment) {
-      const chargeShipment = pick?.kind === 'charge' ? pick.record : null;
-
-      if (!chargeShipment) {
-      // Retornar DTO mínimo con un mensaje indicando el motivo
-      return {
-        trackingNumber,
-        isValid: false,
-        reason: 'No se encontraron datos para el tracking number en la base de datos',
-        subsidiary: null,
-        status: null,
-      };
-    }
-
-      const validatedCharge = await this.validatePackage(
-        {
-          ...chargeShipment,
-          isValid: false,
-        },
-        subsidiaryId
-      );
-
-      return {
-        ...validatedCharge,
-        isCharge: true,
-      };
-    }
-
-    const consolidated = await this.consolidatedRepository.findOne({
-      where: { id: shipment.consolidatedId },
-    });
-
-    const validatedShipment = await this.validatePackage(
-      {
-        ...shipment,
-        isValid: false,
-        isCharge: false,
-      },
-      subsidiaryId
-    );
-
-    return {
-      ...validatedShipment,
-      consolidated,
-    };
   }
 
   async validateTrackingNumbersResp1306(
@@ -472,6 +436,7 @@ export class InventoriesService {
     }
 
     await this.attachZoneCities(validatedShipments as any[], subsidiaryId);
+    await this.attachCurrentStatusAt(validatedShipments as any[]);
     return { validatedShipments };
   }
 
@@ -536,6 +501,8 @@ export class InventoriesService {
       to?: string;
       search?: string;
       type?: string;
+      sortBy?: string;
+      sortDir?: string;
     } = {},
   ): Promise<PaginatedResult<any>> {
     const { start, end } = resolveDateRange(opts.from, opts.to);
@@ -543,12 +510,25 @@ export class InventoriesService {
     const search = (opts.search || '').trim();
     const type = opts.type && opts.type !== 'all' ? opts.type : undefined;
 
-    // Filtros comunes (semana + búsqueda + tipo). NO carga relaciones pesadas:
-    // los paquetes se devuelven como conteo y el detalle se pide aparte por id.
+    // Búsqueda por folio O por guía (FedEx o pieza DHL, con variante JJD/JD). Con búsqueda se
+    // busca en TODAS las fechas (así también abre el enlace de los correos de otra semana).
+    const upper = search.toUpperCase();
+    const variants = [upper];
+    if (upper.startsWith('JJD')) variants.push(upper.slice(1));
+    else if (upper.startsWith('JD')) variants.push('J' + upper);
+    const trackingMatchSql =
+      `(EXISTS (SELECT 1 FROM inventory_shipment js JOIN shipment s ON s.id = js.shipmentId
+                 WHERE js.inventoryId = inventory.id AND (s.trackingNumber IN (:...variants) OR s.dhlUniqueId IN (:...variants)))
+        OR EXISTS (SELECT 1 FROM inventory_charge_shipments jc JOIN charge_shipment cs ON cs.id = jc.chargeShipmentId
+                 WHERE jc.inventoryId = inventory.id AND cs.trackingNumber IN (:...variants)))`;
+
     const applyFilters = <T extends import('typeorm').SelectQueryBuilder<Inventory>>(qb: T): T => {
-      qb.where('subsidiary.id = :subsidiaryId', { subsidiaryId })
-        .andWhere('inventory.inventoryDate BETWEEN :start AND :end', { start, end });
-      if (search) qb.andWhere('inventory.trackingNumber LIKE :search', { search: `%${search}%` });
+      qb.where('subsidiary.id = :subsidiaryId', { subsidiaryId });
+      if (search) {
+        qb.andWhere(`(inventory.trackingNumber LIKE :search OR ${trackingMatchSql})`, { search: `%${search}%`, variants });
+      } else {
+        qb.andWhere('inventory.inventoryDate BETWEEN :start AND :end', { start, end });
+      }
       if (type) qb.andWhere('inventory.type = :type', { type });
       return qb;
     };
@@ -557,10 +537,23 @@ export class InventoriesService {
       this.inventoryRepository.createQueryBuilder('inventory').leftJoin('inventory.subsidiary', 'subsidiary'),
     ).getCount();
 
-    const { entities, raw } = await applyFilters(
+    // Orden de TODO el historial (no solo la página): columnas permitidas.
+    const SORTS: Record<string, string> = {
+      trackingNumber: 'inventory.trackingNumber',
+      type: 'inventory.type',
+      createdBy: 'createdByName',
+      totalPackages: 'totalPackages',
+      rejectedCount: 'rejectedCount',
+      inventoryDate: 'inventory.inventoryDate',
+    };
+    const sortCol = SORTS[opts.sortBy ?? ''] ?? SORTS.inventoryDate;
+    const sortDir: 'ASC' | 'DESC' = String(opts.sortDir ?? '').toLowerCase() === 'asc' ? 'ASC' : 'DESC';
+
+    const qb = applyFilters(
       this.inventoryRepository
         .createQueryBuilder('inventory')
         .leftJoin('inventory.subsidiary', 'subsidiary')
+        .leftJoin('inventory.createdBy', 'createdBy')
         .leftJoin('inventory.shipments', 'shipments')
         .leftJoin('inventory.chargeShipments', 'chargeShipments'),
     )
@@ -576,12 +569,25 @@ export class InventoriesService {
       ])
       .addSelect('COUNT(DISTINCT shipments.id)', 'shipmentsCount')
       .addSelect('COUNT(DISTINCT chargeShipments.id)', 'chargeShipmentsCount')
+      .addSelect('COUNT(DISTINCT shipments.id) + COUNT(DISTINCT chargeShipments.id)', 'totalPackages')
+      .addSelect('COALESCE(JSON_LENGTH(inventory.rejectedTrackings), 0)', 'rejectedCount')
+      .addSelect("TRIM(CONCAT(IFNULL(createdBy.name, ''), ' ', IFNULL(createdBy.lastName, '')))", 'createdByName');
+    if (search) qb.addSelect(`CASE WHEN ${trackingMatchSql} THEN 1 ELSE 0 END`, 'matchedByTracking');
+
+    const { entities, raw } = await qb
       .groupBy('inventory.id')
       .addGroupBy('subsidiary.id')
-      .orderBy('inventory.inventoryDate', 'DESC')
+      .addGroupBy('createdBy.id')
+      .orderBy(sortCol, sortDir)
+      .addOrderBy('inventory.id', 'DESC')
       .offset(skip)
       .limit(limit)
       .getRawAndEntities();
+
+    // "Contra el anterior": solo para los inventarios de esta página.
+    const summaries = await this.compareSummaries(
+      entities.map((inv) => ({ id: inv.id, inventoryDate: inv.inventoryDate, subsidiaryId: inv.subsidiary?.id ?? subsidiaryId })),
+    );
 
     const data = entities.map((inv) => {
       const r = raw.find((x) => x.inventory_id === inv.id);
@@ -594,14 +600,260 @@ export class InventoriesService {
         chargeShipmentsCount: cc,
         totalPackages: sc + cc,
         rejectedCount: Array.isArray(rejectedTrackings) ? rejectedTrackings.length : 0,
+        createdByName: (r?.createdByName || '').trim() || null,
+        matchedByTracking: Number(r?.matchedByTracking || 0) === 1,
+        compareSummary: summaries.get(inv.id) ?? null,
       };
     });
 
     return { data, total, page, limit, totalPages: Math.max(1, Math.ceil(total / limit)) };
   }
 
+  /** Paquetes de un inventario (envíos + cargas) con lo necesario para comparar y mostrar. */
+  private async inventoryPackages(inventoryId: string, light = false): Promise<InventoryPackageRow[]> {
+    if (light) {
+      // Historial: solo lo necesario para contar (sin datos del destinatario ni cobro).
+      const [ships, charges] = await Promise.all([
+        this.dataSource.query(
+          `SELECT s.id, s.trackingNumber, s.dhlUniqueId, s.status, 0 AS isCharge
+             FROM inventory_shipment j JOIN shipment s ON s.id = j.shipmentId WHERE j.inventoryId = ?`,
+          [inventoryId],
+        ),
+        this.dataSource.query(
+          `SELECT cs.id, cs.trackingNumber, NULL AS dhlUniqueId, cs.status, 1 AS isCharge
+             FROM inventory_charge_shipments j JOIN charge_shipment cs ON cs.id = j.chargeShipmentId WHERE j.inventoryId = ?`,
+          [inventoryId],
+        ),
+      ]);
+      return [...ships, ...charges];
+    }
+    const [ships, charges] = await Promise.all([
+      this.dataSource.query(
+        `SELECT s.id, s.trackingNumber, s.dhlUniqueId, s.recipientName, s.recipientAddress, s.recipientCity,
+                s.recipientZip, s.commitDateTime, s.status, 0 AS isCharge,
+                (SELECT CONCAT(p.type, ' $', p.amount) FROM payment p WHERE p.id = s.paymentId OR p.shipmentId = s.id LIMIT 1) AS paymentLabel
+           FROM inventory_shipment j JOIN shipment s ON s.id = j.shipmentId WHERE j.inventoryId = ?`,
+        [inventoryId],
+      ),
+      this.dataSource.query(
+        `SELECT cs.id, cs.trackingNumber, NULL AS dhlUniqueId, cs.recipientName, cs.recipientAddress, cs.recipientCity,
+                cs.recipientZip, cs.commitDateTime, cs.status, 1 AS isCharge,
+                (SELECT CONCAT(p.type, ' $', p.amount) FROM payment p WHERE p.chargeShipmentId = cs.id LIMIT 1) AS paymentLabel
+           FROM inventory_charge_shipments j JOIN charge_shipment cs ON cs.id = j.chargeShipmentId WHERE j.inventoryId = ?`,
+        [inventoryId],
+      ),
+    ]);
+    return [...ships, ...charges];
+  }
+
+  /**
+   * Último movimiento REAL (sin confirmaciones de inventario) de cada paquete ENTRE `since` y
+   * `until` (los dos inventarios que se comparan). Llave `s:<id>` / `c:<id>`.
+   */
+  private async lastMovementsSince(
+    rows: { id: string; isCharge?: boolean | number | null }[],
+    since: Date,
+    until: Date,
+  ): Promise<Map<string, { at: Date; status: string; exceptionCode: string | null; notes: string | null }>> {
+    const out = new Map<string, { at: Date; status: string; exceptionCode: string | null; notes: string | null }>();
+    const groups: [string, string, string[]][] = [
+      ['s', 'shipmentId', rows.filter((r) => !Number(r.isCharge ?? 0)).map((r) => r.id)],
+      ['c', 'chargeShipmentId', rows.filter((r) => !!Number(r.isCharge ?? 0)).map((r) => r.id)],
+    ];
+    for (const [prefix, fk, ids] of groups) {
+      for (let i = 0; i < ids.length; i += 800) {
+        const part = ids.slice(i, i + 800);
+        if (!part.length) continue;
+        const found: any[] = await this.dataSource.query(
+          `SELECT ${fk} AS id, timestamp AS at, status, exceptionCode, notes FROM shipment_status
+            WHERE ${fk} IN (${part.map(() => '?').join(',')}) AND timestamp > ? AND timestamp <= ? AND ${realMovementSql()}
+            ORDER BY timestamp DESC`,
+          [...part, since, until],
+        );
+        for (const r of found) {
+          const key = `${prefix}:${r.id}`;
+          if (!out.has(key)) out.set(key, { at: new Date(r.at), status: r.status, exceptionCode: r.exceptionCode || null, notes: r.notes || null });
+        }
+      }
+    }
+    return out;
+  }
+
+  /** Inventario anterior de la misma sucursal el mismo día (hora Hermosillo), o null. */
+  private async previousSameDay(inv: { id: string; inventoryDate: Date; subsidiaryId?: string | null }) {
+    if (!inv.subsidiaryId) return null;
+    const dayStart = fromZonedTime(`${herDay(inv.inventoryDate)}T00:00:00.000`, 'America/Hermosillo');
+    return this.inventoryRepository
+      .createQueryBuilder('i')
+      .select(['i.id', 'i.trackingNumber', 'i.inventoryDate', 'i.type'])
+      .where('i.subsidiaryId = :sub', { sub: inv.subsidiaryId })
+      .andWhere('i.id <> :id', { id: inv.id })
+      .andWhere('i.inventoryDate >= :dayStart AND i.inventoryDate < :at', { dayStart, at: inv.inventoryDate })
+      .orderBy('i.inventoryDate', 'DESC')
+      .getOne();
+  }
+
+  /**
+   * Comparación completa contra el anterior: las que ya no están, cada una con su grupo
+   * (Sin movimiento / Bodega / DEX / Ruta / POD / Otros), sus datos y su último movimiento.
+   */
+  private async buildComparison(inv: { id: string; inventoryDate: Date; subsidiaryId?: string | null }, light = false) {
+    const previous = await this.previousSameDay(inv);
+    if (!previous) return null;
+    const [prevPkgs, currPkgs] = await Promise.all([this.inventoryPackages(previous.id, light), this.inventoryPackages(inv.id, light)]);
+    const diff = diffInventories(prevPkgs, currPkgs);
+    // Para contar, el movimiento solo decide entre Bodega y Sin movimiento (las que siguen "en
+    // bodega"); en el detalle se trae para todas porque se muestra.
+    const needMoves = light
+      ? (diff.gone as any[]).filter((g) => ['sinMovimiento', 'bodega'].includes(inventoryGoneBucket(g.status, false)))
+      : (diff.gone as any[]);
+    // Lo que pasó ENTRE los dos inventarios (no después): es lo que explica si debía estar o no.
+    const moves = await this.lastMovementsSince(needMoves, new Date(previous.inventoryDate), new Date(inv.inventoryDate));
+    const counts: InventoryGoneCounts = emptyGoneCounts();
+    const gone = diff.gone.map((g: any) => {
+      const lastMovement = moves.get(`${g.isCharge ? 'c' : 's'}:${g.id}`) ?? null;
+      const bucket = inventoryGoneBucket(g.status, !!lastMovement);
+      counts[bucket]++;
+      return {
+        id: g.id,
+        trackingNumber: g.trackingNumber,
+        dhlUniqueId: g.dhlUniqueId ?? null,
+        recipientName: g.recipientName ?? null,
+        recipientAddress: g.recipientAddress ?? null,
+        recipientCity: g.recipientCity ?? null,
+        recipientZip: g.recipientZip ?? null,
+        commitDateTime: g.commitDateTime ? new Date(g.commitDateTime).toISOString() : null,
+        paymentLabel: g.paymentLabel ?? null,
+        status: g.status ?? null,
+        isCharge: !!g.isCharge,
+        bucket,
+        lastMovement: lastMovement
+          ? { at: lastMovement.at.toISOString(), status: lastMovement.status, exceptionCode: lastMovement.exceptionCode, notes: lastMovement.notes }
+          : null,
+      };
+    });
+    return {
+      previous: {
+        id: previous.id,
+        trackingNumber: previous.trackingNumber,
+        inventoryDate: previous.inventoryDate,
+        type: previous.type,
+        totalPackages: new Set(prevPkgs.map(inventoryPackageKey)).size,
+      },
+      counts,
+      gone,
+      appearedKeys: diff.appearedKeys,
+      keptKeys: diff.keptKeys,
+    };
+  }
+
+  /**
+   * Comparación contra el inventario ANTERIOR de la misma sucursal el mismo día (hora Hermosillo).
+   * Sin anterior ese día → `previous: null`.
+   */
+  async compareWithPrevious(id: string, user?: { role?: string; subsidiaryIds?: string[] }) {
+    const inv = await this.inventoryRepository.findOne({
+      where: { id },
+      relations: ['subsidiary'],
+      select: { id: true, inventoryDate: true, type: true, subsidiary: { id: true } },
+    });
+    if (!inv) throw new NotFoundException('No se encontró el inventario.');
+    this.assertSubsidiaryAccess(user, inv.subsidiary?.id);
+    const cmp = await this.buildComparison({ id: inv.id, inventoryDate: inv.inventoryDate, subsidiaryId: inv.subsidiary?.id });
+    return cmp ?? { previous: null, counts: emptyGoneCounts(), gone: [], appearedKeys: [], keptKeys: [] };
+  }
+
+  /** Resumen de la comparación para la columna "Contra el anterior" del historial (por renglón). */
+  private async compareSummaries(rows: { id: string; inventoryDate: Date; subsidiaryId?: string | null }[]) {
+    const out = new Map<string, any>();
+    // De a pocos para no acaparar el pool de conexiones.
+    for (let i = 0; i < rows.length; i += 5) {
+      const part = rows.slice(i, i + 5);
+      const res = await Promise.all(
+        part.map((r) =>
+          this.buildComparison(r, true).catch((e) => {
+            this.logger.warn(`No se pudo comparar el inventario ${r.id}: ${e?.message}`);
+            return null;
+          }),
+        ),
+      );
+      part.forEach((r, k) => {
+        const c = res[k];
+        out.set(r.id, c
+          ? {
+              previousType: c.previous.type,
+              previousDate: c.previous.inventoryDate,
+              counts: c.counts,
+              appeared: c.appearedKeys.length,
+              kept: c.keptKeys.length,
+            }
+          : null);
+      });
+    }
+    return out;
+  }
+
   async findOne(id: string) {
     return await this.inventoryRepository.findOneBy({ id });
+  }
+
+  /**
+   * Pone `currentStatusAt`: cuándo llegó el paquete a su estatus ACTUAL (último renglón de historial
+   * con ese estatus, sin confirmaciones de inventario). El Excel lo usa como fecha de entrega o de DEX.
+   */
+  private async attachCurrentStatusAt(pkgs: { id?: string; isCharge?: boolean; currentStatusAt?: string | null }[]) {
+    const groups: [string, string, string, typeof pkgs][] = [
+      ['shipmentId', 'shipment', 's', pkgs.filter((p) => p?.id && !p.isCharge)],
+      ['chargeShipmentId', 'charge_shipment', 'c', pkgs.filter((p) => p?.id && p.isCharge)],
+    ];
+    try {
+      for (const [fk, table, , list] of groups) {
+        const byId = new Map(list.map((p) => [String(p.id), p]));
+        const ids = [...byId.keys()];
+        for (let i = 0; i < ids.length; i += 800) {
+          const part = ids.slice(i, i + 800);
+          if (!part.length) continue;
+          const rows: any[] = await this.dataSource.query(
+            `SELECT ss.${fk} AS id, MAX(ss.timestamp) AS at
+               FROM shipment_status ss JOIN ${table} t ON t.id = ss.${fk}
+              WHERE ss.${fk} IN (${part.map(() => '?').join(',')}) AND ss.status = t.status AND ${realMovementSql('ss')}
+              GROUP BY ss.${fk}`,
+            part,
+          );
+          for (const r of rows) {
+            const p = byId.get(String(r.id));
+            if (p && r.at) p.currentStatusAt = new Date(r.at).toISOString();
+          }
+        }
+      }
+    } catch (e) {
+      // Sin la fecha el Excel solo deja la columna vacía; no rompe el detalle ni la validación.
+      this.logger.warn(`No se pudo leer la fecha del estatus actual: ${e?.message}`);
+    }
+  }
+
+  /** Pone `statusAtInventory` (estatus al guardar el inventario, mig 122) a cada paquete. */
+  private async attachStatusAtInventory(inventory: Inventory) {
+    try {
+      const [ships, charges]: any[][] = await Promise.all([
+        this.dataSource.query('SELECT shipmentId AS id, statusAtInventory AS st FROM inventory_shipment WHERE inventoryId = ?', [inventory.id]),
+        this.dataSource.query('SELECT chargeShipmentId AS id, statusAtInventory AS st FROM inventory_charge_shipments WHERE inventoryId = ?', [inventory.id]),
+      ]);
+      const sm = new Map(ships.map((r) => [String(r.id), r.st ?? null]));
+      const cm = new Map(charges.map((r) => [String(r.id), r.st ?? null]));
+      for (const p of (inventory.shipments ?? []) as any[]) p.statusAtInventory = sm.get(String(p.id)) ?? null;
+      for (const p of (inventory.chargeShipments ?? []) as any[]) p.statusAtInventory = cm.get(String(p.id)) ?? null;
+    } catch (e) {
+      // Sin la migración 122 el detalle sigue funcionando (solo estatus actual).
+      this.logger.warn(`No se pudo leer el estatus al inventario: ${e?.message}`);
+    }
+  }
+
+  /** Misma regla que SubsidiaryScopeGuard, para cuando la sucursal sale del registro y no del URL. */
+  private assertSubsidiaryAccess(user: { role?: string; subsidiaryIds?: string[] } | undefined, subsidiaryId?: string | null) {
+    if (!user) return; // llamadas internas
+    if (canAccessSubsidiary(user, subsidiaryId)) return;
+    throw new ForbiddenException('Solo puedes consultar datos de tus sucursales asignadas.');
   }
 
   /**
@@ -621,91 +873,68 @@ export class InventoriesService {
     });
     if (!inventory) throw new NotFoundException('No se encontró el inventario.');
 
-    const role = (user?.role || '').toString().toLowerCase();
-    if (user && !['superadmin', 'superamin', 'owner'].includes(role)) {
-      const allowed = user.subsidiaryIds || [];
-      if (!inventory.subsidiary?.id || !allowed.includes(inventory.subsidiary.id)) {
-        throw new ForbiddenException('Solo puedes consultar datos de tus sucursales asignadas.');
-      }
-    }
+    this.assertSubsidiaryAccess(user, inventory.subsidiary?.id);
 
     const subsidiaryId = inventory.subsidiary?.id;
     await this.attachZoneCities((inventory.shipments ?? []) as any[], subsidiaryId);
     await this.attachZoneCities((inventory.chargeShipments ?? []) as any[], subsidiaryId);
+    await this.attachStatusAtInventory(inventory);
+    await this.attachCurrentStatusAt([
+      ...((inventory.shipments ?? []) as any[]).map((p) => Object.assign(p, { isCharge: false })),
+      ...((inventory.chargeShipments ?? []) as any[]).map((p) => Object.assign(p, { isCharge: true })),
+    ]);
     return inventory;
   }
 
+  /**
+   * Correo de "Paquetes críticos": paquetes del inventario que VENCEN HOY (hora Hermosillo) y
+   * siguen activos. Solo se manda si hay al menos uno (ver inventory-critical.util).
+   */
   async getPriorityPackages(inventory: Inventory) {
-      const timeZone = "America/Hermosillo";
+    if (!inventory) return null;
 
-      const todayUTC = new Date();
-      todayUTC.setUTCHours(0, 0, 0, 0);
-  
-      const tomorrowUTC = new Date(todayUTC);
-      tomorrowUTC.setUTCDate(tomorrowUTC.getUTCDate() + 1);
-  
-      if (!inventory) return null;
-  
-      const shipments = (inventory.shipments || []).filter(
-        s => 
-          s.commitDateTime >= todayUTC && 
-          s.commitDateTime < tomorrowUTC &&
-          s.status === ShipmentStatusType.EN_RUTA
-      );
-  
-      const chargeShipments = (inventory.chargeShipments || []).filter(
-        cs => 
-          cs.commitDateTime >= todayUTC && 
-          cs.commitDateTime < tomorrowUTC &&
-          cs.status === ShipmentStatusType.EN_RUTA
-      );
-  
-      const htmlRows = [...shipments, ...chargeShipments]
-        .map(
-          (s) => `
+    const shipments = pickCriticalPackages(inventory.shipments || []);
+    const chargeShipments = pickCriticalPackages(inventory.chargeShipments || []);
+    const critical = [...shipments, ...chargeShipments];
+
+    if (critical.length === 0) {
+      this.logger.debug(`Inventario ${inventory.id}: sin paquetes que venzan hoy; no se manda correo de críticos.`);
+      return { ...inventory, shipments, chargeShipments };
+    }
+    if (!inventory.subsidiary?.officeEmail) {
+      this.logger.warn(`Inventario ${inventory.id}: la sucursal no tiene correo de oficina; no se manda correo de críticos.`);
+      return { ...inventory, shipments, chargeShipments };
+    }
+
+    const fmtDay = (d: Date | string) => new Date(d).toLocaleDateString('es-MX', { timeZone: 'America/Hermosillo' });
+    const htmlRows = critical
+      .map(
+        (s) => `
             <tr style="border-bottom: 1px solid #ddd;">
-              <td style="padding: 8px; text-align: center;">${s.trackingNumber ?? "N/A"}</td>
-              <td style="padding: 8px;">${s.subsidiary?.name ?? "N/A"}</td>
-              <td style="padding: 8px; text-align: center;">
-                ${
-                  s.commitDateTime
-                    ? new Date(s.commitDateTime).toLocaleDateString("es-MX", {
-                        timeZone: "America/Hermosillo",
-                      })
-                    : "Sin fecha"
-                }
-              </td>
-              <td style="padding: 8px; text-align: center;">
-                ${s.payment ? `${s.payment.type} $ ${s.payment.amount}` : ""}
-              </td>
-              <td style="padding: 8px; text-align: center;">${s.status ?? "N/A"}</td>
-            </tr>
-          `
-        )
-        .join("");
-  
-      const htmlContent = `
+              <td style="padding: 8px; text-align: center;">${escapeHtml(s.trackingNumber ?? 'N/A')}</td>
+              <td style="padding: 8px;">${escapeHtml(s.subsidiary?.name ?? inventory.subsidiary?.name ?? 'N/A')}</td>
+              <td style="padding: 8px; text-align: center;">${s.commitDateTime ? fmtDay(s.commitDateTime) : 'Sin fecha'}</td>
+              <td style="padding: 8px; text-align: center;">${s.payment ? `${escapeHtml(s.payment.type)} $ ${escapeHtml(s.payment.amount)}` : ''}</td>
+              <td style="padding: 8px; text-align: center;">${escapeHtml(s.status ?? 'N/A')}</td>
+            </tr>`,
+      )
+      .join('');
+
+    const htmlContent = `
         <div style="font-family: Arial, sans-serif; color: #2c3e50; max-width: 800px; margin: auto;">
           <h2 style="border-bottom: 3px solid #e74c3c; padding-bottom: 8px;">
             Reporte de Inventario con Paquetes Críticos
           </h2>
-  
           <p>
-            Dentro del Inventario <strong>${inventory.trackingNumber ?? "N/A"}</strong>
-            se han detectado paquetes con fecha de vencimiento el día de hoy 
-            (<strong>${new Date(inventory.inventoryDate).toLocaleDateString('es-MX', { timeZone: 'America/Hermosillo' })}</strong>).
+            En el inventario <strong>${escapeHtml(inventory.trackingNumber ?? 'N/A')}</strong>
+            hay <strong>${critical.length}</strong> paquete(s) que vencen hoy
+            (<strong>${fmtDay(inventory.inventoryDate)}</strong>).
           </p>
-  
           <p style="color:#c0392b; font-weight:bold;">
             Estos envíos deben ser considerados para <u>entrega inmediata</u>.
           </p>
-  
-          <table 
-            border="0" 
-            cellpadding="0" 
-            cellspacing="0" 
-            style="border-collapse: collapse; width: 100%; box-shadow: 0 0 10px rgba(0,0,0,0.05); margin-top: 15px;"
-          >
+          <table border="0" cellpadding="0" cellspacing="0"
+            style="border-collapse: collapse; width: 100%; box-shadow: 0 0 10px rgba(0,0,0,0.05); margin-top: 15px;">
             <thead style="background-color: #f7f7f7; text-align: center;">
               <tr>
                 <th style="padding: 10px;">Tracking Number</th>
@@ -715,51 +944,38 @@ export class InventoriesService {
                 <th style="padding: 10px;">Estatus</th>
               </tr>
             </thead>
-            <tbody>
-              ${
-                htmlRows ||
-                `<tr>
-                  <td colspan="5" style="text-align: center; padding: 15px; color: #7f8c8d;">
-                    No se encontraron paquetes vencidos en el día.
-                  </td>
-                </tr>`
-              }
-            </tbody>
+            <tbody>${htmlRows}</tbody>
           </table>
-  
-          <p style="margin-top: 20px; font-weight: bold; color: #c0392b;">
-            Este correo se genera automáticamente debido a la criticidad de la descarga.
-          </p>
-  
           <p style="margin-top: 20px;">
-            Para un monitoreo detallado de los envíos, por favor visite: 
-            <a href="https://app-pmy.vercel.app/" target="_blank" style="color: #2980b9; text-decoration: none;">
-              https://app-pmy.vercel.app/
-            </a>
+            Para un monitoreo detallado de los envíos, por favor visite:
+            <a href="https://app-pmy.vercel.app/" target="_blank" style="color: #2980b9; text-decoration: none;">https://app-pmy.vercel.app/</a>
           </p>
-  
           <hr style="margin: 30px 0; border: none; border-top: 1px solid #eee;" />
-  
           <p style="font-size: 0.9em; color: #7f8c8d;">
             Este correo fue enviado automáticamente por el sistema.<br />
             Por favor, no responda a este mensaje.
           </p>
         </div>
       `;
-  
-      const result = await this.mailService.sendHighPriorityPackagesOnInvetory({
-        to: inventory.subsidiary.officeEmail,
-        cc: `${inventory.subsidiary.officeEmailToCopy}, sistemas@paqueteriaymensajeriadelyaqui.com`,
-        //cc: 'javier.rappaz@gmail.com'
-        htmlContent
-      });
-  
-      this.logger.debug('Correo enviado correctamente:', result);
-  
-      return { ...inventory, shipments, chargeShipments };
+
+    await this.mailService.sendHighPriorityPackagesOnInvetory({
+      to: inventory.subsidiary.officeEmail,
+      cc: buildCcList(inventory.subsidiary.officeEmailToCopy, 'sistemas@paqueteriaymensajeriadelyaqui.com'),
+      htmlContent,
+    });
+    this.logger.log(`Inventario ${inventory.id}: correo de críticos enviado (${critical.length} paquete(s)).`);
+
+    return { ...inventory, shipments, chargeShipments };
   }
 
-  async sendByEmail(file: Express.Multer.File, excelFile: Express.Multer.File, subsidiaryName: string, inventoryId: string) {
+  async sendByEmail(
+    file: Express.Multer.File,
+    excelFile: Express.Multer.File,
+    subsidiaryName: string,
+    inventoryId: string,
+    user?: { role?: string; subsidiaryIds?: string[] },
+    opts: { resend?: boolean } = {},
+  ) {
     // Guarda crítica: con inventoryId vacío, TypeORM ignora la condición `id`
     // y devuelve un inventario arbitrario (el primero de la tabla), provocando
     // que el correo se envíe a la sucursal equivocada.
@@ -785,13 +1001,14 @@ export class InventoriesService {
       throw new NotFoundException(`Inventario con id ${inventoryId} no encontrado`);
     }
 
-    this.logger.debug(`Inventario encontrado: ${inventory.id}`);
+    this.assertSubsidiaryAccess(user, inventory.subsidiary?.id);
 
+    // El correo de críticos es un aviso extra: si falla, el correo del inventario sale igual.
+    // En un REENVÍO desde el historial no se repite.
     try {
-      await this.getPriorityPackages(inventory);
+      if (!opts.resend) await this.getPriorityPackages(inventory);
     } catch (err) {
-      this.logger.error(`Error al enviar correo de prioridades para inventario: ${inventory.id}`, err);
-      throw err;
+      this.logger.warn(`No se pudo enviar el correo de críticos del inventario ${inventory.id}: ${err?.message}`);
     }
 
     // Unificación "Inventario": detrás de flag, el backend genera PDF/Excel por el
@@ -1836,7 +2053,7 @@ export class InventoriesService {
         if (part.length === 0) continue;
         const ph = part.map(() => '?').join(',');
         const mv: any[] = await this.dataSource.query(
-          `SELECT ${fkCol} AS id, SUM(timestamp BETWEEN ? AND ?) AS n FROM shipment_status WHERE ${fkCol} IN (${ph}) GROUP BY ${fkCol}`,
+          `SELECT ${fkCol} AS id, SUM(timestamp BETWEEN ? AND ? AND ${realMovementSql()}) AS n FROM shipment_status WHERE ${fkCol} IN (${ph}) GROUP BY ${fkCol}`,
           [startUtc, endUtc, ...part],
         );
         for (const r of mv) if (r.id) moved.set(String(r.id), Number(r.n) || 0);

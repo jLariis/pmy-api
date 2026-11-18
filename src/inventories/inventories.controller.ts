@@ -8,8 +8,7 @@ import { ValidationPayloadDto } from 'src/unloading/dto/validate-payload.dto';
 import { NoAudit } from 'src/audit/audit.decorator';
 import { UseGuards, ForbiddenException } from '@nestjs/common';
 import { SubsidiaryScopeGuard } from 'src/auth/guards/subsidiary-scope.guard';
-
-const GLOBAL_ROLES = ['superadmin', 'superamin', 'owner'];
+import { canAccessSubsidiary } from './inventory-scope.util';
 
 @ApiTags('inventories')
 @Controller('inventories')
@@ -18,9 +17,8 @@ export class InventoriesController {
 
   @Post()
   create(@Body() createInventoryDto: CreateInventoryDto, @Req() req: any) {
-    const role = (req.user?.role || '').toString().toLowerCase();
     const subsidiaryId = createInventoryDto?.subsidiary?.id;
-    if (subsidiaryId && !GLOBAL_ROLES.includes(role) && !(req.user?.subsidiaryIds || []).includes(subsidiaryId)) {
+    if (subsidiaryId && !canAccessSubsidiary(req.user, subsidiaryId)) {
       throw new ForbiddenException('Solo puedes guardar inventarios de tus sucursales asignadas.');
     }
     return this.inventoriesService.create(createInventoryDto, req.user?.userId);
@@ -29,6 +27,12 @@ export class InventoriesController {
   @Get('detail/:id')
   findOneFull(@Param('id') id: string, @Req() req: any) {
     return this.inventoriesService.findOneFull(id, req.user);
+  }
+
+  /** Comparación contra el inventario anterior del mismo día (ya no están / aparecieron / siguen). */
+  @Get('detail/:id/compare')
+  compareWithPrevious(@Param('id') id: string, @Req() req: any) {
+    return this.inventoriesService.compareWithPrevious(id, req.user);
   }
 
   /** Reporte "Inventarios" (estilo Visibilidad 67) por sucursal y rango (default: ayer). */
@@ -63,13 +67,8 @@ export class InventoriesController {
     const requested = [...new Set((body?.subsidiaryIds || []).filter(Boolean))];
     if (requested.length === 0) throw new BadRequestException('Selecciona al menos una sucursal.');
 
-    const role = (req.user?.role || '').toString().toLowerCase();
-    if (!GLOBAL_ROLES.includes(role)) {
-      const allowed: string[] = req.user?.subsidiaryIds || [];
-      const denied = requested.filter((id) => !allowed.includes(id));
-      if (denied.length > 0) {
-        throw new ForbiddenException('Solo puedes consultar datos de tus sucursales asignadas.');
-      }
+    if (requested.some((id) => !canAccessSubsidiary(req.user, id))) {
+      throw new ForbiddenException('Solo puedes consultar datos de tus sucursales asignadas.');
     }
 
     return this.inventoriesService.getMissingScanReportMulti(requested);
@@ -95,13 +94,10 @@ export class InventoriesController {
     @Query('to') to?: string,
     @Query('search') search?: string,
     @Query('type') type?: string,
+    @Query('sortBy') sortBy?: string,
+    @Query('sortDir') sortDir?: string,
   ) {
-    return this.inventoriesService.findAll(subsidiaryId, { page, limit, from, to, search, type });
-  }
-
-  @Get('validate/:trackingNumber')
-  validateTrackingNumber(@Param('trackingNumber') trackingNumber: string) {
-    return this.inventoriesService.validateTrackingNumber(trackingNumber);
+    return this.inventoriesService.findAll(subsidiaryId, { page, limit, from, to, search, type, sortBy, sortDir });
   }
 
   @NoAudit() // Validación por escaneo: muy frecuente, no es una acción auditable.
@@ -112,8 +108,14 @@ export class InventoriesController {
       new ParseArrayPipe({ items: ValidationPayloadDto, optional: true }),
     )
     trackingNumbers: ValidationPayloadDto[] = [],
-    @Body('subsidiaryId') subsidiaryId?: string,
+    @Body('subsidiaryId') subsidiaryId: string,
+    @Req() req: any,
   ) {
+    // Sin sucursal todo saldría "no pertenece a la sucursal actual": se pide explícita.
+    if (!subsidiaryId) throw new BadRequestException('Selecciona una sucursal antes de validar.');
+    if (!canAccessSubsidiary(req.user, subsidiaryId)) {
+      throw new ForbiddenException('Solo puedes validar paquetes de tus sucursales asignadas.');
+    }
     return this.inventoriesService.validateTrackingNumbers(trackingNumbers, subsidiaryId);
   }
 
@@ -144,7 +146,9 @@ export class InventoriesController {
   sendEmail(
     @UploadedFiles() files: Express.Multer.File[],
     @Body('subsidiaryName') subsidiaryName: string,
-    @Body('inventoryId') inventoryId: string
+    @Body('inventoryId') inventoryId: string,
+    @Req() req: any,
+    @Body('resend') resend?: string,
   ) {
     // El id es obligatorio: de él se resuelve la sucursal destinataria del correo.
     if (!inventoryId) {
@@ -166,6 +170,6 @@ export class InventoriesController {
       throw new BadRequestException('Se requiere un archivo PDF y un archivo Excel.');
     }
 
-    return this.inventoriesService.sendByEmail(pdfFile, excelFile, subsidiaryName, inventoryId)
+    return this.inventoriesService.sendByEmail(pdfFile, excelFile, subsidiaryName, inventoryId, req.user, { resend: resend === 'true' });
   }
 }

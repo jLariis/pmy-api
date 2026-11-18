@@ -80,6 +80,7 @@ import { buildReceived67Data } from 'src/documents/data/received-67.mapper';
 import { buildPendingShipmentsData } from 'src/documents/data/pending-shipments.mapper';
 import { shipmentIncomeWhere } from 'src/common/shipment-income-where.util';
 import { siblingIncomesSinceCreated } from 'src/common/sibling-income.util';
+import { realMovementSql } from 'src/common/inventory-movement.util';
 
 dayjs.extend(isoWeek);
 
@@ -4908,7 +4909,7 @@ export class ShipmentsService {
           if (part.length === 0) continue;
           const ph = part.map(() => '?').join(',');
           const mv: any[] = await this.dataSource.query(
-            `SELECT ${fkCol} AS id, timestamp AS ts FROM shipment_status WHERE ${fkCol} IN (${ph})`,
+            `SELECT ${fkCol} AS id, timestamp AS ts FROM shipment_status WHERE ${fkCol} IN (${ph}) AND ${realMovementSql()}`,
             part,
           );
           for (const r of mv) {

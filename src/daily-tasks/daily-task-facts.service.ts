@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { DataSource } from 'typeorm';
 import { classifyLd, herDay, LdState } from '../common/ld-rule.util';
+import { isInventoryConfirmationRow } from '../common/inventory-movement.util';
 import { addDays, atLocalTime } from '../ops-alerts/ops-alerts.util';
 import { ConsolidatedFacts, Progress, SubsidiaryDayFacts } from './daily-task.types';
 import { pieceKeyOf } from './daily-task-rules.util';
@@ -200,11 +201,14 @@ export class DailyTaskFactsService {
     const ids = guides.filter((g) => (due.get(g.id) ?? '9') <= today).map((g) => g.id);
     for (const part of chunk(ids)) {
       if (!part.length) continue;
-      const rows: any[] = await this.db.query(`SELECT ${fk} id, exceptionCode, timestamp ts FROM shipment_status WHERE ${fk} IN (${ph(part.length)})`, part);
+      const rows: any[] = await this.db.query(`SELECT ${fk} id, exceptionCode, timestamp ts, source, notes FROM shipment_status WHERE ${fk} IN (${ph(part.length)})`, part);
       for (const r of rows) {
         const d = herDay(r.ts);
-        if (!moved.has(r.id)) moved.set(r.id, new Set());
-        moved.get(r.id)!.add(d);
+        // La confirmación de inventario no es movimiento (si no, le quita el LD al paquete).
+        if (!isInventoryConfirmationRow(r)) {
+          if (!moved.has(r.id)) moved.set(r.id, new Set());
+          moved.get(r.id)!.add(d);
+        }
         if (['03', '05', '07', '08', '17', '42'].includes(String(r.exceptionCode ?? '').trim())) {
           if (!dex.has(r.id)) dex.set(r.id, new Set());
           dex.get(r.id)!.add(d);

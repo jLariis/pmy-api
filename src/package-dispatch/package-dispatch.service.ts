@@ -32,6 +32,7 @@ import { hermosilloDayStartFromInstant } from 'src/common/utils';
 import { resolveClosureStatus } from 'src/tracking-sync/closure-stuck-resolver.util';
 import { loadRouteWindowContext, routeWindowKey } from './route-window.query';
 import { DispatchListFilters } from './dispatch-list-filters.util';
+import { realMovementSql } from 'src/common/inventory-movement.util';
 import {
   DispatchSortable,
   DispatchSortMode,
@@ -2715,7 +2716,7 @@ export class PackageDispatchService {
                   MAX(CASE WHEN exceptionCode IN ${LOCAL_SCAN_CODES_SQL} THEN timestamp END) AS last67,
                   SUM(exceptionCode IN ${LOCAL_SCAN_CODES_SQL} AND timestamp BETWEEN ? AND ?) AS c67y,
                   SUM(exceptionCode IN ${LOCAL_SCAN_CODES_SQL} AND timestamp BETWEEN ? AND ?) AS c67t,
-                  SUM(timestamp BETWEEN ? AND ?) AS movedY
+                  SUM(timestamp BETWEEN ? AND ? AND ${realMovementSql()}) AS movedY
              FROM shipment_status
             WHERE ${fkCol} IN (${ph})
             GROUP BY ${fkCol}`,
