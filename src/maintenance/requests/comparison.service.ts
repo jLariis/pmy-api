@@ -12,7 +12,7 @@ import { RequestNeed } from 'src/entities/request-need.entity';
 import { FolioService } from '../folio.service';
 import { ScopeUser } from '../maintenance-scope.util';
 import { isPurchaser } from '../maintenance.permissions';
-import { totals } from '../utils/money.util';
+import { itemAmount, totals } from '../utils/money.util';
 import { compareByItem, Comparison, CmpQuote, groupSelectionBySupplier } from '../utils/comparison.util';
 import { PurchaseOrdersService } from '../purchase-orders/purchase-orders.service';
 import { RequestsService } from './requests.service';
@@ -101,6 +101,8 @@ export class ComparisonService {
       for (const r of comparison.rows) r.selectedQuoteItemId = r.cells[onlyQuoteId]?.quoteItemId ?? null;
     }
     const groups = groupSelectionBySupplier(comparison, cmpQuotes);
+    const qtyByQuoteItem = new Map<string, number>();
+    for (const r of comparison.rows) for (const c of Object.values(r.cells)) qtyByQuoteItem.set(c.quoteItemId, c.quantity);
     if (!groups.length) throw new BadRequestException('Elige al menos un proveedor en el comparativo.');
 
     const created = await this.dataSource.transaction(async (m) => {
@@ -108,11 +110,15 @@ export class ComparisonService {
       for (const g of groups) {
         const quote = quotes.find((q) => q.id === g.quoteId)!;
         const chosen = quote.items.filter((i) => g.quoteItemIds.includes(i.id));
-        const items = chosen.map((i) => m.create(PurchaseOrderItem, {
-          requestItemId: i.requestItemId ?? null, productId: i.productId ?? null, serviceId: null, description: i.description,
-          quantity: Number(i.quantity), unitPrice: Number(i.unitPrice), ivaEnabled: i.ivaEnabled, iepsEnabled: i.iepsEnabled,
-          iepsRate: Number(i.iepsRate ?? 0), taxRate: i.ivaEnabled ? 0.16 : 0, amount: Number(i.amount), approved: true,
-        }));
+        const items = chosen.map((i) => {
+          // Se compra lo que se pidió en la solicitud (la misma cantidad con la que se comparó).
+          const quantity = qtyByQuoteItem.get(i.id) ?? Number(i.quantity);
+          return m.create(PurchaseOrderItem, {
+            requestItemId: i.requestItemId ?? null, productId: i.productId ?? null, serviceId: null, description: i.description,
+            quantity, unitPrice: Number(i.unitPrice), ivaEnabled: i.ivaEnabled, iepsEnabled: i.iepsEnabled,
+            iepsRate: Number(i.iepsRate ?? 0), taxRate: i.ivaEnabled ? 0.16 : 0, amount: itemAmount({ quantity, unitPrice: Number(i.unitPrice) }), approved: true,
+          });
+        });
         const t = totals(items, true);
         const contact = quote.supplier?.contacts?.find((c) => c.isDefault) ?? quote.supplier?.contacts?.[0] ?? null;
         const folio = await this.folios.next(m, 'OC');

@@ -68,3 +68,36 @@ describe('compareByItem con necesidades', () => {
     expect(out.rows.map((r) => [r.requestItemId, r.kind, r.cells.q1?.quoteItemId])).toEqual([['r1', 'item', 'x2'], ['n1', 'need', 'x1']]);
   });
 });
+
+describe('compareByItem: cantidad de la solicitud', () => {
+  // Caso real SOL-000001: Francisco cotizó 1 llanta (precio unitario) y la solicitud pide 4 y 2.
+  const items = [
+    { id: 'r175', description: 'Llanta 175 x 60 R14', quantity: 4, selectedQuoteItemId: null },
+    { id: 'r255', description: 'Llanta 255 x 40 R17', quantity: 2, selectedQuoteItemId: null },
+  ];
+  const qs = [
+    { id: 'qF', supplierId: 'sF', supplierName: 'Francisco', items: [
+      { id: 'f1', requestItemId: 'r175', description: 'Llanta 175 x 60 R14', quantity: 1, unitPrice: 1200, ivaEnabled: true },
+      { id: 'f2', requestItemId: 'r255', description: 'Llanta 255 x 40 R17', quantity: 1, unitPrice: 2000, ivaEnabled: true },
+    ] },
+    { id: 'qE', supplierId: 'sE', supplierName: 'Econollantas', items: [
+      { id: 'e1', requestItemId: 'r175', description: 'Llanta 175 x 60 R14', quantity: 4, unitPrice: 5000, ivaEnabled: true },
+      { id: 'e2', requestItemId: 'r255', description: 'Llanta 255 x 40 R17', quantity: 2, unitPrice: 3000, ivaEnabled: true },
+    ] },
+  ] as any;
+  const c = compareByItem(items as any, qs);
+
+  it('importe = precio cotizado × cantidad pedida, y conserva lo que cotizó el proveedor', () => {
+    expect(c.rows[0].cells.qF).toMatchObject({ quantity: 4, quotedQuantity: 1, amount: 4800, total: 5568 });
+  });
+
+  it('el total por proveedor compara la misma cantidad para todos', () => {
+    expect(c.quotes.find((q) => q.id === 'qF')!.total).toBe(10208);
+    expect(c.quotes.find((q) => q.id === 'qE')!.total).toBe(30160);
+  });
+
+  it('sin cantidad en la solicitud usa la cotizada', () => {
+    const c2 = compareByItem([{ ...items[0], quantity: 0 }] as any, qs);
+    expect(c2.rows[0].cells.qF).toMatchObject({ quantity: 1, amount: 1200 });
+  });
+});

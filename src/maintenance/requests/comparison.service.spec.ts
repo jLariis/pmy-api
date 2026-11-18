@@ -65,6 +65,19 @@ describe('ComparisonService.generateOrders', () => {
     expect(saved[0].items.map((i: any) => i.description)).toEqual(['Aceite', 'Balero']);
   });
 
+  it('la orden sale por la cantidad pedida aunque el proveedor haya cotizado otra', async () => {
+    const original = quotes[0].items[0].quantity;
+    quotes[0].items[0].quantity = 1; // AutoZone cotizó 1 aceite; la solicitud pide 5
+    try {
+      const { svc, saved } = make();
+      await svc.generateOrders('r1', gerardo);
+      expect(saved[0].items[0]).toMatchObject({ quantity: 5, unitPrice: 60, amount: 300 });
+      expect(saved[0]).toMatchObject({ subtotal: 300, total: 348 });
+    } finally {
+      quotes[0].items[0].quantity = original;
+    }
+  });
+
   it('solo Compras; no si ya hay órdenes o no está en cotización', async () => {
     await expect(make().svc.generateOrders('r1', { userId: 'x', role: 'admin', permissions: [] })).rejects.toBeInstanceOf(ForbiddenException);
     await expect(make({ hasOrders: true }).svc.generateOrders('r1', gerardo)).rejects.toThrow(/ya tiene órdenes/);

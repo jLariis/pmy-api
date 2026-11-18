@@ -37,7 +37,10 @@ export interface CmpQuote {
 export interface CmpCell {
   quoteItemId: string;
   unitPrice: number;
+  /** Cantidad que se compra = la de la solicitud (si no trae, la cotizada). Importe y total salen de aquí. */
   quantity: number;
+  /** Lo que cotizó el proveedor (puede ser distinto de lo pedido; la pantalla lo avisa). */
+  quotedQuantity: number;
   amount: number;
   total: number;
   availability: string;
@@ -66,6 +69,15 @@ export interface Comparison {
 const norm = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
 
 /**
+ * Cantidad que se compra de una partida: la que se pidió en la solicitud (así todos los proveedores se
+ * comparan con la misma cantidad y la orden sale por lo pedido). Si el renglón no trae cantidad, la cotizada.
+ */
+export function buyQuantity(ri: Pick<CmpRequestItem, 'quantity'>, qi: Pick<CmpQuoteItem, 'quantity'>): number {
+  const asked = Number(ri.quantity);
+  return asked > 0 ? asked : Number(qi.quantity);
+}
+
+/**
  * Comparativo por partida: para cada renglón de la solicitud busca la partida de cada cotización
  * (por renglón → por producto → por descripción), marca el mejor precio unitario entre los proveedores
  * que tienen existencia (si nadie tiene, el más barato) y propone ese como ganador.
@@ -81,9 +93,10 @@ export function compareByItem(items: CmpRequestItem[], quotes: CmpQuote[]): Comp
           ?? (ri.productId ? q.items.find((x) => free(x) && x.productId === ri.productId) : undefined)
           ?? q.items.find((x) => free(x) && norm(x.description) === norm(ri.description));
       if (!qi) continue;
-      const t = lineTaxes(qi);
+      const quantity = buyQuantity(ri, qi);
+      const t = lineTaxes({ ...qi, quantity });
       cells[q.id] = {
-        quoteItemId: qi.id, unitPrice: Number(qi.unitPrice), quantity: Number(qi.quantity), amount: t.amount, total: t.total,
+        quoteItemId: qi.id, unitPrice: Number(qi.unitPrice), quantity, quotedQuantity: Number(qi.quantity), amount: t.amount, total: t.total,
         availability: qi.availability ?? 'si', leadTimeDays: qi.leadTimeDays ?? null, quality: qi.quality ?? null,
       };
     }
