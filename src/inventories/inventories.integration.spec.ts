@@ -154,10 +154,11 @@ describe('InventoriesService.generateExcelReport (flag + fallback)', () => {
 });
 
 describe('InventoriesService.create — tipo y guías no incluidas', () => {
-  const makeSvc = () => {
+  const makeSvc = (opts: { shipments?: any[] } = {}) => {
     const created: any[] = [];
     const manager = {
       findBy: jest.fn().mockResolvedValue([]),
+      find: jest.fn(async (entity: any) => (entity?.name === 'Shipment' ? opts.shipments ?? [] : [])),
       findOneBy: jest.fn().mockResolvedValue({ id: 'sub-1', name: 'Bodega Obregon' }),
       create: jest.fn((_e: any, data: any) => { created.push(data); return data; }),
       save: jest.fn(async (x: any) => ({ id: 'inv-1', ...x })),
@@ -165,11 +166,12 @@ describe('InventoriesService.create — tipo y guías no incluidas', () => {
     const qr = {
       connect: jest.fn(), startTransaction: jest.fn(), commitTransaction: jest.fn(),
       rollbackTransaction: jest.fn(), release: jest.fn(), manager,
+      query: jest.fn().mockResolvedValue(undefined),
     };
     const svc = Object.create(InventoriesService.prototype) as any;
     svc.dataSource = { createQueryRunner: () => qr };
-    svc.logger = { log: jest.fn(), error: jest.fn() };
-    return { svc, created };
+    svc.logger = { log: jest.fn(), error: jest.fn(), warn: jest.fn() };
+    return { svc, created, qr };
   };
 
   it('guarda el tipo que manda el front como `inventoryType` (antes todo quedaba "initial")', async () => {
@@ -186,5 +188,47 @@ describe('InventoriesService.create — tipo y guías no incluidas', () => {
     });
     expect(created[0].type).toBe('initial');
     expect(created[0].rejectedTrackings).toEqual([{ trackingNumber: '123', reason: 'No existe', kind: 'no_encontrada' }]);
+  });
+
+  it('rechaza paquetes de otra sucursal y no guarda nada', async () => {
+    const { svc, created } = makeSvc({
+      shipments: [
+        { id: 's1', trackingNumber: '111', status: 'en_bodega', subsidiary: { id: 'sub-1' } },
+        { id: 's2', trackingNumber: '222', status: 'en_bodega', subsidiary: { id: 'sub-OTRA' } },
+      ],
+    });
+    await expect(
+      svc.create({ shipments: ['s1', 's2'], chargeShipments: [], subsidiary: { id: 'sub-1' } }, 'u1'),
+    ).rejects.toThrow('Estas guías son de otra sucursal: 222');
+    expect(created).toHaveLength(0);
+  });
+
+  it('marca el historial del inventario con source=inventory (no es movimiento)', async () => {
+    const { svc, created } = makeSvc({
+      shipments: [{ id: 's1', trackingNumber: '111', status: 'en_bodega', subsidiary: { id: 'sub-1' } }],
+    });
+    await svc.create({ shipments: ['s1'], chargeShipments: [], subsidiary: { id: 'sub-1' } }, 'u1');
+    const history = created.filter((c) => c.notes?.includes('inventario físico'));
+    expect(history).toHaveLength(1);
+    expect(history[0].source).toBe('inventory');
+  });
+
+  it('guarda el estatus de cada paquete al momento del inventario (mig 122)', async () => {
+    const { svc, qr } = makeSvc({
+      shipments: [{ id: 's1', trackingNumber: '111', status: 'en_bodega', subsidiary: { id: 'sub-1' } }],
+    });
+    await svc.create({ shipments: ['s1'], chargeShipments: [], subsidiary: { id: 'sub-1' } }, 'u1');
+    expect(qr.query).toHaveBeenCalledWith(expect.stringContaining('SET j.statusAtInventory = s.status'), ['inv-1']);
+  });
+
+  it('si falta la migración 122, el inventario se guarda igual', async () => {
+    const { svc, qr } = makeSvc({
+      shipments: [{ id: 's1', trackingNumber: '111', status: 'en_bodega', subsidiary: { id: 'sub-1' } }],
+    });
+    qr.query.mockRejectedValueOnce(new Error("Unknown column 'statusAtInventory'"));
+    await expect(svc.create({ shipments: ['s1'], chargeShipments: [], subsidiary: { id: 'sub-1' } }, 'u1')).resolves.toEqual(
+      expect.objectContaining({ id: 'inv-1' }),
+    );
+    expect(qr.commitTransaction).toHaveBeenCalled();
   });
 });
