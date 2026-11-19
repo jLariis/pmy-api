@@ -48,10 +48,22 @@ it('rows: icons [C][$][H], truncado 32/38, cobro con Intl es-MX, fecha/hora Herm
   expect(t1.recipientAddressXlsx).toBe('Calle 1');
 });
 
-it('rows: zebra rowFill F2F2F2 en índices pares (0-based)', () => {
-  const d = buildUnloadingData(baseInput() as any);
+it('rows: zebra rowFill F2F2F2 en índices pares (0-based) cuando no vence hoy/mañana', () => {
+  const input: any = baseInput();
+  input.packages = input.packages.map((p: any) => ({ ...p, commitDateTime: undefined }));
+  const d = buildUnloadingData(input);
   expect(d.rows[0].rowFill).toBe('F2F2F2');
   expect(d.rows[1].rowFill).toBeNull();
+});
+
+it('rows: semáforo de vencimiento (hoy rojo en negritas, mañana naranja; entregada sin marca)', () => {
+  const input: any = baseInput();
+  const d = buildUnloadingData(input);
+  expect(d.rows[0]).toMatchObject({ rowFill: 'FFC7CE', rowFontColor: '9C0006', rowBold: true, urgency: 'today' });
+  input.packages[0].commitDateTime = '2026-07-19T20:00:00Z';
+  expect(buildUnloadingData(input).rows[0]).toMatchObject({ rowFill: 'FFD8A8', urgency: 'tomorrow', rowBold: false });
+  input.packages[0].status = 'entregado';
+  expect(buildUnloadingData(input).rows[0].urgency).toBeNull();
 });
 
 it('truncate a 32 y 38 con "..." al exceder', () => {

@@ -6,7 +6,8 @@ import { chromium } from 'playwright-core';
 export class HtmlToPdfService {
   private readonly logger = new Logger(HtmlToPdfService.name);
 
-  async convert(html: string): Promise<Buffer> {
+  /** `footerHtml`: pie de cada hoja (número de página); va dentro del margen inferior de @page. */
+  async convert(html: string, opts?: { footerHtml?: string }): Promise<Buffer> {
     // Sin CHROMIUM_PATH usamos el Chromium empaquetado de Playwright
     // (instalar en el deploy con `npx playwright install chromium`): el
     // navegador queda fijado a la versión de playwright y no dependemos de
@@ -28,7 +29,13 @@ export class HtmlToPdfService {
     try {
       const page = await browser.newPage();
       await page.setContent(html, { waitUntil: 'networkidle' });
-      const pdf = await page.pdf({ printBackground: true, preferCSSPageSize: true });
+      const pdf = await page.pdf({
+        printBackground: true,
+        preferCSSPageSize: true,
+        ...(opts?.footerHtml
+          ? { displayHeaderFooter: true, headerTemplate: '<span></span>', footerTemplate: opts.footerHtml }
+          : {}),
+      });
       return Buffer.from(pdf);
     } finally {
       await browser.close().catch((e) => this.logger.warn(`cierre de Chromium: ${e?.message}`));

@@ -4,7 +4,7 @@ import { DocumentTemplateVersion } from 'src/entities/document-template-version.
 import { TemplateVariableDef } from 'src/entities/template-variable-def.entity';
 import { PdfDoc } from '../blocks/pdf-doc.types';
 import { ROUTE_DISPATCH_PDF_HTML } from './templates/route-dispatch.pdf.html';
-import { UNLOADING_PDF_HTML } from './templates/unloading.pdf.html';
+import { UNLOADING_PDF_FOOTER, UNLOADING_PDF_HTML } from './templates/unloading.pdf.html';
 import { INVENTORY_PDF_HTML } from './templates/inventory.pdf.html';
 import { ROUTE_CLOSURE_PDF_HTML } from './templates/route-closure.pdf.html';
 import { RETURNING_PDF_HTML } from './templates/returning.pdf.html';
@@ -48,10 +48,11 @@ const routeDispatch: PdfDoc = {
   html: ROUTE_DISPATCH_PDF_HTML,
 };
 
-/** unloading_pdf — "Desembarque" rica (fiel a C3, frontend). Presentación HTML; datos en el data-provider. */
+/** unloading_pdf — "Desembarque" (membrete con logo a la izquierda, tabla fiel a C3). Pie con página X de N. */
 const unloading: PdfDoc = {
-  page: { size: 'LETTER', orientation: 'landscape', margins: '20px' },
+  page: { size: 'LETTER', orientation: 'landscape', margins: '20px 22px 34px 22px' },
   html: UNLOADING_PDF_HTML,
+  footer: UNLOADING_PDF_FOOTER,
 };
 
 /** inventory_pdf — "Inventario" rica (fiel a C5, frontend). Presentación HTML; datos en el data-provider. */
@@ -117,6 +118,8 @@ export const PDF_TEMPLATE_SEEDS: PdfSeed[] = [
       { name: 'totalPackages', label: 'Total de paquetes', dataType: 'number' },
       { name: 'trackingNumber', label: 'Número de seguimiento' },
       { name: 'nowDateTime', label: 'Fecha de generación' },
+      { name: 'createdDateTime', label: 'Fecha del desembarque' }, { name: 'createdByName', label: 'Hecho por' },
+      { name: 'missingSummary', label: 'Faltantes / sobrantes' },
       { name: 'rows', label: 'Filas de paquetes' },
       { name: 'missingRows', label: 'Guías faltantes' }, { name: 'hasMissing', label: 'Hay faltantes', dataType: 'boolean' },
       { name: 'unScannedTrackings', label: 'Guías sobrantes' }, { name: 'hasUnScanned', label: 'Hay sobrantes', dataType: 'boolean' },
@@ -185,6 +188,11 @@ interface SeedRepos {
 }
 
 /** Upsert idempotente por code. */
+/** Versión que nadie ha editado a mano: su changelog sigue siendo el del seed. */
+export function isUntouchedSeed(changelog: unknown): boolean {
+  return typeof changelog === 'string' && changelog.startsWith('Seed');
+}
+
 export async function seedPdfTemplates(repos: SeedRepos): Promise<void> {
   for (const seed of PDF_TEMPLATE_SEEDS) {
     let template = await repos.tplRepo.findOne({ where: { code: seed.code } });
@@ -200,11 +208,18 @@ export async function seedPdfTemplates(repos: SeedRepos): Promise<void> {
         subject: null, designJson: seed.doc, compiledBody: null, engine: 'handlebars',
         changelog: 'Seed inicial PDF (fiel a pdfmake legacy)', publishedAt: new Date(),
       }));
+    } else if (isUntouchedSeed(version.changelog) && JSON.stringify(version.designJson) !== JSON.stringify(seed.doc)) {
+      // No la editó nadie (changelog sigue siendo el del seed): se refresca con el diseño del
+      // código. Antes nunca se actualizaba y los cambios de diseño no llegaban a producción.
+      version.designJson = seed.doc;
+      await repos.verRepo.save(version);
     }
     if (!template.currentVersionId) { template.currentVersionId = version.id; await repos.tplRepo.save(template); }
     const existing = await repos.varRepo.find({ where: { templateId: template.id } });
-    if (existing.length === 0) {
-      await repos.varRepo.save(seed.variables.map((v) => repos.varRepo.create({
+    const known = new Set(existing.map((v: any) => v.name));
+    const missing = seed.variables.filter((v) => !known.has(v.name));
+    if (missing.length) {
+      await repos.varRepo.save(missing.map((v) => repos.varRepo.create({
         templateId: template.id, name: v.name, label: v.label, dataType: (v.dataType as any) ?? 'string', example: null, required: false,
       })));
     }

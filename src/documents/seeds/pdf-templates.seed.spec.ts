@@ -37,6 +37,21 @@ describe('seedPdfTemplates', () => {
     expect(v.designJson.blocks.some((b: any) => b.type === 'table')).toBe(true);
   });
 
+  it('refresca el diseño si nadie lo editó, respeta ediciones a mano y agrega variables nuevas', async () => {
+    const r = repos();
+    await seedPdfTemplates(r as any);
+    const t = r._state.templates.find((x: any) => x.code === 'unloading_pdf');
+    const v = r._state.versions.find((x: any) => x.templateId === t.id);
+    v.designJson = { html: 'viejo' };
+    r._state.vars.splice(0, r._state.vars.length, ...r._state.vars.filter((x: any) => x.name !== 'createdByName'));
+    await seedPdfTemplates(r as any);
+    expect(v.designJson.footer).toBeDefined();
+    expect(r._state.vars.filter((x: any) => x.templateId === t.id && x.name === 'createdByName').length).toBe(1);
+    v.designJson = { html: 'editado' }; v.changelog = 'Editado por superadmin';
+    await seedPdfTemplates(r as any);
+    expect(v.designJson.html).toBe('editado');
+  });
+
   it('es idempotente', async () => {
     const r = repos();
     await seedPdfTemplates(r as any); await seedPdfTemplates(r as any);
@@ -77,7 +92,7 @@ describe('seedPdfTemplates', () => {
     expect(out).not.toContain('>HORA<');
   });
 
-  it('unloading_pdf: HTML fiel a C3 (título, simbología, seguimiento, columnas, cobro, faltantes/sobrantes)', () => {
+  it('unloading_pdf: membrete (logo izq., folio, rejilla de datos) + tabla fiel a C3, faltantes/sobrantes y pie', () => {
     const seed = PDF_TEMPLATE_SEEDS.find((s) => s.code === 'unloading_pdf')!;
     expect(seed).toBeTruthy();
     const html = new PdfHtmlComposer().compose(seed.doc);
@@ -88,11 +103,20 @@ describe('seedPdfTemplates', () => {
         payment: { amount: 500, type: 'COD' }, commitDateTime: '2026-07-18T20:15:00Z' }],
       missingPackages: ['X1'],
       unScannedTrackings: ['Y1'],
+      createdByName: 'Laura Pérez',
     } as any);
     const out = new TemplateEngine().render(html, { data, brand: { logoLight: null, colors: {}, typography: {} }, system: { now: new Date() } } as any);
     expect(out).toContain('Desembarque');
-    expect(out).toContain('Simbología: [C] Carga/F2/31.5 [$] Pago [H] Valor alto');
-    expect(out).toContain('Número de seguimiento');
+    expect(out).toContain('Simbología: [C] Carga/F2/31.5 · [$] Pago · [H] Valor alto');
+    expect(out).toContain('Folio <b>DESEMB-1</b>');
+    // Sin logo en la marca usa el logo de respaldo de PMY, a la izquierda (antes del título).
+    expect(out.indexOf('data:image/png;base64,')).toBeGreaterThan(-1);
+    expect(out.indexOf('data:image/png;base64,')).toBeLessThan(out.indexOf('class="un-title"'));
+    expect(out).toContain('Hecho por</div><div class="un-v">Laura Pérez');
+    expect(out).toContain('Faltantes / sobrantes</div><div class="un-v">1 / 1');
+    const footer = new TemplateEngine().render(seed.doc.footer!, { data } as any);
+    expect(footer).toContain('class="pageNumber"');
+    expect(footer).toContain('Generado 18/07/2026 13:00');
     expect(out).toContain('No. Guía');
     expect(out).toContain('COD $500.00');
     expect(out).toContain('* Guías faltantes');

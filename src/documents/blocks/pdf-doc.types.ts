@@ -17,5 +17,7 @@ export interface PdfDoc {
   header?: { title: string; showDateTime?: boolean };
   /** Plantilla Handlebars completa (fiel al diseño). Si existe, gana sobre `blocks`. */
   html?: string;
+  /** Pie de cada hoja (Handlebars; Chromium llena `<span class="pageNumber">`/`totalPages`). Necesita margen inferior. */
+  footer?: string;
   blocks?: PdfBlock[];
 }

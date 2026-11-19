@@ -3,6 +3,7 @@ import { DocumentTemplate } from 'src/entities/document-template.entity';
 import { DocumentTemplateVersion } from 'src/entities/document-template-version.entity';
 import { TemplateVariableDef } from 'src/entities/template-variable-def.entity';
 import { ExcelDoc } from '../blocks/excel-doc.types';
+import { isUntouchedSeed } from './pdf-templates.seed';
 
 export interface ExcelSeedVar { name: string; label: string; dataType?: string; }
 export interface ExcelSeed { code: string; name: string; doc: ExcelDoc; variables: ExcelSeedVar[]; }
@@ -56,20 +57,32 @@ const routeDispatch: ExcelDoc = {
   }],
 };
 
-/** unloading_excel — "Desembarque" rica (fiel a C4, frontend). Hoja "Desembarque" por secciones. */
+/** unloading_excel — "Desembarque": membrete (logo a la izquierda, título naranja con folio y rejilla
+ * de datos) + la misma tabla café de C4 (frontend). Diseño aprobado 2026-11-18. */
 const unloading: ExcelDoc = {
   sheets: [{
     name: 'Desembarque',
+    showGridLines: false,
+    columnWidths: [5, 18, 45, 45, 12, 20, 12, 12, 18],
     sections: [
-      { kind: 'title', text: '📦 Desembarque', fill: 'ef883a', font: { size: 16, bold: true, color: 'FFFFFF' }, mergeTo: 9 },
+      { kind: 'letterhead', rowHeight: 30,
+        logo: { base64Var: 'logoBase64', widthVar: 'logoWidth', heightVar: 'logoHeight', from: 1, to: 2 },
+        title: { text: 'Desembarque', subtitle: 'Folio {{trackingNumber}}', fill: 'ef883a', from: 3, to: 3 },
+        fields: [
+          { label: 'Sucursal', value: '{{subsidiaryName}}', row: 0, from: 4, to: 4 },
+          { label: 'Unidad', value: '{{vehicleName}}', row: 0, from: 5, to: 6 },
+          { label: 'Paquetes', value: '{{totalPackages}}', row: 0, from: 7, to: 9 },
+          { label: 'Fecha', value: '{{createdDateTime}}', row: 1, from: 4, to: 4 },
+          { label: 'Hecho por', value: '{{createdByName}}', row: 1, from: 5, to: 6 },
+          { label: 'Faltantes / sobrantes', value: '{{missingSummary}}', row: 1, from: 7, to: 9 },
+        ],
+        bottomBorder: { color: '8c5e4e', to: 9 } },
       { kind: 'spacer' },
-      { kind: 'info', mergeTo: 9, rows: [
-        { text: 'Unidad: {{vehicleName}}' }, { text: 'Fecha: {{createdDateTime}}' }, { text: 'Paquetes: {{totalPackages}}' },
-      ] },
-      { kind: 'spacer' },
+      { kind: 'title', text: 'Rojo: vence hoy · Naranja: vence mañana', align: 'left', font: { italic: true, size: 9, color: '666666' }, mergeTo: 9 },
       { kind: 'table', rowsVar: 'rows',
         headerFill: '8c5e4e', headerFont: { bold: true, color: 'FFFFFF' }, headerHeight: 20, headerAlign: 'center',
         bordered: true, cellAlign: 'center', wrap: true, rowFillKey: 'rowFill',
+        rowFontColorKey: 'rowFontColor', rowBoldKey: 'rowBold', freezeHeader: true, autoFilter: true,
         columns: [
           { key: 'index', label: 'No.', width: 5 }, { key: 'trackingNumber', label: 'Guía', width: 18 },
           { key: 'recipientNameXlsx', label: 'Nombre', width: 45 }, { key: 'recipientAddressXlsx', label: 'Dirección', width: 45 },
@@ -564,6 +577,8 @@ export const EXCEL_TEMPLATE_SEEDS: ExcelSeed[] = [
     variables: [
       { name: 'vehicleName', label: 'Unidad' }, { name: 'createdDateTime', label: 'Fecha' },
       { name: 'totalPackages', label: 'Total de paquetes', dataType: 'number' }, { name: 'rows', label: 'Filas' },
+      { name: 'subsidiaryName', label: 'Sucursal' }, { name: 'trackingNumber', label: 'Folio' },
+      { name: 'createdByName', label: 'Hecho por' }, { name: 'missingSummary', label: 'Faltantes / sobrantes' },
       { name: 'missingTrackings', label: 'Guías faltantes' }, { name: 'unScannedTrackings', label: 'Guías sobrantes' },
     ] },
   { code: 'inventory_excel', name: 'Inventario (Excel)', doc: inventory,
@@ -657,8 +672,15 @@ export async function seedExcelTemplates(repos: SeedRepos): Promise<void> {
     if (!template) template = await repos.tplRepo.save(repos.tplRepo.create({ code: seed.code, name: seed.name, type: 'excel', language: 'es', active: true, category: 'reporte' }));
     let version = await repos.verRepo.findOne({ where: { templateId: template.id, version: 1 } });
     if (!version) version = await repos.verRepo.save(repos.verRepo.create({ templateId: template.id, version: 1, status: 'published', subject: null, designJson: seed.doc, compiledBody: null, engine: 'handlebars', changelog: 'Seed inicial Excel (fiel a exceljs legacy)', publishedAt: new Date() }));
+    else if (isUntouchedSeed(version.changelog) && JSON.stringify(version.designJson) !== JSON.stringify(seed.doc)) {
+      // Sin ediciones a mano: refrescar con el diseño del código (antes nunca se actualizaba).
+      version.designJson = seed.doc;
+      await repos.verRepo.save(version);
+    }
     if (!template.currentVersionId) { template.currentVersionId = version.id; await repos.tplRepo.save(template); }
     const existing = await repos.varRepo.find({ where: { templateId: template.id } });
-    if (existing.length === 0) await repos.varRepo.save(seed.variables.map((v) => repos.varRepo.create({ templateId: template.id, name: v.name, label: v.label, dataType: (v.dataType as any) ?? 'string', example: null, required: false })));
+    const known = new Set(existing.map((v: any) => v.name));
+    const missing = seed.variables.filter((v) => !known.has(v.name));
+    if (missing.length) await repos.varRepo.save(missing.map((v) => repos.varRepo.create({ templateId: template.id, name: v.name, label: v.label, dataType: (v.dataType as any) ?? 'string', example: null, required: false })));
   }
 }

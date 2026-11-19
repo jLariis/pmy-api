@@ -1,4 +1,4 @@
-import { PrimaryGeneratedColumn, OneToMany, Column, JoinColumn, ManyToOne, Entity, BeforeInsert } from "typeorm";
+import { PrimaryGeneratedColumn, OneToMany, Column, JoinColumn, ManyToOne, Entity, BeforeInsert, Index } from "typeorm";
 import { ChargeShipment } from "./charge-shipment.entity";
 import { Shipment } from "./shipment.entity";
 import { Vehicle } from "./vehicle.entity";
@@ -45,6 +45,11 @@ export class Unloading {
 
     @Column({ nullable: true })
     createdById: string;
+
+    /** Folio de captura del front: evita duplicar el desembarque si se manda dos veces (mig 123). */
+    @Index('UQ_unloading_clientRequestId', { unique: true })
+    @Column({ type: 'varchar', length: 64, nullable: true })
+    clientRequestId: string | null;
 
     @BeforeInsert()
       setDefaults() {

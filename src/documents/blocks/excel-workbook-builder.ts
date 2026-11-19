@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import * as ExcelJS from 'exceljs';
 import { TemplateEngine } from '../template-engine';
 import { RenderContext } from '../documents.types';
-import { ExcelDoc, ExcelSheet, ExcelSection, ExcelColumn, MergeTarget } from './excel-doc.types';
+import { ExcelDoc, ExcelSheet, ExcelSection, ExcelColumn, ExcelLetterhead, MergeTarget } from './excel-doc.types';
 
 function solid(argb: string): ExcelJS.Fill { return { type: 'pattern', pattern: 'solid', fgColor: { argb } }; }
 function thin(): Partial<ExcelJS.Borders> {
@@ -53,7 +53,7 @@ export class ExcelWorkbookBuilder {
     const ws = wb.addWorksheet(sheet.name, sheet.showGridLines === false ? { views: [{ showGridLines: false }] } : undefined);
     if (sheet.sections?.length) {
       if (sheet.columnWidths) sheet.columnWidths.forEach((w, i) => { if (w != null) ws.getColumn(i + 1).width = w; });
-      this.buildSections(ws, sheet.sections, ctx);
+      this.buildSections(ws, sheet.sections, ctx, wb);
       return;
     }
 
@@ -101,7 +101,7 @@ export class ExcelWorkbookBuilder {
     if (sheet.autoFilter) ws.autoFilter = { from: { row: headerRow.number, column: 1 }, to: { row: headerRow.number, column: lastCol } };
   }
 
-  private buildSections(ws: ExcelJS.Worksheet, sections: ExcelSection[], ctx: RenderContext) {
+  private buildSections(ws: ExcelJS.Worksheet, sections: ExcelSection[], ctx: RenderContext, wb?: ExcelJS.Workbook) {
     for (const s of sections) {
       // Sección condicional: si `when` está seteado y ctx.data[when] es vacío, se omite entera
       // (título incluido) — evita, p.ej., mostrar "❌ Paquetes faltantes" sin faltantes que listar.
@@ -113,7 +113,7 @@ export class ExcelWorkbookBuilder {
           const row = ws.addRow([this.engine.renderRaw(s.text, ctx)]);
           ws.mergeCells(row.number, 1, row.number, mergeTo);
           row.font = { size: s.font?.size, bold: s.font?.bold, italic: s.font?.italic, ...(s.font?.color ? { color: { argb: s.font.color } } : {}) };
-          row.alignment = { vertical: 'middle', horizontal: 'center' };
+          row.alignment = { vertical: 'middle', horizontal: s.align ?? 'center' };
           if (s.height) row.height = s.height;
           if (s.fill) for (let c = 1; c <= mergeTo; c++) ws.getCell(row.number, c).fill = solid(s.fill);
           break;
@@ -149,6 +149,72 @@ export class ExcelWorkbookBuilder {
           break;
         }
         case 'tableGroup': this.buildTableGroup(ws, s, ctx); break;
+        case 'letterhead': this.buildLetterhead(ws, s, ctx, wb); break;
+      }
+    }
+  }
+
+  /** Membrete de 2 filas: logo (imagen), bloque de título fusionado y rejilla de datos. */
+  private buildLetterhead(ws: ExcelJS.Worksheet, s: ExcelLetterhead, ctx: RenderContext, wb?: ExcelJS.Workbook) {
+    const r1 = ws.rowCount + 1;
+    const r2 = r1 + 1;
+    const height = s.rowHeight ?? 30;
+    ws.getRow(r1).height = height;
+    ws.getRow(r2).height = height;
+    const txt = (t: string) => this.engine.renderRaw(t, ctx);
+    const merge = (top: number, bottom: number, from: number, to: number) => {
+      if (top !== bottom || from !== to) ws.mergeCells(top, from, bottom, to);
+    };
+
+    // Logo: celda fusionada vacía + imagen flotante centrada a lo alto de las 2 filas.
+    if (s.logo) {
+      merge(r1, r2, s.logo.from, s.logo.to);
+      const b64 = ctx.data?.[s.logo.base64Var];
+      if (wb && typeof b64 === 'string' && b64) {
+        const pxHeight = Math.round(height * 2 * (96 / 72)) - 10;
+        const w = Number(ctx.data?.[s.logo.widthVar ?? '']) || 1;
+        const h = Number(ctx.data?.[s.logo.heightVar ?? '']) || 1;
+        const id = wb.addImage({ base64: b64, extension: 'png' });
+        ws.addImage(id, {
+          tl: { col: s.logo.from - 1 + 0.15, row: r1 - 1 + 0.1 } as any,
+          ext: { width: Math.round(pxHeight * (w / h)), height: pxHeight },
+          editAs: 'oneCell',
+        });
+      }
+    }
+
+    // Título + subtítulo (texto enriquecido en una celda fusionada).
+    merge(r1, r2, s.title.from, s.title.to);
+    const tc = ws.getCell(r1, s.title.from);
+    const color = { argb: s.title.color ?? 'FFFFFF' };
+    tc.value = {
+      richText: [
+        { text: txt(s.title.text), font: { bold: true, size: 16, color } },
+        ...(s.title.subtitle ? [{ text: '\n' + txt(s.title.subtitle), font: { size: 10, color } }] : []),
+      ],
+    };
+    tc.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
+    if (s.title.fill) tc.fill = solid(s.title.fill);
+
+    // Rejilla de datos: etiqueta chica (color) arriba, valor en negritas abajo.
+    const labelColor = { argb: s.labelColor ?? '9d5137' };
+    for (const f of s.fields) {
+      const row = f.row === 0 ? r1 : r2;
+      merge(row, row, f.from, f.to);
+      const c = ws.getCell(row, f.from);
+      c.value = {
+        richText: [
+          { text: txt(f.label).toUpperCase(), font: { bold: true, size: 8, color: labelColor } },
+          { text: '\n' + txt(f.value), font: { bold: true, size: 11 } },
+        ],
+      };
+      c.alignment = { vertical: 'middle', horizontal: 'left', wrapText: true, indent: 1 };
+    }
+
+    if (s.bottomBorder) {
+      for (let col = 1; col <= s.bottomBorder.to; col++) {
+        const c = ws.getCell(r2, col);
+        c.border = { ...(c.border ?? {}), bottom: { style: 'medium', color: { argb: s.bottomBorder.color } } };
       }
     }
   }
@@ -241,7 +307,11 @@ export class ExcelWorkbookBuilder {
       const rowBold = s.rowBoldKey ? !!r?.[s.rowBoldKey] : false;
       const rowFontColor = s.rowFontColorKey ? r?.[s.rowFontColorKey] : null;
       const isLastRow = idx === rows.length - 1;
-      dataRow.eachCell((cell, col) => {
+      // Todas las celdas de la fila, también las vacías: si no, el fondo (zebra/semáforo) y los
+      // bordes quedaban con huecos donde no había valor (p. ej. "Cobro" vacío).
+      columns.forEach((_, i) => {
+        const col = i + 1;
+        const cell = dataRow.getCell(col);
         const c = columns[col - 1];
         if (fill) cell.fill = solid(fill);
         if (s.bordered) cell.border = thin();
@@ -258,7 +328,8 @@ export class ExcelWorkbookBuilder {
         if (isLastRow && lastRowBorder) cell.border = lastRowBorder as any;
       });
     });
-    if (s.freezeHeader) ws.views = [{ state: 'frozen', ySplit: headerRow.number }];
+    // Conserva la vista de la hoja (p. ej. sin líneas de cuadrícula) al fijar el encabezado.
+    if (s.freezeHeader) ws.views = [{ showGridLines: ws.views?.[0]?.showGridLines ?? true, state: 'frozen', ySplit: headerRow.number }];
     if (s.autoFilter) ws.autoFilter = { from: { row: headerRow.number, column: 1 }, to: { row: headerRow.number, column: columns.length } };
 
     // colorScale mínimo (aproximación: blanco -> color, sobre el rango de filas de datos de la
