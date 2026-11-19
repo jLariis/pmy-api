@@ -1,15 +1,41 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete, UploadedFile, UseInterceptors, BadRequestException, UploadedFiles, Query, ParseArrayPipe, Req, UseGuards } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Post,
+  Body,
+  Param,
+  UseInterceptors,
+  BadRequestException,
+  NotFoundException,
+  UploadedFiles,
+  Query,
+  Req,
+  UseGuards,
+  ValidationPipe,
+} from '@nestjs/common';
 import { UnloadingService } from './unloading.service';
 import { SubsidiaryScopeGuard } from 'src/auth/guards/subsidiary-scope.guard';
+import { PermissionsGuard } from 'src/auth/guards/permissions.guard';
+import { SuperAdminGuard } from 'src/auth/guards/super-admin.guard';
+import { RequirePermission } from 'src/auth/decorators/require-permission.decorator';
 import { CreateUnloadingDto } from './dto/create-unloading.dto';
-import { UpdateUnloadingDto } from './dto/update-unloading.dto';
 import { FilesInterceptor } from '@nestjs/platform-express';
-import { ApiTags, ApiBearerAuth, ApiOperation, ApiConsumes, ApiBody, ApiResponse, ApiQuery } from '@nestjs/swagger';
-import { ValidateTrackingNumbersDto } from './dto/validate-tracking-numbers.dto';
-import { ValidationPayloadDto } from './dto/validate-payload.dto';
+import { ApiTags, ApiBearerAuth, ApiOperation, ApiConsumes, ApiBody, ApiQuery } from '@nestjs/swagger';
 import { ValidateOneRequestDto } from './dto/validate-one.dto';
 import { NoAudit } from 'src/audit/audit.decorator';
+import { assertSubsidiaryAccess, canAccessSubsidiary } from './unloading-access.util';
 
+/** Permiso del módulo (catálogo RBAC). */
+const DESEMBARQUES = 'operaciones.desembarques';
+/** Tope por archivo adjunto del correo (PDF / Excel del desembarque). */
+const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+
+/**
+ * Seguridad (2026-11-18): todas las rutas que reciben una sucursal la acotan a las del usuario
+ * (por URL con SubsidiaryScopeGuard, o por cuerpo con assertSubsidiaryAccess). Las acciones
+ * (crear, validar, subir) además piden el permiso de Desembarques. Antes cualquier usuario con
+ * sesión podía crear/consultar desembarques de cualquier sucursal.
+ */
 @ApiTags('unloadings')
 @ApiBearerAuth()
 @Controller('unloadings')
@@ -17,7 +43,14 @@ export class UnloadingController {
   constructor(private readonly unloadingService: UnloadingService) {}
 
   @Post()
-  create(@Body() createUnloadingDto: CreateUnloadingDto, @Req() req: any) {
+  @UseGuards(PermissionsGuard)
+  @RequirePermission(DESEMBARQUES)
+  create(
+    // Solo los campos declarados en el DTO (lo demás se descarta).
+    @Body(new ValidationPipe({ whitelist: true, transform: true })) createUnloadingDto: CreateUnloadingDto,
+    @Req() req: any,
+  ) {
+    assertSubsidiaryAccess(req.user, createUnloadingDto.subsidiary?.id);
     return this.unloadingService.create(createUnloadingDto, req.user?.userId);
   }
 
@@ -37,118 +70,28 @@ export class UnloadingController {
     return this.unloadingService.getUnloadingVisibilityReport(subsidiaryId, f, t);
   }
 
-  
+  /**
+   * Genera y MANDA por correo el reporte de desembarques. Solo superadmin: cualquiera con sesión
+   * podía disparar el correo. El envío diario lo hace el cron llamando al servicio directo.
+   */
   @Get('report')
-  @ApiOperation({
-    summary: 'Generar y enviar reporte de descargas',
-    description: 'Genera un reporte consolidado de descargas y lo envía por correo electrónico. Puede filtrarse por rango de fechas.'
-  })
-  @ApiQuery({
-    name: 'startDate',
-    required: false,
-    description: 'Fecha de inicio del reporte (formato: YYYY-MM-DD o ISO string)',
-    example: '2025-10-01',
-    type: String
-  })
-  @ApiQuery({
-    name: 'endDate',
-    required: false,
-    description: 'Fecha de fin del reporte (formato: YYYY-MM-DD o ISO string)',
-    example: '2025-10-05',
-    type: String
-  })
-  @ApiResponse({
-    status: 200,
-    description: 'Reporte generado y enviado exitosamente',
-    schema: {
-      example: {
-        message: 'Correo enviado exitosamente',
-        totalUnloadings: 3,
-        totalPackages: 45,
-        period: 'del 2025-10-01 al 2025-10-05'
-      }
-    }
-  })
-  @ApiResponse({
-    status: 400,
-    description: 'Formato de fecha inválido',
-    schema: {
-      example: {
-        statusCode: 400,
-        message: 'Formato de fecha inicial inválido',
-        error: 'Bad Request'
-      }
-    }
-  })
-  @ApiResponse({
-    status: 500,
-    description: 'Error interno del servidor',
-    schema: {
-      example: {
-        statusCode: 500,
-        message: 'Error al generar el reporte',
-        error: 'Internal Server Error'
-      }
-    }
-  })
-  async getReport(
-    @Query('startDate') startDate?: string,
-    @Query('endDate') endDate?: string
-  ) {
-    console.log('===== QUERY PARAMETERS =====');
-    console.log('startDate:', startDate);
-    console.log('endDate:', endDate);
-
-    let startDateObj: Date | undefined;
-    let endDateObj: Date | undefined;
-
-    if (startDate) {
-      // Crear fecha en UTC
-      const tempDate = new Date(startDate);
-      if (isNaN(tempDate.getTime())) {
-        throw new BadRequestException('Formato de fecha inicial inválido');
-      }
-      // Convertir a UTC
-      startDateObj = new Date(Date.UTC(
-        tempDate.getUTCFullYear(),
-        tempDate.getUTCMonth(),
-        tempDate.getUTCDate(),
-        0, 0, 0, 0
-      ));
-      console.log('startDateObj (UTC):', startDateObj.toISOString());
-    }
-
-    if (endDate) {
-      const tempDate = new Date(endDate);
-      if (isNaN(tempDate.getTime())) {
-        throw new BadRequestException('Formato de fecha final inválido');
-      }
-      endDateObj = new Date(Date.UTC(
-        tempDate.getUTCFullYear(),
-        tempDate.getUTCMonth(),
-        tempDate.getUTCDate(),
-        0, 0, 0, 0
-      ));
-      console.log('endDateObj (UTC):', endDateObj.toISOString());
-    }
-
-    const result = await this.unloadingService.sendUnloadingReport(startDateObj, endDateObj);
-    
-    return result;
-
-    console.log('===== REPORTE COMPLETADO =====');
-    /*return {
-      message: 'Correo enviado exitosamente',
-      totalUnloadings: result.length,
-      totalPackages: result.reduce((sum, u) => sum + u.shipments.length + u.chargeShipments.length, 0),
-      period: startDate && endDate 
-        ? `del ${startDate} al ${endDate}` 
-        : 'del día de hoy',
-      timestamp: new Date().toISOString()
-    };*/
+  @UseGuards(SuperAdminGuard)
+  @ApiOperation({ summary: 'Generar y enviar reporte de desembarques (solo superadmin)' })
+  @ApiQuery({ name: 'startDate', required: false, type: String })
+  @ApiQuery({ name: 'endDate', required: false, type: String })
+  async getReport(@Query('startDate') startDate?: string, @Query('endDate') endDate?: string) {
+    const toUtcDay = (raw: string, label: string) => {
+      const d = new Date(raw);
+      if (isNaN(d.getTime())) throw new BadRequestException(`Formato de fecha ${label} inválido`);
+      return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 0, 0, 0, 0));
+    };
+    const startDateObj = startDate ? toUtcDay(startDate, 'inicial') : undefined;
+    const endDateObj = endDate ? toUtcDay(endDate, 'final') : undefined;
+    return this.unloadingService.sendUnloadingReport(startDateObj, endDateObj);
   }
 
   @Get('subsidiary/:subsidiaryId')
+  @UseGuards(SubsidiaryScopeGuard)
   findBySubsidiary(
     @Param('subsidiaryId') subsidiaryId: string,
     @Query('page') page?: string,
@@ -160,113 +103,65 @@ export class UnloadingController {
     return this.unloadingService.findAllBySubsidiary(subsidiaryId, { page, limit, from, to, search });
   }
 
+  /** Detalle con paquetes. De otra sucursal responde "no encontrado" (no confirma que existe). */
   @Get('detail/:id')
-  findOneWithPackages(@Param('id') id: string) {
-    return this.unloadingService.findOneWithPackages(id);
+  async findOneWithPackages(@Param('id') id: string, @Req() req: any) {
+    const unloading = await this.unloadingService.findOneWithPackages(id);
+    if (!unloading || !canAccessSubsidiary(req.user, unloading.subsidiary?.id)) {
+      throw new NotFoundException('Desembarque no encontrado.');
+    }
+    return unloading;
   }
 
+  /** Todos los desembarques de todas las sucursales: solo superadmin. */
   @Get()
+  @UseGuards(SuperAdminGuard)
   findAll() {
     return this.unloadingService.findAll();
   }
 
-   /*** Respaldo por si algo falla 23-03 */
-  /*@Post('validate-tracking-numbers')
-    validateTrackingNumbers(
-      @Body() body: ValidateTrackingNumbersDto
-    ) {
-      const { trackingNumbers, subsidiaryId } = body;
-      return this.unloadingService.validateTrackingNumbers(trackingNumbers, subsidiaryId);
-    }*/
-
-  @NoAudit() // Validación por escaneo: muy frecuente, no es una acción auditable.
-  @Post('validate-tracking-numbers')
-  validateTrackingNumbers(
-    @Body(
-      'trackingNumbers',
-      new ParseArrayPipe({ items: ValidationPayloadDto, optional: true }) // 🚀 LA MAGIA ESTÁ AQUÍ
-    )
-    trackingNumbers: ValidationPayloadDto[] = [], // ✅ Pon el nuevo DTO
-    @Body('subsidiaryId') subsidiaryId?: string,
-  ) {
-    return this.unloadingService.validateTrackingNumbers(trackingNumbers, subsidiaryId);
-  }
-
   @NoAudit() // Validación por escaneo: muy frecuente, no auditable.
   @Post('validate-one')
-  validateOne(@Body() body: ValidateOneRequestDto) {
+  @UseGuards(PermissionsGuard)
+  @RequirePermission(DESEMBARQUES)
+  validateOne(@Body() body: ValidateOneRequestDto, @Req() req: any) {
+    assertSubsidiaryAccess(req.user, body.subsidiaryId);
     return this.unloadingService.validateOne(body.trackingNumber, body.subsidiaryId);
   }
 
-  @Patch(':id')
-  update(@Param('id') id: string, @Body() updateUnloadingDto: UpdateUnloadingDto) {
-    return this.unloadingService.update(+id, updateUnloadingDto);
-  }
-
-  @Delete(':id')
-  remove(@Param('id') id: string) {
-    return this.unloadingService.remove(+id);
-  }
-
+  /**
+   * Adjuntos del correo del desembarque (PDF + Excel). Solo de un desembarque de las sucursales
+   * del usuario; máximo 2 archivos de 10 MB y se revisa el contenido real. Se puede volver a
+   * mandar (reenvío); los destinatarios siempre salen de la base, no del cliente.
+   */
   @Post('upload')
-  @UseInterceptors(FilesInterceptor('files')) // Use FilesInterceptor to handle multiple files
-  @ApiOperation({ summary: 'Subir archivo PDF y Excel y enviar por correo' })
+  @UseGuards(PermissionsGuard)
+  @RequirePermission(DESEMBARQUES)
+  @UseInterceptors(FilesInterceptor('files', 2, { limits: { fileSize: MAX_ATTACHMENT_BYTES, files: 2 } }))
+  @ApiOperation({ summary: 'Subir PDF y Excel del desembarque y enviarlos por correo' })
   @ApiConsumes('multipart/form-data')
   @ApiBody({
-    description: 'Archivos PDF y Excel a enviar por correo',
     schema: {
       type: 'object',
       properties: {
-        files: {
-          type: 'array',
-          items: {
-            type: 'string',
-            format: 'binary',
-          },
-        },
-        subsidiaryName: {
-          type: 'string',
-          example: 'Cd. Obregon',
-        },
-        unloadingId: {
-          type: 'string',
-          example: '6076326c-f6f6-4004-825d-5419a4e6412f',
-        },
+        files: { type: 'array', items: { type: 'string', format: 'binary' } },
+        unloadingId: { type: 'string' },
       },
     },
   })
   async sendEmail(
-    @UploadedFiles() files: Express.Multer.File[], // Receive multiple files
-    @Body('subsidiaryName') subsidiaryName: string,
+    @UploadedFiles() files: Express.Multer.File[],
     @Body('unloadingId') unloadingId: string,
+    @Req() req: any,
   ) {
-    console.log('🚀 ~ UnloadingController ~ sendEmail ~ files:', files);
-    console.log('🚀 ~ UnloadingController ~ sendEmail ~ subsidiaryName:', subsidiaryName);
-    console.log('🚀 ~ UnloadingController ~ sendEmail ~ unloadingId:', unloadingId);
-
-    // Validate that both files are present
-    if (!files || files.length !== 2) {
-      throw new BadRequestException('Se esperan exactamente dos archivos: un PDF y un Excel.');
-    }
-
-    // Identify PDF and Excel files based on mimetype or filename
-    const pdfFile = files.find((file) => file.mimetype === 'application/pdf');
-    const excelFile = files.find((file) =>
-      file.mimetype === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-    );
-
-    if (!pdfFile || !excelFile) {
-      throw new BadRequestException('Se requiere un archivo PDF y un archivo Excel.');
-    }
-
-    // Call the service with the identified files
-    return this.unloadingService.sendByEmail(pdfFile, excelFile, subsidiaryName, unloadingId);
+    if (!unloadingId) throw new BadRequestException('Falta el desembarque.');
+    return this.unloadingService.sendByEmailSecure(files ?? [], unloadingId, req.user);
   }
-  
+
   @Get('consolidateds/:subsidiaryId')
-  async getConsolidatedForStartUnloading(@Param('subsidiaryId') subsidiaryId: string){
-    console.log("🚀 ~ UnloadingController ~ getConsolidatedForStartUnloading ~ subsidiaryId:", subsidiaryId)
-    return await this.unloadingService.getConsolidateToStartUnloading(subsidiaryId)
+  @UseGuards(SubsidiaryScopeGuard)
+  getConsolidatedForStartUnloading(@Param('subsidiaryId') subsidiaryId: string) {
+    return this.unloadingService.getConsolidateToStartUnloading(subsidiaryId);
   }
 
   @Get('session-init/:subsidiaryId')
@@ -288,5 +183,4 @@ export class UnloadingController {
     }
     return this.unloadingService.getUnloadingConsolidatedByConsNumber(subsidiaryId, consNumber);
   }
-
 }

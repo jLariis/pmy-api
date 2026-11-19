@@ -23,7 +23,8 @@ export class PdfRenderer implements DocumentRenderer {
       const doc: any = version.designJson;
       const template = doc && (doc.html || doc.blocks) ? this.composer.compose(doc) : '';
       const html = this.engine.render(template, ctx);
-      const buffer = await this.htmlToPdf.convert(html);
+      const footerHtml = typeof doc?.footer === 'string' && doc.footer ? this.engine.render(doc.footer, ctx) : undefined;
+      const buffer = await this.htmlToPdf.convert(html, footerHtml ? { footerHtml } : undefined);
       return { format: 'pdf', mime: 'application/pdf', buffer, html };
     } catch (e: any) {
       this.logger.warn(`render PDF falló (designJson inválido o sin Chromium?): ${e?.message}`);

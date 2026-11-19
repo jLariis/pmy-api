@@ -45,7 +45,7 @@ describe('UnloadingService.validateOne', () => {
     const shipmentRepository = repo();
     shipmentRepository.findOne.mockResolvedValue({
       id: 'ship-1', trackingNumber: '111', dhlUniqueId: 'JD00111', consolidatedId: 'c1', subsidiary: { id: 'sub-1' },
-      recipientName: 'Ana', priority: 'alta',
+      recipientName: 'Ana', priority: 'alta', shipmentType: 'dhl', recipientCity: 'Cabo San Lucas',
     });
     const chargeShipmentRepository = repo();
     chargeShipmentRepository.findOne.mockResolvedValue(null);
@@ -60,6 +60,9 @@ describe('UnloadingService.validateOne', () => {
     expect(r.recipientName).toBe('Ana');
     // Devuelve el dhlUniqueId para que el cliente pueda casar la guía DHL escaneada.
     expect(r.dhlUniqueId).toBe('JD00111');
+    // Paquetería y ciudad: la captura de desembarque agrupa y filtra por ellas.
+    expect(r.shipmentType).toBe('dhl');
+    expect(r.recipientCity).toBe('Cabo San Lucas');
   });
 
   it('marca inválido si el paquete es de otra sucursal', async () => {

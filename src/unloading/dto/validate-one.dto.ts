@@ -21,8 +21,16 @@ export class ValidatedOneDto {
   recipientAddress?: string;
   recipientPhone?: string;
   recipientZip?: string;
+  recipientCity?: string;
+  /** Paquetería (fedex/dhl): la captura agrupa y filtra por ella. */
+  shipmentType?: string;
   priority?: string;
   isHighValue?: boolean;
   payment?: any;
   commitDateTime?: string;
+  /**
+   * Motivo si la guía ya está en estatus final ("Ya fue entregada"…): cuenta en el desembarque
+   * y en su consolidado, pero al procesar no cambia de estatus.
+   */
+  alreadyFinal?: string;
 }

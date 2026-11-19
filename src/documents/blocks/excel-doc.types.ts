@@ -46,7 +46,7 @@ export type MergeTarget = number | { fromVar: string };
 /** Sección de una hoja heterogénea (título, espaciador, info, banda de filas fusionadas, fila de
  * celdas sueltas, tabla, o grupo de tablas espejo). */
 export type ExcelSection =
-  | { kind: 'title'; text: string; fill?: string; font?: { size?: number; bold?: boolean; color?: string; italic?: boolean }; mergeTo: MergeTarget; height?: number; when?: string }
+  | { kind: 'title'; text: string; fill?: string; font?: { size?: number; bold?: boolean; color?: string; italic?: boolean }; mergeTo: MergeTarget; height?: number; when?: string; align?: 'left' | 'center' | 'right' }
   | { kind: 'spacer' }
   | { kind: 'info'; rows: { text: string }[]; mergeTo: MergeTarget; when?: string }
   | { kind: 'band'; rowsVar: string; fill?: string; font?: { bold?: boolean; color?: string; italic?: boolean }; align?: 'left' | 'center' | 'right'; mergeTo: MergeTarget; when?: string }
@@ -96,7 +96,26 @@ export type ExcelSection =
    * resumen "TOTAL A: 1   TOTAL B: 2" repartido en columnas específicas (fiel a C10, fila 5). */
   | { kind: 'row'; cells: Array<{ col: number; text?: string; key?: string; bold?: boolean }>; when?: string }
   /** Grupo de tablas "espejo" que comparten las mismas filas pero columnas distintas. */
-  | { kind: 'tableGroup'; tables: ExcelMirrorTable[]; when?: string };
+  | { kind: 'tableGroup'; tables: ExcelMirrorTable[]; when?: string }
+  /** Membrete (2 filas): logo a la izquierda, bloque de título y rejilla de datos etiqueta/valor. */
+  | ExcelLetterhead;
+
+/** Membrete de documento (ver `unloading_excel`). Columnas 1-based; cada pieza ocupa `from..to`. */
+export interface ExcelLetterhead {
+  kind: 'letterhead';
+  when?: string;
+  /** Alto de cada una de las 2 filas (puntos). */
+  rowHeight?: number;
+  /** Logo PNG en base64 desde `ctx.data[base64Var]`; tamaño (px) escalado a lo alto del membrete. */
+  logo?: { base64Var: string; widthVar?: string; heightVar?: string; from: number; to: number };
+  /** Título (y subtítulo, p.ej. el folio) fusionado en las 2 filas. */
+  title: { text: string; subtitle?: string; fill?: string; color?: string; from: number; to: number };
+  /** Datos en rejilla: `row` 0 o 1, cada uno etiqueta chica arriba y valor en negritas abajo. */
+  fields: { label: string; value: string; row: 0 | 1; from: number; to: number }[];
+  labelColor?: string;
+  /** Línea inferior del membrete (de la col. 1 a `bottomBorder.to`). */
+  bottomBorder?: { color: string; to: number };
+}
 
 export interface ExcelSheet {
   name: string;

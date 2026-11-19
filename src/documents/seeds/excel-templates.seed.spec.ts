@@ -71,7 +71,7 @@ describe('seedExcelTemplates', () => {
     expect(invalidFound).toBe(true);
   });
 
-  it('unloading_excel: fiel a C4 (título naranja, header café, faltantes/sobrantes)', async () => {
+  it('unloading_excel: membrete (logo, título naranja con folio, rejilla) + header café, faltantes/sobrantes', async () => {
     const seed = EXCEL_TEMPLATE_SEEDS.find((s) => s.code === 'unloading_excel')!;
     expect(seed).toBeTruthy();
     const data = buildUnloadingData({
@@ -88,8 +88,15 @@ describe('seedExcelTemplates', () => {
     const buf = await new ExcelWorkbookBuilder(new TemplateEngine()).build(seed.doc, { data } as any);
     const wb = new Workbook(); await wb.xlsx.load(buf as any);
     const ws = wb.getWorksheet('Desembarque')!;
-    expect(ws.getCell('A1').value).toBe('📦 Desembarque');
-    expect((ws.getCell('A1').fill as any).fgColor.argb).toBe('ef883a');
+    // Membrete: logo como imagen a la izquierda (A1:B2), título naranja con folio en C1:C2, datos en rejilla.
+    expect(ws.getImages().length).toBe(1);
+    const title = (ws.getCell('C1').value as any).richText.map((t: any) => t.text).join('');
+    expect(title).toBe('Desembarque\nFolio DESEMB-1');
+    expect((ws.getCell('C1').fill as any).fgColor.argb).toBe('ef883a');
+    const field = (ref: string) => (ws.getCell(ref).value as any).richText.map((t: any) => t.text).join('');
+    expect(field('D1')).toBe('SUCURSAL\nCd. Obregon');
+    expect(field('E1')).toBe('UNIDAD\nECON-01');
+    expect(field('G2')).toBe('FALTANTES / SOBRANTES\n1 / 1');
     let headerRowNum = 0;
     ws.eachRow({ includeEmpty: true }, (r, n) => { if (r.getCell(1).value === 'No.') headerRowNum = n; });
     expect(headerRowNum).toBeGreaterThan(0);
@@ -100,11 +107,42 @@ describe('seedExcelTemplates', () => {
       if (r.getCell(1).value === '📍 Guías sobrantes') foundUnScanned = true;
       if (String(r.getCell(1).value).includes('X1')) foundMissing = true;
       if (String(r.getCell(1).value).includes('Y1')) foundUnScanned = true;
-      if ((r.getCell(1).fill as any)?.fgColor?.argb === 'F2F2F2') foundZebra = true;
+      if ((r.getCell(1).fill as any)?.fgColor?.argb === 'FFC7CE') foundZebra = true; // T1 vence hoy: rojo, como inventario
     });
     expect(foundMissing).toBe(true);
     expect(foundUnScanned).toBe(true);
     expect(foundZebra).toBe(true);
+  });
+
+  it('unloading_excel: semáforo de inventario (rojo hoy, naranja mañana, gris alternado), leyenda y filtros', async () => {
+    const seed = EXCEL_TEMPLATE_SEEDS.find((s) => s.code === 'unloading_excel')!;
+    const now = new Date('2026-07-18T18:00:00Z'); // 11:00 en Hermosillo
+    const data = buildUnloadingData({
+      subsidiaryName: 'Cabo', vehicleName: 'U1', trackingNumber: 'F1', now,
+      packages: [
+        { trackingNumber: 'HOY', commitDateTime: '2026-07-19T05:00:00Z' }, // 18-jul 22:00 local
+        { trackingNumber: 'MANANA', commitDateTime: '2026-07-19T20:00:00Z' },
+        { trackingNumber: 'LUEGO', commitDateTime: '2026-07-22T20:00:00Z' },
+        { trackingNumber: 'LUEGO2', commitDateTime: '2026-07-22T20:00:00Z' },
+        { trackingNumber: 'ENTREGADA', commitDateTime: '2026-07-18T20:00:00Z', status: 'entregado' },
+      ],
+    } as any);
+    const buf = await new ExcelWorkbookBuilder(new TemplateEngine()).build(seed.doc, { data } as any);
+    const wb = new Workbook(); await wb.xlsx.load(buf as any);
+    const ws = wb.getWorksheet('Desembarque')!;
+    const rowOf = (tn: string) => { let n = 0; ws.eachRow((r, i) => { if (r.getCell(2).value === tn) n = i; }); return ws.getRow(n); };
+    const fill = (tn: string, col = 6) => (rowOf(tn).getCell(col).fill as any)?.fgColor?.argb ?? null;
+    expect(fill('HOY')).toBe('FFC7CE');
+    expect(rowOf('HOY').getCell(2).font?.bold).toBe(true);
+    expect(rowOf('HOY').getCell(2).font?.color?.argb).toBe('9C0006');
+    expect(fill('MANANA')).toBe('FFD8A8');
+    expect([fill('LUEGO'), fill('LUEGO2')]).toContain('F2F2F2');
+    expect(fill('ENTREGADA')).not.toBe('FFC7CE');
+    let legend = false; let header = 0;
+    ws.eachRow((r, i) => { if (String(r.getCell(1).value).startsWith('Rojo: vence hoy')) legend = true; if (r.getCell(1).value === 'No.') header = i; });
+    expect(legend).toBe(true);
+    expect(ws.autoFilter).toBe(`A${header}:I${header}`);
+    expect((ws.views[0] as any).ySplit).toBe(header);
   });
 
   it('unloading_excel: sin faltantes ni sobrantes, sus títulos/bandas NO aparecen (fix Lote 2)', async () => {
