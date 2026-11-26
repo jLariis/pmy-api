@@ -690,11 +690,20 @@ export class ConsolidatedService {
 
       // 3. Consulta de shipments Y charge_shipments (carga/F2/31.5) del consolidado.
       //    Antes solo se traían shipments; la carga/F2 (charge_shipment) faltaba en el detalle.
-      const selectFields = {
+      // Campos comunes a shipment y charge_shipment. Se agregan dirección/CP/teléfono/
+      // paquetería/cobro/alto valor para que el detalle y el reporte (estilo inventario) los muestren.
+      const baseSelect = {
         id: true,
         trackingNumber: true,
         recipientName: true,
+        recipientAddress: true,
+        recipientCity: true,
+        recipientZip: true,
+        recipientPhone: true,
+        shipmentType: true,
+        isHighValue: true,
         commitDateTime: true,
+        createdAt: true,
         consolidatedId: true,
         status: true,
         statusHistory: {
@@ -706,19 +715,27 @@ export class ConsolidatedService {
           id: true,
           name: true,
         },
+        payment: {
+          type: true,
+          amount: true,
+          status: true,
+        },
       };
+      // dhlUniqueId solo existe en shipment (no en charge_shipment).
+      const shipmentSelect = { ...baseSelect, dhlUniqueId: true };
+      const relations = ['subsidiary', 'statusHistory', 'payment'];
 
       const [shipments, chargeShipments] = await Promise.all([
         this.shipmentRepository.find({
-          select: selectFields as any,
+          select: shipmentSelect as any,
           where: { consolidatedId },
-          relations: ['subsidiary', 'statusHistory'],
+          relations,
           order: { commitDateTime: 'DESC' },
         }),
         this.chargeShipmentRepository.find({
-          select: selectFields as any,
+          select: baseSelect as any,
           where: { consolidatedId },
-          relations: ['subsidiary', 'statusHistory'],
+          relations,
           order: { commitDateTime: 'DESC' },
         }),
       ]);
